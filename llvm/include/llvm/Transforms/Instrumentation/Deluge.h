@@ -9,8 +9,7 @@ class Module;
 
 class DelugePass : public PassInfoMixin<DelugePass> {
 public:
-  DelugePass();
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM);
   static bool isRequired() { return true; }
 };
 
