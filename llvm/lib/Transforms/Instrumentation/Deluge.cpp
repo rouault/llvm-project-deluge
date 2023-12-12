@@ -4,8 +4,77 @@
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/TargetParser/Triple.h>
 #include <vector>
+#include <unordered_map>
 
 using namespace llvm;
+
+namespace {
+
+// This has to match the Deluge runtime.
+enum class DelugeWordType {
+  Invalid = 0,
+  Int = 1,
+  PtrPart1 = 2,
+  PtrPart2 = 3,
+  PtrPart3 = 4,
+  PtrPart4 = 5
+};
+
+struct CoreDelugeType {
+  size_t Size { 0 };
+  size_t Alignment { 0 };
+  std::vector<DelugeWordType> WordTypes;
+
+  CoreDelugeType() = default;
+  
+  CoreDelugeType(size_t Size, size_t Alignment)
+    : Size(Size), Alignment(Alignment) {
+  }
+
+  bool isValid() const { return !!Size; }
+
+  bool operator==(const CoreDelugeType& Other) const {
+    return Size == Other.size && Alignment == Other.Alignment && WordTypes == Other.WordTypes;
+  }
+
+  size_t hash() const {
+    size_t Result = Size + Alignment * 3;
+    for (DelugeWordType WordType : WordTypes) {
+      Result *= 7;
+      Result += static_cast<size_t>(WordType);
+    }
+    return Result;
+  }
+};
+
+struct DelugeType {
+  CoreDelugeType Main;
+  CoreDelugeType Trailing;
+
+  DelugeType() = default;
+  
+  DelugeType(size_t Size, size_t Alignment)
+    : Main(Size, Alignment) {
+  }
+
+  bool operator==(const DelugeType& Other) const {
+    return Main == Other.Main && Trailing == Other.Trailing;
+  }
+
+  size_t hash() const {
+    return Main.hash() + 11 * Trailing.hash();
+  }
+};
+
+} // anonymous namespace
+
+template<> struct std::hash<DelugeType>
+{
+  size_t operator()(const DelugeType& Key) const
+  {
+    return Key.hash();
+  }
+};
 
 namespace {
 
@@ -18,19 +87,30 @@ class Deluge {
   ModuleAnalysisManager &MAM;
 
   Type* VoidTy;
+  Type* Int32Ty;
   Type* IntPtrTy;
   Type* LowRawPtrTy;
   Type* LowWidePtrTy;
   
+  FunctionCallee GetHeap;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
+  FunctionCallee Memset;
+  FunctionCallee Memcpy;
+  FunctionCallee Memmove;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
   std::vector<GlobalAlias*> Aliases;
   std::vector<GlobalIFunc*> IFuncs;
 
-  // This turns ptrs into structs.
+  std::map<Constant*, Value*> ForgedConstants;
+  Instruction *ForgingInsertionPoint;
+
+  Constant* typeRep(Type* T) {
+    
+  }
+
   Type* lowerType(Type* T) {
     if (FunctionType* FT = dyn_cast<FunctionType>(T)) {
       std::vector<Type*> Params;
@@ -170,18 +250,59 @@ class Deluge {
     }
   }
 
+  Value* lowerPtr(Value *HighP) {
+    return ExtractValue::Create(P, { 0 }, "deluge_getlowptr", InsertBefore);
+  }
+
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
   Value* prepareForAccess(Type *T, Value *HighP, Instruction *InsertBefore) {
-    Value* LowP = ExtractValue::Create(P, { 0 }, "deluge_getlowptr", InsertBefore);
+    Value* LowP = lowerPtr(HighP);
     checkRecurse(T, LowP, InsertBefore);
     return LowP;
   }
 
+  Value* forgeConstant(Constant* C) {
+    if (!isa<PointerType>(C->getType()))
+      return C;
+    if (C->getType()->getPointerAddressSpace() != TargetAS)
+      return C;
+    
+    auto iter = ForgedConstants.find(C);
+    if (iter != ForgedConstants.end())
+      return iter->second;
+
+    // FIXME: Need to interpret the constant! That means possibly creating a pointer that's in an OOB
+    // state.
+
+    // FIXME: This means we need to have a way of forging a type. That means:
+    // - Functions in this module must have a check at the top of them to see if the global state is
+    //   initialized.
+    // - There is a global state that has all of the type pointers we would use. We can load from this
+    //   as needed.
+    // - There is some module initializer that we call on the slow path if the global state isn't
+    //   initialized.
+    // NO! It looks like we don't even have to hash cons types.
+
+    // FIXME: Eventually, global variables in a module will have some kind of checking associated with
+    // them so that if one module uses a global variable defined in another, then you cannot get a type
+    // confused wide pointer, with any combination of these things used as the enforcement mechanism:
+    // - Accessing a global requires checking some side-state of the global that tells you the type
+    //   that the global was really allocated with
+    // - Extern globals are implemented as function calls that return a wide pointer with the right type.
+    // - Runtime maintains a global registry of types associated with globals, and every module that
+    //   knows of a global tells the runtime what it expects of the type. The runtime may then trap if
+    //   it detects a contradiction.
+  }
+
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I) {
+    // FIXME: need to replace all uses of constants with *something*. Like, using a pointer to a global
+    // must forge that pointer. FUUUUUCK
+    
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
       AI->setAllocatedType(lowerType(AI->getAllocatedType()));
+      // FIXME: This now returns a wide pointer!! WTF!!
       return;
     }
 
@@ -230,7 +351,37 @@ class Deluge {
       return;
     }
 
-    //FIXME: Next up: ICmpInst
+    if (ICmpInst* CI = dyn_cast<ICmpInst>(I)) {
+      if (isa<PointerType>(CI->getOperand(0)->getType()) &&
+          CI->getOperand(0)->getType()->getPointerAddressSpace() == TargetAS) {
+        CI->getOperandUse(0) = lowerPtr(CI->getOperand(0));
+        CI->getOperandUse(1) = lowerPtr(CI->getOperand(1));
+      }
+      return;
+    }
+
+    if (FCmpInst* CI = dyn_cast<FCmpInst>(I)) {
+      // We're gucci.
+      return;
+    }
+
+    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+      // FIXME: We should totally do this, but not now:
+      // Maybe we should lower calls to something that passes all arguments and returns all results
+      // on the stack, which would then enable us to do very smart type checks?
+      // We're fucking the ABI anyway, so why not?
+      // But what does that mean for callers?
+      // -> Callers must create an "outgoing arguments" alloca
+      // -> all calls just place their arguments into that alloca
+      // -> that alloca can also serve as the place that results get janked into
+      // What does it mean for callees?
+      // -> all args get RAUW to loads from the passed-in ptr
+
+      
+      return;
+    }
+
+    FIXME;
   }
 
 public:
@@ -250,13 +401,18 @@ public:
       IFuncs.push_back(G);
 
     VoidTy = Type::getVoidTy(C);
+    Int32Ty = Type::getInt32Ty(C);
     IntPtrTy = Type::getIntNTy(C, DL.getPointerSizeInBits(TargetAS));
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
 
-    CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int", VoidTy, LowWidePtrTy, IntPtrTy);
-    CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr", VoidTy, LowWidePtrTy);
+    GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
+    CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
+    CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy);
+    Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
+    Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
+    Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     
     // Need to rewrite all things that use pointers.
     // - All uses of pointers need to be transformed to calls to wide pointer functions.
