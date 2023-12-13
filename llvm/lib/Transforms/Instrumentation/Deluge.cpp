@@ -78,6 +78,11 @@ template<> struct std::hash<DelugeType>
 
 namespace {
 
+struct DelugeTypeData {
+  DelugeType Type;
+  Constant* TypeRep { nullptr };
+};
+
 class Deluge {
   constexpr unsigned TargetAS = 0;
   
@@ -86,6 +91,7 @@ class Deluge {
   DataLayout& DL;
   ModuleAnalysisManager &MAM;
 
+  unsigned PtrBits;
   Type* VoidTy;
   Type* Int32Ty;
   Type* IntPtrTy;
@@ -104,11 +110,148 @@ class Deluge {
   std::vector<GlobalAlias*> Aliases;
   std::vector<GlobalIFunc*> IFuncs;
 
-  std::map<Constant*, Value*> ForgedConstants;
+  std::unordered_map<Constant*, Value*> ForgedConstants;
   Instruction *ForgingInsertionPoint;
 
-  Constant* typeRep(Type* T) {
+  std::unordered_map<Type*, DelugeTypeData*> TypeMap;
+  std::unordered_map<DelugeType, std::unique_ptr<DelugeTypeData>> TypeDatas;
+  DelugeTypeData Primitive;
+  DelugeTypeData Invalid;
+
+  void buildCoreTypeRecurse(CoreDelugeType& CDT, Type* T) {
+    CDT.Alignment = std::max(CDT.Alignment, DL.getABITypeAlign(T));
+
+    assert((CDT.Size + 7) / 8 == CDT.WordTypes.size());
+    if (CDT.Size % 8)
+      assert(CDT.WordTypes.last() == DelugeWordType::Int);
+
+    auto Fill = [&] () {
+      while ((CDT.Size + 7) / 8 > CDT.WordTypes.size())
+        CDT.WordTypes.push_back(DelugeWordType::Int);
+    };
+
+    assert(T != LowRawPtrTy);
     
+    if (T == LowWidePtrTy) {
+      assert(T->getPointerAddressSpace() == TargetAS);
+      CDT.Size += 32;
+      CDT.WordTypes.push_back(DelugeWordType::PtrPart1);
+      CDT.WordTypes.push_back(DelugeWordType::PtrPart2);
+      CDT.WordTypes.push_back(DelugeWordType::PtrPart3);
+      CDT.WordTypes.push_back(DelugeWordType::PtrPart4);
+      return;
+    }
+
+    if (StructType* ST = dyn_cast<StructType>(T)) {
+      size_t SizeBefore = CDT.Size;
+      StructLayout SL = DL.getStructLayout(ST);
+      for (unsigned Index = 0; Index < ST->getNumElements(); ++Index) {
+        Type* InnerT = ST->getElementType(Index);
+        size_t ProposedSize = SizeBefore + SL.getElementOffset(Index);
+        assert(ProposedSize >= CDT.Size);
+        CDT.Size = ProposedSize;
+        Fill();
+        buildCoreTypeRecurse(CDT, InnerT);
+      }
+      size_t ProposedSize = SizeBefore + SL.getSizeInBytes();
+      assert(ProposedSize >= CDT.Size);
+      CDT.Size = ProposedSize;
+      Fill();
+      return;
+    }
+      
+    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
+      for (uint64_t Index = AT->getNumElements(); Index--;)
+        buildCoreTypeRecurse(CDT, AT->getElementType());
+      return;
+    }
+      
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
+      for (unsigned Index = VT->getElementCount(); Index--;)
+        buildCoreTypeRecurse(CDT, VT->getElementType());
+      return;
+    }
+
+    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(T)) {
+      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
+      return;
+    }
+
+    CDT.Size += DL.getTypeStoreSize(T);
+    while ((CDT.Size + 7) / 8 > CDT.WordTypes.size())
+      CDT.WordTypes.push_back(DelugeWordType::Int);
+  }
+
+  DelugeTypeData* dataForType(const DelugeType& T) {
+    auto iter = TypeDatas.find(T);
+    if (iter != TypeDatas.end())
+      return iter->second.get();
+
+    std::unique_ptr<DelugeTypeData> Data = std::make_unique<DelugeTypeData>();
+    Data->Type = T;
+
+    DelugeTypeData* TrailingData = nullptr;
+    if (T.Trailing.isValid()) {
+      DelugeType TrailingT;
+      TrailingT.Main = T.Trailing;
+      TrailingData = dataForType(TrailingT);
+    }
+
+    std::vector<Constant*> Constants;
+    Constants.push_back(ConstantInt::get(IntPtrTy, Data->Type.Size));
+    Constants.push_back(ConstantInt::get(IntPtrTy, Data->Type.Alignment));
+    if (TrailingData)
+      Constants.push_back(ConstantExpr::getPtrToInt(TrailingData->TypeRep, IntPtrTy));
+    else
+      Constants.push_back(ConstantInt::get(IntPtrTy, 0));
+    uint64_t Word = 0;
+    size_t Shift = 0;
+    auto Flush = [&] () {
+      Constants.push_back(ConstantInt::get(IntPtrTy, Word));
+      Word = 0;
+      Shift = 0;
+    };
+    for (DelugeWordType Type : T.Main.WordTypes) {
+      if (Shift >= PtrBits) {
+        assert(Shift == PtrBits);
+        Flush();
+      }
+      Word |= static_cast<uint64_t>(Type) << Shift;
+      Shift += 8;
+    }
+    if (Shift)
+      Flush();
+    ConstantArray* ConstantArray =
+      ConstantArray::get(ArrayType::get(IntPtrTy, Constants.size()), Constants);
+    // FIXME: At some point, we'll want to content-address these.
+    GlobalVariable* TypeRep = new GlobalVariable(
+      M, true, GlobalValue::PrivateLinkage, ConstantArray, "deluge_type");
+
+    DelugeTypeData* Result = Data.get();
+    TypeDatas.emplace(T, std::move(Data));
+    return Result;
+  }
+
+  DelugeTypeData* dataForLowType(Type* T) {
+    auto iter = TypeMap.find(T);
+    if (iter != TypeMap.end())
+      return iter->second;
+
+    DelugeTypeData* Data;
+    if (!hasPtrsForCheck(T))
+      Data = &Primitive;
+    else {
+      DelugeType DT;
+      // Deluge types derived from llvm types never have a trailing component.
+      buildCoreTypeRecurse(DT.Main, T);
+
+      // FIXME: Find repetitions?
+      
+      Data = dataForType(DT);
+    }
+
+    TypeMap[T] = Data;
+    return Data;
   }
 
   Type* lowerType(Type* T) {
@@ -126,9 +269,10 @@ class Deluge {
     }
 
     if (isa<PointerType>(T)) {
-      if (T->getPointerAddressSpace() == TargetAS)
+      if (T->getPointerAddressSpace() == TargetAS) {
+        assert(T == LowRawPtrTy);
         return LowWidePtrTy;
-      assert(T == LowRawPtrTy);
+      }
       return T;
     }
 
@@ -160,6 +304,7 @@ class Deluge {
     CallInst::Create(CheckAccessPtr, { P }, "", InsertBefore)->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
+  // This happens to work just as well for high types and low types.
   bool hasPtrsForCheck(Type *T) {
     if (FunctionType* FT = dyn_cast<FunctionType>(T)) {
       llvm_unreachable("shouldn't see function types in hasPtrsForCheck");
@@ -248,6 +393,8 @@ class Deluge {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
       return;
     }
+
+    llvm_unreachable("Should not get here.");
   }
 
   Value* lowerPtr(Value *HighP) {
@@ -260,6 +407,14 @@ class Deluge {
     Value* LowP = lowerPtr(HighP);
     checkRecurse(T, LowP, InsertBefore);
     return LowP;
+  }
+
+  Value* forgePtr(Value* Ptr, Value* Lower, Value* Upper, Constant* TypeRep, Instruction* InsertionPoint) {
+    
+  }
+
+  Value* forgePtrWithLowType(Value* Ptr, Value* Lower, Value* Upper, Type* LowT, Instruction* InsertionPoint) {
+    return forgePtr(Ptr, Lower, Upper, dataForLowType(LowT)->TypeRep);
   }
 
   Value* forgeConstant(Constant* C) {
@@ -400,9 +555,10 @@ public:
     for (GlobalIFunc *G : M.ifuncs())
       IFuncs.push_back(G);
 
+    PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
     Int32Ty = Type::getInt32Ty(C);
-    IntPtrTy = Type::getIntNTy(C, DL.getPointerSizeInBits(TargetAS));
+    IntPtrTy = Type::getIntNTy(C, PtrBits);
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
