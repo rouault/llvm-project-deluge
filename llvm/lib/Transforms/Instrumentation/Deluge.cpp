@@ -109,6 +109,8 @@ class Deluge {
   std::vector<Function*> Functions;
   std::vector<GlobalAlias*> Aliases;
   std::vector<GlobalIFunc*> IFuncs;
+  std::unordered_map<GlobalValue*, Type*> GlobalLowTypes;
+  std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
   std::unordered_map<Constant*, Value*> ForgedConstants;
   Instruction *ForgingInsertionPoint;
@@ -182,14 +184,9 @@ class Deluge {
       CDT.WordTypes.push_back(DelugeWordType::Int);
   }
 
-  DelugeTypeData* dataForType(const DelugeType& T) {
-    auto iter = TypeDatas.find(T);
-    if (iter != TypeDatas.end())
-      return iter->second.get();
-
-    std::unique_ptr<DelugeTypeData> Data = std::make_unique<DelugeTypeData>();
-    Data->Type = T;
-
+  void buildTypeRep(DelugeTypeData& Data) {
+    DelugeType& T = Data.Type;
+    
     DelugeTypeData* TrailingData = nullptr;
     if (T.Trailing.isValid()) {
       DelugeType TrailingT;
@@ -198,8 +195,8 @@ class Deluge {
     }
 
     std::vector<Constant*> Constants;
-    Constants.push_back(ConstantInt::get(IntPtrTy, Data->Type.Size));
-    Constants.push_back(ConstantInt::get(IntPtrTy, Data->Type.Alignment));
+    Constants.push_back(ConstantInt::get(IntPtrTy, Data.Type.Size));
+    Constants.push_back(ConstantInt::get(IntPtrTy, Data.Type.Alignment));
     if (TrailingData)
       Constants.push_back(ConstantExpr::getPtrToInt(TrailingData->TypeRep, IntPtrTy));
     else
@@ -224,8 +221,18 @@ class Deluge {
     ConstantArray* ConstantArray =
       ConstantArray::get(ArrayType::get(IntPtrTy, Constants.size()), Constants);
     // FIXME: At some point, we'll want to content-address these.
-    GlobalVariable* TypeRep = new GlobalVariable(
+    Data.TypeRep = new GlobalVariable(
       M, true, GlobalValue::PrivateLinkage, ConstantArray, "deluge_type");
+  }
+
+  DelugeTypeData* dataForType(const DelugeType& T) {
+    auto iter = TypeDatas.find(T);
+    if (iter != TypeDatas.end())
+      return iter->second.get();
+
+    std::unique_ptr<DelugeTypeData> Data = std::make_unique<DelugeTypeData>();
+    Data->Type = T;
+    buildTypeRep(*Data);
 
     DelugeTypeData* Result = Data.get();
     TypeDatas.emplace(T, std::move(Data));
@@ -255,6 +262,8 @@ class Deluge {
   }
 
   Type* lowerType(Type* T) {
+    assert(T != LowWidePtrTy);
+    
     if (FunctionType* FT = dyn_cast<FunctionType>(T)) {
       std::vector<Type*> Params;
       for (Type* InnerT : FT->params())
@@ -409,8 +418,25 @@ class Deluge {
     return LowP;
   }
 
-  Value* forgePtr(Value* Ptr, Value* Lower, Value* Upper, Constant* TypeRep, Instruction* InsertionPoint) {
-    
+  Constant* forgePtrConstant(Constant* Ptr, Constant* Lower, Constant* Upper, Constant* TypeRep) {
+    return ConstantStruct::get(LowWidePtrTy, { Ptr, Lower, Upper, TypeRep });
+  }
+
+  Constant* forgePtrConstantWithLowType(Constant* Ptr, Constant* Lower, Constant* Upper, Type* LowT) {
+    return forgePtrConstant(Ptr, Lower, Upper, dataForLowType(LowT)->TypeRep);
+  }
+
+  Value* forgePtr(Value* Ptr, Value* Lower, Value* Upper, Value* TypeRep, Instruction* InsertionPoint) {
+    Value* Result = UndefValue::get(LowWidePtrTy);
+    Result = InsertValueInst::Create(Result, Ptr, { 0 }, "deluge_forge_ptr", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    Result = InsertValueInst::Create(Result, Lower, { 1 }, "deluge_forge_ptr", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    Result = InsertValueInst::Create(Result, Upper, { 2 }, "deluge_forge_ptr", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    Result = InsertValueInst::Create(Result, TypeRep, { 3 }, "deluge_forge_ptr", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    return Result;
   }
 
   Value* forgePtrWithLowType(Value* Ptr, Value* Lower, Value* Upper, Type* LowT, Instruction* InsertionPoint) {
@@ -427,28 +453,30 @@ class Deluge {
     if (iter != ForgedConstants.end())
       return iter->second;
 
-    // FIXME: Need to interpret the constant! That means possibly creating a pointer that's in an OOB
-    // state.
+    if (isa<ConstantPointerNull>(C))
+      return forgePtrConstantWithLowType(C, C, C, Invalid.TypeRep);
 
-    // FIXME: This means we need to have a way of forging a type. That means:
-    // - Functions in this module must have a check at the top of them to see if the global state is
-    //   initialized.
-    // - There is a global state that has all of the type pointers we would use. We can load from this
-    //   as needed.
-    // - There is some module initializer that we call on the slow path if the global state isn't
-    //   initialized.
-    // NO! It looks like we don't even have to hash cons types.
+    if (isa<GlobalValue>(C)) {
+      Type* LowT = GlobalLowTypes[C];
+      return forgePtrConstantWithLowType(C, C, ConstantExpr::getGetElementPtr(LowT, C, { 1 }), LowT);
+    }
+    
+    assert(isa<ConstantExpr>(C));
 
-    // FIXME: Eventually, global variables in a module will have some kind of checking associated with
-    // them so that if one module uses a global variable defined in another, then you cannot get a type
-    // confused wide pointer, with any combination of these things used as the enforcement mechanism:
-    // - Accessing a global requires checking some side-state of the global that tells you the type
-    //   that the global was really allocated with
-    // - Extern globals are implemented as function calls that return a wide pointer with the right type.
-    // - Runtime maintains a global registry of types associated with globals, and every module that
-    //   knows of a global tells the runtime what it expects of the type. The runtime may then trap if
-    //   it detects a contradiction.
+    switch (C->getOpcode()) {
+      // FIXME
+    }
   }
+  
+  // FIXME: Eventually, global variables in a module will have some kind of checking associated with
+  // them so that if one module uses a global variable defined in another, then you cannot get a type
+  // confused wide pointer, with any combination of these things used as the enforcement mechanism:
+  // - Accessing a global requires checking some side-state of the global that tells you the type
+  //   that the global was really allocated with
+  // - Extern globals are implemented as function calls that return a wide pointer with the right type.
+  // - Runtime maintains a global registry of types associated with globals, and every module that
+  //   knows of a global tells the runtime what it expects of the type. The runtime may then trap if
+  //   it detects a contradiction.
 
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I) {
@@ -546,14 +574,27 @@ public:
 
   void run() {
     // Capture the set of things that need conversion, before we start adding functions and globals.
-    for (GlobalVariable *G : M.globals())
+    auto CaptureType = [&] (GlobalValue* G) {
+      GlobalHighTypes[G] = G->getValueType();
+      GlobalLowTypes[G] = lowerType(G->GetValueType());
+    };
+    
+    for (GlobalVariable *G : M.globals()) {
       Globals.push_back(G);
-    for (Function *F : M.functions())
+      CaptureType(G);
+    }
+    for (Function *F : M.functions()) {
       Functions.push_back(F);
-    for (GlobalAlias *G : M.aliases())
+      CaptureType(F);
+    }
+    for (GlobalAlias *G : M.aliases()) {
       Aliases.push_back(G);
-    for (GlobalIFunc *G : M.ifuncs())
+      CaptureType(G);
+    }
+    for (GlobalIFunc *G : M.ifuncs()) {
       IFuncs.push_back(G);
+      CaptureType(G);
+    }
 
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
@@ -569,6 +610,11 @@ public:
     Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
+
+    Primitive.Type = DelugeType(1, 1);
+    buildTypeRep(Primitive);
+    Invalid.Type = DelugeType(0, 0);
+    Invalid.TypeRep = ConstantPointerNull::get(LowPtrTy);
     
     // Need to rewrite all things that use pointers.
     // - All uses of pointers need to be transformed to calls to wide pointer functions.
