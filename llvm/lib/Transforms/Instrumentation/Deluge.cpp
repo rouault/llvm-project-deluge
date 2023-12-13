@@ -112,8 +112,7 @@ class Deluge {
   std::unordered_map<GlobalValue*, Type*> GlobalLowTypes;
   std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
-  std::unordered_map<Constant*, Value*> ForgedConstants;
-  Instruction *ForgingInsertionPoint;
+  std::unordered_map<Constant*, Constant*> ForgedConstants;
 
   std::unordered_map<Type*, DelugeTypeData*> TypeMap;
   std::unordered_map<DelugeType, std::unique_ptr<DelugeTypeData>> TypeDatas;
@@ -367,11 +366,16 @@ class Deluge {
       return;
     }
 
-    if (isa<PointerType>(T)) {
+    if (isa<PointerType>(T))
       assert(T->getPointerAddressSpace() == TargetAS);
+
+    // We might see either low or high types!!!
+    if (T == LowRawPtrTy || T == LowWidePtrTy) {
       checkPtr(P, InsertBefore);
       return;
     }
+
+    assert(!isa<PointerType>(T));
 
     if (StructType* ST = dyn_cast<StructType>(T)) {
       for (unsigned Index = ST->getNumElements(); Index--;) {
@@ -410,6 +414,13 @@ class Deluge {
     return ExtractValue::Create(P, { 0 }, "deluge_getlowptr", InsertBefore);
   }
 
+  Constant* lowerPtrConstant(Constant* HighP) {
+    ConstantStruct* CS = cast<ConstantStruct>(LowWidePtr);
+    assert(CS->getNumOperands() == 4);
+    assert(CS->getType() == LowWidePtrTy);
+    return CS->getOperand(0);
+  }
+
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
   Value* prepareForAccess(Type *T, Value *HighP, Instruction *InsertBefore) {
@@ -426,15 +437,19 @@ class Deluge {
     return forgePtrConstant(Ptr, Lower, Upper, dataForLowType(LowT)->TypeRep);
   }
 
+  Constant* forgePtrConstantWithLowType(Constant* Ptr, Type* LowT) {
+    return forgePtrConstantWithLowType(Ptr, Ptr, ConstantExpr::getGetElementPtr(LowT, Ptr, { 1 }), LowT);
+  }
+
   Value* forgePtr(Value* Ptr, Value* Lower, Value* Upper, Value* TypeRep, Instruction* InsertionPoint) {
     Value* Result = UndefValue::get(LowWidePtrTy);
     Result = InsertValueInst::Create(Result, Ptr, { 0 }, "deluge_forge_ptr", InsertionPoint);
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
-    Result = InsertValueInst::Create(Result, Lower, { 1 }, "deluge_forge_ptr", InsertionPoint);
+    Result = InsertValueInst::Create(Result, Lower, { 1 }, "deluge_forge_lower", InsertionPoint);
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
-    Result = InsertValueInst::Create(Result, Upper, { 2 }, "deluge_forge_ptr", InsertionPoint);
+    Result = InsertValueInst::Create(Result, Upper, { 2 }, "deluge_forge_upper", InsertionPoint);
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
-    Result = InsertValueInst::Create(Result, TypeRep, { 3 }, "deluge_forge_ptr", InsertionPoint);
+    Result = InsertValueInst::Create(Result, TypeRep, { 3 }, "deluge_forge_type", InsertionPoint);
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
     return Result;
   }
@@ -443,29 +458,65 @@ class Deluge {
     return forgePtr(Ptr, Lower, Upper, dataForLowType(LowT)->TypeRep);
   }
 
-  Value* forgeConstant(Constant* C) {
-    if (!isa<PointerType>(C->getType()))
-      return C;
-    if (C->getType()->getPointerAddressSpace() != TargetAS)
+  Value* forgePtrWithLowType(Value* Ptr, Type* LowT, Instruction* InsertionPoint) {
+    Value* Upper = GetElementPtrInst::Create(LowT, Ptr, { 1 }, "deluge_upper", InsertionPoint);
+    Upper->setDebugLoc(InsertionPoint->getDebugLoc());
+    return forgePtrWithLowType(Ptr, Ptr, Upper, LowT, InsertionPoint);
+  }
+
+  Constant* reforgePtrConstant(Constant* LowWidePtr, Constant* NewLowRawPtr) {
+    ConstantStruct* CS = cast<ConstantStruct>(LowWidePtr);
+    assert(CS->getNumOperands() == 4);
+    assert(CS->getType() == LowWidePtrTy);
+    return forgePtrConstant(newLowRawPtr, CS->getOperand(1), CS->getOperand(2), CS->getOperand(3));
+  }
+
+  Value* reforgePtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertionPoint) {
+    Value* Result = InsertValueInst::Create(
+      LowWidePtr, NewLowRawPtr, { 0 }, "deluge_reforge", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    return Result;
+  }
+
+  Constant* lowerConstantImpl(Constant* C) {
+    if (isa<ConstantPointerNull>(C))
+      return forgePtrConstantWithLowType(C, C, C, Invalid.TypeRep);
+
+    if (isa<GlobalValue>(C)) {
+      Type* LowT = GlobalLowTypes[C];
+      return forgePtrConstantWithLowType(C, LowT);
+    }
+    
+    assert(isa<ConstantExpr>(C));
+
+    switch (C->getOpcode()) {
+    case Instruction::GetElementPtr:
+      return reforgePtrConstant(lowerConstant(C->getOperand(0)), C);
+    case Instruction::IntToPtr:
+      return forgePtrConstantWithLowType(
+        C, ConstantPointerNull::get(LowRawPtrTy), ConstantPointerNull::get(LowRawPtrTy), Invalid.TypeRep);
+    case Instruction::AddrSpaceCast:
+      return forgePtrConstantWithLowType(
+        C, ConstantPointerNull::get(LowRawPtrTy), ConstantPointerNull::get(LowRawPtrTy), Invalid.TypeRep);
+    case Instruction::BitCast:
+      return reforgePtrConstant(lowerConstant(C->getOperand(0)), C);
+    default:
+      llvm_unreachable("Invalid ConstExpr returning ptr");
+      return nullptr;
+    }
+  }
+
+  Constant* lowerConstant(Constant* C) {
+    if (C->getType() != LowRawPtrTy)
       return C;
     
     auto iter = ForgedConstants.find(C);
     if (iter != ForgedConstants.end())
       return iter->second;
 
-    if (isa<ConstantPointerNull>(C))
-      return forgePtrConstantWithLowType(C, C, C, Invalid.TypeRep);
-
-    if (isa<GlobalValue>(C)) {
-      Type* LowT = GlobalLowTypes[C];
-      return forgePtrConstantWithLowType(C, C, ConstantExpr::getGetElementPtr(LowT, C, { 1 }), LowT);
-    }
-    
-    assert(isa<ConstantExpr>(C));
-
-    switch (C->getOpcode()) {
-      // FIXME
-    }
+    Constant* LowC = lowerConstantImpl(C);
+    ForgedConstants[C] = LowC;
+    return LowC;
   }
   
   // FIXME: Eventually, global variables in a module will have some kind of checking associated with
@@ -480,18 +531,20 @@ class Deluge {
 
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I) {
-    // FIXME: need to replace all uses of constants with *something*. Like, using a pointer to a global
-    // must forge that pointer. FUUUUUCK
+    for (unsigned Index = I->getNumOperands(); Index--;) {
+      Use& U = I->getOperandUse(Index);
+      if (Constant* C = dyn_cast<Constant>(U))
+        U = lowerConstant(C);
+    }
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
-      AI->setAllocatedType(lowerType(AI->getAllocatedType()));
-      // FIXME: This now returns a wide pointer!! WTF!!
+      Type* LowT = lowerType(AI->getAllocatedType());
+      AI->setAllocatedType(LowT);
+      AI->replaceAllUsesWith(forgePtrWithLowType(AI, LowT, AI->next()));
       return;
     }
 
     if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
-      // FUCK - if we're loading/storing aggregate type, then we need to emit checks for the
-      // subcomponents! This is wack!
       ReplaceInstWithInst(
         LI, new LoadInst(
           lowerType(LI->getType()), prepareForAccess(LI->getType(), LI->getPointerOperand(), LI),
@@ -529,6 +582,7 @@ class Deluge {
     }
 
     if (GetElementPtrInst* GI = dyn_cast<GetElementPtrInst>(I)) {
+      // FIXME: Need to reforgePtr.
       GI->setSourceElementType(lowerType(GI->getSourceElementType()));
       GI->setResultElementType(lowerType(GI->getResultElementType()));
       return;
