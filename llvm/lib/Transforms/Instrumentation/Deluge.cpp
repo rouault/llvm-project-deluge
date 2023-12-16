@@ -516,6 +516,18 @@ class Deluge {
   }
 
   Constant* lowerConstant(Constant* C) {
+    if (isa<UndefValue>(C)) {
+      if (isa<IntegerType>(C->getType()))
+        return ConstantInt::get(C->getType(), 0);
+      if (C->getType()->isFloatingPointTy()())
+        return ConstantFP::get(C->getType(), 0.);
+      if (C->getType() == LowRawPtrTy) {
+        Constant* N = ConstantPointerNull::get(LowRawPtrTy);
+        return forgePtrConstantWithLowType(N, N, N, Invalid.TypeRep);
+      }
+      return ConstantAggregateZero::get(C->getType());
+    }
+    
     if (C->getType() != LowRawPtrTy)
       return C;
     
@@ -571,7 +583,7 @@ class Deluge {
     }
 
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
-      if (SI->getPointerAddressSpace() == TargetAS) {
+      if (hasPtrsForCheck(SI->getPointerOperand()->getType())) {
         SI->getOperandUse(StoreInst::getPointerOperandIndex()) =
           prepareForAccess(SI->getValueOperand()->getType(), SI->getPointerOperand(), SI);
       }
@@ -584,18 +596,22 @@ class Deluge {
     }
 
     if (AtomicCmpXchInst* AI = dyn_cast<AtomicCmpXchInst>(I)) {
-      if (AI->getPointerAddressSpace() == TargetAS) {
+      if (hasPtrsForCheck(AI->getPointerOperand()->getType())) {
         AI->getOperandUse(AtomicCmpXchInst::getPointerOperandIndex()) =
           prepareForAccess(AI->getNewValOperand()->getType(), AI->getPointerOperand(), AI);
       }
+      if (hasPtrsForCheck(AI->getNewValOperand()->getType()))
+        llvm_unreachable("Cannot handle CAS on pointer field, sorry");
       return;
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      if (AI->getPointerAddressSpace() == TargetAS) {
+      if (hasPtrsForCheck(AI->getPointerOperand()->getType())) {
         AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) =
           prepareForAccess(AI->getValOperand()->getType(), AI->getPointerOperand(), AI);
       }
+      if (hasPtrsForCheck(AI->getValOperand()->getType()))
+        llvm_unreachable("Cannot handle CAS on pointer field, sorry");
       return;
     }
 
@@ -616,7 +632,19 @@ class Deluge {
       return;
     }
 
-    if (FCmpInst* CI = dyn_cast<FCmpInst>(I)) {
+    if (isa<FCmpInst>(I) ||
+        isa<ReturnInst>(I) ||
+        isa<BranchInst>(I) ||
+        isa<SwitchInst>(I) ||
+        isa<TructInst>(I) ||
+        isa<ZExtInst>(I) ||
+        isa<SExtInst>(I) ||
+        isa<FPTruncInst>(I) ||
+        isa<FPExtInst>(I) ||
+        isa<UIToFPInst(I) ||
+        isa<SPToFPInst>(I) ||
+        isa<FPToUIInst>(I) ||
+        isa<FPToSIInst>(I)) {
       // We're gucci.
       return;
     }
@@ -666,8 +694,10 @@ class Deluge {
       default:
         // Intrinsics that take pointers but do not access memory are handled by simply giving them the
         // raw pointers. It's possible that this is the null set, but it's nice to have this carveout.
-        if (!II->getCalledFunction()->doesNotAccessMemory())
-          CallInst::Create(Error, "", II);
+        if (!II->getCalledFunction()->doesNotAccessMemory()) {
+          llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
+          CallInst::Create(Error, "", II)->setDebugLoc(II);
+        }
         for (Use& U : II->data_ops()) {
           if (hasPtrsForCheck(U->getType()))
             U = lowerPtr(U, II);
@@ -690,11 +720,83 @@ class Deluge {
       // What does it mean for callees?
       // -> all args get RAUW to loads from the passed-in ptr
 
-      FIXME;
+      if (CI->isInlineAsm())
+        llvm_unreachable("Don't support InlineAsm");
+
+      // FIXME: This doesn't do _any_ of the checking that needs to happen here.
+      CI->mutateFunctionType(cast<FunctionType>(lowerType(CI->getFunctionType())));
+      CI->getCalledOperandUse() = lowerPtr(CI->getCalledOperand(), CI);
       return;
     }
 
-    FIXME;
+    if (VVArgInst* VI = dyn_cast<VAArgInst>(I)) {
+      // FIXME: This could totally do smart checking if we accept more ABI carnage. See FIXME under
+      // CallInst.
+      VAArgInst* NewVI = new VVArgInst(
+        lowerPtr(VI->getPointerOperand(), VI), lowerType(VI->getType()), "deluge_vaarg", VI);
+      ReplaceInstWithInst(VI, NewVI);
+      return;
+    }
+
+    if (isa<ExtractElementInst>(I) ||
+        isa<InsertElementInst>(I) ||
+        isa<ShuffleVectorInst>(I) ||
+        isa<ExtractValueInst>(I) ||
+        isa<InsertValueInst>(I) ||
+        isa<PHINode>(I)) {
+      I->mutateType(lowerType(I->getType()));
+      return;
+    }
+
+    if (isa<LandingPadInst>(I)) {
+      llvm_unreachable("Don't support LandingPad yet");
+      return;
+    }
+
+    if (isa<IndirectBrInst>(I)) {
+      llvm_unreachable("Don't support IndirectBr yet (and maybe never will)");
+      return;
+    }
+
+    if (isa<CallBrInst>(I)) {
+      llvm_unreachable("Don't support CallBr yet (and maybe never will)");
+      return;
+    }
+
+    if (isa<ResumeInst>(I)) {
+      llvm_unreachable("Don't support Resume yet");
+      return;
+    }
+
+    if (isa<CatchSwitchInst>(I)) {
+      llvm_unreachable("Don't support CatchSwitch yet");
+      return;
+    }
+
+    if (isa<CleanupPadInst>(I)) {
+      llvm_unreachable("Don't support CleanupPad yet");
+      return;
+    }
+
+    if (isa<CatchPadInst>(I)) {
+      llvm_unreachable("Don't support CatchPad yet");
+      return;
+    }
+
+    if (isa<CatchReturnInst>(I)) {
+      llvm_unreachable("Don't support CatchReturn yet");
+      return;
+    }
+
+    if (isa<CleanupReturnInst>(I)) {
+      llvm_unreachable("Don't support CleanupReturn yet");
+      return;
+    }
+
+    if (isa<UnreachableInst>(I)) {
+      CallInst::Create(Error, "", I)->setDebugLoc(I);
+      return;
+    }
   }
 
 public:

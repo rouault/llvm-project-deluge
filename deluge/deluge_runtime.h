@@ -37,6 +37,9 @@ struct deluge_type {
     deluge_word_type word_types[1];
 };
 
+/* FIXME: There should be a subtype of deluge_type that has no word_types but that describes
+   function pointers. */
+
 /* This struct aligns exactly with pas_heap_ref. */
 struct deluge_heap_ref {
     deluge_type* type;
