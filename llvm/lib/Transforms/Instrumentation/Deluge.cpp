@@ -104,6 +104,7 @@ class Deluge {
   FunctionCallee Memset;
   FunctionCallee Memcpy;
   FunctionCallee Memmove;
+  FunctionCallee Error;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -410,8 +411,10 @@ class Deluge {
     llvm_unreachable("Should not get here.");
   }
 
-  Value* lowerPtr(Value *HighP) {
-    return ExtractValue::Create(P, { 0 }, "deluge_getlowptr", InsertBefore);
+  Value* lowerPtr(Value *HighP, Instruction* InsertBefore) {
+    Instruction* Result = ExtractValue::Create(P, { 0 }, "deluge_getlowptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
   }
 
   Constant* lowerPtrConstant(Constant* HighP) {
@@ -424,7 +427,7 @@ class Deluge {
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
   Value* prepareForAccess(Type *T, Value *HighP, Instruction *InsertBefore) {
-    Value* LowP = lowerPtr(HighP);
+    Value* LowP = lowerPtr(HighP, InsertBefore);
     checkRecurse(T, LowP, InsertBefore);
     return LowP;
   }
@@ -462,6 +465,12 @@ class Deluge {
     Value* Upper = GetElementPtrInst::Create(LowT, Ptr, { 1 }, "deluge_upper", InsertionPoint);
     Upper->setDebugLoc(InsertionPoint->getDebugLoc());
     return forgePtrWithLowType(Ptr, Ptr, Upper, LowT, InsertionPoint);
+  }
+
+  Value* forgeBadPtr(Value* Ptr, Instruction* InsertionPoint) {
+    return forgePtr(
+      Ptr, ConstantPointerNull::get(LowRawPtrTy), ConstantPointerNull::get(LowRawPtrTy),
+      Invalid.TypeRep, InsertionPoint);
   }
 
   Constant* reforgePtrConstant(Constant* LowWidePtr, Constant* NewLowRawPtr) {
@@ -517,6 +526,15 @@ class Deluge {
     Constant* LowC = lowerConstantImpl(C);
     ForgedConstants[C] = LowC;
     return LowC;
+  }
+
+  Value* makeIntPtr(Value* V, Instruction *InsertionPoint) {
+    if (V->getType() == IntPtrTy)
+      return V;
+    Instruction* Result =
+      CastInst::CreateIntegerCast(V, IntPtrTy, false, "deluge_makeintptr", InsertionPoint);
+    Result->setDebugLoc(InsertionPoint->getDebugLoc());
+    return Result;
   }
   
   // FIXME: Eventually, global variables in a module will have some kind of checking associated with
@@ -582,17 +600,18 @@ class Deluge {
     }
 
     if (GetElementPtrInst* GI = dyn_cast<GetElementPtrInst>(I)) {
-      // FIXME: Need to reforgePtr.
       GI->setSourceElementType(lowerType(GI->getSourceElementType()));
       GI->setResultElementType(lowerType(GI->getResultElementType()));
+      GI->getOperandUse(0) = lowerPtr(GI->getOperand(0), GI);
+      GI->replaceAllUsesWith(reforgePtr(GI->getOperand(0), GI, GI->next()));
       return;
     }
 
     if (ICmpInst* CI = dyn_cast<ICmpInst>(I)) {
       if (isa<PointerType>(CI->getOperand(0)->getType()) &&
           CI->getOperand(0)->getType()->getPointerAddressSpace() == TargetAS) {
-        CI->getOperandUse(0) = lowerPtr(CI->getOperand(0));
-        CI->getOperandUse(1) = lowerPtr(CI->getOperand(1));
+        CI->getOperandUse(0) = lowerPtr(CI->getOperand(0), CI);
+        CI->getOperandUse(1) = lowerPtr(CI->getOperand(1), CI);
       }
       return;
     }
@@ -602,6 +621,63 @@ class Deluge {
       return;
     }
 
+    if (InvokeInst* II = dyn_cast<InvokeInst>(I)) {
+      llvm_unreachable("Don't support InvokeInst yet");
+      return;
+    }
+    
+    if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
+      switch (II->getIntrinsicID()) {
+      case Intrinsic::memcpy:
+      case Intrinsic::memcpy_inline:
+        // OK, so it seems bad that we're treating memcpy and memcpy_inline the same. But it's fine.
+        // The intent of the inline variant is to cover the low-level programming case where you cannot
+        // call outside libraries, but you want to describe a memcpy. However, with Deluge, we're always
+        // depending on the Deluge runtime somehow, so it's OK to call into the Deluge runtime's memcpy
+        // (or memset, or memmove).
+        //
+        // Also, for now, we just ignore the volatile bit, since the call to the Deluge runtime is going
+        // to look volatile enough.
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
+          Instruction* CI = CallInst::Create(
+            Memcpy, II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II));
+          ReplaceInstWithInst(II, CI);
+        }
+        return;
+      case Intrinsic::memset:
+      case Intrinsic::memset_inline:
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          Instruction* CI = CallInst::Create(
+            Memset, II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2)));
+          ReplaceInstWithInst(II, CI);
+        }
+        return;
+      case Intrinsic::memmove:
+      case Intrinsic::memmove_inline:
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
+          Instruction* CI = CallInst::Create(
+            Memmove, II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II));
+          ReplaceInstWithInst(II, CI);
+        }
+        return;
+
+      default:
+        // Intrinsics that take pointers but do not access memory are handled by simply giving them the
+        // raw pointers. It's possible that this is the null set, but it's nice to have this carveout.
+        if (!II->getCalledFunction()->doesNotAccessMemory())
+          CallInst::Create(Error, "", II);
+        for (Use& U : II->data_ops()) {
+          if (hasPtrsForCheck(U->getType()))
+            U = lowerPtr(U, II);
+        }
+        if (hasPtrsForCheck(II->getType()))
+          II->replaceAllUsesWith(forgeBadPtr(II, II->next()));
+        return;
+      }
+    }
+    
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
       // FIXME: We should totally do this, but not now:
       // Maybe we should lower calls to something that passes all arguments and returns all results
@@ -614,7 +690,7 @@ class Deluge {
       // What does it mean for callees?
       // -> all args get RAUW to loads from the passed-in ptr
 
-      
+      FIXME;
       return;
     }
 
@@ -664,6 +740,7 @@ public:
     Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
+    Error = M.getOrInsertFunction("deluge_error", VoidTy);
 
     Primitive.Type = DelugeType(1, 1);
     buildTypeRep(Primitive);

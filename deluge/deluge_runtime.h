@@ -119,5 +119,7 @@ static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count)
                         count);
 }
 
+void deluge_error(void);
+
 #endif /* DELUGE_RUNTIME_H */
 
