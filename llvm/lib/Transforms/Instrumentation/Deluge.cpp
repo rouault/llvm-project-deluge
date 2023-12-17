@@ -97,6 +97,8 @@ class Deluge {
   Type* IntPtrTy;
   Type* LowRawPtrTy;
   Type* LowWidePtrTy;
+  Value* LowRawNull;
+  Value* LowWideNull;
   
   FunctionCallee GetHeap;
   FunctionCallee CheckAccessInt;
@@ -489,7 +491,7 @@ class Deluge {
 
   Constant* lowerConstantImpl(Constant* C) {
     if (isa<ConstantPointerNull>(C))
-      return forgePtrConstantWithLowType(C, C, C, Invalid.TypeRep);
+      return LowWideNull;
 
     if (isa<GlobalValue>(C)) {
       Type* LowT = GlobalLowTypes[C];
@@ -521,10 +523,8 @@ class Deluge {
         return ConstantInt::get(C->getType(), 0);
       if (C->getType()->isFloatingPointTy()())
         return ConstantFP::get(C->getType(), 0.);
-      if (C->getType() == LowRawPtrTy) {
-        Constant* N = ConstantPointerNull::get(LowRawPtrTy);
-        return forgePtrConstantWithLowType(N, N, N, Invalid.TypeRep);
-      }
+      if (C->getType() == LowRawPtrTy)
+        return LowWideNull;
       return ConstantAggregateZero::get(C->getType());
     }
     
@@ -797,6 +797,48 @@ class Deluge {
       CallInst::Create(Error, "", I)->setDebugLoc(I);
       return;
     }
+
+    if (isa<IntToPtrInst>(I)) {
+      I->replaceAllUsesWith(forgeBadPtr(I, I->next()));
+      return;
+    }
+
+    if (isa<PtrToIntInst>(I)) {
+      I->getOperandUse(0) = lowerPtr(I->getOperand(0));
+      return;
+    }
+
+    if (isa<BitCastInst>(I)) {
+      if (hasPtrsForCheck(I->getType())) {
+        assert(hasPtrsForCheck(I->getOperand(0)->getType()));
+        assert(I->getType() == LowRawPtrTy || I->getType() == LowWidePtrTy);
+        assert(I->getOperand(0)->getType() == LowRawPtrTy || I->getOperand(0)->getType() == LowWidePtrTy);
+        I->replaceAllUsesWith(I->getOperand(0));
+        I->eraseFromParent();
+      } else
+        assert(!hasPtrsForCheck(I->getOperand(0)->getType()));
+      return;
+    }
+
+    if (isa<AddrSpaceCastInst>(I)) {
+      if (hasPtrsForCheck(I->getType())) {
+        if (hasPtrsForCheck(I->getOperand(0)->getType())) {
+          I->replaceAllUsesWith(I->getOperand(0));
+          I->eraseFromParent();
+        } else
+          I->replaceAllUsesWith(forgeBadPtr(I, I->next()));
+      } else if (hasPtrsForCheck(I->getOperand(0)->getType()))
+        I->getOperandUse(0) = lowerPtr(I->getOperand(0));
+      return;
+    }
+
+    if (isa<FreezeInst>(I)) {
+      if (hasPtrsForCheck(I->getType())) {
+        I->replaceAllUsesWith(LowWideNull);
+        I->eraseFromParent();
+      }
+      return;
+    }
   }
 
 public:
@@ -835,6 +877,7 @@ public:
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
+    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
@@ -849,10 +892,17 @@ public:
     Invalid.Type = DelugeType(0, 0);
     Invalid.TypeRep = ConstantPointerNull::get(LowPtrTy);
     
+    LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
+    
     // Need to rewrite all things that use pointers.
     // - All uses of pointers need to be transformed to calls to wide pointer functions.
     // - All pointer data flow needs to be replaced with data flow of wide pointer records.
     // - All types everywhere must now mention the wide pointer records.
+
+    for (Function* F : Functions) {
+      // FIXME: Cannot mutate the type of a function. Therefore, we must create function copies.
+      // YUCK!!!
+    }
   }
 };
 
