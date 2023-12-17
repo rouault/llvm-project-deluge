@@ -560,11 +560,13 @@ class Deluge {
   //   it detects a contradiction.
 
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
-  void lowerInstruction(Instruction *I) {
+  void lowerInstruction(Instruction *I, Function* NewF) {
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Use& U = I->getOperandUse(Index);
       if (Constant* C = dyn_cast<Constant>(U))
         U = lowerConstant(C);
+      if (Argument* A = dyn_cast<Argument>(U))
+        U = NewF->getArg(A->getArgNo());
     }
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
@@ -900,8 +902,19 @@ public:
     // - All types everywhere must now mention the wide pointer records.
 
     for (Function* F : Functions) {
-      // FIXME: Cannot mutate the type of a function. Therefore, we must create function copies.
-      // YUCK!!!
+      Function* NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
+                                        F->getLinkage(), F->getAddrSpace(),
+                                        "deluded_" + F->getName(), &M);
+      std::vector<BasicBlock*> Blocks;
+      for (BasicBlock* BB : *F)
+        Blocks.push_back(BB);
+      for (BasicBlock* BB : Blocks) {
+        BB->removeFromParent();
+        BB->insertInto(NewF);
+        for (Instruction* I : *BB)
+          lowerInstruction(I, newF);
+      }
+      F->eraseFromParent();
     }
   }
 };
