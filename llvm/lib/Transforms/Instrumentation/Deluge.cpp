@@ -518,6 +518,8 @@ class Deluge {
   }
 
   Constant* lowerConstant(Constant* C) {
+    assert(C->getType() != LowWidePtrTy);
+    
     if (isa<UndefValue>(C)) {
       if (isa<IntegerType>(C->getType()))
         return ConstantInt::get(C->getType(), 0);
@@ -530,7 +532,7 @@ class Deluge {
     
     if (C->getType() != LowRawPtrTy)
       return C;
-    
+
     auto iter = ForgedConstants.find(C);
     if (iter != ForgedConstants.end())
       return iter->second;
@@ -896,14 +898,19 @@ public:
     
     LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
     
-    // Need to rewrite all things that use pointers.
-    // - All uses of pointers need to be transformed to calls to wide pointer functions.
-    // - All pointer data flow needs to be replaced with data flow of wide pointer records.
-    // - All types everywhere must now mention the wide pointer records.
-
+    for (GlobalVariable* G : Globals) {
+      GlobalVariable* NewG = new GlobalVariable(
+        &M, lowerType(G->getValueType()), G->isConstant(), G->getLinkage(),
+        G->hasInitializer() ? lowerConstant(G->getInitializer()) : nullptr,
+        "deluged_" + G->getName(), nullptr, G->getThreadLocalMode(), G->getAddressSpace(),
+        G->isExternallyInitialized());
+      NewG->copyAttributesFrom(G);
+      G->replaceAllUsesWith(NewG);
+      G->eraseFromParent();
+    }
     for (Function* F : Functions) {
       Function* NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
-                                        F->getLinkage(), F->getAddrSpace(),
+                                        F->getLinkage(), F->getAddressSpace(),
                                         "deluded_" + F->getName(), &M);
       std::vector<BasicBlock*> Blocks;
       for (BasicBlock* BB : *F)
@@ -914,7 +921,29 @@ public:
         for (Instruction* I : *BB)
           lowerInstruction(I, newF);
       }
+      NewF->copyAttributesFrom(F);
+      F->replaceAllUsesWith(NewF);
       F->eraseFromParent();
+    }
+    for (GlobalAlias* G : Aliases) {
+      // FIXME: The GlobalAlias constant expression may produce something that is not at all a valid
+      // pointer. It's not at all clear that we get the right behavior here. Probably, we want there to
+      // be a compile-time or runtime check that we're producing a pointer that makes sense with a type
+      // that makes sense.
+      GlobalAlias* NewG = GlobalAlias::Create(lowerType(G->getValueType()), G->getAddressSpace(),
+                                              G->getLinkage(), "deluged_" + G->getName(),
+                                              G->getAliasee(), &M);
+      NewG->copyAttributesFrom(G);
+      G->replaceAllUsesWith(NewG);
+      G->eraseFromParent();
+    }
+    for (GlobalIFunc* G : IFuncs) {
+      GlobalIFunc* NewG = GlobalIFunc::create(lowerType(G->getValueType()), G->getAddressSpce(),
+                                              G->getLinkage(), "deluged_" + G->getName(),
+                                              G->getResolver(), &M);
+      NewG->copyAttributesFrom(G);
+      G->relaceAllUsesWith(NewG);
+      G->eraseFromParent();
     }
   }
 };
