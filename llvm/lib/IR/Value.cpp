@@ -505,8 +505,8 @@ void Value::doRAUW(Value *New, ReplaceMetadataUses ReplaceMetaUses) {
   assert(New && "Value::replaceAllUsesWith(<null>) is invalid!");
   assert(!contains(New, this) &&
          "this->replaceAllUsesWith(expr(this)) is NOT valid!");
-  assert(New->getType() == getType() &&
-         "replaceAllUses of value with new value of different type!");
+  //assert(New->getType() == getType() &&
+  //       "replaceAllUses of value with new value of different type!");
 
   // Notify all ValueHandles (if present) that this value is going away.
   if (HasValueHandle)

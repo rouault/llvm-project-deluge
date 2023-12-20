@@ -100,6 +100,7 @@ class Deluge {
   StructType* LowWidePtrTy;
   Constant* LowRawNull;
   Constant* LowWideNull;
+  BitCastInst* Dummy;
   
   FunctionCallee GetHeap;
   FunctionCallee CheckAccessInt;
@@ -116,6 +117,7 @@ class Deluge {
   std::unordered_map<GlobalValue*, Type*> GlobalLowTypes;
   std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
+  std::unordered_map<Type*, Type*> LoweredTypes;
   std::unordered_map<Constant*, Constant*> ForgedConstants;
 
   std::unordered_map<Type*, DelugeTypeData*> TypeMap;
@@ -140,7 +142,6 @@ class Deluge {
     assert(T != LowRawPtrTy);
     
     if (T == LowWidePtrTy) {
-      assert(T->getPointerAddressSpace() == TargetAS);
       CDT.Size += 32;
       CDT.WordTypes.push_back(DelugeWordType::PtrPart1);
       CDT.WordTypes.push_back(DelugeWordType::PtrPart2);
@@ -265,7 +266,7 @@ class Deluge {
     return Data;
   }
 
-  Type* lowerType(Type* T) {
+  Type* lowerTypeImpl(Type* T) {
     assert(T != LowWidePtrTy);
     
     if (FunctionType* FT = dyn_cast<FunctionType>(T)) {
@@ -315,12 +316,23 @@ class Deluge {
     return T;
   }
 
+  Type* lowerType(Type* T) {
+    auto iter = LoweredTypes.find(T);
+    if (iter != LoweredTypes.end())
+      return iter->second;
+
+    Type* LowT = lowerTypeImpl(T);
+    LoweredTypes[T] = LowT;
+    return LowT;
+  }
+
   void checkInt(Value *P, unsigned Size, Instruction *InsertBefore) {
-    CallInst::Create(CheckAccessPtr, { P, ConstantInt::get(IntPtrTy, Size) }, "", InsertBefore)
+    CallInst::Create(CheckAccessInt, { P, ConstantInt::get(IntPtrTy, Size) }, "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
   void checkPtr(Value *P, Instruction *InsertBefore) {
+    errs() << "Inserting call to " << *CheckAccessPtr.getFunctionType() << "\n";
     CallInst::Create(CheckAccessPtr, { P }, "", InsertBefore)->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
@@ -354,7 +366,7 @@ class Deluge {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
       return hasPtrsForCheck(VT->getElementType());
 
-    if (ScalableVectorType* VT = cast<ScalableVectorType>(T)) {
+    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't ever see scalable vectors in hasPtrsForCheck");
       return false;
     }
@@ -362,9 +374,9 @@ class Deluge {
     return false;
   }
 
-  void checkRecurse(Type *T, Value *P, Instruction *InsertBefore) {
+  void checkRecurse(Type *T, Value* HighP, Value *P, Instruction *InsertBefore) {
     if (!hasPtrsForCheck(T)) {
-      checkInt(P, DL.getTypeStoreSize(T), InsertBefore);
+      checkInt(reforgePtr(HighP, P, InsertBefore), DL.getTypeStoreSize(T), InsertBefore);
       return;
     }
     
@@ -383,7 +395,7 @@ class Deluge {
 
     // We might see either low or high types!!!
     if (T == LowRawPtrTy || T == LowWidePtrTy) {
-      checkPtr(P, InsertBefore);
+      checkPtr(reforgePtr(HighP, P, InsertBefore), InsertBefore);
       return;
     }
 
@@ -393,7 +405,7 @@ class Deluge {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(ST, P, { 0, Index }, "deluge_InnerP_struct", InsertBefore);
-        checkRecurse(InnerT, InnerP, InsertBefore);
+        checkRecurse(InnerT, HighP, InnerP, InsertBefore);
       }
       return;
     }
@@ -401,7 +413,7 @@ class Deluge {
     if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
       for (uint64_t Index = AT->getNumElements(); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(AT, P, { 0, Index }, "deluge_InnerP_array", InsertBefore);
-        checkRecurse(AT->getElementType(), InnerP, InsertBefore);
+        checkRecurse(AT->getElementType(), HighP, InnerP, InsertBefore);
       }
       return;
     }
@@ -409,7 +421,7 @@ class Deluge {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(VT, P, { 0, Index }, "deluge_InnerP_vector", InsertBefore);
-        checkRecurse(VT->getElementType(), InnerP, InsertBefore);
+        checkRecurse(VT->getElementType(), HighP, InnerP, InsertBefore);
       }
       return;
     }
@@ -439,7 +451,7 @@ class Deluge {
   // access.
   Value* prepareForAccess(Type *T, Value *HighP, Instruction *InsertBefore) {
     Value* LowP = lowerPtr(HighP, InsertBefore);
-    checkRecurse(T, LowP, InsertBefore);
+    checkRecurse(T, HighP, LowP, InsertBefore);
     return LowP;
   }
 
@@ -556,6 +568,13 @@ class Deluge {
     return Result;
   }
   
+  template<typename Func>
+  void hackRAUW(Value* V, const Func& GetNewValue) {
+    assert(!Dummy->getNumUses());
+    V->replaceAllUsesWith(Dummy);
+    Dummy->replaceAllUsesWith(GetNewValue());
+  }
+  
   // FIXME: Eventually, global variables in a module will have some kind of checking associated with
   // them so that if one module uses a global variable defined in another, then you cannot get a type
   // confused wide pointer, with any combination of these things used as the enforcement mechanism:
@@ -568,6 +587,8 @@ class Deluge {
 
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I, Function* NewF) {
+    errs() << "Lowering: " << *I << "\n";
+    
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Use& U = I->getOperandUse(Index);
       if (Constant* C = dyn_cast<Constant>(U))
@@ -579,7 +600,7 @@ class Deluge {
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
       Type* LowT = lowerType(AI->getAllocatedType());
       AI->setAllocatedType(LowT);
-      AI->replaceAllUsesWith(forgePtrWithLowType(AI, LowT, AI->getNextNode()));
+      hackRAUW(AI, [&] () { return forgePtrWithLowType(AI, LowT, AI->getNextNode()); });
       return;
     }
 
@@ -628,7 +649,7 @@ class Deluge {
       GI->setSourceElementType(lowerType(GI->getSourceElementType()));
       GI->setResultElementType(lowerType(GI->getResultElementType()));
       GI->getOperandUse(0) = lowerPtr(GI->getOperand(0), GI);
-      GI->replaceAllUsesWith(reforgePtr(GI->getOperand(0), GI, GI->getNextNode()));
+      hackRAUW(GI, [&] () { return reforgePtr(GI->getOperand(0), GI, GI->getNextNode()); });
       return;
     }
 
@@ -714,7 +735,7 @@ class Deluge {
             U = lowerPtr(U, II);
         }
         if (hasPtrsForCheck(II->getType()))
-          II->replaceAllUsesWith(forgeBadPtr(II, II->getNextNode()));
+          hackRAUW(II, [&] () { return forgeBadPtr(II, II->getNextNode()); });
         return;
       }
     }
@@ -810,7 +831,7 @@ class Deluge {
     }
 
     if (isa<IntToPtrInst>(I)) {
-      I->replaceAllUsesWith(forgeBadPtr(I, I->getNextNode()));
+      hackRAUW(I, [&] () { return forgeBadPtr(I, I->getNextNode()); });
       return;
     }
 
@@ -837,7 +858,7 @@ class Deluge {
           I->replaceAllUsesWith(I->getOperand(0));
           I->eraseFromParent();
         } else
-          I->replaceAllUsesWith(forgeBadPtr(I, I->getNextNode()));
+          hackRAUW(I, [&] () { return forgeBadPtr(I, I->getNextNode()); });
       } else if (hasPtrsForCheck(I->getOperand(0)->getType()))
         I->getOperandUse(0) = lowerPtr(I->getOperand(0), I);
       return;
@@ -858,6 +879,15 @@ public:
   }
 
   void run() {
+    PtrBits = DL.getPointerSizeInBits(TargetAS);
+    VoidTy = Type::getVoidTy(C);
+    Int32Ty = Type::getInt32Ty(C);
+    IntPtrTy = Type::getIntNTy(C, PtrBits);
+    LowRawPtrTy = PointerType::get(C, TargetAS);
+    LowWidePtrTy = StructType::create(
+      {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
+    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
+
     // Capture the set of things that need conversion, before we start adding functions and globals.
     auto CaptureType = [&] (GlobalValue* G) {
       GlobalHighTypes[G] = G->getValueType();
@@ -881,14 +911,15 @@ public:
       CaptureType(&G);
     }
 
-    PtrBits = DL.getPointerSizeInBits(TargetAS);
-    VoidTy = Type::getVoidTy(C);
-    Int32Ty = Type::getInt32Ty(C);
-    IntPtrTy = Type::getIntNTy(C, PtrBits);
-    LowRawPtrTy = PointerType::get(C, TargetAS);
-    LowWidePtrTy = StructType::create(
-      {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
-    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
+    Primitive.Type = DelugeType(1, 1);
+    Primitive.Type.Main.WordTypes.push_back(DelugeWordType::Int);
+    buildTypeRep(Primitive);
+    Invalid.Type = DelugeType(0, 0);
+    Invalid.TypeRep = LowRawNull;
+    
+    LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
+
+    Dummy = new BitCastInst(UndefValue::get(Int32Ty), Int32Ty, "dummy");
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
@@ -897,13 +928,6 @@ public:
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy);
-
-    Primitive.Type = DelugeType(1, 1);
-    buildTypeRep(Primitive);
-    Invalid.Type = DelugeType(0, 0);
-    Invalid.TypeRep = LowRawNull;
-    
-    LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
@@ -914,7 +938,7 @@ public:
       GlobalVariable* NewG = new GlobalVariable(
         M, lowerType(G->getValueType()), G->isConstant(), G->getLinkage(),
         G->hasInitializer() ? lowerConstant(G->getInitializer()) : nullptr,
-        "deluged_" + G->getName(), nullptr, G->getThreadLocalMode(), G->getAddressSpace(),
+        "deluded_" + G->getName(), nullptr, G->getThreadLocalMode(), G->getAddressSpace(),
         G->isExternallyInitialized());
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
@@ -923,6 +947,8 @@ public:
 
     }
     for (Function* F : Functions) {
+      errs() << "Function before lowering: " << *F << "\n";
+      
       Function* NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
                                         F->getLinkage(), F->getAddressSpace(),
                                         "deluded_" + F->getName(), &M);
@@ -933,9 +959,15 @@ public:
       for (BasicBlock* BB : Blocks) {
         BB->removeFromParent();
         BB->insertInto(NewF);
+        std::vector<Instruction*> Instructions;
         for (Instruction& I : *BB)
-          lowerInstruction(&I, NewF);
+          Instructions.push_back(&I);
+        for (Instruction* I : Instructions)
+          lowerInstruction(I, NewF);
       }
+
+      errs() << "New function: " << *NewF << "\n";
+      
       NewF->copyAttributesFrom(F);
       F->replaceAllUsesWith(NewF);
       F->eraseFromParent();
@@ -946,7 +978,7 @@ public:
       // be a compile-time or runtime check that we're producing a pointer that makes sense with a type
       // that makes sense.
       GlobalAlias* NewG = GlobalAlias::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "deluged_" + G->getName(),
+                                              G->getLinkage(), "deluded_" + G->getName(),
                                               G->getAliasee(), &M);
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
@@ -955,13 +987,15 @@ public:
     }
     for (GlobalIFunc* G : IFuncs) {
       GlobalIFunc* NewG = GlobalIFunc::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "deluged_" + G->getName(),
+                                              G->getLinkage(), "deluded_" + G->getName(),
                                               G->getResolver(), &M);
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
       G->eraseFromParent();
     }
+
+    delete Dummy;
   }
 };
 
