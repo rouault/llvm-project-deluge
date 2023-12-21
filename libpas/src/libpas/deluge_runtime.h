@@ -4,21 +4,23 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include "pas_allocation_config.h"
+#include "pas_hashtable.h"
+#include "pas_heap_ref.h"
+#include "pas_lock.h"
+
+PAS_BEGIN_EXTERN_C;
 
 /* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
 
-struct deluge_heap_ref;
-struct deluge_opaque_heap;
 struct deluge_ptr;
 struct deluge_type;
-typedef struct deluge_heap_ref deluge_heap_ref;
-typedef struct deluge_opaque_heap deluge_opaque_heap;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
 
 typedef uint8_t deluge_word_type;
 
-#define DELUGE_WORD_TYPE_INVALID     ((uint8_t)0)
+#define DELUGE_WORD_TYPE_OFF_LIMITS  ((uint8_t)0)
 #define DELUGE_WORD_TYPE_INT         ((uint8_t)1)
 #define DELUGE_WORD_TYPE_PTR_PART1   ((uint8_t)2)
 #define DELUGE_WORD_TYPE_PTR_PART2   ((uint8_t)3)
@@ -39,17 +41,14 @@ struct deluge_type {
     deluge_word_type word_types[1];
 };
 
+PAS_API extern const deluge_type deluge_int_type;
+
+PAS_DECLARE_LOCK(deluge);
+
 /* FIXME: There should be a subtype of deluge_type that has no word_types but that describes
    function pointers. */
 
-/* This struct aligns exactly with pas_heap_ref. */
-struct deluge_heap_ref {
-    deluge_type* type;
-    deluge_opaque_heap* opaque_heap; /* owned by libpas, initialize to NULL. */
-    unsigned allocator_index; /* owned by libpas, initialize to 0. */
-};
-
-static inline size_t deluge_type_num_words(deluge_type* type)
+static inline size_t deluge_type_num_words(const deluge_type* type)
 {
     return (type->size + 7) / 8;
 }
@@ -57,17 +56,50 @@ static inline size_t deluge_type_num_words(deluge_type* type)
 /* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The
    compiler is expected to only produce types that pass this check, and we provide no path for
    the user to create types (unless they write unsafe code). */
-void deluge_validate_type(deluge_type* type);
+void deluge_validate_type(const deluge_type* type);
 
-bool deluge_type_is_equal(deluge_type* a, deluge_type* b);
-unsigned deluge_type_hash(deluge_type* type);
+bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b);
+unsigned deluge_type_hash(const deluge_type* type);
+
+static inline size_t deluge_type_representation_size(const deluge_type* type)
+{
+    return PAS_OFFSETOF(deluge_type, word_types)
+        + sizeof(deluge_word_type) * deluge_type_num_words(type);
+}
+    
+static inline size_t deluge_type_as_heap_type_get_type_size(const pas_heap_type* type)
+{
+    return ((const deluge_type*)type)->size;
+}
+
+static inline size_t deluge_type_as_heap_type_get_type_alignment(const pas_heap_type* type)
+{
+    return ((const deluge_type*)type)->alignment;
+}
+
+PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
+
+PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
+PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
 
 /* Gives you a heap for the given type. This looks up the heap based on the structural equality
    of the type, so equal types get the same heap.
 
    It's correct to call this every type you do a memory allocation, but it's not a super great
-   idea. It so happens that this will at least be lock-free in most cases. */
-deluge_heap_ref* deluge_get_heap(deluge_type* type);
+   idea. Currently it grabs global locks.
+
+   The type you pass here must be immortal. The runtime may refer to it forever. (That's not
+   strictly necessary so we could change that if we needed to.) */
+pas_heap_ref* deluge_get_heap(const deluge_type* type);
+
+void* deluge_try_allocate_int(size_t size);
+
+void* deluge_try_allocate_one(pas_heap_ref* ref);
+void* deluge_try_allocate_with_size(pas_heap_ref* ref, size_t size);
+
+void* deluge_allocate_utility(size_t size);
+
+void deluge_deallocate(void* ptr);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
@@ -82,15 +114,15 @@ deluge_heap_ref* deluge_get_heap(deluge_type* type);
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
    safety! */
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, deluge_type* type);
+void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
 
 static inline void deluge_validate_ptr(deluge_ptr ptr)
 {
     deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
 }
 
-void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, deluge_type* type, uintptr_t bytes);
-void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, deluge_type* type);
+void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes);
+void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
 
 static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes)
 {
@@ -101,13 +133,13 @@ static inline void deluge_check_access_ptr(deluge_ptr ptr)
     deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
 }
 
-void deluge_memset_impl(void* ptr, void* lower, void* upper, deluge_type* type,
+void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                         unsigned value, size_t count);
-void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, deluge_type* dst_type,
-                        void *src_ptr, void* src_lower, void* src_upper, deluge_type* src_type,
+void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
+                        void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                         size_t count);
-void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, deluge_type* dst_type,
-                         void *src_ptr, void* src_lower, void* src_upper, deluge_type* src_type,
+void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
+                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                          size_t count);
 
 static inline void deluge_memset(deluge_ptr ptr, unsigned value, size_t count)
@@ -130,6 +162,8 @@ static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count)
 }
 
 void deluge_error(void);
+
+PAS_END_EXTERN_C;
 
 #endif /* DELUGE_RUNTIME_H */
 

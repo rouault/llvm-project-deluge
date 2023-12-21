@@ -9,7 +9,7 @@ do_build() {
     rm -f build/*.o
     for x in src/libpas/*.c
     do
-        xcrun clang -O3 -W -Werror -c -o build/`basename $x .c`.o -I../deluge/include $x $flags &
+        xcrun clang -O3 -W -Werror -c -o build/`basename $x .c`.o $x $flags &
     done
     wait
     xcrun clang -dynamiclib -o build/$libname build/*.o

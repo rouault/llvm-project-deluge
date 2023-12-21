@@ -53,8 +53,6 @@
 #define __PAS_ARM64E 0
 #endif
 
-#define PAS_ENABLE_ASSERT 1
-
 #if (defined(__arm64__) && defined(__APPLE__)) || defined(__aarch64__) || defined(__arm64e__)
 #define PAS_ARM64 1
 #if defined(__arm64e__)

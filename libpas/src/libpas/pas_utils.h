@@ -562,7 +562,7 @@ PAS_IGNORE_WARNINGS_END;
     } while (0)
 
 #define PAS_ASSERT(exp, ...) \
-    PAS_ASSERT_IF(PAS_ENABLE_ASSERT, exp __VA_OPT__(,) __VA_ARGS__)
+    PAS_ASSERT_IF((1), exp __VA_OPT__(,) __VA_ARGS__)
 
 #define PAS_TESTING_ASSERT(exp, ...) \
     PAS_ASSERT_IF(PAS_ENABLE_TESTING, exp __VA_OPT__(,) __VA_ARGS__)
@@ -571,8 +571,6 @@ PAS_IGNORE_WARNINGS_END;
 
 #define PAS_ASSERT(exp, ...) \
     do { \
-        if (!PAS_ENABLE_ASSERT) \
-            break; \
         if (PAS_LIKELY(exp)) \
             break; \
         pas_assertion_failed_noreturn_silencer(__FILE__, __LINE__, PAS_PRETTY_FUNCTION, #exp); \
@@ -591,8 +589,6 @@ PAS_IGNORE_WARNINGS_END;
 
 #define PAS_ASSERT_WITH_DETAIL(exp) \
     do { \
-        if (!PAS_ENABLE_ASSERT) \
-            break; \
         if (PAS_LIKELY(exp)) \
             break; \
         pas_assertion_failed_no_inline(__FILE__, __LINE__, PAS_PRETTY_FUNCTION, #exp); \
@@ -600,8 +596,6 @@ PAS_IGNORE_WARNINGS_END;
 
 #define PAS_ASSERT_WITH_EXTRA_DETAIL(exp, extra) \
     do { \
-        if (!PAS_ENABLE_ASSERT) \
-            break; \
         if (PAS_LIKELY(exp)) \
             break; \
         pas_assertion_failed_no_inline_with_extra_detail(__FILE__, __LINE__, PAS_PRETTY_FUNCTION, #exp, extra); \

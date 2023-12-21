@@ -913,7 +913,8 @@ public:
 
     Primitive.Type = DelugeType(1, 1);
     Primitive.Type.Main.WordTypes.push_back(DelugeWordType::Int);
-    buildTypeRep(Primitive);
+    Primitive.Type.TypeRep = new GlobalVariable(
+      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_int_type");
     Invalid.Type = DelugeType(0, 0);
     Invalid.TypeRep = LowRawNull;
     
