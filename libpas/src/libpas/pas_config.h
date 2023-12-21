@@ -53,11 +53,7 @@
 #define __PAS_ARM64E 0
 #endif
 
-#if ((PAS_OS(DARWIN) && __PAS_ARM64 && !__PAS_ARM64E) || PAS_PLATFORM(PLAYSTATION)) && defined(NDEBUG) && !PAS_ENABLE_TESTING
-#define PAS_ENABLE_ASSERT 0
-#else
 #define PAS_ENABLE_ASSERT 1
-#endif
 
 #if (defined(__arm64__) && defined(__APPLE__)) || defined(__aarch64__) || defined(__arm64e__)
 #define PAS_ARM64 1

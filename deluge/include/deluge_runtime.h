@@ -2,6 +2,8 @@
 #define DELUGE_RUNTIME_H
 
 #include <inttypes.h>
+#include <stdbool.h>
+#include <stdlib.h>
 
 /* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
 
@@ -47,6 +49,11 @@ struct deluge_heap_ref {
     unsigned allocator_index; /* owned by libpas, initialize to 0. */
 };
 
+static inline size_t deluge_type_num_words(deluge_type* type)
+{
+    return (type->size + 7) / 8;
+}
+
 /* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The
    compiler is expected to only produce types that pass this check, and we provide no path for
    the user to create types (unless they write unsafe code). */
@@ -59,7 +66,7 @@ unsigned deluge_type_hash(deluge_type* type);
    of the type, so equal types get the same heap.
 
    It's correct to call this every type you do a memory allocation, but it's not a super great
-   idea. */
+   idea. It so happens that this will at least be lock-free in most cases. */
 deluge_heap_ref* deluge_get_heap(deluge_type* type);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
@@ -91,7 +98,7 @@ static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes)
 }
 static inline void deluge_check_access_ptr(deluge_ptr ptr)
 {
-    deluge_check_access_ptr(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
+    deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, deluge_type* type,
