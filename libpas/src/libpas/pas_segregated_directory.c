@@ -35,9 +35,6 @@
 #include "pas_segregated_directory_inlines.h"
 #include "pas_segregated_heap.h"
 #include "pas_segregated_size_directory_inlines.h"
-#include "verse_heap_config.h"
-#include "verse_heap_object_set_set.h"
-#include "verse_heap_runtime_config.h"
 
 PAS_API void pas_segregated_directory_construct(
     pas_segregated_directory* directory,
@@ -444,14 +441,6 @@ void pas_segregated_directory_append(
         
         pas_compact_atomic_segregated_view_store(&encoded_view, view);
         pas_segregated_directory_view_vector_append(&data->views, encoded_view);
-    }
-
-    if (pas_segregated_page_config_kind_is_verse(directory->page_config_kind)) {
-        PAS_ASSERT(directory->directory_kind == pas_segregated_size_directory_kind);
-        verse_heap_object_set_set_add_view(
-            &((verse_heap_runtime_config*)
-              ((pas_segregated_size_directory*)directory)->heap->runtime_config)->object_sets,
-            pas_segregated_view_get_exclusive(view));
     }
 }
 

@@ -73,10 +73,10 @@ pas_try_allocate_for_reallocate_and_copy(
            different units. But that should not matter:
         
            - We only care about the old size, not the old count. We get a
-             size from the allocator.
+           size from the allocator.
         
            - We end up computing the new size using the new count and the
-             new heap.
+           new heap.
         
            Then we take the min of those two. No big deal if the old count
            and new count had different units. */
@@ -200,13 +200,13 @@ pas_try_reallocate(void* old_ptr,
     
     begin = (uintptr_t)old_ptr;
 	
-	if (!begin)
-		return allocate_callback(heap, new_size, allocate_callback_arg);
+    if (!begin)
+        return allocate_callback(heap, new_size, allocate_callback_arg);
 
-	if (!new_size) {
-		pas_deallocate(old_ptr, config);
-		return NULL;
-	}
+    if (!new_size) {
+        pas_deallocate(old_ptr, config);
+        return NULL;
+    }
 
     switch (config.fast_megapage_kind_func(begin)) {
     case pas_small_exclusive_segregated_fast_megapage_kind: {
@@ -353,92 +353,91 @@ pas_try_reallocate(void* old_ptr,
 
 typedef pas_allocation_result
 (*pas_try_reallocate_allocate_fast_inline_only_callback)(pas_heap* heap,
-														 size_t new_size,
-														 void* arg,
-														 pas_thread_local_cache* cache);
+                                                         size_t new_size,
+                                                         void* arg,
+                                                         pas_thread_local_cache* cache);
 
 static PAS_ALWAYS_INLINE pas_allocation_result pas_try_reallocate_fast_inline_only(
-	void* old_ptr,
-	pas_heap* heap,
-	size_t new_size,
-	pas_heap_config config,
-	pas_reallocate_heap_teleport_rule teleport_rule,
-	pas_reallocate_free_mode free_mode,
-	pas_try_reallocate_allocate_fast_inline_only_callback allocate_callback,
-	void* allocate_callback_arg)
+    void* old_ptr,
+    pas_heap* heap,
+    size_t new_size,
+    pas_heap_config config,
+    pas_reallocate_heap_teleport_rule teleport_rule,
+    pas_try_reallocate_allocate_fast_inline_only_callback allocate_callback,
+    void* allocate_callback_arg)
 {
-	static const bool verbose = false;
+    static const bool verbose = false;
 	
-	pas_thread_local_cache* cache;
-	size_t old_size;
-	size_t copy_size;
-	pas_allocation_result result;
+    pas_thread_local_cache* cache;
+    size_t old_size;
+    size_t copy_size;
+    pas_allocation_result result;
 
-	PAS_ASSERT(teleport_rule == pas_reallocate_allow_heap_teleport);
+    PAS_ASSERT(teleport_rule == pas_reallocate_allow_heap_teleport);
 
-	if (!config.small_segregated_is_in_megapage
-		|| !config.small_segregated_config.base.is_enabled
-		|| config.small_segregated_config.exclusive_logging_mode != pas_segregated_deallocation_size_oblivious_logging_mode) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast failing because bad config\n");
-		return pas_allocation_result_create_failure();
-	}
+    if (!config.small_segregated_is_in_megapage
+        || !config.small_segregated_config.base.is_enabled
+        || config.small_segregated_config.exclusive_logging_mode != pas_segregated_deallocation_size_oblivious_logging_mode) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast failing because bad config\n");
+        return pas_allocation_result_create_failure();
+    }
 
-	cache = pas_thread_local_cache_try_get();
-	if (!cache) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast failing because no cache\n");
-		return pas_allocation_result_create_failure();
-	}
+    cache = pas_thread_local_cache_try_get();
+    if (!cache) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast failing because no cache\n");
+        return pas_allocation_result_create_failure();
+    }
 
-	if (!old_ptr) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast doing new allocation\n");
-		return allocate_callback(heap, new_size, allocate_callback_arg, cache);
-	}
+    if (!old_ptr) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast doing new allocation\n");
+        return allocate_callback(heap, new_size, allocate_callback_arg, cache);
+    }
 
-	if (config.fast_megapage_kind_func((uintptr_t)old_ptr) != pas_small_exclusive_segregated_fast_megapage_kind) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast failing because bad megapage kind\n");
-		return pas_allocation_result_create_failure();
-	}
+    if (config.fast_megapage_kind_func((uintptr_t)old_ptr) != pas_small_exclusive_segregated_fast_megapage_kind) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast failing because bad megapage kind\n");
+        return pas_allocation_result_create_failure();
+    }
 
-	if (!pas_thread_local_cache_can_append_deallocation_fast(cache)) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast failing because deallocation log is full\n");
-		return pas_allocation_result_create_failure();
-	}
+    if (!pas_thread_local_cache_can_append_deallocation_fast(cache)) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast failing because deallocation log is full\n");
+        return pas_allocation_result_create_failure();
+    }
 
-	if (!new_size) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast just freeing\n");
-		pas_thread_local_cache_append_deallocation_fast(
-			cache, (uintptr_t)old_ptr,
-			pas_segregated_page_config_kind_and_role_create(config.small_segregated_config.kind, pas_segregated_page_exclusive_role));
-		return pas_allocation_result_create_success(0);
-	}
+    if (!new_size) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast just freeing\n");
+        pas_thread_local_cache_append_deallocation_fast(
+            cache, (uintptr_t)old_ptr,
+            pas_segregated_page_config_kind_and_role_create(config.small_segregated_config.kind, pas_segregated_page_exclusive_role));
+        return pas_allocation_result_create_success(0);
+    }
 
-	old_size = pas_segregated_page_get_object_size_for_address_and_page_config(
-		(uintptr_t)old_ptr, config.small_segregated_config, pas_segregated_page_exclusive_role);
+    old_size = pas_segregated_page_get_object_size_for_address_and_page_config(
+        (uintptr_t)old_ptr, config.small_segregated_config, pas_segregated_page_exclusive_role);
 
-	result = allocate_callback(heap, new_size, allocate_callback_arg, cache);
-	if (!result.did_succeed) {
-		if (verbose)
-			pas_log("pas_try_reallocate_fast failing because allocation failed\n");
-		return pas_allocation_result_create_failure();
-	}
+    result = allocate_callback(heap, new_size, allocate_callback_arg, cache);
+    if (!result.did_succeed) {
+        if (verbose)
+            pas_log("pas_try_reallocate_fast failing because allocation failed\n");
+        return pas_allocation_result_create_failure();
+    }
 	
-	if (verbose)
-		pas_log("pas_try_reallocate_fast doing real things\n");
+    if (verbose)
+        pas_log("pas_try_reallocate_fast doing real things\n");
 	
-	copy_size = pas_min_uintptr(new_size, old_size);
-	memcpy((void*)result.begin, old_ptr, copy_size);
+    copy_size = pas_min_uintptr(new_size, old_size);
+    memcpy((void*)result.begin, old_ptr, copy_size);
 
-	pas_thread_local_cache_append_deallocation_fast(
-		cache, (uintptr_t)old_ptr,
-		pas_segregated_page_config_kind_and_role_create(config.small_segregated_config.kind, pas_segregated_page_exclusive_role));
+    pas_thread_local_cache_append_deallocation_fast(
+        cache, (uintptr_t)old_ptr,
+        pas_segregated_page_config_kind_and_role_create(config.small_segregated_config.kind, pas_segregated_page_exclusive_role));
 
-	return pas_allocation_result_create_success_with_zero_mode(result.begin, result.zero_mode);
+    return pas_allocation_result_create_success_with_zero_mode(result.begin, result.zero_mode);
 }
 
 typedef struct {

@@ -36,7 +36,6 @@
 #include "pas_segregated_size_directory_inlines.h"
 #include "pas_utility_heap.h"
 #include "pas_utils.h"
-#include "verse_heap.h"
 
 pas_thread_local_cache_layout_segment* pas_thread_local_cache_layout_first_segment = NULL;
 static pas_thread_local_cache_layout_segment* pas_thread_local_cache_layout_last_segment = NULL;
@@ -121,12 +120,6 @@ pas_allocator_index pas_thread_local_cache_layout_add_node(pas_thread_local_cach
         NULL, &pas_large_utility_free_heap_allocation_config);
     pas_thread_local_cache_layout_hashtable_lock_unlock();
 
-	if (pas_segregated_page_config_kind_is_verse(
-			pas_thread_local_cache_layout_node_get_directory(node)->base.page_config_kind)) {
-		verse_heap_thread_local_cache_layout_node_vector_append(
-			&verse_heap_thread_local_cache_layout_node_vector_instance, node);
-	}
-    
     return result;
 }
 

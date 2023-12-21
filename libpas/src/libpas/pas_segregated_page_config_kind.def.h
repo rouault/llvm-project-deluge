@@ -110,13 +110,6 @@ PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(jit_small_segregated,
                                        JIT_HEAP_CONFIG.small_segregated_config)
 #endif
 
-#if PAS_ENABLE_VERSE
-PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(verse_small_segregated,
-                                       VERSE_HEAP_CONFIG.small_segregated_config)
-PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(verse_medium_segregated,
-                                       VERSE_HEAP_CONFIG.medium_segregated_config)
-#endif
-
 #if PAS_ENABLE_INLINE_MEDIUM_PAGE_HEADER
 PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(inline_medium_page_header,
 									   INLINE_MEDIUM_PAGE_HEADER_CONFIG.small_segregated_config)

@@ -98,13 +98,12 @@ PAS_API void pas_scavenger_decommit_expendable_memory(void);
 PAS_API size_t pas_scavenger_decommit_bootstrap_free_heap(void);
 PAS_API size_t pas_scavenger_decommit_immortal_heap(void);
 PAS_API void pas_scavenger_fake_decommit_expendable_memory(void); /* Useful for testing. */
-PAS_API bool pas_scavenger_decommit_verse_heap_mark_bits(void);
 PAS_API size_t pas_scavenger_decommit_free_memory(void);
 PAS_API void pas_scavenger_decommit_everything(void);
 
 typedef enum {
     pas_scavenger_invalid_synchronous_operation_kind,
-	pas_scavenger_clear_local_tlcs_kind,
+    pas_scavenger_clear_local_tlcs_kind,
     pas_scavenger_clear_all_non_tlc_caches_kind,
     pas_scavenger_clear_all_caches_except_remote_tlcs_kind,
     pas_scavenger_clear_all_caches_kind,
@@ -112,9 +111,8 @@ typedef enum {
     pas_scavenger_decommit_bootstrap_free_heap_kind,
     pas_scavenger_decommit_immortal_heap_kind,
     pas_scavenger_decommit_free_memory_kind,
-	pas_scavenger_decommit_verse_heap_mark_bits_kind,
-	pas_scavenger_decommit_everything_kind,
-	pas_scavenger_do_everything_except_remote_tlcs_kind,
+    pas_scavenger_decommit_everything_kind,
+    pas_scavenger_do_everything_except_remote_tlcs_kind,
     pas_scavenger_run_synchronously_now_kind
 } pas_scavenger_synchronous_operation_kind;
 

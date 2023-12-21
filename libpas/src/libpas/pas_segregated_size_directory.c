@@ -381,14 +381,10 @@ void pas_segregated_size_directory_enable_exclusive_views(
             true);
     }
 
-    if (pas_segregated_page_config_is_verse(page_config))
-        full_num_non_empty_words_or_live_bytes = end - begin;
-    else {
-        full_num_non_empty_words_or_live_bytes = 0;
-        for (index = pas_segregated_page_config_num_alloc_words(page_config); index--;) {
-            if (full_alloc_bits[index])
-                full_num_non_empty_words_or_live_bytes++;
-        }
+    full_num_non_empty_words_or_live_bytes = 0;
+    for (index = pas_segregated_page_config_num_alloc_words(page_config); index--;) {
+        if (full_alloc_bits[index])
+            full_num_non_empty_words_or_live_bytes++;
     }
     PAS_ASSERT(full_num_non_empty_words_or_live_bytes);
 

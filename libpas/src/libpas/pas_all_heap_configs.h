@@ -40,7 +40,6 @@
 #include "pagesize64k_heap_config.h"
 #include "pas_utility_heap_config.h"
 #include "thingy_heap_config.h"
-#include "verse_heap_config.h"
 
 #endif /* PAS_ALL_HEAP_CONFIG_H */
 

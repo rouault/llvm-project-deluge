@@ -121,7 +121,6 @@
 #define PAS_ENABLE_BMALLOC               1
 #define PAS_ENABLE_HOTBIT                0
 #define PAS_ENABLE_JIT                   1
-#define PAS_ENABLE_VERSE                 0
 #define PAS_ENABLE_INLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_OUTLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_INLINE_NON_COMMITTABLE_GRANULES 0
@@ -135,26 +134,24 @@
 #define PAS_ENABLE_BMALLOC               0
 #define PAS_ENABLE_HOTBIT                0
 #define PAS_ENABLE_JIT                   0
-#define PAS_ENABLE_VERSE                 0
 #define PAS_ENABLE_INLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_OUTLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_INLINE_NON_COMMITTABLE_GRANULES 0
 #define PAS_ENABLE_OUTLINE_NON_COMMITTABLE_GRANULES 0
-#elif defined(PAS_UE)
+#elif defined(PAS_DELUGE)
 #define PAS_ENABLE_THINGY                0
-#define PAS_ENABLE_ISO                   0
+#define PAS_ENABLE_ISO                   1
 #define PAS_ENABLE_ISO_TEST              0
 #define PAS_ENABLE_MINALIGN32            0
 #define PAS_ENABLE_PAGESIZE64K           0
-#define PAS_ENABLE_BMALLOC               1
+#define PAS_ENABLE_BMALLOC               0
 #define PAS_ENABLE_HOTBIT                0
 #define PAS_ENABLE_JIT                   0
-#define PAS_ENABLE_VERSE                 1
 #define PAS_ENABLE_INLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_OUTLINE_MEDIUM_PAGE_HEADER 0
 #define PAS_ENABLE_INLINE_NON_COMMITTABLE_GRANULES 0
 #define PAS_ENABLE_OUTLINE_NON_COMMITTABLE_GRANULES 0
-#else /* libpas standalone library */
+#else /* libpas standalone testing library */
 #define PAS_ENABLE_THINGY                1
 #define PAS_ENABLE_ISO                   1
 #define PAS_ENABLE_ISO_TEST              1
@@ -163,7 +160,6 @@
 #define PAS_ENABLE_BMALLOC               1
 #define PAS_ENABLE_HOTBIT                1
 #define PAS_ENABLE_JIT                   1
-#define PAS_ENABLE_VERSE                 1
 #define PAS_ENABLE_INLINE_MEDIUM_PAGE_HEADER 1
 #define PAS_ENABLE_OUTLINE_MEDIUM_PAGE_HEADER 1
 #define PAS_ENABLE_INLINE_NON_COMMITTABLE_GRANULES 1

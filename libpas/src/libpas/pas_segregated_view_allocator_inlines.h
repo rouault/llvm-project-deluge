@@ -32,8 +32,6 @@
 #include "pas_segregated_page_inlines.h"
 #include "pas_segregated_partial_view.h"
 #include "pas_segregated_view.h"
-#include "verse_heap_config.h"
-#include "verse_heap_page_header.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -213,11 +211,6 @@ pas_segregated_view_will_start_allocating(pas_segregated_view view,
                 ineligible_owning_view,
                 was_stolen,
                 (const pas_segregated_page_config*)page_config.base.page_config_ptr);
-
-            if (pas_segregated_page_config_is_verse(page_config)) {
-                verse_heap_page_header_construct(
-                    verse_heap_page_header_for_boundary(exclusive->page_boundary, page_config.variant));
-            }
 
             pas_lock_lock_conditionally(&exclusive->ownership_lock, heap_lock_hold_mode);
             exclusive->is_owned = true;

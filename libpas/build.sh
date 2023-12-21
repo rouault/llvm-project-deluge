@@ -16,4 +16,5 @@ do_build() {
 }
 
 do_build libpas_test.dylib ""
+do_build libpas_deluge.dylib "-DPAS_DELUGE=1"
 

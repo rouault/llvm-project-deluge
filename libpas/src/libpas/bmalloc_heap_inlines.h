@@ -173,7 +173,6 @@ bmalloc_try_reallocate_inline(void* old_ptr, size_t new_size,
         new_size,
         BMALLOC_HEAP_CONFIG,
         pas_reallocate_allow_heap_teleport,
-		free_mode,
         bmalloc_try_reallocate_fast_inline_only_callback,
         NULL);
 
@@ -206,7 +205,6 @@ bmalloc_reallocate_inline(void* old_ptr, size_t new_size,
         new_size,
         BMALLOC_HEAP_CONFIG,
         pas_reallocate_allow_heap_teleport,
-		free_mode,
         bmalloc_reallocate_fast_inline_only_callback,
         NULL);
 

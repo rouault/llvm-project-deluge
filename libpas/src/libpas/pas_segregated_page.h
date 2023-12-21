@@ -57,7 +57,7 @@ typedef struct pas_segregated_page pas_segregated_page;
 typedef struct PAS_ALIGNED(PAS_PAIR_SIZE) pas_segregated_page_emptiness {
     uintptr_t use_epoch;
 
-    /* For everyone but verse, this is num_non_empty_words. For Verse, this is num_live_bytes. */
+    /* This is really just num_non_empty_words. */
     uintptr_t num_non_empty_words_or_live_bytes;
 } pas_segregated_page_emptiness;
 #if PAS_COMPILER(CLANG)
