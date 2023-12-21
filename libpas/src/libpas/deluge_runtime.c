@@ -159,6 +159,7 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
 pas_heap_ref* deluge_get_heap(const deluge_type* type)
 {
     pas_heap_ref* result;
+    PAS_ASSERT(type != &deluge_int_type);
     deluge_lock_lock();
     result = get_heap_impl(type);
     deluge_lock_unlock();
@@ -316,9 +317,29 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                         unsigned value, size_t count)
 {
+    if (!count)
+        return;
+    
     check_access_common(ptr, lower, upper, count);
     
     if (!value) {
+        if (type != &deluge_int_type) {
+            uintptr_t offset;
+            deluge_word_type word_type;
+            
+            offset = (char*)ptr - (char*)lower;
+            word_type = type->word_types[(offset / 8) % deluge_type_num_words(type)];
+            if (offset % 8)
+                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+            else
+                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+            word_type = type->word_types[((offset + count - 1) / 8) % deluge_type_num_words(type)];
+            if ((offset + count) % 8)
+                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+            else
+                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3);
+        }
+        
         memset(ptr, 0, count);
         return;
     }
@@ -331,19 +352,66 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
                        void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                        size_t count)
 {
+    uintptr_t dst_offset;
+    uintptr_t src_offset;
+    deluge_word_type word_type;
+    uintptr_t num_word_types;
+    uitnptr_t word_type_index_offset;
+    uitnptr_t first_dst_word_type_index;
+    uitnptr_t first_src_word_type_index;
+    
     check_access_common(dst_ptr, dst_lower, dst_upper, count);
     check_access_common(src_ptr, src_lower, src_upper, count);
     
     if (dst_type == &deluge_int_type && src_type == &deluge_int_type)
         return;
 
-    /* FIXME: Lots of shit to check for. */
+    dst_offset = (char*)dst_ptr - (char*)dst_lower;
+    src_offset = (char*)src_ptr - (char*)src_lower;
+    if ((dst_offset % 8) != (src_offset % 8)) {
+        /* No chance we could copy pointers if the offsets are skewed within a word.
+           
+           It would be harder to write a generalized checking algorithm for this case (the
+           non-offset-skew version lower in this function can't handle it) and we don't need
+           to, since that path could only succeed if there were only integers on both sides of
+           the copy. */
+        check_int(dst_ptr, dst_lower, dst_type, count);
+        check_int(src_ptr, src_lower, src_type, count);
+        return;
+    }
+
+    num_word_types = (dst_offset + count - 1) / 8 - dst_offset / 8 + 1;
+    first_dst_word_type_index = dst_offset / 8;
+    first_src_word_type_index = src_offset / 8;
+
+    for (word_type_index_offset = num_word_types; word_type_index_offset--;) {
+        PAS_ASSERT(dst_type->word_types[(first_dst_word_type_index + word_type_index_offset)
+                                        % deluge_type_num_words(dst_type)] ==
+                   src_type->word_types[(first_src_word_type_index + word_type_index_offset)
+                                        % deluge_type_num_words(src_type)]);
+    }
+
+    /* We cannot copy parts of pointers. */
+    word_type = dst_type->word_types[first_dst_word_type_index % deluge_type_num_words(dst_type)];
+    if (dst_offset % 8)
+        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+    else
+        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+    word_type = dst_type->word_types[(first_dst_word_type_index + num_word_types - 1)
+                                     % deluge_type_num_words(dst_type)];
+    if ((dst_offset + count) % 8)
+        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+    else
+        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3);
 }
 
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                         size_t count)
 {
+    if (!count)
+        return;
+    
     check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
                src_ptr, src_lower, src_upper, src_type,
                count);
@@ -355,9 +423,17 @@ void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const 
                          void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                          size_t count)
 {
+    if (!count)
+        return;
+    
     check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
                src_ptr, src_lower, src_upper, src_type,
                count);
     
     memmove(dst_ptr, src_ptr, count);
+}
+
+void deluge_error(void)
+{
+    PAS_ASSERT(!"deluge error");
 }
