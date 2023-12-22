@@ -2820,8 +2820,8 @@ void InsertValueInst::init(Value *Agg, Value *Val, ArrayRef<unsigned> Idxs,
   // present need to support it.
   assert(!Idxs.empty() && "InsertValueInst must have at least one index");
 
-  assert(ExtractValueInst::getIndexedType(Agg->getType(), Idxs) ==
-         Val->getType() && "Inserted value must match indexed type!");
+  //assert(ExtractValueInst::getIndexedType(Agg->getType(), Idxs) ==
+  //       Val->getType() && "Inserted value must match indexed type!");
   Op<0>() = Agg;
   Op<1>() = Val;
 

@@ -656,8 +656,9 @@ class Deluge {
     if (GetElementPtrInst* GI = dyn_cast<GetElementPtrInst>(I)) {
       GI->setSourceElementType(lowerType(GI->getSourceElementType()));
       GI->setResultElementType(lowerType(GI->getResultElementType()));
-      GI->getOperandUse(0) = lowerPtr(GI->getOperand(0), GI);
-      hackRAUW(GI, [&] () { return reforgePtr(GI->getOperand(0), GI, GI->getNextNode()); });
+      Value* HighP = GI->getOperand(0);
+      GI->getOperandUse(0) = lowerPtr(HighP, GI);
+      hackRAUW(GI, [&] () { return reforgePtr(HighP, GI, GI->getNextNode()); });
       return;
     }
 
