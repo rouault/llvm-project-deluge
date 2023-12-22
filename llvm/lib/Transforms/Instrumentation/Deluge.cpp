@@ -18,7 +18,8 @@ enum class DelugeWordType {
   PtrPart1 = 2,
   PtrPart2 = 3,
   PtrPart3 = 4,
-  PtrPart4 = 5
+  PtrPart4 = 5,
+  Function = 6
 };
 
 struct CoreDelugeType {
@@ -123,6 +124,7 @@ class Deluge {
   std::unordered_map<Type*, DelugeTypeData*> TypeMap;
   std::unordered_map<DelugeType, std::unique_ptr<DelugeTypeData>> TypeDatas;
   DelugeTypeData Primitive;
+  DelugeTypeData FunctionDTD;
   DelugeTypeData Invalid;
 
   void buildCoreTypeRecurse(CoreDelugeType& CDT, Type* T) {
@@ -250,7 +252,9 @@ class Deluge {
       return iter->second;
 
     DelugeTypeData* Data;
-    if (!hasPtrsForCheck(T))
+    if (isa<FunctionType>(T))
+      Data = &FunctionDTD;
+    else if (!hasPtrsForCheck(T))
       Data = &Primitive;
     else {
       DelugeType DT;
@@ -464,6 +468,8 @@ class Deluge {
   }
 
   Constant* forgePtrConstantWithLowType(Constant* Ptr, Type* LowT) {
+    if (isa<FunctionType>(LowT))
+      return forgePtrConstant(Ptr, LowRawNull, LowRawNull, FunctionDTD.TypeRep);
     return forgePtrConstantWithLowType(
       Ptr, Ptr, ConstantExpr::getGetElementPtr(LowT, Ptr, ConstantInt::get(IntPtrTy, 1)), LowT);
   }
@@ -486,6 +492,8 @@ class Deluge {
   }
 
   Value* forgePtrWithLowType(Value* Ptr, Type* LowT, Instruction* InsertionPoint) {
+    if (isa<FunctionType>(LowT))
+      return forgePtr(Ptr, LowRawNull, LowRawNull, FunctionDTD.TypeRep, InsertionPoint);
     Instruction* Upper = GetElementPtrInst::Create(LowT, Ptr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper", InsertionPoint);
     Upper->setDebugLoc(InsertionPoint->getDebugLoc());
     return forgePtrWithLowType(Ptr, Ptr, Upper, LowT, InsertionPoint);
@@ -913,8 +921,12 @@ public:
 
     Primitive.Type = DelugeType(1, 1);
     Primitive.Type.Main.WordTypes.push_back(DelugeWordType::Int);
-    Primitive.Type.TypeRep = new GlobalVariable(
+    Primitive.TypeRep = new GlobalVariable(
       M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_int_type");
+    FunctionDTD.Type = DelugeType(1, 1);
+    FunctionDTD.Type.Main.WordTypes.push_back(DelugeWordType::Function);
+    FunctionDTD.TypeRep = new GlobalVariable(
+      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_function_type");
     Invalid.Type = DelugeType(0, 0);
     Invalid.TypeRep = LowRawNull;
     

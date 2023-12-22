@@ -23,6 +23,13 @@ const deluge_type deluge_int_type = {
     .word_types = { DELUGE_WORD_TYPE_INT }
 };
 
+const deluge_type deluge_function_type = {
+    .size = 1,
+    .alignment = 1,
+    .trailing_array = NULL,
+    .word_types = { DELUGE_WORD_TYPE_FUNCTION }
+};
+
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
 
 PAS_DEFINE_LOCK(deluge);
@@ -255,7 +262,7 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
 {
     PAS_UNUSED_PARAM(ptr);
     
-    if (!type) {
+    if (!type || type == &deluge_function_type) {
         PAS_ASSERT(!lower);
         PAS_ASSERT(!upper);
         return;

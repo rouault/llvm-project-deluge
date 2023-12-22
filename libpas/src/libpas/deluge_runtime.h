@@ -28,6 +28,7 @@ typedef uint8_t deluge_word_type;
 #define DELUGE_WORD_TYPE_PTR_PART2   ((uint8_t)3)
 #define DELUGE_WORD_TYPE_PTR_PART3   ((uint8_t)4)
 #define DELUGE_WORD_TYPE_PTR_PART4   ((uint8_t)5)
+#define DELUGE_WORD_TYPE_FUNCTION    ((uint8_t)6)
 
 struct deluge_ptr {
     void* ptr;
@@ -44,6 +45,7 @@ struct deluge_type {
 };
 
 PAS_API extern const deluge_type deluge_int_type;
+PAS_API extern const deluge_type deluge_function_type;
 
 PAS_DECLARE_LOCK(deluge);
 
