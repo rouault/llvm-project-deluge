@@ -16,5 +16,6 @@ do_build() {
 }
 
 do_build libpas_test.dylib "-DENABLE_PAS_TESTING=1"
-do_build libpas_deluge.dylib "-DPAS_DELUGE=1"
+do_build libdeluge.dylib "-DPAS_DELUGE=1"
+do_build libdeluge_test.dylib "-DPAS_DELUGE=1 -DENABLE_PAS_TESTING=1"
 

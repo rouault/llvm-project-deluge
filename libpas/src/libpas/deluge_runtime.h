@@ -15,8 +15,10 @@ PAS_BEGIN_EXTERN_C;
 
 struct deluge_ptr;
 struct deluge_type;
+struct pas_stream;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
+typedef struct pas_stream pas_stream;
 
 typedef uint8_t deluge_word_type;
 
@@ -51,6 +53,25 @@ PAS_DECLARE_LOCK(deluge);
 static inline size_t deluge_type_num_words(const deluge_type* type)
 {
     return (type->size + 7) / 8;
+}
+
+static inline size_t deluge_type_num_words_exact(const deluge_type* type)
+{
+    PAS_TESTING_ASSERT(!(type->size % 8));
+    return type->size / 8;
+}
+
+static inline deluge_word_type deluge_type_get_word_type(const deluge_type* type,
+                                                         uintptr_t word_type_index)
+{
+    if (type->trailing_array) {
+        uintptr_t num_words = deluge_type_num_words_exact(type);
+        if (word_type_index >= num_words) {
+            word_type_index -= num_words;
+            type = type->trailing_array;
+        }
+    }
+    return type->word_types[word_type_index % deluge_type_num_words(type)];
 }
 
 /* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The

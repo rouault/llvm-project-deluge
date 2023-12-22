@@ -28,6 +28,7 @@
 #define PAS_ALL_HEAP_CONFIGS_H
 
 #include "bmalloc_heap_config.h"
+#include "deluge_heap_config.h"
 #include "hotbit_heap_config.h"
 #include "inline_medium_page_header_config.h"
 #include "inline_non_committable_granules_config.h"

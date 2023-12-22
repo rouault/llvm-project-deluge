@@ -121,3 +121,12 @@ PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(jit_medium_bitfit,
                                    JIT_HEAP_CONFIG.medium_bitfit_config)
 #endif
 
+#if PAS_ENABLE_DELUGE
+PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_small_bitfit,
+                                   DELUGE_HEAP_CONFIG.small_bitfit_config)
+PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_medium_bitfit,
+                                   DELUGE_HEAP_CONFIG.medium_bitfit_config)
+PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_marge_bitfit,
+                                   DELUGE_HEAP_CONFIG.marge_bitfit_config)
+#endif
+

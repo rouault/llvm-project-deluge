@@ -6,6 +6,7 @@
 #if PAS_ENABLE_DELUGE
 
 #include "deluge_runtime.h"
+#include "pas_heap_config_utils.h"
 
 PAS_API void deluge_heap_config_activate(void);
 
@@ -42,6 +43,10 @@ PAS_API void deluge_heap_config_activate(void);
     .use_marge_bitfit = true, \
     .marge_bitfit_min_align_shift = PAS_MIN_MARGE_ALIGN_SHIFT, \
     .marge_bitfit_page_size = PAS_MARGE_PAGE_DEFAULT_SIZE)
+
+PAS_API extern const pas_heap_config deluge_heap_config;
+
+PAS_BASIC_HEAP_CONFIG_DECLARATIONS(deluge, DELUGE);
 
 #endif /* PAS_ENABLE_DELUGE */
 

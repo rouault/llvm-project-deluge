@@ -1,8 +1,16 @@
+#include "pas_config.h"
+
+#if LIBPAS_ENABLED
+
+#include "deluge_runtime.h"
+
+#if PAS_ENABLE_DELUGE
+
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
-#include "deluge_runtime.h"
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
+#include "pas_hashtable.h"
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
 #include "pas_try_allocate_intrinsic.h"
@@ -15,13 +23,7 @@ const deluge_type deluge_int_type = {
     .word_types = { DELUGE_WORD_TYPE_INT }
 };
 
-const pas_allocation_config deluge_utility_allocation_config = {
-    .allocate = deluge_allocate_utility_for_allocation_config,
-    .deallocate = deluge_deallocate_for_allocation_config,
-    .arg = NULL
-};
-
-deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INSTANCE;
+deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
 
 PAS_DEFINE_LOCK(deluge);
 
@@ -132,7 +134,7 @@ void deluge_type_dump(const deluge_type* type, pas_stream* stream)
     pas_stream_printf(stream, "}");
 }
 
-void deluge_type_as_heap_type_dmp(const pas_heap_type* type, pas_stream* stream)
+void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream)
 {
     deluge_type_dump((const deluge_type*)type, stream);
 }
@@ -146,14 +148,14 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
 
     add_result = deluge_type_table_add(&deluge_type_table_instance, type, NULL, &allocation_config);
     if (add_result.is_new_entry) {
-        add_result.entry.type = type;
-        add_result.entry.heap = (pas_heap_ref*)deluge_allocate_utility(sizeof(pas_heap_ref));
-        add_result.entry.heap->type = type;
-        add_result.entry.heap->heap = NULL;
-        add_result.enrty.heap->allocator_index = 0;
+        add_result.entry->type = type;
+        add_result.entry->heap = (pas_heap_ref*)deluge_allocate_utility(sizeof(pas_heap_ref));
+        add_result.entry->heap->type = (const pas_heap_type*)type;
+        add_result.entry->heap->heap = NULL;
+        add_result.entry->heap->allocator_index = 0;
     }
 
-    return add_result.entry.heap;
+    return add_result.entry->heap;
 }
 
 pas_heap_ref* deluge_get_heap(const deluge_type* type)
@@ -251,6 +253,8 @@ void deluge_deallocate(void* ptr)
 
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
+    PAS_UNUSED_PARAM(ptr);
+    
     if (!type) {
         PAS_ASSERT(!lower);
         PAS_ASSERT(!upper);
@@ -268,7 +272,7 @@ static void check_access_common(void* ptr, void* lower, void* upper, uintptr_t b
 {
     PAS_ASSERT(ptr >= lower);
     PAS_ASSERT(ptr < upper);
-    PAS_ASSERT((char*)ptr + bytes <= upper);
+    PAS_ASSERT((char*)ptr + bytes <= (char*)upper);
 }
 
 static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t bytes)
@@ -288,7 +292,7 @@ static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;
          word_type_index++)
-        PAS_ASSERT(type->word_types[word_type_index % deluge_type_num_words(type)] == DELUGE_WORD_TYPE_INT);
+        PAS_ASSERT(deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT);
 }
 
 void deluge_check_access_int_impl(
@@ -303,11 +307,20 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
     uintptr_t offset;
     uintptr_t word_type_index;
 
-    check_access_common(ptr, lower, upper, bytes);
+    check_access_common(ptr, lower, upper, 32);
 
     offset = (char*)ptr - (char*)lower;
     PAS_ASSERT(pas_is_aligned(offset, 8));
     word_type_index = offset / 8;
+    if (type->trailing_array) {
+        uintptr_t num_words = deluge_type_num_words_exact(type);
+        if (word_type_index < num_words)
+            PAS_ASSERT(word_type_index + 3 < num_words);
+        else {
+            word_type_index -= num_words;
+            type = type->trailing_array;
+        }
+    }
     PAS_ASSERT(type->word_types[word_type_index + 0] == DELUGE_WORD_TYPE_PTR_PART1);
     PAS_ASSERT(type->word_types[word_type_index + 1] == DELUGE_WORD_TYPE_PTR_PART2);
     PAS_ASSERT(type->word_types[word_type_index + 2] == DELUGE_WORD_TYPE_PTR_PART3);
@@ -328,12 +341,12 @@ void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* 
             deluge_word_type word_type;
             
             offset = (char*)ptr - (char*)lower;
-            word_type = type->word_types[(offset / 8) % deluge_type_num_words(type)];
+            word_type = deluge_type_get_word_type(type, offset / 8);
             if (offset % 8)
                 PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
             else
                 PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-            word_type = type->word_types[((offset + count - 1) / 8) % deluge_type_num_words(type)];
+            word_type = deluge_type_get_word_type(type, (offset + count - 1) / 8);
             if ((offset + count) % 8)
                 PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
             else
@@ -356,9 +369,9 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
     uintptr_t src_offset;
     deluge_word_type word_type;
     uintptr_t num_word_types;
-    uitnptr_t word_type_index_offset;
-    uitnptr_t first_dst_word_type_index;
-    uitnptr_t first_src_word_type_index;
+    uintptr_t word_type_index_offset;
+    uintptr_t first_dst_word_type_index;
+    uintptr_t first_src_word_type_index;
     
     check_access_common(dst_ptr, dst_lower, dst_upper, count);
     check_access_common(src_ptr, src_lower, src_upper, count);
@@ -385,20 +398,18 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
     first_src_word_type_index = src_offset / 8;
 
     for (word_type_index_offset = num_word_types; word_type_index_offset--;) {
-        PAS_ASSERT(dst_type->word_types[(first_dst_word_type_index + word_type_index_offset)
-                                        % deluge_type_num_words(dst_type)] ==
-                   src_type->word_types[(first_src_word_type_index + word_type_index_offset)
-                                        % deluge_type_num_words(src_type)]);
+        PAS_ASSERT(deluge_type_get_word_type(dst_type, first_dst_word_type_index + word_type_index_offset)
+                   ==
+                   deluge_type_get_word_type(src_type, first_src_word_type_index + word_type_index_offset));
     }
 
     /* We cannot copy parts of pointers. */
-    word_type = dst_type->word_types[first_dst_word_type_index % deluge_type_num_words(dst_type)];
+    word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index);
     if (dst_offset % 8)
         PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
     else
         PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-    word_type = dst_type->word_types[(first_dst_word_type_index + num_word_types - 1)
-                                     % deluge_type_num_words(dst_type)];
+    word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index + num_word_types - 1);
     if ((dst_offset + count) % 8)
         PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
     else
@@ -437,3 +448,8 @@ void deluge_error(void)
 {
     PAS_ASSERT(!"deluge error");
 }
+
+#endif /* PAS_ENABLE_DELUGE */
+
+#endif /* LIBPAS_ENABLED */
+

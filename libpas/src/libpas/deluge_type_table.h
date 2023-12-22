@@ -48,7 +48,7 @@ static inline bool deluge_type_table_entry_is_deleted(deluge_type_table_entry en
 
 static inline const deluge_type* deluge_type_table_entry_get_key(deluge_type_table_entry entry)
 {
-    return entry.key;
+    return entry.type;
 }
 
 static inline unsigned deluge_type_table_key_get_hash(const deluge_type* key)
