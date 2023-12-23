@@ -222,9 +222,9 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
     &deluge_allocator_counts,
     pas_allocation_result_identity);
 
-void* deluge_try_allocate_with_size(pas_heap_ref* ref, size_t size)
+void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
 {
-    return (void*)deluge_try_allocate_with_size_impl_by_size(ref, size, 1).begin;
+    return (void*)deluge_try_allocate_with_size_impl_by_count(ref, count, 1).begin;
 }
 
 PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
@@ -258,6 +258,14 @@ void deluge_deallocate(void* ptr)
     pas_deallocate(ptr, DELUGE_HEAP_CONFIG);
 }
 
+void deluded_zfree(void* ptr, void* lower, void* upper, const deluge_type* type)
+{
+    PAS_UNUSED_PARAM(lower);
+    PAS_UNUSED_PARAM(upper);
+    PAS_UNUSED_PARAM(type);
+    deluge_deallocate(ptr);
+}
+
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
     PAS_UNUSED_PARAM(ptr);
@@ -275,11 +283,29 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
     PAS_ASSERT(!((upper - lower) % type->size));
 }
 
-static void check_access_common(void* ptr, void* lower, void* upper, uintptr_t bytes)
+static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                uintptr_t bytes)
 {
+    PAS_ASSERT(lower); /* This check is necessary in case a wide pointer spans page boundary and the
+                          first of the two pages gets decommitted in a way that causes it to become
+                          zero.
+                       
+                          We could avoid this, probably a bunch of ways. Here are two ways:
+                       
+                          - Make wide pointers 32-byte aligned instead of 8-byte aligned. Hardware gonna
+                            like that better wanyway, if there's ever shit like atomic 32-byte loads and
+                            stores.
+                       
+                          - Require that decommit is Windows-style in that decommitted pages are not
+                            accessible.
+                       
+                          It seems like the alignment solution is strictly simpler.
+                       
+                          But also, it's just one little check. It almost certainly doesn't matter. */
     PAS_ASSERT(ptr >= lower);
     PAS_ASSERT(ptr < upper);
     PAS_ASSERT((char*)ptr + bytes <= (char*)upper);
+    PAS_ASSERT(type);
 }
 
 static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t bytes)
@@ -305,7 +331,7 @@ static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t
 void deluge_check_access_int_impl(
     void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes)
 {
-    check_access_common(ptr, lower, upper, bytes);
+    check_access_common(ptr, lower, upper, type, bytes);
     check_int(ptr, lower, type, bytes);
 }
 
@@ -314,7 +340,7 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
     uintptr_t offset;
     uintptr_t word_type_index;
 
-    check_access_common(ptr, lower, upper, 32);
+    check_access_common(ptr, lower, upper, type, 32);
 
     offset = (char*)ptr - (char*)lower;
     PAS_ASSERT(pas_is_aligned(offset, 8));
@@ -340,7 +366,7 @@ void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* 
     if (!count)
         return;
     
-    check_access_common(ptr, lower, upper, count);
+    check_access_common(ptr, lower, upper, type, count);
     
     if (!value) {
         if (type != &deluge_int_type) {
@@ -368,9 +394,9 @@ void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* 
     memset(ptr, value, count);
 }
 
-static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                       void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                       size_t count)
+static void check_type_overlap(void* dst_ptr, void* dst_lower, const deluge_type* dst_type,
+                               void* src_ptr, void* src_lower, const deluge_type* src_type,
+                               size_t count)
 {
     uintptr_t dst_offset;
     uintptr_t src_offset;
@@ -379,10 +405,7 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
     uintptr_t word_type_index_offset;
     uintptr_t first_dst_word_type_index;
     uintptr_t first_src_word_type_index;
-    
-    check_access_common(dst_ptr, dst_lower, dst_upper, count);
-    check_access_common(src_ptr, src_lower, src_upper, count);
-    
+
     if (dst_type == &deluge_int_type && src_type == &deluge_int_type)
         return;
 
@@ -423,6 +446,15 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
         PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3);
 }
 
+static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
+                       void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
+                       size_t count)
+{
+    check_access_common(dst_ptr, dst_lower, dst_upper, dst_type, count);
+    check_access_common(src_ptr, src_lower, src_upper, src_type, count);
+    check_type_overlap(dst_ptr, dst_lower, dst_type, src_ptr, src_lower, src_type, count);
+}
+
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                         size_t count)
@@ -449,6 +481,20 @@ void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const 
                count);
     
     memmove(dst_ptr, src_ptr, count);
+}
+
+void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
+                           void* new_upper, const deluge_type* new_type)
+{
+    PAS_ASSERT(ptr >= lower);
+    PAS_ASSERT(ptr < upper);
+    PAS_ASSERT(new_upper <= upper);
+    PAS_ASSERT(new_upper >= lower); /* Not sure if we need to assert this at all, since it would be
+                                       a memory-safe outcome. */
+    PAS_ASSERT(type);
+    PAS_ASSERT(new_type);
+
+    check_type_overlap(ptr, ptr, new_type, ptr, lower, type, (char*)new_upper - (char*)ptr);
 }
 
 void deluge_error(void)

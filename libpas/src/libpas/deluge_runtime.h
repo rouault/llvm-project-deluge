@@ -34,13 +34,13 @@ struct deluge_ptr {
     void* ptr;
     void* lower;
     void* upper;
-    deluge_type* type;
+    const deluge_type* type;
 };
 
 struct deluge_type {
     size_t size;
     size_t alignment;
-    deluge_type* trailing_array;
+    const deluge_type* trailing_array;
     deluge_word_type word_types[1];
 };
 
@@ -118,11 +118,12 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type);
 void* deluge_try_allocate_int(size_t size);
 
 void* deluge_try_allocate_one(pas_heap_ref* ref);
-void* deluge_try_allocate_with_size(pas_heap_ref* ref, size_t size);
+void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 
 void* deluge_allocate_utility(size_t size);
 
 void deluge_deallocate(void* ptr);
+void deluded_zfree(void* ptr, void* lower, void* upper, const deluge_type* type);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
@@ -182,6 +183,23 @@ static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count)
     deluge_memmove_impl(dst.ptr, dst.lower, dst.upper, dst.type,
                         src.ptr, src.lower, src.upper, src.type,
                         count);
+}
+
+/* Correct uses of this should always pass new_upper = ptr + K * new_type->size. This function does
+   not have to check that you did that. This property is ensured by the compiler and the fact that
+   the user-visible API (zrestrict) takes a count. */
+void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
+                           void* new_upper, const deluge_type* new_type);
+
+static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const deluge_type* new_type)
+{
+    void* new_upper;
+    new_upper = (char*)ptr.ptr + count * new_type->size;
+    deluge_check_restrict(ptr.ptr, ptr.lower, ptr.upper, ptr.type, new_upper, new_type);
+    ptr.lower = ptr.ptr;
+    ptr.upper = new_upper;
+    ptr.type = new_type;
+    return ptr;
 }
 
 void deluge_error(void);

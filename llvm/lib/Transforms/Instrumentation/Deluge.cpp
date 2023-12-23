@@ -102,7 +102,13 @@ class Deluge {
   Constant* LowRawNull;
   Constant* LowWideNull;
   BitCastInst* Dummy;
-  
+
+  // High-level functions available to the user.
+  Value* ZunsafeForgeImpl;
+  Value* ZrestrictImpl;
+  Value* ZallocImpl;
+
+  // Low-level functions used by codegen.
   FunctionCallee GetHeap;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
@@ -575,12 +581,29 @@ class Deluge {
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
     return Result;
   }
-  
+
   template<typename Func>
   void hackRAUW(Value* V, const Func& GetNewValue) {
     assert(!Dummy->getNumUses());
     V->replaceAllUsesWith(Dummy);
     Dummy->replaceAllUsesWith(GetNewValue());
+  }
+
+  bool earlyLowerInstruction(Instruction* I, Function* NewF) {
+    errs() << "Early lowering: " << *I << "\n";
+
+    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+      if (CI->getCalledFunction() == ZunsafeForgeImpl) {
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
+        CI->replaceAllUsesWith(forgePtrWithLowType(LowPtr, LowPtr, GetElementPtr::Create(LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper_unsafe_forge", CI), LowT, CI));
+        CI->eraseFromParent();
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   // FIXME: Eventually, global variables in a module will have some kind of checking associated with
@@ -764,6 +787,10 @@ class Deluge {
       if (CI->isInlineAsm())
         llvm_unreachable("Don't support InlineAsm");
 
+      if (CI->getCalledFunction() == ZunsafeForgeImpl) {
+        Type*  = cast<AllocaInst>CI->getArgOperand(1));
+      }
+
       // FIXME: This doesn't do _any_ of the checking that needs to happen here.
       CI->mutateFunctionType(cast<FunctionType>(lowerType(CI->getFunctionType())));
       CI->getCalledOperandUse() = lowerPtr(CI->getCalledOperand(), CI);
@@ -897,6 +924,13 @@ public:
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
+    ZunsafeForgeImpl = M.getOrInsertFunction(
+      "zunsafe_forge_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZrestrictImpl = M.getOrInsertFunction(
+      "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZallocImpl = M.getOrInsertFunction(
+      "zalloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+
     // Capture the set of things that need conversion, before we start adding functions and globals.
     auto CaptureType = [&] (GlobalValue* G) {
       GlobalHighTypes[G] = G->getValueType();
@@ -973,12 +1007,15 @@ public:
       for (BasicBlock* BB : Blocks) {
         BB->removeFromParent();
         BB->insertInto(NewF);
-        std::vector<Instruction*> Instructions;
+      }
+      std::vector<Instruction*> Instructions;
+      for (BasicBlock* BB : Blocks) {
         for (Instruction& I : *BB)
           Instructions.push_back(&I);
-        for (Instruction* I : Instructions)
-          lowerInstruction(I, NewF);
       }
+      std::erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I, NewF); });
+      for (Instruction* I : Instructions)
+        lowerInstruction(I, NewF);
 
       errs() << "New function: " << *NewF << "\n";
       

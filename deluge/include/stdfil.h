@@ -1,9 +1,10 @@
 #ifndef DELUGE_STDFIL_H
 #define DELUGE_STDFIL_H
 
-/* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may trap. */
-void* zunsafe_forge_impl(uintptr_t ptr, void* type_like, size_t count);
-void* zrestrict_impl(void* ptr, void* type_type, size_t count);
+/* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may 
+   crash the compiler or produce a program that traps extra hard. */
+void* zunsafe_forge_impl(const void* ptr, void* type_like, size_t count);
+void* zrestrict_impl(const void* ptr, void* type_type, size_t count);
 void* zalloc_impl(void* type_like, size_t count);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
@@ -12,10 +13,10 @@ void* zalloc_impl(void* type_like, size_t count);
    
    This is the only escape hatch.
    
-   ptr can be anything castable to pointer. type is a type expression. count must be size_t ish. */
+   ptr can be anything castable to const void*. type is a type expression. count must be size_t ish. */
 #define zunsage_forge(ptr, type, count) ({ \
         type __d_temporary; \
-        (type*)zunsafe_forge_impl((uintptr_t)(ptr), &__d_temporary, (size_t)(count)); \
+        (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (size_t)(count)); \
     })
 
 /* Safely restricts the capability of the incoming pointer. If the given pointer cannot be treated as
@@ -25,7 +26,7 @@ void* zalloc_impl(void* type_like, size_t count);
    size_tish. */
 #define zrestrict(ptr, type, count) ({ \
         type __d_temporary; \
-        (type*)zrestrict_impl((uintptr_t)(ptr), &__d_temporary, (size_t)(count)); \
+        (type*)zrestrict_impl(ptr, &__d_temporary, (size_t)(count)); \
     })
 
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
