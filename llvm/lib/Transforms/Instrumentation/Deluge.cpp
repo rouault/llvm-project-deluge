@@ -95,6 +95,7 @@ class Deluge {
 
   unsigned PtrBits;
   Type* VoidTy;
+  Type* Int8Ty;
   Type* Int32Ty;
   Type* IntPtrTy;
   PointerType* LowRawPtrTy;
@@ -110,11 +111,15 @@ class Deluge {
 
   // Low-level functions used by codegen.
   FunctionCallee GetHeap;
+  FunctionCallee TryAllocateInt;
+  FunctionCallee TryAllocateOne;
+  FunctionCallee TryAllocateMany;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
   FunctionCallee Memset;
   FunctionCallee Memcpy;
   FunctionCallee Memmove;
+  FunctionCallee CheckRestrict;
   FunctionCallee Error;
 
   std::vector<GlobalVariable*> Globals;
@@ -266,6 +271,7 @@ class Deluge {
       DelugeType DT;
       // Deluge types derived from llvm types never have a trailing component.
       buildCoreTypeRecurse(DT.Main, T);
+      assert(DT.Main.Size == DL.getTypeStoreSize(T));
 
       // FIXME: Find repetitions?
       
@@ -601,6 +607,48 @@ class Deluge {
         CI->eraseFromParent();
         return true;
       }
+
+      if (CI->getCalledFunction() == ZrestrictImpl) {
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        Value* TypeRep = dataForLowType(LowT)->TypeRep;
+        Value* LowPtr = lowerPtr(CI->getOperand(0), CI);
+        Instruction* NewUpper = GetElementPtrInst::Create(LowT, LowPtr, { 1 }, "deluge_NewUpper", CI);
+        NewUpper->setDebugLoc(CI->getDebugLoc());
+        CallInst::Create(CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep }, "", CI)
+          ->setDebugLoc(CI->getDebugLoc());
+        CI->replaceAllUsesWith(forgePtr(LowPtr, LowPtr, NewUpper, TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
+
+      if (CI->getCalledFunction() == ZallocImpl) {
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
+        DelugeTypeData *DTD = dataForLowType(LowT);
+        Instruction* Alloc;
+        
+        if (!hasPtrsForCheck(HighT)) {
+          assert(DTD == &Primitive);
+          Instruction* Mul = BinaryOperator::CreateMul(
+            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Main.Size), "deluge_alloc_mul");
+          Mul->setDebugLoc(CI->getDebugLoc());
+          Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
+        } else if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1)) && C->isOneValue())
+          Alloc = CallInst::Create(TryAllocateOne, { DTD->TypeRep }, "deluge_alloc_one", CI);
+        else {
+          Alloc = CallInst::Create(
+            TryAllocateMany, { DTD->TypeRep, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
+        }
+        
+        Alloc->setDebugLoc(CI->getDebugLoc());
+        Instruction* Upper = GetElementPtrInst::Create(LowT, Alloc, { CI->getArgOperand(1) }, CI);
+        Upper->setDebugLoc(CI->getDebugLoc());
+        CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
     }
     
     return false;
@@ -787,9 +835,9 @@ class Deluge {
       if (CI->isInlineAsm())
         llvm_unreachable("Don't support InlineAsm");
 
-      if (CI->getCalledFunction() == ZunsafeForgeImpl) {
-        Type*  = cast<AllocaInst>CI->getArgOperand(1));
-      }
+      assert(CI->getCalledFunction() != ZunsafeForgeImpl);
+      assert(CI->getCalledFunction() != ZrestrictImpl);
+      assert(CI->getCalledFunction() != ZallocImpl);
 
       // FIXME: This doesn't do _any_ of the checking that needs to happen here.
       CI->mutateFunctionType(cast<FunctionType>(lowerType(CI->getFunctionType())));
@@ -917,6 +965,7 @@ public:
   void run() {
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
+    Int8Ty = Type::getInt8Ty(C);
     Int32Ty = Type::getInt32Ty(C);
     IntPtrTy = Type::getIntNTy(C, PtrBits);
     LowRawPtrTy = PointerType::get(C, TargetAS);
@@ -970,11 +1019,15 @@ public:
     Dummy = new BitCastInst(UndefValue::get(Int32Ty), Int32Ty, "dummy");
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
+    TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
+    TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
+    TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
     CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy);
     Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
+    CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
