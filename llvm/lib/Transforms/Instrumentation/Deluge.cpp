@@ -647,14 +647,16 @@ class Deluge {
           Mul->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
         } else {
+          Instruction* Heap = CallInst::Create(GetHeap, { DTD->TypeRep }, "deluge_alloc_get_heap", CI);
+          Heap->setDebugLoc(CI->getDebugLoc());
           if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
             if (C->isOneValue())
-              Alloc = CallInst::Create(TryAllocateOne, { DTD->TypeRep }, "deluge_alloc_one", CI);
+              Alloc = CallInst::Create(TryAllocateOne, { Heap }, "deluge_alloc_one", CI);
           }
-        }
-        if (!Alloc) {
-          Alloc = CallInst::Create(
-            TryAllocateMany, { DTD->TypeRep, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
+          if (!Alloc) {
+            Alloc = CallInst::Create(
+              TryAllocateMany, { Heap, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
+          }
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());

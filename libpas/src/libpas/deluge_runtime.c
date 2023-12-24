@@ -178,7 +178,13 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
 
 pas_heap_ref* deluge_get_heap(const deluge_type* type)
 {
+    static const bool verbose = false;
     pas_heap_ref* result;
+    if (verbose) {
+        pas_log("Getting heap for ");
+        deluge_type_dump(type, &pas_log_stream.base);
+        pas_log("\n");
+    }
     PAS_ASSERT(type != &deluge_int_type);
     deluge_lock_lock();
     result = get_heap_impl(type);
@@ -340,7 +346,7 @@ static void check_access_common(void* ptr, void* lower, void* upper, const delug
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
-static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t bytes)
+static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes)
 {
     uintptr_t offset;
     uintptr_t first_word_type_index;
@@ -356,15 +362,19 @@ static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t
 
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;
-         word_type_index++)
-        PAS_ASSERT(deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT);
+         word_type_index++) {
+        DELUGE_CHECK(
+            deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT,
+            "cannot access %zu bytes as int, span contains non-ints (ptr = %p,%p,%p,%s)\n",
+            bytes, ptr, lower, upper, deluge_type_to_new_string(type));
+    }
 }
 
 void deluge_check_access_int_impl(
     void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes)
 {
     check_access_common(ptr, lower, upper, type, bytes);
-    check_int(ptr, lower, type, bytes);
+    check_int(ptr, lower, upper, type, bytes);
 }
 
 void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
@@ -375,7 +385,10 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
     check_access_common(ptr, lower, upper, type, 32);
 
     offset = (char*)ptr - (char*)lower;
-    PAS_ASSERT(pas_is_aligned(offset, 8));
+    DELUGE_CHECK(
+        pas_is_aligned(offset, 8),
+        "cannot access memory as ptr without 8-byte alignment; in this case ptr %% 8 = %zu (ptr = %p,%p,%p,%s)\n",
+        (size_t)(offset % 8), ptr, lower, upper, deluge_type_to_new_string(type));
     word_type_index = offset / 8;
     if (type->trailing_array) {
         uintptr_t num_words = deluge_type_num_words_exact(type);
@@ -386,10 +399,22 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
             type = type->trailing_array;
         }
     }
-    PAS_ASSERT(type->word_types[word_type_index + 0] == DELUGE_WORD_TYPE_PTR_PART1);
-    PAS_ASSERT(type->word_types[word_type_index + 1] == DELUGE_WORD_TYPE_PTR_PART2);
-    PAS_ASSERT(type->word_types[word_type_index + 2] == DELUGE_WORD_TYPE_PTR_PART3);
-    PAS_ASSERT(type->word_types[word_type_index + 3] == DELUGE_WORD_TYPE_PTR_PART4);
+    DELUGE_CHECK(
+        type->word_types[word_type_index + 0] == DELUGE_WORD_TYPE_PTR_PART1,
+        "memory type error accessing ptr part1 (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+    DELUGE_CHECK(
+        type->word_types[word_type_index + 1] == DELUGE_WORD_TYPE_PTR_PART2,
+        "memory type error accessing ptr part2 (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+    DELUGE_CHECK(
+        type->word_types[word_type_index + 2] == DELUGE_WORD_TYPE_PTR_PART3,
+        "memory type error accessing ptr part3 (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+    DELUGE_CHECK(
+        type->word_types[word_type_index + 3] == DELUGE_WORD_TYPE_PTR_PART4,
+        "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
@@ -422,12 +447,12 @@ void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* 
         return;
     }
 
-    check_int(ptr, lower, type, count);
+    check_int(ptr, lower, upper, type, count);
     memset(ptr, value, count);
 }
 
-static void check_type_overlap(void* dst_ptr, void* dst_lower, const deluge_type* dst_type,
-                               void* src_ptr, void* src_lower, const deluge_type* src_type,
+static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
+                               void* src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
                                size_t count)
 {
     uintptr_t dst_offset;
@@ -450,8 +475,8 @@ static void check_type_overlap(void* dst_ptr, void* dst_lower, const deluge_type
            non-offset-skew version lower in this function can't handle it) and we don't need
            to, since that path could only succeed if there were only integers on both sides of
            the copy. */
-        check_int(dst_ptr, dst_lower, dst_type, count);
-        check_int(src_ptr, src_lower, src_type, count);
+        check_int(dst_ptr, dst_lower, dst_upper, dst_type, count);
+        check_int(src_ptr, src_lower, src_upper, src_type, count);
         return;
     }
 
@@ -484,7 +509,9 @@ static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const de
 {
     check_access_common(dst_ptr, dst_lower, dst_upper, dst_type, count);
     check_access_common(src_ptr, src_lower, src_upper, src_type, count);
-    check_type_overlap(dst_ptr, dst_lower, dst_type, src_ptr, src_lower, src_type, count);
+    check_type_overlap(dst_ptr, dst_lower, dst_upper, dst_type,
+                       src_ptr, src_lower, src_upper, src_type,
+                       count);
 }
 
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
@@ -526,7 +553,9 @@ void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_typ
     PAS_ASSERT(type);
     PAS_ASSERT(new_type);
 
-    check_type_overlap(ptr, ptr, new_type, ptr, lower, type, (char*)new_upper - (char*)ptr);
+    check_type_overlap(ptr, ptr, new_upper, new_type,
+                       ptr, lower, upper, type,
+                       (char*)new_upper - (char*)ptr);
 }
 
 void deluge_error(void)
