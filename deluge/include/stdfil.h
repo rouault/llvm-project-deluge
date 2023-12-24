@@ -3,9 +3,9 @@
 
 /* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may 
    crash the compiler or produce a program that traps extra hard. */
-void* zunsafe_forge_impl(const void* ptr, void* type_like, size_t count);
-void* zrestrict_impl(const void* ptr, void* type_type, size_t count);
-void* zalloc_impl(void* type_like, size_t count);
+void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
+void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
+void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
    
@@ -13,20 +13,20 @@ void* zalloc_impl(void* type_like, size_t count);
    
    This is the only escape hatch.
    
-   ptr can be anything castable to const void*. type is a type expression. count must be size_t ish. */
+   ptr can be anything castable to const void*. type is a type expression. count must be __SIZE_TYPE__ ish. */
 #define zunsage_forge(ptr, type, count) ({ \
         type __d_temporary; \
-        (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (size_t)(count)); \
+        (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
 /* Safely restricts the capability of the incoming pointer. If the given pointer cannot be treated as
    the given type and size, trap.
    
    ptr must be a valid pointer, but can be of any type. type is a type expression. count must be
-   size_tish. */
+   __SIZE_TYPE__ish. */
 #define zrestrict(ptr, type, count) ({ \
         type __d_temporary; \
-        (type*)zrestrict_impl(ptr, &__d_temporary, (size_t)(count)); \
+        (type*)zrestrict_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
@@ -38,10 +38,10 @@ void* zalloc_impl(void* type_like, size_t count);
    
    It's not possible to misuse zalloc/zfree to cause type confusion.
    
-   type is a type expression. count must be size_tish. */
+   type is a type expression. count must be __SIZE_TYPE__ish. */
 #define zalloc(type, count) ({ \
         type __d_temporary; \
-        (type*)zalloc_impl(&__d_temporary, (size_t)(count)); \
+        (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
 /* Free the object starting at the given pointer.

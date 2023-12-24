@@ -642,7 +642,8 @@ class Deluge {
         if (!hasPtrsForCheck(HighT)) {
           assert(DTD == &Primitive);
           Instruction* Mul = BinaryOperator::CreateMul(
-            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Type.Main.Size), "deluge_alloc_mul");
+            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Type.Main.Size),
+            "deluge_alloc_mul", CI);
           Mul->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
         } else {
