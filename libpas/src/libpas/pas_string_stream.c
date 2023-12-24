@@ -131,4 +131,22 @@ void pas_string_stream_vprintf(pas_string_stream* stream, const char* format, va
     PAS_ASSERT(!stream->buffer[stream->next]);
 }
 
+char* pas_string_stream_take_string(pas_string_stream* stream)
+{
+    char* result;
+    pas_allocation_config allocation_config;
+    
+    if (stream->buffer == stream->inline_buffer) {
+        result = stream->allocation_config.allocate(
+            stream->next, "pas_stream/taken_string", pas_object_allocation, stream->allocation_config.arg);
+        memcpy(result, stream->inline_buffer, stream->next);
+        return result;
+    }
+
+    result = stream->buffer;
+    allocation_config = stream->allocation_config;
+    pas_string_stream_construct(stream, &allocation_config);
+    return result;
+}
+
 #endif /* LIBPAS_ENABLED */

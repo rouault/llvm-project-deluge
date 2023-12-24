@@ -11,6 +11,8 @@ using namespace llvm;
 
 namespace {
 
+static constexpr bool verbose = false;
+
 // This has to match the Deluge runtime.
 enum class DelugeWordType {
   Invalid = 0,
@@ -348,7 +350,8 @@ class Deluge {
   }
 
   void checkPtr(Value *P, Instruction *InsertBefore) {
-    errs() << "Inserting call to " << *CheckAccessPtr.getFunctionType() << "\n";
+    if (verbose)
+      errs() << "Inserting call to " << *CheckAccessPtr.getFunctionType() << "\n";
     CallInst::Create(CheckAccessPtr, { P }, "", InsertBefore)->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
@@ -596,14 +599,20 @@ class Deluge {
   }
 
   bool earlyLowerInstruction(Instruction* I, Function* NewF) {
-    errs() << "Early lowering: " << *I << "\n";
+    if (verbose)
+      errs() << "Early lowering: " << *I << "\n";
 
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
       if (CI->getCalledFunction() == ZunsafeForgeImpl) {
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
-        CI->replaceAllUsesWith(forgePtrWithLowType(LowPtr, LowPtr, GetElementPtr::Create(LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper_unsafe_forge", CI), LowT, CI));
+        CI->replaceAllUsesWith(
+          forgePtrWithLowType(
+            LowPtr, LowPtr,
+            GetElementPtrInst::Create(
+              LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper_unsafe_forge", CI),
+            LowT, CI));
         CI->eraseFromParent();
         return true;
       }
@@ -613,7 +622,8 @@ class Deluge {
         Type* LowT = lowerType(HighT);
         Value* TypeRep = dataForLowType(LowT)->TypeRep;
         Value* LowPtr = lowerPtr(CI->getOperand(0), CI);
-        Instruction* NewUpper = GetElementPtrInst::Create(LowT, LowPtr, { 1 }, "deluge_NewUpper", CI);
+        Instruction* NewUpper = GetElementPtrInst::Create(
+          LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_NewUpper", CI);
         NewUpper->setDebugLoc(CI->getDebugLoc());
         CallInst::Create(CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep }, "", CI)
           ->setDebugLoc(CI->getDebugLoc());
@@ -627,23 +637,28 @@ class Deluge {
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
         DelugeTypeData *DTD = dataForLowType(LowT);
-        Instruction* Alloc;
+        Instruction* Alloc = nullptr;;
         
         if (!hasPtrsForCheck(HighT)) {
           assert(DTD == &Primitive);
           Instruction* Mul = BinaryOperator::CreateMul(
-            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Main.Size), "deluge_alloc_mul");
+            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Type.Main.Size), "deluge_alloc_mul");
           Mul->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
-        } else if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1)) && C->isOneValue())
-          Alloc = CallInst::Create(TryAllocateOne, { DTD->TypeRep }, "deluge_alloc_one", CI);
-        else {
+        } else {
+          if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
+            if (C->isOneValue())
+              Alloc = CallInst::Create(TryAllocateOne, { DTD->TypeRep }, "deluge_alloc_one", CI);
+          }
+        }
+        if (!Alloc) {
           Alloc = CallInst::Create(
             TryAllocateMany, { DTD->TypeRep, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
-        Instruction* Upper = GetElementPtrInst::Create(LowT, Alloc, { CI->getArgOperand(1) }, CI);
+        Instruction* Upper = GetElementPtrInst::Create(
+          LowT, Alloc, { CI->getArgOperand(1) }, "deluge_alloc_upper", CI);
         Upper->setDebugLoc(CI->getDebugLoc());
         CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
         CI->eraseFromParent();
@@ -666,7 +681,8 @@ class Deluge {
 
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I, Function* NewF) {
-    errs() << "Lowering: " << *I << "\n";
+    if (verbose)
+      errs() << "Lowering: " << *I << "\n";
     
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Use& U = I->getOperandUse(Index);
@@ -807,7 +823,8 @@ class Deluge {
         // Intrinsics that take pointers but do not access memory are handled by simply giving them the
         // raw pointers. It's possible that this is the null set, but it's nice to have this carveout.
         if (!II->getCalledFunction()->doesNotAccessMemory()) {
-          llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
+          if (verbose)
+            llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
           CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
@@ -1048,7 +1065,8 @@ public:
 
     }
     for (Function* F : Functions) {
-      errs() << "Function before lowering: " << *F << "\n";
+      if (verbose)
+        errs() << "Function before lowering: " << *F << "\n";
       
       Function* NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
                                         F->getLinkage(), F->getAddressSpace(),
@@ -1066,11 +1084,12 @@ public:
         for (Instruction& I : *BB)
           Instructions.push_back(&I);
       }
-      std::erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I, NewF); });
+      erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I, NewF); });
       for (Instruction* I : Instructions)
         lowerInstruction(I, NewF);
 
-      errs() << "New function: " << *NewF << "\n";
+      if (verbose)
+        errs() << "New function: " << *NewF << "\n";
       
       NewF->copyAttributesFrom(F);
       F->replaceAllUsesWith(NewF);

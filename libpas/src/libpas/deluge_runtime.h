@@ -49,6 +49,12 @@ PAS_API extern const deluge_type deluge_function_type;
 
 PAS_DECLARE_LOCK(deluge);
 
+#define DELUGE_CHECK(exp, ...) do { \
+        if ((exp)) \
+            break; \
+        pas_panic(__VA_ARGS__); \
+    } while (0)
+
 /* FIXME: There should be a subtype of deluge_type that has no word_types but that describes
    function pointers. */
 
@@ -104,6 +110,7 @@ PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
 
 PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
 PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
+char* deluge_type_to_new_string(const deluge_type* type);
 
 /* Gives you a heap for the given type. This looks up the heap based on the structural equality
    of the type, so equal types get the same heap.

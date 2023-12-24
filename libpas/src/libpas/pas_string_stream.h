@@ -62,6 +62,9 @@ static inline const char* pas_string_stream_get_string(pas_string_stream* stream
     return stream->buffer;
 }
 
+/* Returns a string that you own and get to free. Also resets the stream. */
+char* pas_string_stream_take_string(pas_string_stream* stream);
+
 static inline size_t pas_string_stream_get_string_length(pas_string_stream* stream)
 {
     return stream->next;

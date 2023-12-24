@@ -11,6 +11,7 @@
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
 #include "pas_hashtable.h"
+#include "pas_string_stream.h"
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
 #include "pas_try_allocate_intrinsic.h"
@@ -131,7 +132,7 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
 void deluge_type_dump(const deluge_type* type, pas_stream* stream)
 {
     size_t index;
-    pas_stream_printf(stream, "delty{%zu,%zu,", type->size, type->alignment);
+    pas_stream_printf(stream, "delty<%p>{%zu,%zu,", type, type->size, type->alignment);
     if (type->trailing_array) {
         deluge_type_dump(type->trailing_array, stream);
         pas_stream_printf(stream, ",");
@@ -144,6 +145,16 @@ void deluge_type_dump(const deluge_type* type, pas_stream* stream)
 void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream)
 {
     deluge_type_dump((const deluge_type*)type, stream);
+}
+
+char* deluge_type_to_new_string(const deluge_type* type)
+{
+    pas_allocation_config allocation_config;
+    pas_string_stream stream;
+    initialize_utility_allocation_config(&allocation_config);
+    pas_string_stream_construct(&stream, &allocation_config);
+    deluge_type_dump(type, &stream.base);
+    return pas_string_stream_take_string(&stream);
 }
 
 static pas_heap_ref* get_heap_impl(const deluge_type* type)
@@ -286,26 +297,47 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
 static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
                                 uintptr_t bytes)
 {
-    PAS_ASSERT(lower); /* This check is necessary in case a wide pointer spans page boundary and the
-                          first of the two pages gets decommitted in a way that causes it to become
-                          zero.
-                       
-                          We could avoid this, probably a bunch of ways. Here are two ways:
-                       
-                          - Make wide pointers 32-byte aligned instead of 8-byte aligned. Hardware gonna
-                            like that better wanyway, if there's ever shit like atomic 32-byte loads and
-                            stores.
-                       
-                          - Require that decommit is Windows-style in that decommitted pages are not
-                            accessible.
-                       
-                          It seems like the alignment solution is strictly simpler.
-                       
-                          But also, it's just one little check. It almost certainly doesn't matter. */
-    PAS_ASSERT(ptr >= lower);
-    PAS_ASSERT(ptr < upper);
-    PAS_ASSERT((char*)ptr + bytes <= (char*)upper);
-    PAS_ASSERT(type);
+    /* This check is necessary in case a wide pointer spans page boundary and the
+       first of the two pages gets decommitted in a way that causes it to become
+       zero.
+       
+       We could avoid this, probably a bunch of ways. Here are two ways:
+       
+       - Make wide pointers 32-byte aligned instead of 8-byte aligned. Hardware gonna
+       like that better wanyway, if there's ever shit like atomic 32-byte loads and
+       stores.
+       
+       - Require that decommit is Windows-style in that decommitted pages are not
+       accessible.
+       
+       It seems like the alignment solution is strictly simpler.
+       
+       But also, it's just one little check. It almost certainly doesn't matter. */
+    DELUGE_CHECK(
+        lower,
+        "cannot access pointer with null lower (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+
+    DELUGE_CHECK(
+        ptr >= lower,
+        "cannot access pointer with ptr < lower (ptr = %p,%p,%p,%s)\n", 
+        ptr, lower, upper, deluge_type_to_new_string(type));
+
+    DELUGE_CHECK(
+        ptr < upper,
+        "cannot access pointer with ptr >= upper (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+
+    DELUGE_CHECK(
+        bytes <= (uintptr_t)((char*)upper - (char*)ptr),
+        "cannot access %zu bytes when upper - ptr = %zu (ptr = %p,%p,%p,%s)\n",
+        bytes, (size_t)((char*)upper - (char*)ptr),
+        ptr, lower, upper, deluge_type_to_new_string(type));
+        
+    DELUGE_CHECK(
+        type,
+        "cannot access ptr with null type (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
 static void check_int(void* ptr, void* lower, const deluge_type* type, uintptr_t bytes)

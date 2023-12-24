@@ -164,7 +164,7 @@ void pas_panic(const char* format, ...)
     if (!fast_panic) {
         va_list arg_list;
         pas_start_crash_logging();
-        pas_log("[%d] pas panic: ", pas_getpid());
+        pas_log("[%d] deluge panic: ", pas_getpid());
         va_start(arg_list, format);
         pas_vlog(format, arg_list);
         pas_crash_with_info_impl((uint64_t)format, 0, 0, 0, 0, 0, 0);
