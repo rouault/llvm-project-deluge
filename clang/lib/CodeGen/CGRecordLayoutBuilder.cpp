@@ -138,7 +138,7 @@ struct CGRecordLowering {
   /// Gets an llvm type of size NumChars and alignment 1.
   llvm::Type *getByteArrayType(CharUnits NumChars) {
     assert(!NumChars.isZero() && "Empty byte arrays aren't allowed.");
-    llvm::errs() << "want byte array of size " << NumChars.getQuantity() << "\n";
+    //llvm::errs() << "want byte array of size " << NumChars.getQuantity() << "\n";
     llvm::Type *Type = getCharType();
     return NumChars == CharUnits::One() ? Type :
         (llvm::Type *)llvm::ArrayType::get(Type, NumChars.getQuantity());
@@ -810,9 +810,9 @@ void CGRecordLowering::insertPadding() {
        Member != MemberEnd; ++Member) {
     if (!Member->Data)
       continue;
-    llvm::errs() << "Size = " << Size.getQuantity() << "\n";
+    //llvm::errs() << "Size = " << Size.getQuantity() << "\n";
     CharUnits Offset = Member->Offset;
-    llvm::errs() << "Member offset = " << Offset.getQuantity() << "\n";
+    //llvm::errs() << "Member offset = " << Offset.getQuantity() << "\n";
     assert(Offset >= Size);
     // Insert padding if we need to.
     if (Offset !=
@@ -930,7 +930,7 @@ CodeGenTypes::ComputeRecordLayout(const RecordDecl *D, llvm::StructType *Ty) {
   RL->BitFields.swap(Builder.BitFields);
 
   // Dump the layout, if requested.
-  if (true || getContext().getLangOpts().DumpRecordLayouts) {
+  if (getContext().getLangOpts().DumpRecordLayouts) {
     llvm::outs() << "\n*** Dumping IRgen Record Layout\n";
     llvm::outs() << "Record: ";
     D->dump(llvm::outs());
@@ -944,9 +944,9 @@ CodeGenTypes::ComputeRecordLayout(const RecordDecl *D, llvm::StructType *Ty) {
 
   uint64_t TypeSizeInBits = getContext().toBits(Layout.getSize());
   
-  llvm::errs() << "Ty = " << *Ty << "\n";
-  llvm::errs() << "TypeSizeInBits = " << TypeSizeInBits << "\n";
-  llvm::errs() << "getDataLayout().getTypeAllocSizeInBitsBeforeDeluge(Ty) = " << getDataLayout().getTypeAllocSizeInBitsBeforeDeluge(Ty) << "\n";
+  //llvm::errs() << "Ty = " << *Ty << "\n";
+  //llvm::errs() << "TypeSizeInBits = " << TypeSizeInBits << "\n";
+  //llvm::errs() << "getDataLayout().getTypeAllocSizeInBitsBeforeDeluge(Ty) = " << getDataLayout().getTypeAllocSizeInBitsBeforeDeluge(Ty) << "\n";
   
   assert(TypeSizeInBits == getDataLayout().getTypeAllocSizeInBitsBeforeDeluge(Ty) &&
          "Type size mismatch!");

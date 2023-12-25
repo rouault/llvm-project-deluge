@@ -12,7 +12,7 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = true;
+static constexpr bool verbose = false;
 
 // This has to match the Deluge runtime.
 enum class DelugeWordType {
@@ -519,7 +519,8 @@ class Deluge {
   }
 
   Constant* reforgePtrConstant(Constant* LowWidePtr, Constant* NewLowRawPtr) {
-    errs() << "LowWidePtr = " << *LowWidePtr << ", NewLowRawPtr = " << *NewLowRawPtr << "\n";
+    if (verbose)
+      errs() << "LowWidePtr = " << *LowWidePtr << ", NewLowRawPtr = " << *NewLowRawPtr << "\n";
     if (isa<ConstantAggregateZero>(LowWidePtr))
       return forgePtrConstant(NewLowRawPtr, LowRawNull, LowRawNull, LowRawNull);
     ConstantStruct* CS = cast<ConstantStruct>(LowWidePtr);
@@ -573,13 +574,15 @@ class Deluge {
     assert(isa<ConstantExpr>(C));
     ConstantExpr* CE = cast<ConstantExpr>(C);
 
-    errs() << "Lowering CE = " << *CE << "\n";
+    if (verbose)
+      errs() << "Lowering CE = " << *CE << "\n";
 
     switch (CE->getOpcode()) {
     case Instruction::GetElementPtr: {
       GEPOperator* GO = cast<GEPOperator>(CE);
       Constant* LowPtr = lowerConstant(CE->getOperand(0));
-      errs() << "LowPtr = " << *LowPtr << "\n";
+      if (verbose)
+        errs() << "LowPtr = " << *LowPtr << "\n";
       std::vector<Constant*> Args;
       for (size_t Index = 1; Index < CE->getNumOperands(); ++Index)
         Args.push_back(lowerConstant(CE->getOperand(Index)));
@@ -607,14 +610,16 @@ class Deluge {
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CE->getNumOperands(); ++Index)
         Args.push_back(lowerConstant(CE->getOperand(Index)));
-      errs() << "Going to replace operands for " << *CE << "\n";
-      errs() << "Operands: ";
-      for (size_t Index = 0; Index < Args.size(); ++Index) {
-        if (Index)
-          errs() << ", ";
-        errs() << *Args[Index];
+      if (verbose) {
+        errs() << "Going to replace operands for " << *CE << "\n";
+        errs() << "Operands: ";
+        for (size_t Index = 0; Index < Args.size(); ++Index) {
+          if (Index)
+            errs() << ", ";
+          errs() << *Args[Index];
+        }
+        errs() << "\n";
       }
-      errs() << "\n";
       return CE->getWithOperands(Args);
     } }
   }
@@ -1041,7 +1046,8 @@ public:
   }
 
   void run() {
-    errs() << "Going to town on module:\n" << M << "\n";
+    if (verbose)
+      errs() << "Going to town on module:\n" << M << "\n";
     
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);

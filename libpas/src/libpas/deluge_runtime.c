@@ -62,6 +62,8 @@ static void initialize_utility_allocation_config(pas_allocation_config* allocati
 
 void deluge_validate_type(const deluge_type* type)
 {
+    if (deluge_type_is_equal(type, &deluge_int_type))
+        PAS_ASSERT(type == &deluge_int_type);
     PAS_ASSERT(type->size);
     PAS_ASSERT(type->alignment);
     PAS_ASSERT(pas_is_power_of_2(type->alignment));
@@ -123,6 +125,9 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     case DELUGE_WORD_TYPE_PTR_PART4:
         pas_stream_printf(stream, "P%u", type - DELUGE_WORD_TYPE_PTR_PART1 + 1);
         return;
+    case DELUGE_WORD_TYPE_FUNCTION:
+        pas_stream_printf(stream, "Fu");
+        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -131,8 +136,14 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
 
 void deluge_type_dump(const deluge_type* type, pas_stream* stream)
 {
+    static const bool dump_ptr = false;
+    
     size_t index;
-    pas_stream_printf(stream, "delty<%p>{%zu,%zu,", type, type->size, type->alignment);
+
+    if (dump_ptr)
+        pas_stream_printf(stream, "%p:", type);
+    
+    pas_stream_printf(stream, "delty{%zu,%zu,", type->size, type->alignment);
     if (type->trailing_array) {
         deluge_type_dump(type->trailing_array, stream);
         pas_stream_printf(stream, ",");
@@ -285,11 +296,31 @@ void deluded_zfree(void* ptr, void* lower, void* upper, const deluge_type* type)
 
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
-    PAS_UNUSED_PARAM(ptr);
+    static const bool verbose = false;
+
+    if (verbose) {
+        pas_log("validating ptr: %p,%p,%p,", ptr, lower, upper);
+        if (type)
+            deluge_type_dump(type, &pas_log_stream.base);
+        else
+            pas_log("%p", NULL);
+        pas_log("\n");
+    }
     
-    if (!type || type == &deluge_function_type) {
+    PAS_UNUSED_PARAM(ptr); /* It's totally OK for the ptr component to be anything, so long as
+                              we don't access it. That means checks must treat the ptr component
+                              as untrusted. */
+    
+    if (type == &deluge_function_type) {
         PAS_ASSERT(!lower);
         PAS_ASSERT(!upper);
+        return;
+    }
+
+    if (!lower || !upper || !type) {
+        /* It's possible for part of the ptr to fall off into a page that gets decommitted.
+           In that case part of it will become null, and we'll treat the ptr as valid but
+           inaccessible. For example, lower=0 always fails check_access_common. */
         return;
     }
 
@@ -298,11 +329,15 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
     PAS_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment));
     PAS_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment));
     PAS_ASSERT(!((upper - lower) % type->size));
+    deluge_validate_type(type);
 }
 
 static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
                                 uintptr_t bytes)
 {
+    if (PAS_ENABLE_TESTING)
+        deluge_validate_ptr_impl(ptr, lower, upper, type);
+
     /* This check is necessary in case a wide pointer spans page boundary and the
        first of the two pages gets decommitted in a way that causes it to become
        zero.
