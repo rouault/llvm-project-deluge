@@ -8,6 +8,11 @@ void deluded_print(const char* string, void*, void*, void*)
     printf("%s", string);
 }
 
+void deluded_print_long(long value)
+{
+    printf("%ld", value);
+}
+
 void deluded_fail(void)
 {
     printf("FAIL\n");

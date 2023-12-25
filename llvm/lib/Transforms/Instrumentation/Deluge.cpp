@@ -753,8 +753,7 @@ class Deluge {
     }
 
     if (ICmpInst* CI = dyn_cast<ICmpInst>(I)) {
-      if (isa<PointerType>(CI->getOperand(0)->getType()) &&
-          CI->getOperand(0)->getType()->getPointerAddressSpace() == TargetAS) {
+      if (hasPtrsForCheck(CI->getOperand(0)->getType())) {
         CI->getOperandUse(0) = lowerPtr(CI->getOperand(0), CI);
         CI->getOperandUse(1) = lowerPtr(CI->getOperand(1), CI);
       }
