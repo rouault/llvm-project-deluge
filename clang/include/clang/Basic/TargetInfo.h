@@ -82,7 +82,7 @@ enum class FloatModeKind {
 /// be copied for targets like AMDGPU that base their ABIs on an auxiliary
 /// CPU target.
 struct TransferrableTargetInfo {
-  unsigned char PointerWidth, PointerAlign;
+  unsigned short PointerWidth, PointerAlign;
   unsigned char BoolWidth, BoolAlign;
   unsigned char IntWidth, IntAlign;
   unsigned char HalfWidth, HalfAlign;
