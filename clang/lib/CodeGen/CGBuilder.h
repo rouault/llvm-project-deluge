@@ -176,7 +176,7 @@ public:
                           const llvm::Twine &Name = "") {
     llvm::StructType *ElTy = cast<llvm::StructType>(Addr.getElementType());
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
-    const llvm::StructLayout *Layout = DL.getStructLayout(ElTy);
+    const llvm::StructLayout *Layout = DL.getStructLayoutBeforeDeluge(ElTy);
     auto Offset = CharUnits::fromQuantity(Layout->getElementOffset(Index));
 
     return Address(
@@ -198,7 +198,7 @@ public:
     llvm::ArrayType *ElTy = cast<llvm::ArrayType>(Addr.getElementType());
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
     CharUnits EltSize =
-        CharUnits::fromQuantity(DL.getTypeAllocSize(ElTy->getElementType()));
+        CharUnits::fromQuantity(DL.getTypeAllocSizeBeforeDeluge(ElTy->getElementType()));
 
     return Address(
         CreateInBoundsGEP(Addr.getElementType(), Addr.getPointer(),
@@ -217,7 +217,7 @@ public:
                                  const llvm::Twine &Name = "") {
     llvm::Type *ElTy = Addr.getElementType();
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
-    CharUnits EltSize = CharUnits::fromQuantity(DL.getTypeAllocSize(ElTy));
+    CharUnits EltSize = CharUnits::fromQuantity(DL.getTypeAllocSizeBeforeDeluge(ElTy));
 
     return Address(CreateInBoundsGEP(Addr.getElementType(), Addr.getPointer(),
                                      getSize(Index), Name),
@@ -234,7 +234,7 @@ public:
                          const llvm::Twine &Name = "") {
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
     CharUnits EltSize =
-        CharUnits::fromQuantity(DL.getTypeAllocSize(Addr.getElementType()));
+        CharUnits::fromQuantity(DL.getTypeAllocSizeBeforeDeluge(Addr.getElementType()));
 
     return Address(CreateGEP(Addr.getElementType(), Addr.getPointer(),
                              getSize(Index), Name),
@@ -250,7 +250,7 @@ public:
                     const llvm::Twine &Name = "") {
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
     CharUnits EltSize =
-        CharUnits::fromQuantity(DL.getTypeAllocSize(Addr.getElementType()));
+        CharUnits::fromQuantity(DL.getTypeAllocSizeBeforeDeluge(Addr.getElementType()));
 
     return Address(
         CreateGEP(Addr.getElementType(), Addr.getPointer(), Index, Name),
@@ -346,7 +346,7 @@ public:
                                           llvm::MDNode *DbgInfo) {
     llvm::StructType *ElTy = cast<llvm::StructType>(Addr.getElementType());
     const llvm::DataLayout &DL = BB->getParent()->getParent()->getDataLayout();
-    const llvm::StructLayout *Layout = DL.getStructLayout(ElTy);
+    const llvm::StructLayout *Layout = DL.getStructLayoutBeforeDeluge(ElTy);
     auto Offset = CharUnits::fromQuantity(Layout->getElementOffset(Index));
 
     return Address(CreatePreserveStructAccessIndex(ElTy, Addr.getPointer(),

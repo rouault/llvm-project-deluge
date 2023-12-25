@@ -210,7 +210,7 @@ ConstantAggregateBuilderBase::addPlaceholderWithSize(llvm::Type *type) {
   auto &layout = Builder.CGM.getDataLayout();
   if (!Packed)
     offset = offset.alignTo(CharUnits::fromQuantity(layout.getABITypeAlign(type)));
-  offset += CharUnits::fromQuantity(layout.getTypeStoreSize(type));
+  offset += CharUnits::fromQuantity(layout.getTypeStoreSizeBeforeDeluge(type));
 
   CachedOffsetEnd = Builder.Buffer.size();
   CachedOffsetFromGlobal = offset;
@@ -250,7 +250,7 @@ CharUnits ConstantAggregateBuilderBase::getOffsetFromGlobalTo(size_t end) const{
       if (!Packed)
         offset = offset.alignTo(
             CharUnits::fromQuantity(layout.getABITypeAlign(elementType)));
-      offset += CharUnits::fromQuantity(layout.getTypeStoreSize(elementType));
+      offset += CharUnits::fromQuantity(layout.getTypeStoreSizeBeforeDeluge(elementType));
     } while (++cacheEnd != end);
   }
 

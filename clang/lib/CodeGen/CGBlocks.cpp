@@ -526,7 +526,7 @@ static void initializeForBlockHeader(CodeGenModule &CGM, CGBlockInfo &info,
         if (BlockAlign < Align)
           BlockAlign = Align;
         assert(Offset % Align == 0);
-        Offset += CGM.getDataLayout().getTypeAllocSize(I);
+        Offset += CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(I);
         elementTypes.push_back(I);
       }
     }
@@ -893,7 +893,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
         addHeaderField(
             I.first,
             CharUnits::fromQuantity(
-                CGM.getDataLayout().getTypeAllocSize(I.first->getType())),
+                CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(I.first->getType())),
             I.second);
       }
     }
@@ -2776,7 +2776,7 @@ void CodeGenFunction::emitByrefStructureInit(const AutoVarEmission &emission) {
   storeHeaderField(llvm::ConstantInt::get(IntTy, flags.getBitMask()),
                    getIntSize(), "byref.flags");
 
-  CharUnits byrefSize = CGM.GetTargetTypeStoreSize(byrefType);
+  CharUnits byrefSize = CGM.GetTargetTypeStoreSizeBeforeDeluge(byrefType);
   V = llvm::ConstantInt::get(IntTy, byrefSize.getQuantity());
   storeHeaderField(V, getIntSize(), "byref.size");
 

@@ -1306,7 +1306,7 @@ void CodeGenModule::EmitVTableTypeMetadata(const CXXRecordDecl *RD,
   if (!getCodeGenOpts().LTOUnit)
     return;
 
-  CharUnits ComponentWidth = GetTargetTypeStoreSize(getVTableComponentType());
+  CharUnits ComponentWidth = GetTargetTypeStoreSizeBeforeDeluge(getVTableComponentType());
 
   typedef std::pair<const CXXRecordDecl *, unsigned> AddressPoint;
   std::vector<AddressPoint> AddressPoints;

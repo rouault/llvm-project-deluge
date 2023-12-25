@@ -1,6 +1,7 @@
 #include "llvm/Transforms/Instrumentation/Deluge.h"
 
 #include <llvm/IR/DebugInfo.h>
+#include <llvm/IR/Operator.h>
 #include <llvm/IR/TypedPointerType.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/TargetParser/Triple.h>
@@ -11,7 +12,7 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = false;
+static constexpr bool verbose = true;
 
 // This has to match the Deluge runtime.
 enum class DelugeWordType {
@@ -340,6 +341,9 @@ class Deluge {
       return iter->second;
 
     Type* LowT = lowerTypeImpl(T);
+    assert(T->isSized() == LowT->isSized());
+    if (T->isSized())
+      assert(DL.getTypeStoreSizeBeforeDeluge(T) == DL.getTypeStoreSize(LowT));
     LoweredTypes[T] = LowT;
     return LowT;
   }
@@ -515,6 +519,9 @@ class Deluge {
   }
 
   Constant* reforgePtrConstant(Constant* LowWidePtr, Constant* NewLowRawPtr) {
+    errs() << "LowWidePtr = " << *LowWidePtr << ", NewLowRawPtr = " << *NewLowRawPtr << "\n";
+    if (isa<ConstantAggregateZero>(LowWidePtr))
+      return forgePtrConstant(NewLowRawPtr, LowRawNull, LowRawNull, LowRawNull);
     ConstantStruct* CS = cast<ConstantStruct>(LowWidePtr);
     assert(CS->getNumOperands() == 4);
     assert(CS->getType() == LowWidePtrTy);
@@ -541,20 +548,75 @@ class Deluge {
       return forgePtrConstantWithLowType(G, LowT);
     }
 
+    if (isa<ConstantData>(C))
+      return C;
+
+    if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < CA->getNumOperands(); ++Index)
+        Args.push_back(lowerConstant(CA->getOperand(Index)));
+      return ConstantArray::get(cast<ArrayType>(lowerType(CA->getType())), Args);
+    }
+    if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < CS->getNumOperands(); ++Index)
+        Args.push_back(lowerConstant(CS->getOperand(Index)));
+      return ConstantStruct::get(cast<StructType>(lowerType(CS->getType())), Args);
+    }
+    if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < CV->getNumOperands(); ++Index)
+        Args.push_back(lowerConstant(CV->getOperand(Index)));
+      return ConstantVector::get(Args);
+    }
+
     assert(isa<ConstantExpr>(C));
     ConstantExpr* CE = cast<ConstantExpr>(C);
 
+    errs() << "Lowering CE = " << *CE << "\n";
+
     switch (CE->getOpcode()) {
-    case Instruction::GetElementPtr:
-    case Instruction::BitCast:
-      return reforgePtrConstant(lowerConstant(CE->getOperand(0)), C);
-    case Instruction::IntToPtr:
-    case Instruction::AddrSpaceCast:
-      return reforgePtrConstant(LowWideNull, C);
-    default:
-      llvm_unreachable("Invalid ConstExpr returning ptr");
-      return nullptr;
+    case Instruction::GetElementPtr: {
+      GEPOperator* GO = cast<GEPOperator>(CE);
+      Constant* LowPtr = lowerConstant(CE->getOperand(0));
+      errs() << "LowPtr = " << *LowPtr << "\n";
+      std::vector<Constant*> Args;
+      for (size_t Index = 1; Index < CE->getNumOperands(); ++Index)
+        Args.push_back(lowerConstant(CE->getOperand(Index)));
+      return reforgePtrConstant(
+        LowPtr,
+        ConstantExpr::getGetElementPtr(
+          lowerType(GO->getSourceElementType()), lowerPtrConstant(LowPtr), Args, GO->isInBounds()));
     }
+    case Instruction::BitCast:
+      if (CE->getType() == LowRawPtrTy) {
+        Constant* LowPtr = lowerConstant(CE->getOperand(0));
+        return reforgePtrConstant(LowPtr, ConstantExpr::getBitCast(lowerPtrConstant(LowPtr), CE->getType()));
+      }
+      return ConstantExpr::getBitCast(lowerConstant(CE->getOperand(0)), CE->getType());
+    case Instruction::IntToPtr:
+      return reforgePtrConstant(
+        LowWideNull, ConstantExpr::getIntToPtr(lowerConstant(CE->getOperand(0)), CE->getType()));
+    case Instruction::AddrSpaceCast:
+      return reforgePtrConstant(
+        LowWideNull, ConstantExpr::getAddrSpaceCast(lowerConstant(CE->getOperand(0)), CE->getType()));
+    case Instruction::PtrToInt:
+      return ConstantExpr::getPtrToInt(lowerPtrConstant(lowerConstant(CE->getOperand(0))), CE->getType());
+    default: {
+      assert(CE->getType() != LowRawPtrTy);
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < CE->getNumOperands(); ++Index)
+        Args.push_back(lowerConstant(CE->getOperand(Index)));
+      errs() << "Going to replace operands for " << *CE << "\n";
+      errs() << "Operands: ";
+      for (size_t Index = 0; Index < Args.size(); ++Index) {
+        if (Index)
+          errs() << ", ";
+        errs() << *Args[Index];
+      }
+      errs() << "\n";
+      return CE->getWithOperands(Args);
+    } }
   }
 
   Constant* lowerConstant(Constant* C) {
@@ -570,9 +632,6 @@ class Deluge {
       return ConstantAggregateZero::get(C->getType());
     }
     
-    if (C->getType() != LowRawPtrTy)
-      return C;
-
     auto iter = ForgedConstants.find(C);
     if (iter != ForgedConstants.end())
       return iter->second;
@@ -982,6 +1041,8 @@ public:
   }
 
   void run() {
+    errs() << "Going to town on module:\n" << M << "\n";
+    
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
     Int8Ty = Type::getInt8Ty(C);

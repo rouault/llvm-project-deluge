@@ -45,7 +45,7 @@ using namespace llvm;
 // Support for StructLayout
 //===----------------------------------------------------------------------===//
 
-StructLayout::StructLayout(StructType *ST, const DataLayout &DL)
+StructLayout::StructLayout(StructType *ST, const DataLayout &DL, DelugeMode DM)
     : StructSize(TypeSize::Fixed(0)) {
   assert(!ST->isOpaque() && "Cannot get layout of opaque structs");
   IsPadded = false;
@@ -76,7 +76,7 @@ StructLayout::StructLayout(StructType *ST, const DataLayout &DL)
 
     getMemberOffsets()[i] = StructSize;
     // Consume space for this data item
-    StructSize += DL.getTypeAllocSize(Ty);
+    StructSize += DL.getTypeAllocSize(Ty, DM);
   }
 
   // Add padding to the end of the struct so that it could be put in an array
@@ -683,6 +683,7 @@ namespace {
 class StructLayoutMap {
   using LayoutInfoTy = DenseMap<StructType*, StructLayout*>;
   LayoutInfoTy LayoutInfo;
+  LayoutInfoTy LayoutInfoBeforeDeluge;
 
 public:
   ~StructLayoutMap() {
@@ -694,7 +695,9 @@ public:
     }
   }
 
-  StructLayout *&operator[](StructType *STy) {
+  StructLayout *&get(StructType *STy, DelugeMode DM) {
+    if (DM == BeforeDeluge)
+      return LayoutInfoBeforeDeluge[STy];
     return LayoutInfo[STy];
   }
 };
@@ -715,12 +718,12 @@ DataLayout::~DataLayout() {
   clear();
 }
 
-const StructLayout *DataLayout::getStructLayout(StructType *Ty) const {
+const StructLayout *DataLayout::getStructLayout(StructType *Ty, DelugeMode DM) const {
   if (!LayoutMap)
     LayoutMap = new StructLayoutMap();
 
   StructLayoutMap *STM = static_cast<StructLayoutMap*>(LayoutMap);
-  StructLayout *&SL = (*STM)[Ty];
+  StructLayout *&SL = STM->get(Ty, DM);
   if (SL) return SL;
 
   // Otherwise, create the struct layout.  Because it is variable length, we
@@ -732,7 +735,7 @@ const StructLayout *DataLayout::getStructLayout(StructType *Ty) const {
   // entries to be added to TheMap, invalidating our reference.
   SL = L;
 
-  new (L) StructLayout(Ty, *this);
+  new (L) StructLayout(Ty, *this, DM);
 
   return L;
 }

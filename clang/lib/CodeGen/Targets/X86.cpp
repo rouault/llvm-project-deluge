@@ -2342,7 +2342,7 @@ static llvm::Type *getFPTypeAtOffset(llvm::Type *IRType, unsigned IROffset,
     if (!STy->getNumContainedTypes())
       return nullptr;
 
-    const llvm::StructLayout *SL = TD.getStructLayout(STy);
+    const llvm::StructLayout *SL = TD.getStructLayoutBeforeDeluge(STy);
     unsigned Elt = SL->getElementContainingOffset(IROffset);
     IROffset -= SL->getElementOffset(Elt);
     return getFPTypeAtOffset(STy->getElementType(Elt), IROffset, TD);
@@ -2351,7 +2351,7 @@ static llvm::Type *getFPTypeAtOffset(llvm::Type *IRType, unsigned IROffset,
   // If this is an array, recurse into the field at the specified offset.
   if (llvm::ArrayType *ATy = dyn_cast<llvm::ArrayType>(IRType)) {
     llvm::Type *EltTy = ATy->getElementType();
-    unsigned EltSize = TD.getTypeAllocSize(EltTy);
+    unsigned EltSize = TD.getTypeAllocSizeBeforeDeluge(EltTy);
     IROffset -= IROffset / EltSize * EltSize;
     return getFPTypeAtOffset(EltTy, IROffset, TD);
   }
@@ -2373,7 +2373,7 @@ GetSSETypeAtOffset(llvm::Type *IRType, unsigned IROffset,
 
   // Get the adjacent FP type.
   llvm::Type *T1 = nullptr;
-  unsigned T0Size = TD.getTypeAllocSize(T0);
+  unsigned T0Size = TD.getTypeAllocSizeBeforeDeluge(T0);
   if (SourceSize > T0Size)
       T1 = getFPTypeAtOffset(IRType, IROffset + T0Size, TD);
   if (T1 == nullptr) {
@@ -2452,7 +2452,7 @@ GetINTEGERTypeAtOffset(llvm::Type *IRType, unsigned IROffset,
 
   if (llvm::StructType *STy = dyn_cast<llvm::StructType>(IRType)) {
     // If this is a struct, recurse into the field at the specified offset.
-    const llvm::StructLayout *SL = getDataLayout().getStructLayout(STy);
+    const llvm::StructLayout *SL = getDataLayout().getStructLayoutBeforeDeluge(STy);
     if (IROffset < SL->getSizeInBytes()) {
       unsigned FieldIdx = SL->getElementContainingOffset(IROffset);
       IROffset -= SL->getElementOffset(FieldIdx);
@@ -2464,7 +2464,7 @@ GetINTEGERTypeAtOffset(llvm::Type *IRType, unsigned IROffset,
 
   if (llvm::ArrayType *ATy = dyn_cast<llvm::ArrayType>(IRType)) {
     llvm::Type *EltTy = ATy->getElementType();
-    unsigned EltSize = getDataLayout().getTypeAllocSize(EltTy);
+    unsigned EltSize = getDataLayout().getTypeAllocSizeBeforeDeluge(EltTy);
     unsigned EltOffset = IROffset/EltSize*EltSize;
     return GetINTEGERTypeAtOffset(EltTy, IROffset-EltOffset, SourceTy,
                                   SourceOffset);
@@ -2496,7 +2496,7 @@ GetX86_64ByValArgumentPair(llvm::Type *Lo, llvm::Type *Hi,
   // at offset 8.  If the high and low parts we inferred are both 4-byte types
   // (e.g. i32 and i32) then the resultant struct type ({i32,i32}) won't have
   // the second element at offset 8.  Check for this:
-  unsigned LoSize = (unsigned)TD.getTypeAllocSize(Lo);
+  unsigned LoSize = (unsigned)TD.getTypeAllocSizeBeforeDeluge(Lo);
   llvm::Align HiAlign = TD.getABITypeAlign(Hi);
   unsigned HiStart = llvm::alignTo(LoSize, HiAlign);
   assert(HiStart != 0 && HiStart <= 8 && "Invalid x86-64 argument pair!");
@@ -2523,7 +2523,7 @@ GetX86_64ByValArgumentPair(llvm::Type *Lo, llvm::Type *Hi,
   llvm::StructType *Result = llvm::StructType::get(Lo, Hi);
 
   // Verify that the second element is at an 8-byte offset.
-  assert(TD.getStructLayout(Result)->getElementOffset(1) == 8 &&
+  assert(TD.getStructLayoutBeforeDeluge(Result)->getElementOffset(1) == 8 &&
          "Invalid x86-64 argument pair!");
   return Result;
 }

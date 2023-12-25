@@ -6,6 +6,7 @@ void print_long(long value);
 struct foo {
     int x;
     char* string;
+    float* whatever;
 };
 
 struct bar {

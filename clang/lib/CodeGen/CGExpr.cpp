@@ -518,7 +518,7 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
     switch (M->getStorageDuration()) {
     case SD_Automatic:
       if (auto *Size = EmitLifetimeStart(
-              CGM.getDataLayout().getTypeAllocSize(Alloca.getElementType()),
+              CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Alloca.getElementType()),
               Alloca.getPointer())) {
         pushCleanupAfterFullExpr<CallLifetimeEnd>(NormalEHLifetimeMarker,
                                                   Alloca, Size);
@@ -553,7 +553,7 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       }
 
       if (auto *Size = EmitLifetimeStart(
-              CGM.getDataLayout().getTypeAllocSize(Alloca.getElementType()),
+              CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Alloca.getElementType()),
               Alloca.getPointer())) {
         pushFullExprCleanup<CallLifetimeEnd>(NormalEHLifetimeMarker, Alloca,
                                              Size);

@@ -4923,9 +4923,9 @@ void CodeGenModule::EmitExternalDeclaration(const VarDecl *D) {
   EmitExternalVarDeclaration(D);
 }
 
-CharUnits CodeGenModule::GetTargetTypeStoreSize(llvm::Type *Ty) const {
+CharUnits CodeGenModule::GetTargetTypeStoreSizeBeforeDeluge(llvm::Type *Ty) const {
   return Context.toCharUnitsFromBits(
-      getDataLayout().getTypeStoreSizeInBits(Ty));
+      getDataLayout().getTypeStoreSizeInBitsBeforeDeluge(Ty));
 }
 
 LangAS CodeGenModule::GetGlobalVarAddressSpace(const VarDecl *D) {
@@ -5173,7 +5173,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
       CharUnits VarSize = getContext().getTypeSizeInChars(ASTTy) +
                           InitDecl->getFlexibleArrayInitChars(getContext());
       CharUnits CstSize = CharUnits::fromQuantity(
-          getDataLayout().getTypeAllocSize(Init->getType()));
+          getDataLayout().getTypeAllocSizeBeforeDeluge(Init->getType()));
       assert(VarSize == CstSize && "Emitted constant has unexpected size");
 #endif
     }

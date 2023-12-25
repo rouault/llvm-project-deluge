@@ -1174,9 +1174,9 @@ EnterStructPointerForCoercedAccess(Address SrcPtr,
   // comparison must be made on the store size and not the alloca size. Using
   // the alloca size may overstate the size of the load.
   uint64_t FirstEltSize =
-    CGF.CGM.getDataLayout().getTypeStoreSize(FirstElt);
+    CGF.CGM.getDataLayout().getTypeStoreSizeBeforeDeluge(FirstElt);
   if (FirstEltSize < DstSize &&
-      FirstEltSize < CGF.CGM.getDataLayout().getTypeStoreSize(SrcSTy))
+      FirstEltSize < CGF.CGM.getDataLayout().getTypeStoreSizeBeforeDeluge(SrcSTy))
     return SrcPtr;
 
   // GEP into the first element.
@@ -1221,8 +1221,8 @@ static llvm::Value *CoerceIntOrPtrToIntOrPtr(llvm::Value *Val,
     if (DL.isBigEndian()) {
       // Preserve the high bits on big-endian targets.
       // That is what memory coercion does.
-      uint64_t SrcSize = DL.getTypeSizeInBits(Val->getType());
-      uint64_t DstSize = DL.getTypeSizeInBits(DestIntTy);
+      uint64_t SrcSize = DL.getTypeSizeInBitsBeforeDeluge(Val->getType());
+      uint64_t DstSize = DL.getTypeSizeInBitsBeforeDeluge(DestIntTy);
 
       if (SrcSize > DstSize) {
         Val = CGF.Builder.CreateLShr(Val, SrcSize - DstSize, "coerce.highbits");
@@ -1259,7 +1259,7 @@ static llvm::Value *CreateCoercedLoad(Address Src, llvm::Type *Ty,
   if (SrcTy == Ty)
     return CGF.Builder.CreateLoad(Src);
 
-  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(Ty);
+  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Ty);
 
   if (llvm::StructType *SrcSTy = dyn_cast<llvm::StructType>(SrcTy)) {
     Src = EnterStructPointerForCoercedAccess(Src, SrcSTy,
@@ -1267,7 +1267,7 @@ static llvm::Value *CreateCoercedLoad(Address Src, llvm::Type *Ty,
     SrcTy = Src.getElementType();
   }
 
-  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
+  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(SrcTy);
 
   // If the source and destination are integer or pointer types, just do an
   // extension or truncation to the desired type.
@@ -1364,7 +1364,7 @@ static void CreateCoercedStore(llvm::Value *Src,
     return;
   }
 
-  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
+  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(SrcTy);
 
   if (llvm::StructType *DstSTy = dyn_cast<llvm::StructType>(DstTy)) {
     Dst = EnterStructPointerForCoercedAccess(Dst, DstSTy,
@@ -1390,7 +1390,7 @@ static void CreateCoercedStore(llvm::Value *Src,
     return;
   }
 
-  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(DstTy);
+  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(DstTy);
 
   // If store is legal, just bitcast the src pointer.
   if (isa<llvm::ScalableVectorType>(SrcTy) ||
@@ -2159,8 +2159,8 @@ static bool DetermineNoUndef(QualType QTy, CodeGenTypes &Types,
     return false;
   if (CheckCoerce && AI.canHaveCoerceToType()) {
     llvm::Type *CoerceTy = AI.getCoerceToType();
-    if (llvm::TypeSize::isKnownGT(DL.getTypeSizeInBits(CoerceTy),
-                                  DL.getTypeSizeInBits(Ty)))
+    if (llvm::TypeSize::isKnownGT(DL.getTypeSizeInBitsBeforeDeluge(CoerceTy),
+                                  DL.getTypeSizeInBitsBeforeDeluge(Ty)))
       // If we're coercing to a type with a greater size than the canonical one,
       // we're introducing new undef bits.
       // Coercing to a type of smaller or equal size is ok, as we know that
@@ -3163,9 +3163,9 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
       llvm::StructType *STy = dyn_cast<llvm::StructType>(ArgI.getCoerceToType());
       if (ArgI.isDirect() && ArgI.getCanBeFlattened() && STy &&
           STy->getNumElements() > 1) {
-        llvm::TypeSize StructSize = CGM.getDataLayout().getTypeAllocSize(STy);
+        llvm::TypeSize StructSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(STy);
         llvm::TypeSize PtrElementSize =
-            CGM.getDataLayout().getTypeAllocSize(Ptr.getElementType());
+            CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Ptr.getElementType());
         if (StructSize.isScalable()) {
           assert(STy->containsHomogeneousScalableVectorTypes() &&
                  "ABI only supports structure with homogeneous scalable vector "
@@ -3657,7 +3657,7 @@ llvm::Value *CodeGenFunction::EmitCMSEClearRecord(llvm::Value *Src,
   assert(ITy->getScalarSizeInBits() <= 64);
 
   const llvm::DataLayout &DataLayout = CGM.getDataLayout();
-  int Size = DataLayout.getTypeStoreSize(ITy);
+  int Size = DataLayout.getTypeStoreSizeBeforeDeluge(ITy);
   SmallVector<uint64_t, 4> Bits(Size);
   setUsedBits(CGM, QTy->castAs<RecordType>(), 0, Bits);
 
@@ -3674,7 +3674,7 @@ llvm::Value *CodeGenFunction::EmitCMSEClearRecord(llvm::Value *Src,
                                                   llvm::ArrayType *ATy,
                                                   QualType QTy) {
   const llvm::DataLayout &DataLayout = CGM.getDataLayout();
-  int Size = DataLayout.getTypeStoreSize(ATy);
+  int Size = DataLayout.getTypeStoreSizeBeforeDeluge(ATy);
   SmallVector<uint64_t, 16> Bits(Size);
   setUsedBits(CGM, QTy->castAs<RecordType>(), 0, Bits);
 
@@ -4976,7 +4976,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       SRetPtr = CreateMemTemp(RetTy, "tmp", &SRetAlloca);
       if (HaveInsertPoint() && ReturnValue.isUnused()) {
         llvm::TypeSize size =
-            CGM.getDataLayout().getTypeAllocSize(ConvertTypeForMem(RetTy));
+            CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(ConvertTypeForMem(RetTy));
         UnusedReturnSizePtr = EmitLifetimeStart(size, SRetAlloca.getPointer());
       }
     }
@@ -5140,7 +5140,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
           // Emit lifetime markers for the temporary alloca.
           llvm::TypeSize ByvalTempElementSize =
-              CGM.getDataLayout().getTypeAllocSize(AI.getElementType());
+              CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(AI.getElementType());
           llvm::Value *LifetimeSize =
               EmitLifetimeStart(ByvalTempElementSize, AI.getPointer());
 
@@ -5240,8 +5240,8 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       if (STy && ArgInfo.isDirect() && ArgInfo.getCanBeFlattened()) {
         llvm::Type *SrcTy = Src.getElementType();
         llvm::TypeSize SrcTypeSize =
-            CGM.getDataLayout().getTypeAllocSize(SrcTy);
-        llvm::TypeSize DstTypeSize = CGM.getDataLayout().getTypeAllocSize(STy);
+            CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(SrcTy);
+        llvm::TypeSize DstTypeSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(STy);
         if (SrcTypeSize.isScalable()) {
           assert(STy->containsHomogeneousScalableVectorTypes() &&
                  "ABI only supports structure with homogeneous scalable vector "
@@ -5309,7 +5309,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
     case ABIArgInfo::CoerceAndExpand: {
       auto coercionType = ArgInfo.getCoerceAndExpandType();
-      auto layout = CGM.getDataLayout().getStructLayout(coercionType);
+      auto layout = CGM.getDataLayout().getStructLayoutBeforeDeluge(coercionType);
 
       llvm::Value *tempSize = nullptr;
       Address addr = Address::invalid();
@@ -5323,7 +5323,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
         assert(RV.isScalar()); // complex should always just be direct
 
         llvm::Type *scalarType = RV.getScalarVal()->getType();
-        auto scalarSize = CGM.getDataLayout().getTypeAllocSize(scalarType);
+        auto scalarSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(scalarType);
         auto scalarAlign = CGM.getDataLayout().getPrefTypeAlign(scalarType);
 
         // Materialize to a temporary.

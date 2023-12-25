@@ -277,7 +277,7 @@ protected:
       // int size; (only in GNUstep v2 ABI.
       if (isRuntime(ObjCRuntime::GNUstep, 2)) {
         llvm::DataLayout td(&TheModule);
-        Fields.addInt(IntTy, td.getTypeSizeInBits(PropertyMetadataTy) /
+        Fields.addInt(IntTy, td.getTypeSizeInBitsBeforeDeluge(PropertyMetadataTy) /
             CGM.getContext().getCharWidth());
       }
       // struct objc_property_list *next;
@@ -1172,7 +1172,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
     MethodList.addInt(IntTy, Methods.size());
     // int size; // sizeof(struct objc_method_description)
     llvm::DataLayout td(&TheModule);
-    MethodList.addInt(IntTy, td.getTypeSizeInBits(ObjCMethodDescTy) /
+    MethodList.addInt(IntTy, td.getTypeSizeInBitsBeforeDeluge(ObjCMethodDescTy) /
         CGM.getContext().getCharWidth());
     // struct objc_method_description[]
     auto MethodArray = MethodList.beginArray(ObjCMethodDescTy);
@@ -1831,7 +1831,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
         PtrToInt8Ty,
         Int32Ty,
         Int32Ty);
-      ivarListBuilder.addInt(SizeTy, td.getTypeSizeInBits(ObjCIvarTy) /
+      ivarListBuilder.addInt(SizeTy, td.getTypeSizeInBitsBeforeDeluge(ObjCIvarTy) /
           CGM.getContext().getCharWidth());
       // struct objc_ivar ivars[]
       auto ivarArrayBuilder = ivarListBuilder.beginArray();
@@ -2885,7 +2885,7 @@ GenerateMethodList(StringRef ClassName,
   if (isV2ABI) {
     // size_t size;
     llvm::DataLayout td(&TheModule);
-    MethodList.addInt(SizeTy, td.getTypeSizeInBits(ObjCMethodTy) /
+    MethodList.addInt(SizeTy, td.getTypeSizeInBitsBeforeDeluge(ObjCMethodTy) /
         CGM.getContext().getCharWidth());
     ObjCMethodTy =
       llvm::StructType::get(CGM.getLLVMContext(), {
@@ -3028,7 +3028,7 @@ llvm::Constant *CGObjCGNU::GenerateClassStructure(
   if (isMeta) {
     llvm::DataLayout td(&TheModule);
     Elements.addInt(LongTy,
-                    td.getTypeSizeInBits(ClassTy) /
+                    td.getTypeSizeInBitsBeforeDeluge(ClassTy) /
                       CGM.getContext().getCharWidth());
   } else
     Elements.add(InstanceSize);
@@ -3856,7 +3856,7 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
     // Runtime version, used for ABI compatibility checking.
     module.addInt(LongTy, RuntimeVersion);
     // sizeof(ModuleTy)
-    module.addInt(LongTy, CGM.getDataLayout().getTypeStoreSize(moduleTy));
+    module.addInt(LongTy, CGM.getDataLayout().getTypeStoreSizeBeforeDeluge(moduleTy));
 
     // The path to the source file where this module was declared
     SourceManager &SM = CGM.getContext().getSourceManager();

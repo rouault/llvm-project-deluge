@@ -43,6 +43,12 @@ using LLVMTargetDataRef = struct LLVMOpaqueTargetData *;
 
 namespace llvm {
 
+// What a fucking awful hack. If someone did this to my compiler, I'd hire assassins.
+enum DelugeMode {
+  BeforeDeluge,
+  AfterDeluge
+};
+
 class GlobalVariable;
 class LLVMContext;
 class Module;
@@ -456,7 +462,8 @@ public:
   ///
   /// For example, returns 36 for i36 and 80 for x86_fp80. The type passed must
   /// have a size (Type::isSized() must return true).
-  TypeSize getTypeSizeInBits(Type *Ty) const;
+  TypeSize getTypeSizeInBits(Type *Ty, DelugeMode = AfterDeluge) const;
+  TypeSize getTypeSizeInBitsBeforeDeluge(Type *Ty) const { return getTypeSizeInBits(Ty, BeforeDeluge); }
 
   /// Returns the maximum number of bytes that may be overwritten by
   /// storing the specified type.
@@ -465,10 +472,11 @@ public:
   /// the runtime size will be a positive integer multiple of the base size.
   ///
   /// For example, returns 5 for i36 and 10 for x86_fp80.
-  TypeSize getTypeStoreSize(Type *Ty) const {
-    TypeSize BaseSize = getTypeSizeInBits(Ty);
+  TypeSize getTypeStoreSize(Type *Ty, DelugeMode DM = AfterDeluge) const {
+    TypeSize BaseSize = getTypeSizeInBits(Ty, DM);
     return {divideCeil(BaseSize.getKnownMinValue(), 8), BaseSize.isScalable()};
   }
+  TypeSize getTypeStoreSizeBeforeDeluge(Type *Ty) const { return getTypeStoreSize(Ty, BeforeDeluge); }
 
   /// Returns the maximum number of bits that may be overwritten by
   /// storing the specified type; always a multiple of 8.
@@ -477,9 +485,10 @@ public:
   /// the runtime size will be a positive integer multiple of the base size.
   ///
   /// For example, returns 40 for i36 and 80 for x86_fp80.
-  TypeSize getTypeStoreSizeInBits(Type *Ty) const {
-    return 8 * getTypeStoreSize(Ty);
+  TypeSize getTypeStoreSizeInBits(Type *Ty, DelugeMode DM = AfterDeluge) const {
+    return 8 * getTypeStoreSize(Ty, DM);
   }
+  TypeSize getTypeStoreSizeInBitsBeforeDeluge(Type *Ty) const { return getTypeStoreSizeInBits(Ty, BeforeDeluge); }
 
   /// Returns true if no extra padding bits are needed when storing the
   /// specified type.
@@ -497,10 +506,11 @@ public:
   ///
   /// This is the amount that alloca reserves for this type. For example,
   /// returns 12 or 16 for x86_fp80, depending on alignment.
-  TypeSize getTypeAllocSize(Type *Ty) const {
+  TypeSize getTypeAllocSize(Type *Ty, DelugeMode DM = AfterDeluge) const {
     // Round up to the next alignment boundary.
-    return alignTo(getTypeStoreSize(Ty), getABITypeAlign(Ty).value());
+    return alignTo(getTypeStoreSize(Ty, DM), getABITypeAlign(Ty).value());
   }
+  TypeSize getTypeAllocSizeBeforeDeluge(Type *Ty) const { return getTypeAllocSize(Ty, BeforeDeluge); }
 
   /// Returns the offset in bits between successive objects of the
   /// specified type, including alignment padding; always a multiple of 8.
@@ -510,9 +520,10 @@ public:
   ///
   /// This is the amount that alloca reserves for this type. For example,
   /// returns 96 or 128 for x86_fp80, depending on alignment.
-  TypeSize getTypeAllocSizeInBits(Type *Ty) const {
-    return 8 * getTypeAllocSize(Ty);
+  TypeSize getTypeAllocSizeInBits(Type *Ty, DelugeMode DM = AfterDeluge) const {
+    return 8 * getTypeAllocSize(Ty, DM);
   }
+  TypeSize getTypeAllocSizeInBitsBeforeDeluge(Type *Ty) const { return getTypeAllocSizeInBits(Ty, BeforeDeluge); }
 
   /// Returns the minimum ABI-required alignment for the specified type.
   Align getABITypeAlign(Type *Ty) const;
@@ -597,7 +608,8 @@ public:
   /// struct, its size, and the offsets of its fields.
   ///
   /// Note that this information is lazily cached.
-  const StructLayout *getStructLayout(StructType *Ty) const;
+  const StructLayout *getStructLayout(StructType *Ty, DelugeMode DM = AfterDeluge) const;
+  const StructLayout *getStructLayoutBeforeDeluge(StructType *Ty) const { return getStructLayout(Ty, BeforeDeluge); }
 
   /// Returns the preferred alignment of the specified global.
   ///
@@ -656,7 +668,7 @@ public:
 private:
   friend class DataLayout; // Only DataLayout can create this class
 
-  StructLayout(StructType *ST, const DataLayout &DL);
+  StructLayout(StructType *ST, const DataLayout &DL, DelugeMode DM);
 
   size_t numTrailingObjects(OverloadToken<TypeSize>) const {
     return NumElements;
@@ -665,21 +677,25 @@ private:
 
 // The implementation of this method is provided inline as it is particularly
 // well suited to constant folding when called on a specific Type subclass.
-inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty) const {
+inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty, DelugeMode DM) const {
   assert(Ty->isSized() && "Cannot getTypeInfo() on a type that is unsized!");
   switch (Ty->getTypeID()) {
   case Type::LabelTyID:
     return TypeSize::Fixed(getPointerSizeInBits(0));
-  case Type::PointerTyID:
-    return TypeSize::Fixed(getPointerSizeInBits(Ty->getPointerAddressSpace()));
+  case Type::PointerTyID: {
+    TypeSize Result = TypeSize::Fixed(getPointerSizeInBits(Ty->getPointerAddressSpace()));
+    if (DM == BeforeDeluge && Ty->getPointerAddressSpace() == 0)
+      Result *= 4;
+    return Result;
+  }
   case Type::ArrayTyID: {
     ArrayType *ATy = cast<ArrayType>(Ty);
     return ATy->getNumElements() *
-           getTypeAllocSizeInBits(ATy->getElementType());
+      getTypeAllocSizeInBits(ATy->getElementType(), DM);
   }
   case Type::StructTyID:
     // Get the layout annotation... which is lazily created on demand.
-    return getStructLayout(cast<StructType>(Ty))->getSizeInBits();
+    return getStructLayout(cast<StructType>(Ty), DM)->getSizeInBits();
   case Type::IntegerTyID:
     return TypeSize::Fixed(Ty->getIntegerBitWidth());
   case Type::HalfTyID:
@@ -704,12 +720,12 @@ inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty) const {
     VectorType *VTy = cast<VectorType>(Ty);
     auto EltCnt = VTy->getElementCount();
     uint64_t MinBits = EltCnt.getKnownMinValue() *
-                       getTypeSizeInBits(VTy->getElementType()).getFixedValue();
+      getTypeSizeInBits(VTy->getElementType(), DM).getFixedValue();
     return TypeSize(MinBits, EltCnt.isScalable());
   }
   case Type::TargetExtTyID: {
     Type *LayoutTy = cast<TargetExtType>(Ty)->getLayoutType();
-    return getTypeSizeInBits(LayoutTy);
+    return getTypeSizeInBits(LayoutTy, DM);
   }
   default:
     llvm_unreachable("DataLayout::getTypeSizeInBits(): Unsupported type");
