@@ -1,0 +1,110 @@
+#!/usr/bin/env ruby
+
+require 'etc'
+require 'pathname'
+require 'shellwords'
+require 'yaml'
+
+$testDirectory = Pathname.new("deluge/tests")
+
+$tests = []
+
+def handleArray(thing)
+    return [] unless thing
+    return [thing] unless thing.is_a? Array
+    thing
+end
+
+$testDirectory.each_entry {
+    | entry |
+    next if entry == Pathname.new(".")
+    next if entry == Pathname.new("..")
+    testName = entry.basename
+    fullPath = $testDirectory + entry
+    next unless fullPath.directory?
+    manifest = YAML.load_file(fullPath + "manifest")
+    expectedReturn = manifest["return"]
+    raise unless expectedReturn == "success" or expectedReturn == "failure"
+    expectedOutputs = handleArray(manifest["output-includes"])
+    forbiddenOutputs = handleArray(manifest["output-excludes"])
+    runScript = fullPath + "run.sh"
+    subRunScript = fullPath + "subRun.sh"
+    binary = fullPath + testName
+    compilerOutput = fullPath + "compilerOutput.txt"
+    output = fullPath + "output.txt"
+    File.open(subRunScript, "w") {
+        | outp |
+        outp.puts "#!/bin/sh"
+        outp.puts "set -e"
+        outp.puts "DYLD_LIBRARY_PATH=libpas/build #{Shellwords.shellescape(binary)}"
+    }
+    File.open(runScript, "w") {
+        | outp |
+        outp.puts "#!/bin/sh"
+        outp.puts "set -e"
+        outp.print "xcrun build/bin/clang -o #{Shellwords.shellescape(binary)} >& #{Shellwords.shellescape(compilerOutput)}"
+        fullPath.each_entry {
+            | entry |
+            next unless entry.extname == ".c"
+            outp.print " "
+            outp.print Shellwords.shellescape(fullPath + entry)
+        }
+        outp.puts " deluge/main/main.o -Ideluge/include -Llibpas/build -ldeluge"
+        outp.puts "set +e"
+        outp.puts "#{Shellwords.shellescape(subRunScript)} >& #{Shellwords.shellescape(output)}"
+        if expectedReturn == "failure"
+            outp.puts "if [ $? -eq 0 ]"
+        else
+            outp.puts "if [ $? -ne 0 ]"
+        end
+        outp.puts "then"
+        if expectedReturn == "failure"
+            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected program to return failure"))
+        else
+            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected program to return success"))
+        end
+        outp.puts "    cat #{Shellwords.shellescape(output)}"
+        outp.puts "    exit 1"
+        outp.puts "fi"
+        expectedOutputs.each {
+            | expectedOutput |
+            outp.puts "fgrep #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(output)} > /dev/null || {"
+            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + "FAIL: expected output to contain #{expectedOutput}"))
+            outp.puts "    cat #{Shellwords.shellescape(output)}"
+            outp.puts "    exit 1"
+            outp.puts "}"
+        }
+        forbiddenOutputs.each {
+            | forbiddenOutput |
+            outp.puts "fgrep #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(output)} > /dev/null && {"
+            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + "FAIL: expected output to NOT contain #{forbiddenOutput}"))
+            outp.puts "    cat #{Shellwords.shellescape(output)}"
+            outp.puts "    exit 1"
+            outp.puts "}"
+        }
+        outp.puts ":"
+    }
+    subRunScript.chmod(0755)
+    runScript.chmod(0755)
+    $tests << runScript
+}
+
+File.open("deluge/tests/testmakefile", "w") {
+    | outp |
+    outp.print "all:"
+    $tests.each_with_index {
+        | test, index |
+        outp.print " .t#{index}"
+    }
+    outp.puts
+    $tests.each_with_index {
+        | test, index |
+        outp.puts ".t#{index}:"
+        outp.puts "\t@#{Shellwords.shellescape(test)}"
+        outp.puts "\t@echo -n ."
+    }
+}
+
+raise unless system("make -f deluge/tests/testmakefile -j #{Etc.nprocessors}")
+puts "SUCCESS"
+

@@ -1,0 +1,4 @@
+return:
+  failure
+output-excludes:
+  - "NO"

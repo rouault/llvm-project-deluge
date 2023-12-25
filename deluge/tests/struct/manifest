@@ -1,0 +1,5 @@
+return:
+   success
+output-includes:
+   - YAY1
+   - YAY2

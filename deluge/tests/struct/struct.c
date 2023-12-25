@@ -12,9 +12,9 @@ int main(void) {
     ptr->x = 42;
     ptr->string = "hello";
     if (ptr->x == 42)
-        print("YAY\n");
+        print("YAY1\n");
     if (ptr->string == "hello")
-        print("YAY\n");
+        print("YAY2\n");
     return 0;
 }
 
