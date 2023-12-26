@@ -203,15 +203,7 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type)
     return result;
 }
 
-PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
-    deluge_try_allocate_int_impl,
-    DELUGE_HEAP_CONFIG,
-    &deluge_intrinsic_runtime_config.base,
-    &deluge_allocator_counts,
-    pas_allocation_result_identity,
-    &deluge_int_heap,
-    &deluge_int_heap_support,
-    pas_intrinsic_heap_is_designated);
+pas_allocator_counts deluge_allocator_counts;
 
 pas_intrinsic_heap_support deluge_int_heap_support =
     PAS_INTRINSIC_HEAP_SUPPORT_INITIALIZER;
@@ -224,11 +216,75 @@ pas_heap deluge_int_heap =
         DELUGE_HEAP_CONFIG,
         &deluge_intrinsic_runtime_config.base);
 
-pas_allocator_counts deluge_allocator_counts;
+pas_intrinsic_heap_support deluge_utility_heap_support =
+    PAS_INTRINSIC_HEAP_SUPPORT_INITIALIZER;
+
+pas_heap deluge_utility_heap =
+    PAS_INTRINSIC_HEAP_INITIALIZER(
+        &deluge_utility_heap,
+        &deluge_int_type,
+        deluge_utility_heap_support,
+        DELUGE_HEAP_CONFIG,
+        &deluge_intrinsic_runtime_config.base);
+
+PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
+    deluge_try_allocate_int_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_intrinsic_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_identity,
+    &deluge_int_heap,
+    &deluge_int_heap_support,
+    pas_intrinsic_heap_is_designated);
 
 void* deluge_try_allocate_int(size_t size)
 {
     return deluge_try_allocate_int_impl_ptr(size, 1);
+}
+
+PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
+    deluge_try_allocate_int_with_alignment_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_intrinsic_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_identity,
+    &deluge_int_heap,
+    &deluge_int_heap_support,
+    pas_intrinsic_heap_is_not_designated);
+
+void* deluge_try_allocate_int_with_alignment(size_t size, size_t alignment)
+{
+    return deluge_try_allocate_int_with_alignment_impl_ptr(size, alignment);
+}
+
+PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
+    deluge_allocate_int_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_intrinsic_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_crash_on_error,
+    &deluge_int_heap,
+    &deluge_int_heap_support,
+    pas_intrinsic_heap_is_designated);
+
+void* deluge_allocate_int(size_t size)
+{
+    return deluge_allocate_int_impl_ptr(size, 1);
+}
+
+PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
+    deluge_allocate_int_with_alignment_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_intrinsic_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_crash_on_error,
+    &deluge_int_heap,
+    &deluge_int_heap_support,
+    pas_intrinsic_heap_is_not_designated);
+
+void* deluge_allocate_int_with_alignment(size_t size, size_t alignment)
+{
+    return deluge_allocate_int_with_alignment_impl_ptr(size, alignment);
 }
 
 PAS_CREATE_TRY_ALLOCATE(
@@ -241,6 +297,18 @@ PAS_CREATE_TRY_ALLOCATE(
 void* deluge_try_allocate_one(pas_heap_ref* ref)
 {
     return deluge_try_allocate_one_impl_ptr(ref);
+}
+
+PAS_CREATE_TRY_ALLOCATE(
+    deluge_allocate_one_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_typed_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_crash_on_error);
+
+void* deluge_allocate_one(pas_heap_ref* ref)
+{
+    return deluge_allocate_one_impl_ptr(ref);
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
@@ -264,17 +332,6 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     &deluge_utility_heap,
     &deluge_utility_heap_support,
     pas_intrinsic_heap_is_not_designated);
-
-pas_intrinsic_heap_support deluge_utility_heap_support =
-    PAS_INTRINSIC_HEAP_SUPPORT_INITIALIZER;
-
-pas_heap deluge_utility_heap =
-    PAS_INTRINSIC_HEAP_INITIALIZER(
-        &deluge_utility_heap,
-        &deluge_int_type,
-        deluge_utility_heap_support,
-        DELUGE_HEAP_CONFIG,
-        &deluge_intrinsic_runtime_config.base);
 
 void* deluge_allocate_utility(size_t size)
 {

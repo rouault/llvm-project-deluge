@@ -14,6 +14,8 @@ namespace {
 
 static constexpr bool verbose = true;
 
+static constexpr size_t MinAlign = 16;
+
 // This has to match the Deluge runtime.
 enum class DelugeWordType {
   Invalid = 0,
@@ -48,6 +50,30 @@ struct CoreDelugeType {
       Result *= 7;
       Result += static_cast<size_t>(WordType);
     }
+    return Result;
+  }
+
+  // Append two types to each other. Does not work for special types like int or func. Returns the
+  // offset that the Other type was appended at.
+  size_t append(const CoreDelugeType& Other) {
+    assert(!(Size % 8));
+    assert(!(Other.Size % 8));
+
+    Alignment = std::max(Alignment, Other.Alignment);
+
+    auto pad = [&] () {
+      while (Size % Alignment) {
+        assert(Alignment > 8);
+        WordTypes.push_back(DelugeWordType::Invalid);
+        Size += 8;
+      }
+    };
+
+    pad();
+    size_t Result = Size;
+    WordTypes.insert(WordTypes.end(), Other.WordTypes.begin(), Other.WordTypes.end());
+    Size += Other.Size;
+    pad();
     return Result;
   }
 };
@@ -148,6 +174,8 @@ class Deluge {
   Constant* LowRawNull;
   Constant* LowWideNull;
   BitCastInst* Dummy;
+  BitCastInst* FutureIntFrame;
+  BitCastInst* FutureTypedFrame;
 
   // High-level functions available to the user.
   Value* ZunsafeForgeImpl;
@@ -157,9 +185,14 @@ class Deluge {
   // Low-level functions used by codegen.
   FunctionCallee GetHeap;
   FunctionCallee TryAllocateInt;
+  FunctionCallee TryAllocateIntWithAlignment;
+  FunctionCallee AllocateInt;
+  FunctionCallee AllocateIntWithAlignment;
   FunctionCallee TryAllocateOne;
+  FunctionCallee AllocateOne;
   FunctionCallee TryAllocateMany;
   FunctionCallee AllocateUtility;
+  FunctionCallee Deallocate;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
   FunctionCallee Memset;
@@ -192,7 +225,19 @@ class Deluge {
   std::vector<ConstantPoolEntry> ConstantPoolEntries;
   std::unordered_map<ConstantPoolEntry, size_t> ConstantPoolEntryIndex;
 
+  BasicBlock* FirstRealBlock;
+
+  size_t IntFrameSize;
+  size_t IntFrameAlignment;
+  CoreDelugeType TypedFrameType;
+  BasicBlock* ReturnB;
+  PHINode* ReturnPhi;
+
   PHINode* LocalConstantPoolPtr;
+
+  BitCastInst* makeDummy(Type* T) {
+    return new BitCastInst(UndefValue::get(T), T, "dummy");
+  }
 
   void buildCoreTypeRecurse(CoreDelugeType& CDT, Type* T) {
     CDT.Alignment = std::max(CDT.Alignment, static_cast<size_t>(DL.getABITypeAlign(T).value()));
@@ -759,7 +804,7 @@ class Deluge {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
             Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memcpy", II);
+            "deluge_memcpy");
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -768,7 +813,7 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
             Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memset", II);
+            "deluge_memset");
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -777,23 +822,25 @@ class Deluge {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
             Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memmove", II);
+            "deluge_memmove");
           ReplaceInstWithInst(II, CI);
         }
         return true;
 
+      case Intrinsic::lifetime_start:
+      case Intrinsic::lifetime_end:
+        // FIXME: We should use these to do more compact allocation of frames. And, if we decide that some
+        // allocas don't need to go into the frame, then those can just keep their existing lifetime
+        // annotations. Moreover, choosing which allocas don't escape will require analyzing lifetime
+        // annotations.
+        II->eraseFromParent();
+        return true;
+
       default:
-        switch (II->getIntrinsicID()) {
-        case Intrinsic::lifetime_start:
-        case Intrinsic::lifetime_end:
-          break;
-        default:
-          if (!II->getCalledFunction()->doesNotAccessMemory()) {
-            if (verbose)
-              llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
-            CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
-          }
-          break;
+        if (!II->getCalledFunction()->doesNotAccessMemory()) {
+          if (verbose)
+            llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
+          CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
           if (hasPtrsForCheck(U->getType()))
@@ -839,16 +886,23 @@ class Deluge {
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
-        DelugeTypeData *DTD = dataForLowType(LowT);
-        Instruction* Alloc = nullptr;;
+        Instruction* Alloc = nullptr;
         
+        DelugeTypeData *DTD = dataForLowType(LowT);
         if (!hasPtrsForCheck(HighT)) {
           assert(DTD == &Primitive);
+          size_t Alignment = DL.getABITypeAlign(LowT).value();
+          size_t Size = DL.getTypeStoreSize(LowT);
           Instruction* Mul = BinaryOperator::CreateMul(
-            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, DTD->Type.Main.Size),
+            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
             "deluge_alloc_mul", CI);
           Mul->setDebugLoc(CI->getDebugLoc());
-          Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
+          if (Alignment > MinAlign) {
+            Alloc = CallInst::Create(
+              TryAllocateIntWithAlignment, { Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              "deluge_alloc_int", CI);
+          } else
+            Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
         } else {
           Value* Heap = getHeap(DTD, CI);
           if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
@@ -898,9 +952,41 @@ class Deluge {
     }
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
+      assert(AI->getParent() == FirstRealBlock); // FIXME: We could totally support this.
+      if (!AI->hasNUsesOrMore(1)) {
+        // By this point we may have dead allocas, due to earlyLowerInstruction. Only happens for allocas
+        // used as type hacks for stdfil API.
+        return;
+      }
       Type* LowT = lowerType(AI->getAllocatedType());
-      AI->setAllocatedType(LowT);
-      hackRAUW(AI, [&] () { return forgePtrWithLowType(AI, LowT, AI->getNextNode()); });
+      Value* Base;
+      size_t Offset;
+      DelugeTypeData* DTD = dataForLowType(LowT);
+      if (!hasPtrsForCheck(LowT)) {
+        assert(DTD == &Primitive);
+        size_t Alignment = DL.getABITypeAlign(LowT).value();
+        size_t Size = DL.getTypeStoreSize(LowT);
+        Base = FutureIntFrame;
+        IntFrameSize = (IntFrameSize + Alignment - 1) / Alignment * Alignment;
+        IntFrameAlignment = std::max(IntFrameAlignment, Alignment);
+        Offset = IntFrameSize;
+        IntFrameSize += Size;
+        // libpas doesn't have the requirement that the size is already aligned, but there are perf
+        // benefits to doing so.
+        IntFrameSize = (IntFrameSize + IntFrameAlignment - 1) / IntFrameAlignment * IntFrameAlignment;
+      } else {
+        assert(!DTD->Type.Trailing.isValid());
+        Base = FutureTypedFrame;
+        Offset = TypedFrameType.append(DTD->Type.Main);
+      }
+      Instruction* EntryPtr = GetElementPtrInst::Create(
+        Int8Ty, Base, { ConstantInt::get(IntPtrTy, Offset) }, "deluge_alloca_entry_ptr", AI);
+      EntryPtr->setDebugLoc(AI->getDebugLoc());
+      Instruction* Upper = GetElementPtrInst::Create(
+        LowT, EntryPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_alloca_upper", AI);
+      Upper->setDebugLoc(AI->getDebugLoc());
+      AI->replaceAllUsesWith(forgePtr(EntryPtr, EntryPtr, Upper, DTD->TypeRep, AI));
+      AI->eraseFromParent();
       return;
     }
 
@@ -963,7 +1049,6 @@ class Deluge {
     }
 
     if (isa<FCmpInst>(I) ||
-        isa<ReturnInst>(I) ||
         isa<BranchInst>(I) ||
         isa<SwitchInst>(I) ||
         isa<TruncInst>(I) ||
@@ -976,6 +1061,12 @@ class Deluge {
         isa<FPToUIInst>(I) ||
         isa<FPToSIInst>(I)) {
       // We're gucci.
+      return;
+    }
+
+    if (isa<ReturnInst>(I)) {
+      ReturnPhi->addIncoming(I->getOperand(0), I->getParent());
+      ReplaceInstWithInst(I, BranchInst::Create(ReturnB));
       return;
     }
 
@@ -1183,13 +1274,20 @@ public:
     
     LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
 
-    Dummy = new BitCastInst(UndefValue::get(Int32Ty), Int32Ty, "dummy");
+    Dummy = makeDummy(Int32Ty);
+    FutureIntFrame = makeDummy(LowRawPtrTy);
+    FutureTypedFrame = makeDummy(LowRawPtrTy);
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
+    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy);
+    AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy);
+    AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy);
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
+    AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
+    Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
     CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy);
     Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
@@ -1234,6 +1332,12 @@ public:
       for (BasicBlock& BB : *F)
         Blocks.push_back(&BB);
       if (!Blocks.empty()) {
+        assert(!FutureIntFrame->getNumUses());
+        assert(!FutureTypedFrame->getNumUses());
+        IntFrameSize = 0;
+        IntFrameAlignment = 1;
+        TypedFrameType = CoreDelugeType();
+        
         for (BasicBlock* BB : Blocks) {
           BB->removeFromParent();
           BB->insertInto(NewF);
@@ -1244,8 +1348,12 @@ public:
           for (Instruction& I : *BB)
             Instructions.push_back(&I);
         }
+
+        ReturnB = BasicBlock::Create(C, "deluge_return_block", NewF);
+        ReturnPhi = PHINode::Create(NewF->getReturnType(), 1, "deluge_return_value", ReturnB);
+        ReturnInst* Return = ReturnInst::Create(C, ReturnPhi, ReturnB);
         
-        Instruction* InsertionPoint = &*Blocks[0]->getFirstNonPHIOrDbgOrAlloca();
+        Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit about
         // perf for the most part.
         Instruction* FastConstantPoolPtr = new LoadInst(
@@ -1260,10 +1368,42 @@ public:
         LocalConstantPoolPtr = PHINode::Create(LowRawPtrTy, 2, "deluge_constantpool", InsertionPoint);
         LocalConstantPoolPtr->addIncoming(FastConstantPoolPtr, Blocks[0]);
         LocalConstantPoolPtr->addIncoming(SlowConstantPoolPtr, SlowConstantPoolPtr->getParent());
+
+        FirstRealBlock = InsertionPoint->getParent();
         
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I, NewF); });
         for (Instruction* I : Instructions)
           lowerInstruction(I, NewF);
+
+        InsertionPoint = &*FirstRealBlock->getFirstInsertionPt();
+        
+        if (IntFrameSize) {
+          Instruction* AllocateIntFrame;
+          if (IntFrameAlignment > MinAlign) {
+            AllocateIntFrame = CallInst::Create(
+              AllocateIntWithAlignment,
+              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, IntFrameAlignment) },
+              "deluge_allocate_int_frame", InsertionPoint);
+          } else {
+            AllocateIntFrame = CallInst::Create(
+              AllocateInt, { ConstantInt::get(IntPtrTy, IntFrameSize) }, "deluge_allocate_int_frame",
+              InsertionPoint);
+          }
+          FutureIntFrame->replaceAllUsesWith(AllocateIntFrame);
+          CallInst::Create(Deallocate, { AllocateIntFrame }, "", Return);
+        } else
+          assert(!FutureIntFrame->getNumUses());
+
+        if (TypedFrameType.isValid()) {
+          DelugeType FullFrameType;
+          FullFrameType.Main = TypedFrameType;
+          DelugeTypeData* DTD = dataForType(FullFrameType);
+          Instruction* AllocateTypedFrame = CallInst::Create(
+            AllocateOne, { getHeap(DTD, InsertionPoint) }, "deluge_allocate_typed_frame", InsertionPoint);
+          FutureTypedFrame->replaceAllUsesWith(AllocateTypedFrame);
+          CallInst::Create(Deallocate, { AllocateTypedFrame }, "", Return);
+        } else
+          assert(!FutureTypedFrame->getNumUses());
       }
       
       NewF->copyAttributesFrom(F);

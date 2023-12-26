@@ -123,8 +123,12 @@ char* deluge_type_to_new_string(const deluge_type* type);
 pas_heap_ref* deluge_get_heap(const deluge_type* type);
 
 void* deluge_try_allocate_int(size_t size);
+void* deluge_try_allocate_int_with_alignment(size_t size, size_t alignment);
+void* deluge_allocate_int(size_t size);
+void* deluge_allocate_int_with_alignment(size_t size, size_t alignment);
 
 void* deluge_try_allocate_one(pas_heap_ref* ref);
+void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 
 void* deluge_allocate_utility(size_t size);
