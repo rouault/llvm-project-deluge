@@ -48,7 +48,7 @@ $testDirectory.each_entry {
             outp.print " "
             outp.print Shellwords.shellescape(fullPath + entry)
         }
-        outp.puts " deluge/main/main.o -Ideluge/include -Llibpas/build -ldeluge >& #{Shellwords.shellescape(compilerOutput)}"
+        outp.puts " deluge/main/main.o -Ideluge/include -Llibpas/build -ldeluge -O2 >& #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "if [ $? -ne 0 ]"
         outp.puts "then"
         outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile"))

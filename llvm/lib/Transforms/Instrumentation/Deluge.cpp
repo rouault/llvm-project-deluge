@@ -12,7 +12,7 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = false;
+static constexpr bool verbose = true;
 
 // This has to match the Deluge runtime.
 enum class DelugeWordType {
@@ -511,7 +511,8 @@ class Deluge {
   }
 
   Value* lowerPtr(Value *HighP, Instruction* InsertBefore) {
-    Instruction* Result = ExtractValueInst::Create(HighP, { 0 }, "deluge_getlowptr", InsertBefore);
+    Instruction* Result = ExtractValueInst::Create(
+      LowRawPtrTy, HighP, { 0 }, "deluge_getlowptr", InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
   }
@@ -742,6 +743,68 @@ class Deluge {
     if (verbose)
       errs() << "Early lowering: " << *I << "\n";
 
+    if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
+      switch (II->getIntrinsicID()) {
+      case Intrinsic::memcpy:
+      case Intrinsic::memcpy_inline:
+        // OK, so it seems bad that we're treating memcpy and memcpy_inline the same. But it's fine.
+        // The intent of the inline variant is to cover the low-level programming case where you cannot
+        // call outside libraries, but you want to describe a memcpy. However, with Deluge, we're always
+        // depending on the Deluge runtime somehow, so it's OK to call into the Deluge runtime's memcpy
+        // (or memset, or memmove).
+        //
+        // Also, for now, we just ignore the volatile bit, since the call to the Deluge runtime is going
+        // to look volatile enough.
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
+          Instruction* CI = CallInst::Create(
+            Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
+            "deluge_memcpy", II);
+          ReplaceInstWithInst(II, CI);
+        }
+        return true;
+      case Intrinsic::memset:
+      case Intrinsic::memset_inline:
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          Instruction* CI = CallInst::Create(
+            Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
+            "deluge_memset", II);
+          ReplaceInstWithInst(II, CI);
+        }
+        return true;
+      case Intrinsic::memmove:
+        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
+          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
+          Instruction* CI = CallInst::Create(
+            Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
+            "deluge_memmove", II);
+          ReplaceInstWithInst(II, CI);
+        }
+        return true;
+
+      default:
+        switch (II->getIntrinsicID()) {
+        case Intrinsic::lifetime_start:
+        case Intrinsic::lifetime_end:
+          break;
+        default:
+          if (!II->getCalledFunction()->doesNotAccessMemory()) {
+            if (verbose)
+              llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
+            CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
+          }
+          break;
+        }
+        for (Use& U : II->data_ops()) {
+          if (hasPtrsForCheck(U->getType()))
+            U = lowerPtr(U, II);
+        }
+        if (hasPtrsForCheck(II->getType()))
+          hackRAUW(II, [&] () { return forgeBadPtr(II, II->getNextNode()); });
+        return true;
+      }
+    }
+    
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
       if (CI->getCalledFunction() == ZunsafeForgeImpl) {
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
@@ -919,63 +982,6 @@ class Deluge {
     if (InvokeInst* II = dyn_cast<InvokeInst>(I)) {
       llvm_unreachable("Don't support InvokeInst yet");
       return;
-    }
-    
-    if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
-      switch (II->getIntrinsicID()) {
-      case Intrinsic::memcpy:
-      case Intrinsic::memcpy_inline:
-        // OK, so it seems bad that we're treating memcpy and memcpy_inline the same. But it's fine.
-        // The intent of the inline variant is to cover the low-level programming case where you cannot
-        // call outside libraries, but you want to describe a memcpy. However, with Deluge, we're always
-        // depending on the Deluge runtime somehow, so it's OK to call into the Deluge runtime's memcpy
-        // (or memset, or memmove).
-        //
-        // Also, for now, we just ignore the volatile bit, since the call to the Deluge runtime is going
-        // to look volatile enough.
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
-          Instruction* CI = CallInst::Create(
-            Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memcpy", II);
-          ReplaceInstWithInst(II, CI);
-        }
-        return;
-      case Intrinsic::memset:
-      case Intrinsic::memset_inline:
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          Instruction* CI = CallInst::Create(
-            Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memset", II);
-          ReplaceInstWithInst(II, CI);
-        }
-        return;
-      case Intrinsic::memmove:
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
-          Instruction* CI = CallInst::Create(
-            Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memmove", II);
-          ReplaceInstWithInst(II, CI);
-        }
-        return;
-
-      default:
-        // Intrinsics that take pointers but do not access memory are handled by simply giving them the
-        // raw pointers. It's possible that this is the null set, but it's nice to have this carveout.
-        if (!II->getCalledFunction()->doesNotAccessMemory()) {
-          if (verbose)
-            llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
-          CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
-        }
-        for (Use& U : II->data_ops()) {
-          if (hasPtrsForCheck(U->getType()))
-            U = lowerPtr(U, II);
-        }
-        if (hasPtrsForCheck(II->getType()))
-          hackRAUW(II, [&] () { return forgeBadPtr(II, II->getNextNode()); });
-        return;
-      }
     }
     
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
@@ -1214,6 +1220,9 @@ public:
 
     }
     for (Function* F : Functions) {
+      if (F->isIntrinsic())
+        continue;
+      
       if (verbose)
         errs() << "Function before lowering: " << *F << "\n";
       
@@ -1236,7 +1245,7 @@ public:
             Instructions.push_back(&I);
         }
         
-        Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
+        Instruction* InsertionPoint = &*Blocks[0]->getFirstNonPHIOrDbgOrAlloca();
         // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit about
         // perf for the most part.
         Instruction* FastConstantPoolPtr = new LoadInst(
@@ -1310,6 +1319,9 @@ public:
     ReturnInst::Create(C, ConstantPoolPtr, BB);
 
     delete Dummy;
+
+    if (verbose)
+      errs() << "Here's the deluded module:\n" << M << "\n";
   }
 };
 
