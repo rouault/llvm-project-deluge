@@ -1237,7 +1237,7 @@ public:
         }
         
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
-        // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit abut
+        // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit about
         // perf for the most part.
         Instruction* FastConstantPoolPtr = new LoadInst(
           LowRawPtrTy, GlobalConstantPoolPtr, "deluge_load_contantpool", InsertionPoint);
