@@ -31,6 +31,13 @@ const deluge_type deluge_function_type = {
     .word_types = { DELUGE_WORD_TYPE_FUNCTION }
 };
 
+const deluge_type deluge_type_type = {
+    .size = 1,
+    .alignment = 1,
+    .trailing_array = NULL,
+    .word_types = { DELUGE_WORD_TYPE_TYPE }
+};
+
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
 
 PAS_DEFINE_LOCK(deluge);
@@ -64,6 +71,10 @@ void deluge_validate_type(const deluge_type* type)
 {
     if (deluge_type_is_equal(type, &deluge_int_type))
         PAS_ASSERT(type == &deluge_int_type);
+    if (deluge_type_is_equal(type, &deluge_function_type))
+        PAS_ASSERT(type == &deluge_function_type);
+    if (deluge_type_is_equal(type, &deluge_type_type))
+        PAS_ASSERT(type == &deluge_type_type);
     PAS_ASSERT(type->size);
     PAS_ASSERT(type->alignment);
     PAS_ASSERT(pas_is_power_of_2(type->alignment));
@@ -114,7 +125,7 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
 {
     switch (type) {
     case DELUGE_WORD_TYPE_OFF_LIMITS:
-        pas_stream_printf(stream, "Of");
+        pas_stream_printf(stream, "//");
         return;
     case DELUGE_WORD_TYPE_INT:
         pas_stream_printf(stream, "In");
@@ -128,6 +139,9 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     case DELUGE_WORD_TYPE_FUNCTION:
         pas_stream_printf(stream, "Fu");
         return;
+    case DELUGE_WORD_TYPE_TYPE:
+        pas_stream_printf(stream, "Ty");
+        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -137,11 +151,22 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
 void deluge_type_dump(const deluge_type* type, pas_stream* stream)
 {
     static const bool dump_ptr = false;
+    static const bool dump_only_ptr = false;
     
     size_t index;
 
+    if (dump_only_ptr) {
+        pas_stream_printf(stream, "%p", type);
+        return;
+    }
+
     if (dump_ptr)
         pas_stream_printf(stream, "%p:", type);
+
+    if (!type) {
+        pas_stream_printf(stream, "delty{invalid}");
+        return;
+    }
     
     pas_stream_printf(stream, "delty{%zu,%zu,", type->size, type->alignment);
     if (type->trailing_array) {
@@ -343,12 +368,11 @@ void deluge_deallocate(void* ptr)
     pas_deallocate(ptr, DELUGE_HEAP_CONFIG);
 }
 
-void deluded_zfree(void* ptr, void* lower, void* upper, const deluge_type* type)
+void deluded_zfree(DELUDED_SIGNATURE)
 {
-    PAS_UNUSED_PARAM(lower);
-    PAS_UNUSED_PARAM(upper);
-    PAS_UNUSED_PARAM(type);
-    deluge_deallocate(ptr);
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_deallocate(deluge_ptr_get_next_ptr(&args).ptr);
+    DELUDED_DELETE_ARGS();
 }
 
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
@@ -369,8 +393,8 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
                               as untrusted. */
     
     if (type == &deluge_function_type) {
-        PAS_ASSERT(!lower);
-        PAS_ASSERT(!upper);
+        PAS_ASSERT(lower == ptr);
+        PAS_ASSERT((char*)upper == (char*)ptr + 1);
         return;
     }
 
@@ -506,6 +530,15 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
     DELUGE_CHECK(
         type->word_types[word_type_index + 3] == DELUGE_WORD_TYPE_PTR_PART4,
         "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s)\n",
+        ptr, lower, upper, deluge_type_to_new_string(type));
+}
+
+void deluge_check_access_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
+{
+    check_access_common(ptr, lower, upper, type, 1);
+    DELUGE_CHECK(
+        type == &deluge_function_type,
+        "attempt to call pointer that is not a function (ptr = %p,%p,%p,%s)\n",
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
@@ -653,6 +686,52 @@ void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_typ
 void deluge_error(void)
 {
     PAS_ASSERT(!"deluge error");
+}
+
+const char* deluge_check_and_get_str(deluge_ptr str)
+{
+    size_t available;
+    size_t length;
+    check_access_common(str.ptr, str.lower, str.upper, str.type, 1);
+    available = (char*)str.upper - (char*)str.ptr;
+    length = strnlen((char*)str.ptr, available);
+    PAS_ASSERT(length < available);
+    PAS_ASSERT(length + 1 <= available);
+    check_int(str.ptr, str.lower, str.upper, str.type, length + 1);
+    return (char*)str.ptr;
+}
+
+static void print_str(const char* str)
+{
+    write(1, str, strlen(str));
+}
+
+void deluded_zprint(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr str;
+    str = deluge_ptr_get_next_ptr(&args);
+    DELUDED_DELETE_ARGS();
+    print_str(deluge_check_and_get_str(str));
+}
+
+void deluded_zprint_long(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    long x;
+    char buf[100];
+    x = deluge_ptr_get_next_long(&args);
+    DELUDED_DELETE_ARGS();
+    snprintf(buf, sizeof(buf), "%ld", x);
+    print_str(buf);
+}
+
+void deluded_zerror(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args));
+    DELUDED_DELETE_ARGS();
+    pas_panic("zerror() called with: %s\n", str);
 }
 
 #endif /* PAS_ENABLE_DELUGE */

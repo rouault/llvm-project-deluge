@@ -1,7 +1,5 @@
 #include <stdfil.h>
 
-void print(const char* string);
-
 #define BUFFER_IN_LOOP(iterations, elements) do { \
         for (unsigned i = iterations; i--;) { \
             int **ptrs[elements]; \
@@ -12,7 +10,7 @@ void print(const char* string);
             } \
             for (unsigned j = elements; j--;) { \
                 if (**ptrs[j] != j) \
-                    print("ERROR\n"); \
+                    zprint("ERROR\n"); \
                 zfree(*ptrs[j]); \
                 zfree(ptrs[j]); \
             } \

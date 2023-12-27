@@ -1,7 +1,5 @@
 #include <stdfil.h>
 
-void print(const char* string);
-
 int main(void) {
     for (unsigned i = 666; i--;) {
         int **ptrs[100];
@@ -12,7 +10,7 @@ int main(void) {
         }
         for (unsigned j = 100; j--;) {
             if (**ptrs[j] != j)
-                print("ERROR\n");
+                zprint("ERROR\n");
             zfree(*ptrs[j]);
             zfree(ptrs[j]);
         }

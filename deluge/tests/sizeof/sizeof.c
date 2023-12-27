@@ -1,8 +1,5 @@
 #include <stdfil.h>
 
-void print(const char* str);
-void print_long(long value);
-
 struct foo {
     int x;
     char* string;
@@ -12,9 +9,9 @@ struct foo {
 #define OFFSETOF(type, field) ((char*)&(((type*)666)->field) - (char*)666)
 
 #define PRINT(exp) do { \
-        print(#exp " = "); \
-        print_long(exp); \
-        print("\n"); \
+        zprint(#exp " = "); \
+        zprint_long(exp); \
+        zprint("\n"); \
     } while (0)
 
 int main(void)

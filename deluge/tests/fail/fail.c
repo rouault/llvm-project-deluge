@@ -1,5 +1,5 @@
-void print(const char* string);
-void fail(void);
+#include <stdfil.h>
+
 int* opaque(int*);
 
 int main(void)
@@ -8,9 +8,9 @@ int main(void)
     int* ptr = opaque(&x) + 1;
     *ptr = 42;
     if (*ptr == 42)
-        print("YAY\n");
+        zprint("YAY\n");
     else
-        fail();
+        zerror("fail");
     return 0;
 }
 

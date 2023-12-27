@@ -30,13 +30,13 @@ void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
     })
 
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
-   by pointers that view it as anything other than count repetitions of the given type.
+   by pointers that view it as anything other than count or more repetitions of the given type.
    
    Misuse of zalloc/zfree may cause logic errors where zalloc will return the same pointer as it had
    previously returned, so pointers that you expected to different objects will end up pointing at the
    same object.
    
-   It's not possible to misuse zalloc/zfree to cause type confusion.
+   It's not possible to misuse zalloc/zfree to cause type confusion under the Deluge P^I type system.
    
    type is a type expression. count must be __SIZE_TYPE__ish. */
 #define zalloc(type, count) ({ \
@@ -55,6 +55,14 @@ void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
    If you free an object and then use it again, then that might be fine. But, free memory may be
    decommitted at any time (so many start to trap or suddenly become all-zero). */
 void zfree(void* ptr);
+
+/* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
+   print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
+   for sure, and it will never print out of bounds even if there is no null terminator). */
+void zprint(const char* str);
+void zprint_long(long x);
+
+void zerror(const char* str);
 
 #endif /* DELUGE_STDFIL_H */
 

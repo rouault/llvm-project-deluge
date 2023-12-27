@@ -2,6 +2,7 @@
 #define DELUGE_RUNTIME_H
 
 #include <inttypes.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include "pas_allocation_config.h"
@@ -22,13 +23,28 @@ typedef struct pas_stream pas_stream;
 
 typedef uint8_t deluge_word_type;
 
-#define DELUGE_WORD_TYPE_OFF_LIMITS  ((uint8_t)0)
-#define DELUGE_WORD_TYPE_INT         ((uint8_t)1)
-#define DELUGE_WORD_TYPE_PTR_PART1   ((uint8_t)2)
-#define DELUGE_WORD_TYPE_PTR_PART2   ((uint8_t)3)
-#define DELUGE_WORD_TYPE_PTR_PART3   ((uint8_t)4)
-#define DELUGE_WORD_TYPE_PTR_PART4   ((uint8_t)5)
-#define DELUGE_WORD_TYPE_FUNCTION    ((uint8_t)6)
+/* Note that any statement like "64-bit word" below needs to be understood with the caveat that ptr
+   access also checks bounds. So, a pointer might say it has type "64-bit int" but bounds that say
+   "1 byte", in which case you get the intersection: "1 byte int". A similar thing happens with
+   function pointers and any pointer to opaque libdeluge state: the bounds will claim that the pointer
+   points at 1 byte. */
+#define DELUGE_WORD_TYPE_OFF_LIMITS        ((uint8_t)0)     /* 64-bit that cannot be accessed. */
+#define DELUGE_WORD_TYPE_INT               ((uint8_t)1)     /* 64-bit word that contains ints.
+                                                               Primitive ptrs may have bounds that
+                                                               are less than 8 bytes and may not have
+                                                               8 byte alignment. */
+#define DELUGE_WORD_TYPE_PTR_PART1         ((uint8_t)2)     /* 64-bit word that contains the first part
+                                                               of a wide ptr (the ptr). */
+#define DELUGE_WORD_TYPE_PTR_PART2         ((uint8_t)3)     /* 64-bit word that contains the second
+                                                               part of a wide ptr (the lower). */
+#define DELUGE_WORD_TYPE_PTR_PART3         ((uint8_t)4)     /* 64-bit word that contains the third part
+                                                               of a wide ptr (the upper). */
+#define DELUGE_WORD_TYPE_PTR_PART4         ((uint8_t)5)     /* 64-bit word that contains the fourth
+                                                               part of a wide ptr (the type). */
+#define DELUGE_WORD_TYPE_FUNCTION          ((uint8_t)6)     /* "64-bit word" that contains the start
+                                                               of a function. */
+#define DELUGE_WORD_TYPE_TYPE              ((uint8_t)7)     /* "64-bit word" that contains the start
+                                                               of a deluge type object. */
 
 struct deluge_ptr {
     void* ptr;
@@ -44,8 +60,9 @@ struct deluge_type {
     deluge_word_type word_types[1];
 };
 
-PAS_API extern const deluge_type deluge_int_type;
-PAS_API extern const deluge_type deluge_function_type;
+extern const deluge_type deluge_int_type;
+extern const deluge_type deluge_function_type;
+extern const deluge_type deluge_type_type;
 
 PAS_DECLARE_LOCK(deluge);
 
@@ -55,8 +72,33 @@ PAS_DECLARE_LOCK(deluge);
         pas_panic(__VA_ARGS__); \
     } while (0)
 
-/* FIXME: There should be a subtype of deluge_type that has no word_types but that describes
-   function pointers. */
+#define DELUDED_SIGNATURE \
+    void* deluded_arg_ptr, void* deluded_arg_upper, const deluge_type* deluded_arg_type, \
+    void* deluded_ret_ptr, void* deluded_ret_upper, const deluge_type *deluded_ret_type
+
+#define DELUDED_ARGS \
+    deluge_ptr_forge(deluded_arg_ptr, deluded_arg_ptr, deluded_arg_upper, deluded_arg_type)
+#define DELUDED_RETS \
+    deluge_ptr_forge(deluded_ret_ptr, deluded_ret_ptr, deluded_ret_upper, deluded_ret_type)
+
+#define DELUDED_DELETE_ARGS() do { \
+        deluge_deallocate(deluded_arg_ptr); \
+        PAS_UNUSED_PARAM(deluded_arg_upper); \
+        PAS_UNUSED_PARAM(deluded_arg_type); \
+        PAS_UNUSED_PARAM(deluded_ret_ptr); \
+        PAS_UNUSED_PARAM(deluded_ret_upper); \
+        PAS_UNUSED_PARAM(deluded_ret_type); \
+    } while (false)
+
+static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type)
+{
+    deluge_ptr result;
+    result.ptr = ptr;
+    result.lower = lower;
+    result.upper = upper;
+    result.type = type;
+    return result;
+}
 
 static inline size_t deluge_type_num_words(const deluge_type* type)
 {
@@ -112,6 +154,26 @@ PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
 PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
 char* deluge_type_to_new_string(const deluge_type* type);
 
+/* This is basically va_arg, but it doesn't check that the type matches. That's fine if the consumer
+   of the pointer is code compiled by Deluge, since that will check on every access. That's not fine if
+   the consumer is someone writing legacy C code against some Deluge flight API. */
+static inline deluge_ptr deluge_ptr_get_next_bytes(
+    deluge_ptr* ptr, size_t size, size_t alignment)
+{
+    uintptr_t ptr_as_int;
+    deluge_ptr result;
+
+    ptr_as_int = (uintptr_t)ptr->ptr;
+    ptr_as_int = pas_round_up_to_power_of_2(ptr_as_int, alignment);
+
+    result = *ptr;
+    result.ptr = (void*)ptr_as_int;
+
+    ptr->ptr = (char*)ptr_as_int + size;
+
+    return result;
+}
+
 /* Gives you a heap for the given type. This looks up the heap based on the structural equality
    of the type, so equal types get the same heap.
 
@@ -134,7 +196,7 @@ void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_utility(size_t size);
 
 void deluge_deallocate(void* ptr);
-void deluded_zfree(void* ptr, void* lower, void* upper, const deluge_type* type);
+void deluded_zfree(DELUDED_SIGNATURE);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
@@ -166,6 +228,13 @@ static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes)
 static inline void deluge_check_access_ptr(deluge_ptr ptr)
 {
     deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
+}
+
+void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
+
+static inline void deluge_check_function_call(deluge_ptr ptr)
+{
+    deluge_check_function_call_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
@@ -213,7 +282,50 @@ static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const del
     return ptr;
 }
 
+const char* deluge_check_and_get_str(deluge_ptr ptr);
+
+/* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge
+   code will have to use this kind of API to parse the flights. */
+static inline deluge_ptr deluge_ptr_get_next(
+    deluge_ptr* ptr, size_t count, size_t alignment, const deluge_type* type)
+{
+    return deluge_restrict(deluge_ptr_get_next_bytes(
+                               ptr, count * type->size, alignment),
+                           count, type);
+}
+
+/* NOTE: It's tempting to add a macro that takes a type and does get_next, but I don't see how
+   that would handle pointers correctly. */
+
+static inline deluge_ptr deluge_ptr_get_next_ptr(deluge_ptr* ptr)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, 32, 8);
+    deluge_check_access_ptr(slot_ptr);
+    return *(deluge_ptr*)slot_ptr.ptr;
+}
+
+static inline int deluge_ptr_get_next_int(deluge_ptr* ptr)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
+    deluge_check_access_int(slot_ptr, sizeof(int));
+    return *(int*)slot_ptr.ptr;
+}
+
+static inline long deluge_ptr_get_next_long(deluge_ptr* ptr)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(long), alignof(long));
+    deluge_check_access_int(slot_ptr, sizeof(long));
+    return *(long*)slot_ptr.ptr;
+}
+
 void deluge_error(void);
+
+void deluded_zprint(DELUDED_SIGNATURE);
+void deluded_zprint_long(DELUDED_SIGNATURE);
+void deluded_zerror(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

@@ -1,14 +1,13 @@
-void print(const char* string);
-void fail(void);
+#include <stdfil.h>
 
 int main(void)
 {
     int x;
     x = 42;
     if (x == 42)
-        print("YAY\n");
+        zprint("YAY\n");
     else
-        fail();
+        zerror("bad value");
     return 0;
 }
 

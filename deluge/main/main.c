@@ -1,28 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include "deluge_runtime.h"
 
-int deluded_main(void);
-
-void deluded_print(const char* string, void*, void*, void*)
-{
-    printf("%s", string);
-}
-
-void deluded_print_long(long value)
-{
-    printf("%ld", value);
-}
-
-void deluded_fail(void)
-{
-    printf("FAIL\n");
-    exit(1);
-}
+void deluded_main(DELUDED_SIGNATURE);
 
 int main(int argc, char** argv)
 {
+    union {
+        uintptr_t return_buffer[2];
+        int result;
+    } u;
+    
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    return deluded_main();
+
+    deluded_main(NULL, NULL, NULL, u.return_buffer, u.return_buffer + 1, &deluge_int_type);
+
+    return u.result;
 }
 

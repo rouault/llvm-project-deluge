@@ -1,8 +1,5 @@
 #include <stdfil.h>
 
-void print(const char* string);
-void print_long(long value);
-
 struct foo {
     int x;
     char* string;
@@ -15,9 +12,9 @@ struct bar {
 };
 
 #define PRINT(exp) do { \
-        print(#exp " = "); \
-        print_long(exp); \
-        print("\n"); \
+        zprint(#exp " = "); \
+        zprint_long(exp); \
+        zprint("\n"); \
     } while (0)
 
 int main(void) {
@@ -27,9 +24,9 @@ int main(void) {
     ptr->string = "hello";
     struct bar* ptr2 = (struct bar*)ptr;
     if (ptr2->x == 42)
-        print("NO\n");
+        zprint("NO\n");
     if (ptr2->string == "hello")
-        print("NO\n");
+        zprint("NO\n");
     return 0;
 }
 
