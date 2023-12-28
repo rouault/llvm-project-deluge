@@ -61,6 +61,7 @@ void zfree(void* ptr);
    for sure, and it will never print out of bounds even if there is no null terminator). */
 void zprint(const char* str);
 void zprint_long(long x);
+void zprint_ptr(const void* ptr);
 
 void zerror(const char* str);
 

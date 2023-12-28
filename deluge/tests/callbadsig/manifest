@@ -1,0 +1,10 @@
+return:
+   failure
+output-includes:
+ - thingy
+ - stuff
+ - yay
+ - deluge panic
+output-excludes:
+ - nonono
+ - hello

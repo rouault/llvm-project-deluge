@@ -12,7 +12,8 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = true;
+static constexpr bool verbose = false;
+static constexpr bool ultraVerbose = false;
 
 static constexpr size_t MinAlign = 16;
 
@@ -765,10 +766,19 @@ class Deluge {
     }
     
     auto iter = ForgedConstants.find(C);
-    if (iter != ForgedConstants.end())
+    if (iter != ForgedConstants.end()) {
+      if (ultraVerbose) {
+        errs() << "lowerConstant for C = " << C << ", " << *C << " got a hit in the table, which "
+               << "gives = " << iter->second << ", " << *iter->second << "\n";
+      }
       return iter->second;
+    }
 
     Constant* LowC = lowerConstantImpl(C);
+    if (ultraVerbose) {
+      errs() << "lowerConstant for C = " << C << ", " << *C << " had to call slow, which gave = "
+             << LowC << ", " << *LowC << "\n";
+    }
     ForgedConstants[C] = LowC;
     return LowC;
   }
@@ -832,6 +842,9 @@ class Deluge {
   bool earlyLowerInstruction(Instruction* I) {
     if (verbose)
       errs() << "Early lowering: " << *I << "\n";
+
+    // FIXME: Anywhere this uses operands, it must do the operand lowering thing that happens at the
+    // top of lowerInstruction().
 
     if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
       switch (II->getIntrinsicID()) {
@@ -990,12 +1003,28 @@ class Deluge {
     
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Use& U = I->getOperandUse(Index);
-      if (Constant* C = dyn_cast<Constant>(U))
-        U = lowerConstant(C);
-      if (Argument* A = dyn_cast<Argument>(U))
+      if (Constant* C = dyn_cast<Constant>(U)) {
+        if (ultraVerbose)
+          errs() << "At Index = " << Index << ", got U = " << *U << ", C = " << *C << "\n";
+        Constant* NewC = lowerConstant(C);
+        if (ultraVerbose)
+          errs() << "At Index = " << Index << ", got NewC = " << *NewC <<"\n";
+        U = NewC;
+      } else if (Argument* A = dyn_cast<Argument>(U)) {
+        if (ultraVerbose) {
+          errs() << "A = " << *A << "\n";
+          errs() << "A->getArgNo() == " << A->getArgNo() << "\n";
+          errs() << "Args[A->getArgNo()] == " << *Args[A->getArgNo()] << "\n";
+        }
         U = Args[A->getArgNo()];
+      }
+      if (ultraVerbose)
+        errs() << "After Index = " << Index << ", I = " << *I << "\n";
     }
     
+    if (verbose)
+      errs() << "After arg lowering: " << *I << "\n";
+
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
       assert(AI->getParent() == FirstRealBlock); // FIXME: We could totally support this.
       if (!AI->hasNUsesOrMore(1)) {
@@ -1124,6 +1153,8 @@ class Deluge {
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
       if (CI->isInlineAsm())
         llvm_unreachable("Don't support InlineAsm, because that shit's not memory safe");
+
+      errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
 
       assert(CI->getCalledFunction() != ZunsafeForgeImpl);
       assert(CI->getCalledFunction() != ZrestrictImpl);
@@ -1446,6 +1477,7 @@ public:
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
+      ForgedConstants.erase(G);
       G->eraseFromParent();
 
     }
@@ -1472,6 +1504,7 @@ public:
         TypedFrameType = CoreDelugeType();
         ReturnBufferSize = 0;
         ReturnBufferAlignment = 0;
+        Args.clear();
         for (BasicBlock* BB : Blocks) {
           BB->removeFromParent();
           BB->insertInto(NewF);
@@ -1585,6 +1618,7 @@ public:
       
       NewF->copyAttributesFrom(F);
       F->replaceAllUsesWith(NewF);
+      ForgedConstants.erase(F);
       F->eraseFromParent();
       
       if (verbose)
@@ -1601,6 +1635,7 @@ public:
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
+      ForgedConstants.erase(G);
       G->eraseFromParent();
     }
     for (GlobalIFunc* G : IFuncs) {
@@ -1610,6 +1645,7 @@ public:
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
+      ForgedConstants.erase(G);
       G->eraseFromParent();
     }
 

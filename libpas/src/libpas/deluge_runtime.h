@@ -325,6 +325,7 @@ void deluge_error(void);
 
 void deluded_zprint(DELUDED_SIGNATURE);
 void deluded_zprint_long(DELUDED_SIGNATURE);
+void deluded_zprint_ptr(DELUDED_SIGNATURE);
 void deluded_zerror(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;

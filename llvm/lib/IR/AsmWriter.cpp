@@ -4015,7 +4015,9 @@ static void maybePrintCallAddrSpace(const Value *Operand, const Instruction *I,
     Out << " <cannot get addrspace!>";
     return;
   }
-  unsigned CallAddrSpace = Operand->getType()->getPointerAddressSpace();
+  unsigned CallAddrSpace = 0;
+  if (Operand->getType()->isPointerTy())
+    CallAddrSpace = Operand->getType()->getPointerAddressSpace();
   bool PrintAddrSpace = CallAddrSpace != 0;
   if (!PrintAddrSpace) {
     const Module *Mod = getModuleFromVal(I);

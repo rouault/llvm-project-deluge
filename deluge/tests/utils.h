@@ -1,0 +1,2 @@
+void* opaque(void* ptr);
+

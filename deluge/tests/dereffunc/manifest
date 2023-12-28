@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - cannot access 4 bytes when upper - ptr = 1
+output-excludes:
+  blah

@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - spoko
+  - attempt to call pointer that is not a function
+output-excludes:
+  kurcze

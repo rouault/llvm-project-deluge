@@ -726,6 +726,22 @@ void deluded_zprint_long(DELUDED_SIGNATURE)
     print_str(buf);
 }
 
+void deluded_zprint_ptr(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr ptr;
+    pas_allocation_config allocation_config;
+    pas_string_stream stream;
+    ptr = deluge_ptr_get_next_ptr(&args);
+    DELUDED_DELETE_ARGS();
+    initialize_utility_allocation_config(&allocation_config);
+    pas_string_stream_construct(&stream, &allocation_config);
+    pas_string_stream_printf(&stream, "%p,%p,%p,", ptr.ptr, ptr.lower, ptr.upper);
+    deluge_type_dump(ptr.type, &stream.base);
+    print_str(pas_string_stream_get_string(&stream));
+    pas_string_stream_destruct(&stream);
+}
+
 void deluded_zerror(DELUDED_SIGNATURE)
 {
     deluge_ptr args = DELUDED_ARGS;

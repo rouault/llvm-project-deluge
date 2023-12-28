@@ -1,0 +1,9 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - span contains non-ints
+  - delty{1,1,Fu}
+output-excludes:
+  - blah
+  - bytes when uper - ptr
