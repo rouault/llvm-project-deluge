@@ -321,6 +321,16 @@ static inline long deluge_ptr_get_next_long(deluge_ptr* ptr)
     return *(long*)slot_ptr.ptr;
 }
 
+/* Given a va_list ptr (so a ptr to a ptr), this:
+   
+   - checks that it is indeed a ptr to a ptr
+   - uses that ptr to va_arg according to the deluge_ptr_get_next_bytes protocol
+   - checks that the resulting ptr can be restructed to count*type
+   - of all that goes well, returns a ptr you can load/store from safely according to that type */
+void* deluge_va_arg_impl(
+    void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
+    size_t count, size_t alignment, const deluge_type* type);
+
 void deluge_error(void);
 
 void deluded_zprint(DELUDED_SIGNATURE);

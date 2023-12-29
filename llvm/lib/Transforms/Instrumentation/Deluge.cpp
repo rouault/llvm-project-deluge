@@ -215,6 +215,7 @@ class Deluge {
   FunctionCallee Memcpy;
   FunctionCallee Memmove;
   FunctionCallee CheckRestrict;
+  FunctionCallee VAArgImpl;
   FunctionCallee Error;
   FunctionCallee RealMemset;
 
@@ -246,6 +247,7 @@ class Deluge {
   Function* NewF;
 
   std::unordered_map<Instruction*, Type*> InstLowTypes;
+  std::unordered_map<Instruction*, std::vector<Type*>> InstLowTypeVectors;
   
   BasicBlock* FirstRealBlock;
 
@@ -837,6 +839,14 @@ class Deluge {
       InstLowTypes[I] = lowerType(AI->getValOperand()->getType());
       return;
     }
+
+    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+      std::vector<Type*> Types;
+      for (size_t Index = 0; Index < CI->arg_size(); ++Index)
+        Types.push_back(lowerType(CI->getArgOperand(Index)->getType()));
+      InstLowTypeVectors[I] = std::move(Types);
+      return;
+    }
   }
 
   bool earlyLowerInstruction(Instruction* I) {
@@ -891,6 +901,28 @@ class Deluge {
         // allocas don't need to go into the frame, then those can just keep their existing lifetime
         // annotations. Moreover, choosing which allocas don't escape will require analyzing lifetime
         // annotations.
+        II->eraseFromParent();
+        return true;
+
+      case Intrinsic::vastart:
+        checkPtr(II->getArgOperand(0), II);
+        (new StoreInst(ArgBufferPtr, lowerPtr(II->getArgOperand(0), II), II))
+          ->setDebugLoc(II->getDebugLoc());
+        II->eraseFromParent();
+        return true;
+        
+      case Intrinsic::vacopy: {
+        checkPtr(II->getArgOperand(0), II);
+        checkPtr(II->getArgOperand(1), II);
+        Instruction* Load = new LoadInst(
+          LowWidePtrTy, lowerPtr(II->getArgOperand(1), II), "deluge_vacopy_load", II);
+        Load->setDebugLoc(II->getDebugLoc());
+        new StoreInst(Load, lowerPtr(II->getArgOperand(0), II), II);
+        II->eraseFromParent();
+        return true;
+      }
+        
+      case Intrinsic::vaend:
         II->eraseFromParent();
         return true;
 
@@ -1154,7 +1186,8 @@ class Deluge {
       if (CI->isInlineAsm())
         llvm_unreachable("Don't support InlineAsm, because that shit's not memory safe");
 
-      errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
+      if (verbose)
+        errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
 
       assert(CI->getCalledFunction() != ZunsafeForgeImpl);
       assert(CI->getCalledFunction() != ZrestrictImpl);
@@ -1165,10 +1198,10 @@ class Deluge {
       
       DelugeType ArgType;
       FunctionType *FT = CI->getFunctionType();
+      std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
       std::vector<size_t> Offsets;
-      for (size_t Index = 0; Index < FT->getNumParams(); ++Index) {
-        Type* T = FT->getParamType(Index);
-        Type* LowT = lowerType(T);
+      for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
+        Type* LowT = ArgTypes[Index];
         ArgType.Main.pad(DL.getABITypeAlign(LowT).value());
         Offsets.push_back(ArgType.Main.Size);
         buildCoreTypeRecurse(ArgType.Main, LowT);
@@ -1199,18 +1232,17 @@ class Deluge {
         Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) },
         "deluge_arg_buffer_upper", CI);
       ArgBufferUpper->setDebugLoc(CI->getDebugLoc());
-      Value* ArgBufferPtr = forgePtr(ArgBufferRawPtr, ArgBufferRawPtr, ArgBufferUpper, ArgDTD->TypeRep, CI);
 
-      assert(FT->getNumParams() == CI->arg_size());
-      for (size_t Index = 0; Index < FT->getNumParams(); ++Index) {
+      assert(FT->getNumParams() <= CI->arg_size());
+      assert(FT->getNumParams() == CI->arg_size() || FT->isVarArg());
+      for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
         Value* Arg = CI->getArgOperand(Index);
-        Type* T = FT->getParamType(Index);
-        Type* LowT = lowerType(T);
-        assert(Arg->getType() == T || Arg->getType() == LowT);
+        Type* LowT = ArgTypes[Index];
+        assert(Arg->getType() == LowT || lowerType(Arg->getType()) == LowT);
+        assert(Index < Offsets.size());
         Instruction* ArgSlotPtr = GetElementPtrInst::Create(
           Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, Offsets[Index]) }, "deluge_arg_slot", CI);
         ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
-        checkRecurse(LowT, ArgBufferPtr, ArgSlotPtr, CI);
         new StoreInst(Arg, ArgSlotPtr, CI);
       }
 
@@ -1256,11 +1288,23 @@ class Deluge {
     }
 
     if (VAArgInst* VI = dyn_cast<VAArgInst>(I)) {
-      // FIXME: This could totally do smart checking if we accept more ABI carnage. See FIXME under
-      // CallInst.
-      VAArgInst* NewVI = new VAArgInst(
-        lowerPtr(VI->getPointerOperand(), VI), lowerType(VI->getType()), "deluge_vaarg");
-      ReplaceInstWithInst(VI, NewVI);
+      Type* T = VI->getType();
+      Type* LowT = lowerType(T);
+      size_t Size = DL.getTypeStoreSize(LowT);
+      size_t Alignment = DL.getABITypeAlign(LowT).value();
+      DelugeTypeData* DTD = dataForLowType(LowT);
+      assert(!DTD->Type.Trailing.isValid());
+      assert(!(Size % DTD->Type.Main.Size));
+      CallInst* Call = CallInst::Create(
+        VAArgImpl,
+        { VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size / DTD->Type.Main.Size),
+          ConstantInt::get(IntPtrTy, Alignment), DTD->TypeRep },
+        "deluge_va_arg", VI);
+      Call->setDebugLoc(VI->getDebugLoc());
+      Instruction* Load = new LoadInst(LowT, Call, "deluge_va_arg_load", VI);
+      Load->setDebugLoc(VI->getDebugLoc());
+      VI->replaceAllUsesWith(Load);
+      VI->eraseFromParent();
       return;
     }
 
@@ -1456,6 +1500,7 @@ public:
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
     CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy);
+    VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);

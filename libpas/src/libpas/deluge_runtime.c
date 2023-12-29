@@ -670,22 +670,11 @@ void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const 
 void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
                            void* new_upper, const deluge_type* new_type)
 {
-    PAS_ASSERT(ptr >= lower);
-    PAS_ASSERT(ptr < upper);
-    PAS_ASSERT(new_upper <= upper);
-    PAS_ASSERT(new_upper >= lower); /* Not sure if we need to assert this at all, since it would be
-                                       a memory-safe outcome. */
-    PAS_ASSERT(type);
-    PAS_ASSERT(new_type);
-
+    check_access_common(ptr, lower, upper, type, (char*)new_upper - (char*)ptr);
+    DELUGE_CHECK(new_type, "cannot restrict to NULL type\n");
     check_type_overlap(ptr, ptr, new_upper, new_type,
                        ptr, lower, upper, type,
                        (char*)new_upper - (char*)ptr);
-}
-
-void deluge_error(void)
-{
-    PAS_ASSERT(!"deluge error");
 }
 
 const char* deluge_check_and_get_str(deluge_ptr str)
@@ -699,6 +688,24 @@ const char* deluge_check_and_get_str(deluge_ptr str)
     PAS_ASSERT(length + 1 <= available);
     check_int(str.ptr, str.lower, str.upper, str.type, length + 1);
     return (char*)str.ptr;
+}
+
+void* deluge_va_arg_impl(
+    void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
+    size_t count, size_t alignment, const deluge_type* type)
+{
+    deluge_ptr va_list;
+    deluge_ptr* va_list_impl;
+    void* result;
+    va_list = deluge_ptr_forge(va_list_ptr, va_list_lower, va_list_upper, va_list_type);
+    deluge_check_access_ptr(va_list);
+    va_list_impl = (deluge_ptr*)va_list.ptr;
+    return deluge_ptr_get_next(va_list_impl, count, alignment, type).ptr;
+}
+
+void deluge_error(void)
+{
+    PAS_ASSERT(!"deluge error");
 }
 
 static void print_str(const char* str)
