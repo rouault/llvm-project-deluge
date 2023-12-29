@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - cannot access pointer with ptr >= upper
+output-excludes:
+  nono
