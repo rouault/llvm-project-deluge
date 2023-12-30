@@ -203,6 +203,10 @@ void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 void deluge_deallocate(void* ptr);
 void deluded_zfree(DELUDED_SIGNATURE);
 
+void deluded_zgetlower(DELUDED_SIGNATURE);
+void deluded_zgetupper(DELUDED_SIGNATURE);
+void deluded_zgettype(DELUDED_SIGNATURE);
+
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
    even for user-forged pointers using unsafe API, so the only way to break these asserts is to

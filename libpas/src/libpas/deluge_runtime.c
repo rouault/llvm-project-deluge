@@ -417,6 +417,36 @@ void deluded_zfree(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
 }
 
+void deluded_zgetlower(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.lower, ptr.lower, ptr.upper, ptr.type);
+}
+
+void deluded_zgetupper(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.upper, ptr.lower, ptr.upper, ptr.type);
+}
+
+void deluded_zgettype(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge((void*)ptr.type, (void*)ptr.type, (char*)ptr.type + 1, &deluge_type_type);
+}
+
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
     static const bool verbose = false;
@@ -752,7 +782,18 @@ void deluge_error(void)
 
 static void print_str(const char* str)
 {
-    write(1, str, strlen(str));
+    size_t length;
+    length = strlen(str);
+    while (length) {
+        ssize_t result = write(1, str, length);
+        PAS_ASSERT(result);
+        if (result < 0 && errno == EINTR)
+            continue;
+        PAS_ASSERT(result > 0);
+        PAS_ASSERT((size_t)result <= length);
+        str += result;
+        length -= result;
+    }
 }
 
 void deluded_zprint(DELUDED_SIGNATURE)

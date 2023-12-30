@@ -4,6 +4,8 @@
 
 /*
  * NOTE: If you change this file, please merge it into rsync, samba, etc.
+ *
+ * LMAO haha yeah right -pizlonator
  */
 
 /*
@@ -108,7 +110,6 @@
  **************************************************************/
 
 #include <stdfil.h>
-#include "snprintf.h"
 
 //#include "replace.h"
 //#include "system/locale.h"
@@ -130,17 +131,6 @@ typedef long ssize_t;
 #  undef HAVE_VASPRINTF
 #  include <math.h>
 #endif /* TEST_SNPRINTF */
-
-#if defined(HAVE_SNPRINTF) && defined(HAVE_VSNPRINTF) && defined(HAVE_C99_VSNPRINTF)
-/* only include stdio.h if we are not re-defining snprintf or vsnprintf */
-#include <stdio.h>
- /* make the compiler happy with an empty file */
- void dummy_snprintf(void);
- void dummy_snprintf(void) {}
-#endif /* HAVE_SNPRINTF, etc */
-
-/* yes this really must be a ||. Don't muck with this (tridge) */
-#if !defined(HAVE_VSNPRINTF) || !defined(HAVE_C99_VSNPRINTF)
 
 #ifdef HAVE_LONG_DOUBLE
 #define LDOUBLE long double
@@ -712,8 +702,8 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 			break;
 
 		case CNK_PTR:
-			fmtint (buffer, &currlen, maxlen, (long)(cnk->strvalue), 16, min, max, cnk->flags);
-			break;
+                    fmtint (buffer, &currlen, maxlen, (long)(__SIZE_TYPE__)(cnk->strvalue), 16, min, max, cnk->flags);
+                    break;
 
 		case CNK_NUM:
 			if (cnk->cflags == DP_C_CHAR)
@@ -838,7 +828,7 @@ static void fmtint(char *buffer, size_t *currlen, size_t maxlen,
 			(caps? "0123456789ABCDEF":"0123456789abcdef")
 			[uvalue % (unsigned)base  ];
 		uvalue = (uvalue / (unsigned)base );
-	} while(uvalue && (place < sizeof(convert)));
+	} while(uvalue && ((__SIZE_TYPE__)place < sizeof(convert)));
 	if (place == sizeof(convert)) place--;
 	convert[place] = 0;
 
@@ -1195,321 +1185,82 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 	return max;
 }
 
- int rep_vsnprintf (char *str, size_t count, const char *fmt, __builtin_va_list args)
+int zvsnprintf (char *str, size_t count, const char *fmt, __builtin_va_list args)
 {
 	return dopr(str, count, fmt, args);
 }
-#endif
 
-/* yes this really must be a ||. Don't muck with this (tridge)
- *
- * The logic for these two is that we need our own definition if the
- * OS *either* has no definition of *sprintf, or if it does have one
- * that doesn't work properly according to the autoconf test.
- */
-#if !defined(HAVE_SNPRINTF) || !defined(HAVE_C99_VSNPRINTF)
- int rep_snprintf(char *str,size_t count,const char *fmt,...)
+int zsnprintf(char *str,size_t count,const char *fmt,...)
 {
 	size_t ret;
 	__builtin_va_list ap;
 
 	__builtin_va_start(ap, fmt);
-	ret = rep_vsnprintf(str, count, fmt, ap);
+	ret = zvsnprintf(str, count, fmt, ap);
 	__builtin_va_end(ap);
 	return ret;
 }
-#endif
 
-#ifndef HAVE_C99_VSNPRINTF
- int rep_printf(const char *fmt, ...)
+int zvsprintf(char* buf, const char* format, __builtin_va_list args)
 {
-	__builtin_va_list ap;
-	int ret;
-	char *s;
-
-	s = NULL;
-	__builtin_va_start(ap, fmt);
-	ret = rep_vasprintf(&s, fmt, ap);
-	__builtin_va_end(ap);
-
-	if (s) {
-            zprint(s);
-	}
-	zfree(s);
-
-	return ret;
+    if (buf < (char*)zgetlower(buf) || buf >= (char*)zgetupper(buf))
+        zerror("Cannot zvsprintf with a buffer pointer that is not in bounds");
+    return zvsnprintf(buf, (char*)zgetupper(buf) - buf, format, args);
 }
-#endif
 
-#if !defined(HAVE_VASPRINTF) || !defined(HAVE_C99_VSNPRINTF)
- int rep_vasprintf(char **ptr, const char *format, __builtin_va_list ap)
+int zsprintf(char* buf, const char* format, ...)
 {
-	int ret;
-	__builtin_va_list ap2;
-
-	__builtin_va_copy(ap2, ap);
-	ret = rep_vsnprintf(NULL, 0, format, ap2);
-	__builtin_va_end(ap2);
-	if (ret < 0) return ret;
-
-	(*ptr) = (char *)zalloc(char, ret+1);
-	if (!*ptr) return -1;
-
-	__builtin_va_copy(ap2, ap);
-	ret = rep_vsnprintf(*ptr, ret+1, format, ap2);
-	__builtin_va_end(ap2);
-
-	return ret;
+    int result;
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+    result = zvsprintf(buf, format, args);
+    __builtin_va_end(args);
+    return result;
 }
-#endif
 
-#if !defined(HAVE_ASPRINTF) || !defined(HAVE_C99_VSNPRINTF)
- int rep_asprintf(char **ptr, const char *format, ...)
+char* zvasprintf(const char* format, __builtin_va_list args)
 {
-	__builtin_va_list ap;
-	int ret;
+    int snprintf_result;
+    __builtin_va_list args2;
+    char* result;
+    
+    __builtin_va_copy(args2, args);
+    snprintf_result = zvsnprintf(NULL, 0, format, args2);
+    __builtin_va_end(args2);
+    if (snprintf_result < 0)
+        return NULL;
 
-	*ptr = NULL;
-	__builtin_va_start(ap, format);
-	ret = rep_vasprintf(ptr, format, ap);
-	__builtin_va_end(ap);
+    result = zalloc(char, snprintf_result + 1);
+    if (!result)
+        NULL;
 
-	return ret;
+    zvsnprintf(result, snprintf_result + 1, format, args);
+    return result;
 }
-#endif
 
-#ifdef TEST_SNPRINTF
-
- int sprintf(char *str,const char *fmt,...);
- int printf(const char *fmt,...);
-
- int main (void)
+char* zasprintf(const char* format, ...)
 {
-	char buf1[1024];
-	char buf2[1024];
-	char *buf3;
-	char *fp_fmt[] = {
-		"%1.1f",
-		"%-1.5f",
-		"%1.5f",
-		"%123.9f",
-		"%10.5f",
-		"% 10.5f",
-		"%+22.9f",
-		"%+4.9f",
-		"%01.3f",
-		"%4f",
-		"%3.1f",
-		"%3.2f",
-		"%.0f",
-		"%f",
-		"%-8.8f",
-		"%-9.9f",
-		NULL
-	};
-	double fp_nums[] = { 6442452944.1234, -1.5, 134.21, 91340.2, 341.1234, 203.9, 0.96, 0.996,
-			     0.9996, 1.996, 4.136, 5.030201, 0.00205,
-			     /* END LIST */ 0};
-	char *int_fmt[] = {
-		"%-1.5d",
-		"%1.5d",
-		"%123.9d",
-		"%5.5d",
-		"%10.5d",
-		"% 10.5d",
-		"%+22.33d",
-		"%01.3d",
-		"%4d",
-		"%d",
-		NULL
-	};
-	long int_nums[] = { -1, 134, 91340, 341, 0203, 1234567890, 0};
-	char *str_fmt[] = {
-		"%10.5s",
-		"%-10.5s",
-		"%5.10s",
-		"%-5.10s",
-		"%10.1s",
-		"%0.10s",
-		"%10.0s",
-		"%1.10s",
-		"%s",
-		"%.1s",
-		"%.10s",
-		"%10s",
-		NULL
-	};
-	char *str_vals[] = {"hello", "a", "", "a longer string", NULL};
-#ifdef HAVE_LONG_LONG
-	char *ll_fmt[] = {
-		"%llu",
-		NULL
-	};
-	LLONG ll_nums[] = { 134, 91340, 341, 0203, 1234567890, 128006186140000000LL, 0};
-#endif
-	int x, y;
-	int fail = 0;
-	int num = 0;
-	int l1, l2;
-	char *ss_fmt[] = {
-		"%zd",
-		"%zu",
-		NULL
-	};
-	size_t ss_nums[] = {134, 91340, 123456789, 0203, 1234567890, 0};
-
-	printf ("Testing snprintf format codes against system sprintf...\n");
-
-	for (x = 0; fp_fmt[x] ; x++) {
-		for (y = 0; fp_nums[y] != 0 ; y++) {
-			buf1[0] = buf2[0] = '\0';
-			l1 = snprintf(buf1, sizeof(buf1), fp_fmt[x], fp_nums[y]);
-			l2 = sprintf (buf2, fp_fmt[x], fp_nums[y]);
-			buf1[1023] = buf2[1023] = '\0';
-			if (strcmp (buf1, buf2) || (l1 != l2)) {
-				printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				       fp_fmt[x], l1, buf1, l2, buf2);
-				fail++;
-			}
-			num++;
-		}
-	}
-
-	for (x = 0; int_fmt[x] ; x++) {
-		for (y = 0; int_nums[y] != 0 ; y++) {
-			buf1[0] = buf2[0] = '\0';
-			l1 = snprintf(buf1, sizeof(buf1), int_fmt[x], int_nums[y]);
-			l2 = sprintf (buf2, int_fmt[x], int_nums[y]);
-			buf1[1023] = buf2[1023] = '\0';
-			if (strcmp (buf1, buf2) || (l1 != l2)) {
-				printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				       int_fmt[x], l1, buf1, l2, buf2);
-				fail++;
-			}
-			num++;
-		}
-	}
-
-	for (x = 0; str_fmt[x] ; x++) {
-		for (y = 0; str_vals[y] != 0 ; y++) {
-			buf1[0] = buf2[0] = '\0';
-			l1 = snprintf(buf1, sizeof(buf1), str_fmt[x], str_vals[y]);
-			l2 = sprintf (buf2, str_fmt[x], str_vals[y]);
-			buf1[1023] = buf2[1023] = '\0';
-			if (strcmp (buf1, buf2) || (l1 != l2)) {
-				printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				       str_fmt[x], l1, buf1, l2, buf2);
-				fail++;
-			}
-			num++;
-		}
-	}
-
-#ifdef HAVE_LONG_LONG
-	for (x = 0; ll_fmt[x] ; x++) {
-		for (y = 0; ll_nums[y] != 0 ; y++) {
-			buf1[0] = buf2[0] = '\0';
-			l1 = snprintf(buf1, sizeof(buf1), ll_fmt[x], ll_nums[y]);
-			l2 = sprintf (buf2, ll_fmt[x], ll_nums[y]);
-			buf1[1023] = buf2[1023] = '\0';
-			if (strcmp (buf1, buf2) || (l1 != l2)) {
-				printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				       ll_fmt[x], l1, buf1, l2, buf2);
-				fail++;
-			}
-			num++;
-		}
-	}
-#endif
-
-#define BUFSZ 2048
-
-	buf1[0] = buf2[0] = '\0';
-	if ((buf3 = zalloc(char, BUFSZ)) == NULL) {
-		fail++;
-	} else {
-		num++;
-		memset(buf3, 'a', BUFSZ);
-		snprintf(buf1, sizeof(buf1), "%.*s", 1, buf3);
-		buf1[1023] = '\0';
-		if (strcmp(buf1, "a") != 0) {
-			printf("length limit buf1 '%s' expected 'a'\n", buf1);
-			fail++;
-		}
-        }
-
-	buf1[0] = buf2[0] = '\0';
-	l1 = snprintf(buf1, sizeof(buf1), "%4$*1$d %2$s %3$*1$.*1$f", 3, "pos test", 12.3456, 9);
-	l2 = sprintf(buf2, "%4$*1$d %2$s %3$*1$.*1$f", 3, "pos test", 12.3456, 9);
-	buf1[1023] = buf2[1023] = '\0';
-	if (strcmp(buf1, buf2) || (l1 != l2)) {
-		printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				"%4$*1$d %2$s %3$*1$.*1$f", l1, buf1, l2, buf2);
-		fail++;
-	}
-
-	buf1[0] = buf2[0] = '\0';
-	l1 = snprintf(buf1, sizeof(buf1), "%4$*4$d %2$s %3$*4$.*4$f", 3, "pos test", 12.3456, 9);
-	l2 = sprintf(buf2, "%4$*4$d %2$s %3$*4$.*4$f", 3, "pos test", 12.3456, 9);
-	buf1[1023] = buf2[1023] = '\0';
-	if (strcmp(buf1, buf2)) {
-		printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				"%4$*1$d %2$s %3$*1$.*1$f", l1, buf1, l2, buf2);
-		fail++;
-	}
-
-	for (x = 0; ss_fmt[x] ; x++) {
-		for (y = 0; ss_nums[y] != 0 ; y++) {
-			buf1[0] = buf2[0] = '\0';
-			l1 = snprintf(buf1, sizeof(buf1), ss_fmt[x], ss_nums[y]);
-			l2 = sprintf (buf2, ss_fmt[x], ss_nums[y]);
-			buf1[1023] = buf2[1023] = '\0';
-			if (strcmp (buf1, buf2) || (l1 != l2)) {
-				printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				       ss_fmt[x], l1, buf1, l2, buf2);
-				fail++;
-			}
-			num++;
-		}
-	}
-#if 0
-	buf1[0] = buf2[0] = '\0';
-	l1 = snprintf(buf1, sizeof(buf1), "%lld", (LLONG)1234567890);
-	l2 = sprintf(buf2, "%lld", (LLONG)1234567890);
-	buf1[1023] = buf2[1023] = '\0';
-	if (strcmp(buf1, buf2)) {
-		printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				"%lld", l1, buf1, l2, buf2);
-		fail++;
-	}
-
-	buf1[0] = buf2[0] = '\0';
-	l1 = snprintf(buf1, sizeof(buf1), "%Lf", (LDOUBLE)890.1234567890123);
-	l2 = sprintf(buf2, "%Lf", (LDOUBLE)890.1234567890123);
-	buf1[1023] = buf2[1023] = '\0';
-	if (strcmp(buf1, buf2)) {
-		printf("snprintf doesn't match Format: %s\n\tsnprintf(%d) = [%s]\n\t sprintf(%d) = [%s]\n",
-				"%Lf", l1, buf1, l2, buf2);
-		fail++;
-	}
-#endif
-	printf ("%d tests failed out of %d.\n", fail, num);
-
-	printf("seeing how many digits we support\n");
-	{
-		double v0 = 0.12345678901234567890123456789012345678901;
-		for (x=0; x<100; x++) {
-			double p = pow(10, x);
-			double r = v0*p;
-			snprintf(buf1, sizeof(buf1), "%1.1f", r);
-			sprintf(buf2,                "%1.1f", r);
-			if (strcmp(buf1, buf2)) {
-				printf("we seem to support %d digits\n", x-1);
-				break;
-			}
-		}
-	}
-
-	return 0;
+    char* result;
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+    result = zvasprintf(format, args);
+    __builtin_va_end(args);
+    return result;
 }
-#endif /* TEST_SNPRINTF */
+
+void zvprintf(const char* format, __builtin_va_list args)
+{
+    char* str = zvasprintf(format, args);
+    if (!str)
+        zerror("Cannot printf");
+    zprint(str);
+}
+
+void zprintf(const char* format, ...)
+{
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+    zvprintf(format, args);
+    __builtin_va_end(args);
+}
+

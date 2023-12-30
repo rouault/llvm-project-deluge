@@ -959,7 +959,8 @@ class Deluge {
       }
       
       if (CI->getCalledOperand() == ZunsafeForgeImpl) {
-        errs() << "Lowering unsafe forge\n";
+        if (verbose)
+          errs() << "Lowering unsafe forge\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
@@ -974,7 +975,8 @@ class Deluge {
       }
 
       if (CI->getCalledOperand() == ZrestrictImpl) {
-        errs() << "Lowering restrict\n";
+        if (verbose)
+          errs() << "Lowering restrict\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* TypeRep = dataForLowType(LowT)->TypeRep;
@@ -990,7 +992,8 @@ class Deluge {
       }
 
       if (CI->getCalledOperand() == ZallocImpl) {
-        errs() << "Lowering alloc\n";
+        if (verbose)
+          errs() << "Lowering alloc\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
@@ -1033,7 +1036,8 @@ class Deluge {
       }
 
       if (CI->getCalledOperand() == ZreallocImpl) {
-        errs() << "Lowering realloc\n";
+        if (verbose)
+          errs() << "Lowering realloc\n";
         Value* OrigPtr = lowerPtr(CI->getArgOperand(0), CI);
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);

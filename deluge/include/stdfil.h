@@ -1,6 +1,9 @@
 #ifndef DELUGE_STDFIL_H
 #define DELUGE_STDFIL_H
 
+struct ztype;
+typedef struct ztype ztype;
+
 /* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may 
    crash the compiler or produce a program that traps extra hard. */
 void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
@@ -77,6 +80,11 @@ void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
    decommitted at any time (so many start to trap or suddenly become all-zero). */
 void zfree(void* ptr);
 
+/* Accessors for the bounds. */
+void* zgetlower(void* ptr);
+void* zgetupper(void* ptr);
+ztype* zgettype(void* ptr);
+
 /* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
    for sure, and it will never print out of bounds even if there is no null terminator). */
@@ -90,6 +98,28 @@ __SIZE_TYPE__ zstrlen(const char* str);
 char* zstrchr(const char* str, int chr);
 void* zmemchr(const void* str, int chr, __SIZE_TYPE__ length);
 int zisdigit(int chr);
+
+/* This is almost like sprintf, but because Deluge knows the upper bounds of buf, this actually ends
+   up working exactly like snprintf where the size is upper-ptr. Hence, in Deluge, it's preferable
+   to call zsprintf instead of zsnprintf.
+
+   It's up to libc to decide if sprintf (without the z) behaves like zsprintf, or traps on OOB. */
+int zvsprintf(char* buf, const char* format, __builtin_va_list args);
+int zsprintf(char* buf, const char* format, ...);
+
+int zvsnprintf(char* buf, __SIZE_TYPE__ size, const char* format, __builtin_va_list args);
+int zsnprintf(char* buf, __SIZE_TYPE__ size, const char* format, ...);
+
+/* This is like asprintf, but instead of super annoyingly returning the string in an out argument,
+   it just fucking returns it in the return value like a fucking sensible function. */
+char* zvasprintf(const char* format, __builtin_va_list args);
+char* zasprintf(const char* format, ...);
+
+/* This is just like printf, but does only per-call buffering. In particular, this relies on
+   zvasprintf under the hood and then prints the entire string in one write(2) call (unless write
+   demands that we call it again). */
+void zvprintf(const char* format, __builtin_va_list args);
+void zprintf(const char* format, ...);
 
 void zerror(const char* str);
 

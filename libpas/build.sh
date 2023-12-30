@@ -4,17 +4,22 @@ set -e
 
 mkdir -p build/test
 
+rm -f build/deluded-*.o
+for x in ../deluge/src/*.c
+do
+    xcrun ../build/bin/clang -O3 -W -Werror -Wno-pointer-to-int-cast -c -o build/deluded-`basename $x .c`.o $x -I../deluge/include &
+done
+
 do_build() {
     libname=$1
     flags=$2
-    mkdir -p build
     rm -f build/$libname-*.o
     for x in src/libpas/*.c
     do
         xcrun clang -g -O3 -W -Werror -c -o build/$libname-`basename $x .c`.o $x $flags &
     done
     wait
-    xcrun clang -dynamiclib -o build/$libname build/$libname-*.o
+    xcrun clang -dynamiclib -o build/$libname build/$libname-*.o build/deluded-*.o
 }
 
 do_build test/libpas.dylib ""
