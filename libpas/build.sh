@@ -8,13 +8,13 @@ do_build() {
     libname=$1
     flags=$2
     mkdir -p build
-    rm -f build/*.o
+    rm -f build/$libname-*.o
     for x in src/libpas/*.c
     do
-        xcrun clang -O3 -W -Werror -c -o build/`basename $x .c`.o $x $flags &
+        xcrun clang -g -O3 -W -Werror -c -o build/$libname-`basename $x .c`.o $x $flags &
     done
     wait
-    xcrun clang -dynamiclib -o build/$libname build/*.o
+    xcrun clang -dynamiclib -o build/$libname build/$libname-*.o
 }
 
 do_build test/libpas.dylib ""

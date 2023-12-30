@@ -6,6 +6,7 @@
 void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
 void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
 void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
+void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
    
@@ -44,6 +45,26 @@ void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
         (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
+/* Allocates count repetitions of the given type from virtual memory that has never been pointed at
+   by pointers that view it as anything other than count or more repetitions of the given type.
+   The new memory is populated with a copy of the passed-in pointer. If the pointer points at more
+   than count repetitions of the type, then only the first count are copied. If the pointer points
+   at fewer than count repetitions of the type, then we only copy whatever it has.
+   
+   The pointer must point at an allocation of the same type as the one we're requesting, else this
+   traps.
+   
+   Misuse of zrealloc/zalloc/zfree may cause logic errors where zalloc/realloc will return the same
+   pointer as it had previously returned.
+   
+   It's not possible to misues zrealloc to cause type confusion under the Deluge P^I type system.
+   
+   ptr is a pointer of the given type, type is a type expression, count must be __SIZE_TYPE__ ish. */
+#define zrealloc(ptr, type, count) ({ \
+        type __d_temporary; \
+        (type*)zrealloc_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
+    })
+
 /* Free the object starting at the given pointer.
    
    If you pass a pointer that is already freed, was never allocated, then this might trap either now
@@ -62,6 +83,13 @@ void zfree(void* ptr);
 void zprint(const char* str);
 void zprint_long(long x);
 void zprint_ptr(const void* ptr);
+
+/* Low-level functions that should be provided by libc, which should live above this. For now they are
+   here because we don't have that libc. */
+__SIZE_TYPE__ zstrlen(const char* str);
+char* zstrchr(const char* str, int chr);
+void* zmemchr(const void* str, int chr, __SIZE_TYPE__ length);
+int zisdigit(int chr);
 
 void zerror(const char* str);
 

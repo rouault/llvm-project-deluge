@@ -196,6 +196,7 @@ class Deluge {
   Value* ZunsafeForgeImpl;
   Value* ZrestrictImpl;
   Value* ZallocImpl;
+  Value* ZreallocImpl;
 
   // Low-level functions used by codegen.
   FunctionCallee GetHeap;
@@ -207,6 +208,9 @@ class Deluge {
   FunctionCallee AllocateOne;
   FunctionCallee TryAllocateMany;
   FunctionCallee AllocateUtility;
+  FunctionCallee TryReallocateInt;
+  FunctionCallee TryReallocateIntWithAlignment;
+  FunctionCallee TryReallocate;
   FunctionCallee Deallocate;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
@@ -349,6 +353,10 @@ class Deluge {
       TrailingData = dataForType(TrailingT);
     }
 
+    assert(T.Main.Size);
+    assert(T.Main.Alignment);
+    assert(!(T.Main.Size % T.Main.Alignment));
+
     std::vector<Constant*> Constants;
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size));
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Alignment));
@@ -408,6 +416,7 @@ class Deluge {
       // Deluge types derived from llvm types never have a trailing component.
       buildCoreTypeRecurse(DT.Main, T);
       assert(DT.Main.Size == DL.getTypeStoreSize(T));
+      assert(!(DT.Main.Size % DT.Main.Alignment));
 
       // FIXME: Find repetitions?
       
@@ -857,6 +866,8 @@ class Deluge {
     // top of lowerInstruction().
 
     if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
+      if (verbose)
+        errs() << "It's an intrinsic.\n";
       switch (II->getIntrinsicID()) {
       case Intrinsic::memcpy:
       case Intrinsic::memcpy_inline:
@@ -871,8 +882,7 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
-            Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memcpy");
+            Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -880,8 +890,7 @@ class Deluge {
       case Intrinsic::memset_inline:
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
-            Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memset");
+            Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -889,8 +898,7 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
-            Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) },
-            "deluge_memmove");
+            Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -943,7 +951,15 @@ class Deluge {
     }
     
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
-      if (CI->getCalledFunction() == ZunsafeForgeImpl) {
+      if (verbose) {
+        errs() << "It's a call!\n";
+        errs() << "Callee = " << CI->getCalledOperand() << "\n";
+        if (CI->getCalledOperand())
+          errs() << "Callee name = " << CI->getCalledOperand()->getName() << "\n";
+      }
+      
+      if (CI->getCalledOperand() == ZunsafeForgeImpl) {
+        errs() << "Lowering unsafe forge\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
@@ -957,7 +973,8 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledFunction() == ZrestrictImpl) {
+      if (CI->getCalledOperand() == ZrestrictImpl) {
+        errs() << "Lowering restrict\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* TypeRep = dataForLowType(LowT)->TypeRep;
@@ -972,7 +989,8 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledFunction() == ZallocImpl) {
+      if (CI->getCalledOperand() == ZallocImpl) {
+        errs() << "Lowering alloc\n";
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
@@ -1008,6 +1026,44 @@ class Deluge {
         Alloc->setDebugLoc(CI->getDebugLoc());
         Instruction* Upper = GetElementPtrInst::Create(
           LowT, Alloc, { CI->getArgOperand(1) }, "deluge_alloc_upper", CI);
+        Upper->setDebugLoc(CI->getDebugLoc());
+        CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
+
+      if (CI->getCalledOperand() == ZreallocImpl) {
+        errs() << "Lowering realloc\n";
+        Value* OrigPtr = lowerPtr(CI->getArgOperand(0), CI);
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
+        Instruction* Alloc = nullptr;
+        
+        DelugeTypeData *DTD = dataForLowType(LowT);
+        if (!hasPtrsForCheck(HighT)) {
+          assert(DTD == &Int);
+          size_t Alignment = DL.getABITypeAlign(LowT).value();
+          size_t Size = DL.getTypeStoreSize(LowT);
+          Instruction* Mul = BinaryOperator::CreateMul(
+            CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
+            "deluge_alloc_mul", CI);
+          Mul->setDebugLoc(CI->getDebugLoc());
+          if (Alignment > MinAlign) {
+            Alloc = CallInst::Create(
+              TryReallocateIntWithAlignment, { OrigPtr, Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              "deluge_realloc_int", CI);
+          } else
+            Alloc = CallInst::Create(TryReallocateInt, { OrigPtr, Mul }, "deluge_realloc_int", CI);
+        } else {
+          Value* Heap = getHeap(DTD, CI);
+          Alloc = CallInst::Create(
+            TryReallocate, { OrigPtr, Heap, CI->getArgOperand(2) }, "deluge_realloc", CI);
+        }
+        
+        Alloc->setDebugLoc(CI->getDebugLoc());
+        Instruction* Upper = GetElementPtrInst::Create(
+          LowT, Alloc, { CI->getArgOperand(2) }, "deluge_alloc_upper", CI);
         Upper->setDebugLoc(CI->getDebugLoc());
         CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
         CI->eraseFromParent();
@@ -1172,7 +1228,8 @@ class Deluge {
     }
 
     if (isa<ReturnInst>(I)) {
-      ReturnPhi->addIncoming(I->getOperand(0), I->getParent());
+      if (OldF->getReturnType() != VoidTy)
+        ReturnPhi->addIncoming(I->getOperand(0), I->getParent());
       ReplaceInstWithInst(I, BranchInst::Create(ReturnB));
       return;
     }
@@ -1189,61 +1246,78 @@ class Deluge {
       if (verbose)
         errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
 
-      assert(CI->getCalledFunction() != ZunsafeForgeImpl);
-      assert(CI->getCalledFunction() != ZrestrictImpl);
-      assert(CI->getCalledFunction() != ZallocImpl);
+      assert(CI->getCalledOperand() != ZunsafeForgeImpl);
+      assert(CI->getCalledOperand() != ZrestrictImpl);
+      assert(CI->getCalledOperand() != ZallocImpl);
+      assert(CI->getCalledOperand() != ZreallocImpl);
       
       CallInst::Create(CheckAccessFunctionCall, { CI->getCalledOperand() }, "", CI)
         ->setDebugLoc(CI->getDebugLoc());
-      
-      DelugeType ArgType;
+
+      Value* ArgBufferRawPtrValue;
+      Value* ArgBufferUpperValue;
+      Value* ArgTypeRep;
+
       FunctionType *FT = CI->getFunctionType();
-      std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
-      std::vector<size_t> Offsets;
-      for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
-        Type* LowT = ArgTypes[Index];
-        ArgType.Main.pad(DL.getABITypeAlign(LowT).value());
-        Offsets.push_back(ArgType.Main.Size);
-        buildCoreTypeRecurse(ArgType.Main, LowT);
-      }
-
-      DelugeTypeData* ArgDTD;
-      Instruction* ArgBufferRawPtr;
-      if (ArgType.canBeInt()) {
-        ArgDTD = &Int;
-        if (ArgType.Main.Alignment > MinAlign) {
-          ArgBufferRawPtr = CallInst::Create(
-            AllocateIntWithAlignment,
-            { ConstantInt::get(IntPtrTy, ArgType.Main.Size),
-              ConstantInt::get(IntPtrTy, ArgType.Main.Alignment) },
-            "deluge_allocate_args", CI);
-        } else {
-          ArgBufferRawPtr = CallInst::Create(
-            AllocateInt, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) }, "deluge_allocate_args", CI);
+      
+      if (CI->arg_size()) {
+        DelugeType ArgType;
+        std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
+        std::vector<size_t> Offsets;
+        for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
+          Type* LowT = ArgTypes[Index];
+          ArgType.Main.pad(DL.getABITypeAlign(LowT).value());
+          Offsets.push_back(ArgType.Main.Size);
+          buildCoreTypeRecurse(ArgType.Main, LowT);
         }
+
+        ArgType.Main.pad(ArgType.Main.Alignment);
+
+        DelugeTypeData* ArgDTD;
+        Instruction* ArgBufferRawPtr;
+        if (ArgType.canBeInt()) {
+          ArgDTD = &Int;
+          if (ArgType.Main.Alignment > MinAlign) {
+            ArgBufferRawPtr = CallInst::Create(
+              AllocateIntWithAlignment,
+              { ConstantInt::get(IntPtrTy, ArgType.Main.Size),
+                ConstantInt::get(IntPtrTy, ArgType.Main.Alignment) },
+              "deluge_allocate_args", CI);
+          } else {
+            ArgBufferRawPtr = CallInst::Create(
+              AllocateInt, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) }, "deluge_allocate_args", CI);
+          }
+        } else {
+          ArgDTD = dataForType(ArgType);
+          ArgBufferRawPtr = CallInst::Create(
+            AllocateOne, { getHeap(ArgDTD, CI) }, "deluge_allocate_args", CI);
+        }
+
+        ArgBufferRawPtr->setDebugLoc(CI->getDebugLoc());
+        Instruction* ArgBufferUpper = GetElementPtrInst::Create(
+          Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) },
+          "deluge_arg_buffer_upper", CI);
+        ArgBufferUpper->setDebugLoc(CI->getDebugLoc());
+
+        assert(FT->getNumParams() <= CI->arg_size());
+        assert(FT->getNumParams() == CI->arg_size() || FT->isVarArg());
+        for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
+          Value* Arg = CI->getArgOperand(Index);
+          Type* LowT = ArgTypes[Index];
+          assert(Arg->getType() == LowT || lowerType(Arg->getType()) == LowT);
+          assert(Index < Offsets.size());
+          Instruction* ArgSlotPtr = GetElementPtrInst::Create(
+            Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, Offsets[Index]) }, "deluge_arg_slot", CI);
+          ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
+          new StoreInst(Arg, ArgSlotPtr, CI);
+        }
+        ArgBufferRawPtrValue = ArgBufferRawPtr;
+        ArgBufferUpperValue = ArgBufferUpper;
+        ArgTypeRep = ArgDTD->TypeRep;
       } else {
-        ArgDTD = dataForType(ArgType);
-        ArgBufferRawPtr = CallInst::Create(
-          AllocateOne, { getHeap(ArgDTD, CI) }, "deluge_allocate_args", CI);
-      }
-
-      ArgBufferRawPtr->setDebugLoc(CI->getDebugLoc());
-      Instruction* ArgBufferUpper = GetElementPtrInst::Create(
-        Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) },
-        "deluge_arg_buffer_upper", CI);
-      ArgBufferUpper->setDebugLoc(CI->getDebugLoc());
-
-      assert(FT->getNumParams() <= CI->arg_size());
-      assert(FT->getNumParams() == CI->arg_size() || FT->isVarArg());
-      for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
-        Value* Arg = CI->getArgOperand(Index);
-        Type* LowT = ArgTypes[Index];
-        assert(Arg->getType() == LowT || lowerType(Arg->getType()) == LowT);
-        assert(Index < Offsets.size());
-        Instruction* ArgSlotPtr = GetElementPtrInst::Create(
-          Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, Offsets[Index]) }, "deluge_arg_slot", CI);
-        ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
-        new StoreInst(Arg, ArgSlotPtr, CI);
+        ArgBufferRawPtrValue = LowRawNull;
+        ArgBufferUpperValue = LowRawNull;
+        ArgTypeRep = LowRawNull;
       }
 
       Type* LowRetT = lowerType(FT->getReturnType());
@@ -1277,7 +1351,7 @@ class Deluge {
       assert(!CI->hasOperandBundles());
       CallInst::Create(
         DeludedFuncTy, lowerPtr(CI->getCalledOperand(), CI),
-        { ArgBufferRawPtr, ArgBufferUpper, ArgDTD->TypeRep,
+        { ArgBufferRawPtrValue, ArgBufferUpperValue, ArgTypeRep,
           FutureReturnBuffer, RetBufferUpper, RetDTD->TypeRep },
         "", CI);
 
@@ -1313,7 +1387,8 @@ class Deluge {
         isa<ShuffleVectorInst>(I) ||
         isa<ExtractValueInst>(I) ||
         isa<InsertValueInst>(I) ||
-        isa<PHINode>(I)) {
+        isa<PHINode>(I) ||
+        isa<SelectInst>(I)) {
       I->mutateType(lowerType(I->getType()));
       return;
     }
@@ -1441,6 +1516,20 @@ public:
       "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZallocImpl = M.getOrInsertFunction(
       "zalloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZreallocImpl = M.getOrInsertFunction(
+      "zrealloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+
+    assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
+    assert(cast<Function>(ZrestrictImpl)->isDeclaration());
+    assert(cast<Function>(ZallocImpl)->isDeclaration());
+    assert(cast<Function>(ZreallocImpl)->isDeclaration());
+    
+    if (verbose) {
+      errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
+      errs() << "zrestrict_impl = " << ZrestrictImpl << "\n";
+      errs() << "zalloc_impl = " << ZallocImpl << "\n";
+      errs() << "zrealloc_impl = " << ZreallocImpl << "\n";
+    }
 
     // Capture the set of things that need conversion, before we start adding functions and globals.
     auto CaptureType = [&] (GlobalValue* G) {
@@ -1487,11 +1576,14 @@ public:
     TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
     TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy);
     AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy);
-    AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy);
+    AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
+    TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryReallocate = M.getOrInsertFunction("deluge_try_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
     CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy);
@@ -1527,7 +1619,11 @@ public:
 
     }
     for (Function* F : Functions) {
-      if (F->isIntrinsic())
+      if (F->isIntrinsic() ||
+          F == ZunsafeForgeImpl ||
+          F == ZrestrictImpl ||
+          F == ZallocImpl ||
+          F == ZreallocImpl)
         continue;
       
       if (verbose)
@@ -1564,13 +1660,16 @@ public:
         }
 
         ReturnB = BasicBlock::Create(C, "deluge_return_block", NewF);
-        ReturnPhi = PHINode::Create(lowerType(F->getReturnType()), 1, "deluge_return_value", ReturnB);
+        if (F->getReturnType() != VoidTy)
+          ReturnPhi = PHINode::Create(lowerType(F->getReturnType()), 1, "deluge_return_value", ReturnB);
         ReturnInst* Return = ReturnInst::Create(C, ReturnB);
 
-        Value* ReturnDataPtr = forgePtr(
-          NewF->getArg(3), NewF->getArg(3), NewF->getArg(4), NewF->getArg(5), Return);
-        new StoreInst(
-          ReturnPhi, prepareForAccess(lowerType(F->getReturnType()), ReturnDataPtr, Return), Return);
+        if (F->getReturnType() != VoidTy) {
+          Value* ReturnDataPtr = forgePtr(
+            NewF->getArg(3), NewF->getArg(3), NewF->getArg(4), NewF->getArg(5), Return);
+          new StoreInst(
+            ReturnPhi, prepareForAccess(lowerType(F->getReturnType()), ReturnDataPtr, Return), Return);
+        }
 
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit about
@@ -1662,6 +1761,7 @@ public:
       }
       
       NewF->copyAttributesFrom(F);
+      NewF->setAttributes(AttributeList());
       F->replaceAllUsesWith(NewF);
       ForgedConstants.erase(F);
       F->eraseFromParent();

@@ -195,6 +195,11 @@ void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 
 void* deluge_allocate_utility(size_t size);
 
+void* deluge_try_reallocate_int(void* ptr, size_t size);
+void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t alignment);
+
+void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
+
 void deluge_deallocate(void* ptr);
 void deluded_zfree(DELUDED_SIGNATURE);
 
@@ -282,6 +287,11 @@ static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const del
     return ptr;
 }
 
+/* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
+   get to the upper bound.
+   
+   It's safe to call legacy C string functions on strings returned from this, since if they lacked
+   an in-bounds terminator, then this would have trapped. */
 const char* deluge_check_and_get_str(deluge_ptr ptr);
 
 /* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge
@@ -321,6 +331,14 @@ static inline long deluge_ptr_get_next_long(deluge_ptr* ptr)
     return *(long*)slot_ptr.ptr;
 }
 
+static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
+    deluge_check_access_int(slot_ptr, sizeof(size_t));
+    return *(size_t*)slot_ptr.ptr;
+}
+
 /* Given a va_list ptr (so a ptr to a ptr), this:
    
    - checks that it is indeed a ptr to a ptr
@@ -337,6 +355,10 @@ void deluded_zprint(DELUDED_SIGNATURE);
 void deluded_zprint_long(DELUDED_SIGNATURE);
 void deluded_zprint_ptr(DELUDED_SIGNATURE);
 void deluded_zerror(DELUDED_SIGNATURE);
+void deluded_zstrlen(DELUDED_SIGNATURE);
+void deluded_zstrchr(DELUDED_SIGNATURE);
+void deluded_zmemchr(DELUDED_SIGNATURE);
+void deluded_zisdigit(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

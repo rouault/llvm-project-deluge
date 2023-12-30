@@ -15,7 +15,9 @@
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
 #include "pas_try_allocate_intrinsic.h"
+#include "pas_try_reallocate.h"
 #include "pas_utils.h"
+#include <ctype.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -197,6 +199,8 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
 {
     pas_allocation_config allocation_config;
     deluge_type_table_add_result add_result;
+
+    deluge_validate_type(type);
     
     initialize_utility_allocation_config(&allocation_config);
 
@@ -337,7 +341,7 @@ void* deluge_allocate_one(pas_heap_ref* ref)
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
-    deluge_try_allocate_with_size_impl,
+    deluge_try_allocate_many_impl,
     DELUGE_HEAP_CONFIG,
     &deluge_typed_runtime_config.base,
     &deluge_allocator_counts,
@@ -345,7 +349,7 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
 
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
 {
-    return (void*)deluge_try_allocate_with_size_impl_by_count(ref, count, 1).begin;
+    return (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
 PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
@@ -361,6 +365,44 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
 void* deluge_allocate_utility(size_t size)
 {
     return deluge_allocate_utility_impl_ptr(size, 1);
+}
+
+void* deluge_try_reallocate_int(void* ptr, size_t size)
+{
+    return pas_try_reallocate_intrinsic(
+        ptr,
+        &deluge_int_heap,
+        size,
+        DELUGE_HEAP_CONFIG,
+        deluge_try_allocate_int_impl_for_realloc,
+        pas_reallocate_disallow_heap_teleport,
+        pas_reallocate_free_if_successful);
+}
+
+void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t alignment)
+{
+    return pas_try_reallocate_intrinsic_with_alignment(
+        ptr,
+        &deluge_int_heap,
+        size,
+        alignment,
+        DELUGE_HEAP_CONFIG,
+        deluge_try_allocate_int_with_alignment_impl_for_realloc_with_alignment,
+        pas_reallocate_disallow_heap_teleport,
+        pas_reallocate_free_if_successful);
+}
+
+void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
+{
+    return pas_try_reallocate_array_by_count(
+        ptr,
+        ref,
+        count,
+        DELUGE_HEAP_CONFIG,
+        deluge_try_allocate_many_impl_for_realloc,
+        &deluge_typed_runtime_config.base,
+        pas_reallocate_disallow_heap_teleport,
+        pas_reallocate_free_if_successful);
 }
 
 void deluge_deallocate(void* ptr)
@@ -516,19 +558,19 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
         }
     }
     DELUGE_CHECK(
-        type->word_types[word_type_index + 0] == DELUGE_WORD_TYPE_PTR_PART1,
+        deluge_type_get_word_type(type, word_type_index + 0) == DELUGE_WORD_TYPE_PTR_PART1,
         "memory type error accessing ptr part1 (ptr = %p,%p,%p,%s)\n",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
-        type->word_types[word_type_index + 1] == DELUGE_WORD_TYPE_PTR_PART2,
+        deluge_type_get_word_type(type, word_type_index + 1) == DELUGE_WORD_TYPE_PTR_PART2,
         "memory type error accessing ptr part2 (ptr = %p,%p,%p,%s)\n",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
-        type->word_types[word_type_index + 2] == DELUGE_WORD_TYPE_PTR_PART3,
+        deluge_type_get_word_type(type, word_type_index + 2) == DELUGE_WORD_TYPE_PTR_PART3,
         "memory type error accessing ptr part3 (ptr = %p,%p,%p,%s)\n",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
-        type->word_types[word_type_index + 3] == DELUGE_WORD_TYPE_PTR_PART4,
+        deluge_type_get_word_type(type, word_type_index + 3) == DELUGE_WORD_TYPE_PTR_PART4,
         "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s)\n",
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
@@ -755,6 +797,59 @@ void deluded_zerror(DELUDED_SIGNATURE)
     const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args));
     DELUDED_DELETE_ARGS();
     pas_panic("zerror() called with: %s\n", str);
+}
+
+void deluded_zstrlen(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args));
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int));
+    *(int*)rets.ptr = strlen(str);
+}
+
+void deluded_zstrchr(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args);
+    const char* str = deluge_check_and_get_str(str_ptr);
+    int chr = deluge_ptr_get_next_int(&args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets);
+    *(deluge_ptr*)rets.ptr =
+        deluge_ptr_forge(strchr(str, chr), str_ptr.lower, str_ptr.upper, str_ptr.type);
+}
+
+void deluded_zmemchr(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args);
+    int chr = deluge_ptr_get_next_int(&args);
+    size_t length = deluge_ptr_get_next_size_t(&args);
+    void* result;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets);
+    if (!length)
+        result = NULL;
+    else {
+        deluge_check_access_int(str_ptr, length);
+        result = memchr(str_ptr.ptr, chr, length);
+    }
+    *(deluge_ptr*)rets.ptr =
+        deluge_ptr_forge(result, str_ptr.lower, str_ptr.upper, str_ptr.type);
+}
+
+void deluded_zisdigit(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int chr = deluge_ptr_get_next_int(&args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int));
+    *(int*)rets.ptr = isdigit(chr);
 }
 
 #endif /* PAS_ENABLE_DELUGE */
