@@ -187,6 +187,7 @@ class Deluge {
   Type* IntPtrTy;
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
+  StructType* OriginTy;
   FunctionType* DeludedFuncTy;
   Constant* LowRawNull;
   Constant* LowWideNull;
@@ -228,6 +229,9 @@ class Deluge {
 
   GlobalVariable* GlobalConstantPoolPtr;
 
+  std::unordered_map<std::string, GlobalVariable*> Strings;
+  std::unordered_map<DILocation*, GlobalVariable*> Origins;
+
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
   std::vector<GlobalAlias*> Aliases;
@@ -247,6 +251,7 @@ class Deluge {
   std::vector<ConstantPoolEntry> ConstantPoolEntries;
   std::unordered_map<ConstantPoolEntry, size_t> ConstantPoolEntryIndex;
 
+  std::string FunctionName;
   Function* OldF;
   Function* NewF;
 
@@ -276,6 +281,37 @@ class Deluge {
 
   BitCastInst* makeDummy(Type* T) {
     return new BitCastInst(UndefValue::get(T), T, "dummy");
+  }
+
+  GlobalVariable* getString(StringRef Str) {
+    auto iter = Strings.find(Str.str());
+    if (iter != Strings.end())
+      return iter->second;
+
+    Constant* C = ConstantDataArray::getString(this->C, Str);
+    GlobalVariable* Result = new GlobalVariable(
+      M, C->getType(), true, GlobalVariable::PrivateLinkage, C, "deluge_string");
+    Strings[Str.str()] = Result;
+    return Result;
+  }
+
+  Value* getOrigin(DebugLoc Loc) {
+    if (!Loc)
+      return LowRawNull;
+    
+    DILocation* Impl = Loc.get();
+    auto iter = Origins.find(Impl);
+    if (iter != Origins.end())
+      return iter->second;
+
+    Constant* C = ConstantStruct::get(
+      OriginTy,
+      { getString(FunctionName), getString(cast<DIScope>(Loc.getScope())->getFilename()),
+        ConstantInt::get(Int32Ty, Loc.getLine()), ConstantInt::get(Int32Ty, Loc.getCol()) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "deluge_origin");
+    Origins[Impl] = Result;
+    return Result;
   }
 
   void buildCoreTypeRecurse(CoreDelugeType& CDT, Type* T) {
@@ -486,14 +522,19 @@ class Deluge {
   }
 
   void checkInt(Value *P, unsigned Size, Instruction *InsertBefore) {
-    CallInst::Create(CheckAccessInt, { P, ConstantInt::get(IntPtrTy, Size) }, "", InsertBefore)
+    CallInst::Create(
+      CheckAccessInt,
+      { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+      "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
   void checkPtr(Value *P, Instruction *InsertBefore) {
     if (verbose)
       errs() << "Inserting call to " << *CheckAccessPtr.getFunctionType() << "\n";
-    CallInst::Create(CheckAccessPtr, { P }, "", InsertBefore)->setDebugLoc(InsertBefore->getDebugLoc());
+    CallInst::Create(
+      CheckAccessPtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
   // This happens to work just as well for high types and low types.
@@ -891,7 +932,9 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
-            Memcpy, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
+            Memcpy,
+            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
+              getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -899,7 +942,9 @@ class Deluge {
       case Intrinsic::memset_inline:
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
-            Memset, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
+            Memset,
+            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
+              getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -907,7 +952,9 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
-            Memmove, { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II) });
+            Memmove,
+            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
+              getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
@@ -993,7 +1040,8 @@ class Deluge {
         Instruction* NewUpper = GetElementPtrInst::Create(
           LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_NewUpper", CI);
         NewUpper->setDebugLoc(CI->getDebugLoc());
-        CallInst::Create(CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep }, "", CI)
+        CallInst::Create(
+          CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep, getOrigin(CI->getDebugLoc()) }, "", CI)
           ->setDebugLoc(CI->getDebugLoc());
         CI->replaceAllUsesWith(forgePtr(LowPtr, LowPtr, NewUpper, TypeRep, CI));
         CI->eraseFromParent();
@@ -1264,7 +1312,8 @@ class Deluge {
       assert(CI->getCalledOperand() != ZallocImpl);
       assert(CI->getCalledOperand() != ZreallocImpl);
       
-      CallInst::Create(CheckAccessFunctionCall, { CI->getCalledOperand() }, "", CI)
+      CallInst::Create(
+        CheckAccessFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
         ->setDebugLoc(CI->getDebugLoc());
 
       Value* ArgBufferRawPtrValue;
@@ -1385,7 +1434,7 @@ class Deluge {
       CallInst* Call = CallInst::Create(
         VAArgImpl,
         { VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size / DTD->Type.Main.Size),
-          ConstantInt::get(IntPtrTy, Alignment), DTD->TypeRep },
+          ConstantInt::get(IntPtrTy, Alignment), DTD->TypeRep, getOrigin(VI->getDebugLoc()) },
         "deluge_va_arg", VI);
       Call->setDebugLoc(VI->getDebugLoc());
       Instruction* Load = new LoadInst(LowT, Call, "deluge_va_arg_load", VI);
@@ -1452,7 +1501,7 @@ class Deluge {
     }
 
     if (isa<UnreachableInst>(I)) {
-      CallInst::Create(Error, "", I)->setDebugLoc(I->getDebugLoc());
+      CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", I)->setDebugLoc(I->getDebugLoc());
       return;
     }
 
@@ -1507,6 +1556,8 @@ public:
   void run() {
     if (verbose)
       errs() << "Going to town on module:\n" << M << "\n";
+
+    FunctionName = "<internal>";
     
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
@@ -1518,6 +1569,8 @@ public:
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
+    OriginTy = StructType::create(
+      {LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "deluge_origin");
     // See DELUDED_SIGNATURE in deluge_runtime.h.
     DeludedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);
@@ -1598,15 +1651,15 @@ public:
     TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryReallocate = M.getOrInsertFunction("deluge_try_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
-    CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy);
-    CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy);
-    CheckAccessFunctionCall = M.getOrInsertFunction("deluge_check_access_function_call_impl", VoidTy, LowWidePtrTy);
-    Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy);
-    Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
-    Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy);
-    CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy);
-    VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    Error = M.getOrInsertFunction("deluge_error", VoidTy);
+    CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckAccessFunctionCall = M.getOrInsertFunction("deluge_check_access_function_call_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
+    Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+    VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
+    Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
 
@@ -1642,6 +1695,7 @@ public:
       if (verbose)
         errs() << "Function before lowering: " << *F << "\n";
 
+      FunctionName = F->getName();
       OldF = F;
       NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
                               F->getLinkage(), F->getAddressSpace(),
@@ -1778,6 +1832,8 @@ public:
       F->replaceAllUsesWith(NewF);
       ForgedConstants.erase(F);
       F->eraseFromParent();
+      
+      FunctionName = "<internal>";
       
       if (verbose)
         errs() << "New function: " << *NewF << "\n";

@@ -69,21 +69,21 @@ static void initialize_utility_allocation_config(pas_allocation_config* allocati
     allocation_config->arg = NULL;
 }
 
-void deluge_validate_type(const deluge_type* type)
+void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
 {
     if (deluge_type_is_equal(type, &deluge_int_type))
-        PAS_ASSERT(type == &deluge_int_type);
+        DELUGE_ASSERT(type == &deluge_int_type, origin);
     if (deluge_type_is_equal(type, &deluge_function_type))
-        PAS_ASSERT(type == &deluge_function_type);
+        DELUGE_ASSERT(type == &deluge_function_type, origin);
     if (deluge_type_is_equal(type, &deluge_type_type))
-        PAS_ASSERT(type == &deluge_type_type);
-    PAS_ASSERT(type->size);
-    PAS_ASSERT(type->alignment);
-    PAS_ASSERT(pas_is_power_of_2(type->alignment));
-    PAS_ASSERT(!(type->size % type->alignment));
+        DELUGE_ASSERT(type == &deluge_type_type, origin);
+    DELUGE_ASSERT(type->size, origin);
+    DELUGE_ASSERT(type->alignment, origin);
+    DELUGE_ASSERT(pas_is_power_of_2(type->alignment), origin);
+    DELUGE_ASSERT(!(type->size % type->alignment), origin);
     if (type->trailing_array) {
-        PAS_ASSERT(!type->trailing_array->trailing_array);
-        deluge_validate_type(type->trailing_array);
+        DELUGE_ASSERT(!type->trailing_array->trailing_array, origin);
+        deluge_validate_type(type->trailing_array, origin);
     }
 }
 
@@ -200,7 +200,7 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
     pas_allocation_config allocation_config;
     deluge_type_table_add_result add_result;
 
-    deluge_validate_type(type);
+    deluge_validate_type(type, NULL);
     
     initialize_utility_allocation_config(&allocation_config);
 
@@ -412,42 +412,67 @@ void deluge_deallocate(void* ptr)
 
 void deluded_zfree(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zfree",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
-    deluge_deallocate(deluge_ptr_get_next_ptr(&args).ptr);
+    deluge_deallocate(deluge_ptr_get_next_ptr(&args, &origin).ptr);
     DELUDED_DELETE_ARGS();
 }
 
 void deluded_zgetlower(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zgetlower",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets);
+    deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.lower, ptr.lower, ptr.upper, ptr.type);
 }
 
 void deluded_zgetupper(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zgetupper",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets);
+    deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.upper, ptr.lower, ptr.upper, ptr.type);
 }
 
 void deluded_zgettype(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zgettype",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args);
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets);
+    deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge((void*)ptr.type, (void*)ptr.type, (char*)ptr.type + 1, &deluge_type_type);
 }
 
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
+void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                              const deluge_origin* origin)
 {
     static const bool verbose = false;
 
@@ -460,13 +485,9 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
         pas_log("\n");
     }
     
-    PAS_UNUSED_PARAM(ptr); /* It's totally OK for the ptr component to be anything, so long as
-                              we don't access it. That means checks must treat the ptr component
-                              as untrusted. */
-    
-    if (type == &deluge_function_type) {
-        PAS_ASSERT(lower == ptr);
-        PAS_ASSERT((char*)upper == (char*)ptr + 1);
+    if (type == &deluge_function_type || type == &deluge_type_type) {
+        DELUGE_ASSERT(lower == ptr, origin);
+        DELUGE_ASSERT((char*)upper == (char*)ptr + 1, origin);
         return;
     }
 
@@ -477,19 +498,19 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
         return;
     }
 
-    PAS_ASSERT(upper > lower);
-    PAS_ASSERT(upper <= (void*)PAS_MAX_ADDRESS);
-    PAS_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment));
-    PAS_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment));
-    PAS_ASSERT(!((upper - lower) % type->size));
-    deluge_validate_type(type);
+    DELUGE_ASSERT(upper > lower, origin);
+    DELUGE_ASSERT(upper <= (void*)PAS_MAX_ADDRESS, origin);
+    DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
+    DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
+    DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+    deluge_validate_type(type, origin);
 }
 
 static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
-                                uintptr_t bytes)
+                                uintptr_t bytes, const deluge_origin* origin)
 {
     if (PAS_ENABLE_TESTING)
-        deluge_validate_ptr_impl(ptr, lower, upper, type);
+        deluge_validate_ptr_impl(ptr, lower, upper, type, origin);
 
     /* This check is necessary in case a wide pointer spans page boundary and the
        first of the two pages gets decommitted in a way that causes it to become
@@ -509,32 +530,38 @@ static void check_access_common(void* ptr, void* lower, void* upper, const delug
        But also, it's just one little check. It almost certainly doesn't matter. */
     DELUGE_CHECK(
         lower,
-        "cannot access pointer with null lower (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "cannot access pointer with null lower (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
 
     DELUGE_CHECK(
         ptr >= lower,
-        "cannot access pointer with ptr < lower (ptr = %p,%p,%p,%s)\n", 
+        origin,
+        "cannot access pointer with ptr < lower (ptr = %p,%p,%p,%s).", 
         ptr, lower, upper, deluge_type_to_new_string(type));
 
     DELUGE_CHECK(
         ptr < upper,
-        "cannot access pointer with ptr >= upper (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "cannot access pointer with ptr >= upper (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
 
     DELUGE_CHECK(
         bytes <= (uintptr_t)((char*)upper - (char*)ptr),
-        "cannot access %zu bytes when upper - ptr = %zu (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "cannot access %zu bytes when upper - ptr = %zu (ptr = %p,%p,%p,%s).",
         bytes, (size_t)((char*)upper - (char*)ptr),
         ptr, lower, upper, deluge_type_to_new_string(type));
         
     DELUGE_CHECK(
         type,
-        "cannot access ptr with null type (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "cannot access ptr with null type (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
-static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes)
+static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
+                      const deluge_origin* origin)
 {
     uintptr_t offset;
     uintptr_t first_word_type_index;
@@ -553,35 +580,39 @@ static void check_int(void* ptr, void* lower, void* upper, const deluge_type* ty
          word_type_index++) {
         DELUGE_CHECK(
             deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT,
-            "cannot access %zu bytes as int, span contains non-ints (ptr = %p,%p,%p,%s)\n",
+            origin,
+            "cannot access %zu bytes as int, span contains non-ints (ptr = %p,%p,%p,%s).",
             bytes, ptr, lower, upper, deluge_type_to_new_string(type));
     }
 }
 
 void deluge_check_access_int_impl(
-    void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes)
+    void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
+    const deluge_origin* origin)
 {
-    check_access_common(ptr, lower, upper, type, bytes);
-    check_int(ptr, lower, upper, type, bytes);
+    check_access_common(ptr, lower, upper, type, bytes, origin);
+    check_int(ptr, lower, upper, type, bytes, origin);
 }
 
-void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
+void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                  const deluge_origin* origin)
 {
     uintptr_t offset;
     uintptr_t word_type_index;
 
-    check_access_common(ptr, lower, upper, type, 32);
+    check_access_common(ptr, lower, upper, type, 32, origin);
 
     offset = (char*)ptr - (char*)lower;
     DELUGE_CHECK(
         pas_is_aligned(offset, 8),
-        "cannot access memory as ptr without 8-byte alignment; in this case ptr %% 8 = %zu (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "cannot access memory as ptr without 8-byte alignment; in this case ptr %% 8 = %zu (ptr = %p,%p,%p,%s).",
         (size_t)(offset % 8), ptr, lower, upper, deluge_type_to_new_string(type));
     word_type_index = offset / 8;
     if (type->trailing_array) {
         uintptr_t num_words = deluge_type_num_words_exact(type);
         if (word_type_index < num_words)
-            PAS_ASSERT(word_type_index + 3 < num_words);
+            DELUGE_ASSERT(word_type_index + 3 < num_words, origin);
         else {
             word_type_index -= num_words;
             type = type->trailing_array;
@@ -589,38 +620,44 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
     }
     DELUGE_CHECK(
         deluge_type_get_word_type(type, word_type_index + 0) == DELUGE_WORD_TYPE_PTR_PART1,
-        "memory type error accessing ptr part1 (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "memory type error accessing ptr part1 (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
         deluge_type_get_word_type(type, word_type_index + 1) == DELUGE_WORD_TYPE_PTR_PART2,
-        "memory type error accessing ptr part2 (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "memory type error accessing ptr part2 (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
         deluge_type_get_word_type(type, word_type_index + 2) == DELUGE_WORD_TYPE_PTR_PART3,
-        "memory type error accessing ptr part3 (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "memory type error accessing ptr part3 (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
     DELUGE_CHECK(
         deluge_type_get_word_type(type, word_type_index + 3) == DELUGE_WORD_TYPE_PTR_PART4,
-        "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
-void deluge_check_access_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type)
+void deluge_check_access_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                            const deluge_origin* origin)
 {
-    check_access_common(ptr, lower, upper, type, 1);
+    check_access_common(ptr, lower, upper, type, 1, origin);
     DELUGE_CHECK(
         type == &deluge_function_type,
-        "attempt to call pointer that is not a function (ptr = %p,%p,%p,%s)\n",
+        origin,
+        "attempt to call pointer that is not a function (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
-                        unsigned value, size_t count)
+                        unsigned value, size_t count, const deluge_origin* origin)
 {
     if (!count)
         return;
     
-    check_access_common(ptr, lower, upper, type, count);
+    check_access_common(ptr, lower, upper, type, count, origin);
     
     if (!value) {
         if (type != &deluge_int_type) {
@@ -629,28 +666,38 @@ void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* 
             
             offset = (char*)ptr - (char*)lower;
             word_type = deluge_type_get_word_type(type, offset / 8);
-            if (offset % 8)
-                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-            else
-                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+            if (offset % 8) {
+                DELUGE_ASSERT(
+                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    origin);
+            } else {
+                DELUGE_ASSERT(
+                    word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    origin);
+            }
             word_type = deluge_type_get_word_type(type, (offset + count - 1) / 8);
-            if ((offset + count) % 8)
-                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-            else
-                PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3);
+            if ((offset + count) % 8) {
+                DELUGE_ASSERT(
+                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    origin);
+            } else {
+                DELUGE_ASSERT(
+                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3,
+                    origin);
+            }
         }
         
         memset(ptr, 0, count);
         return;
     }
 
-    check_int(ptr, lower, upper, type, count);
+    check_int(ptr, lower, upper, type, count, origin);
     memset(ptr, value, count);
 }
 
 static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                                void* src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                               size_t count)
+                               size_t count, const deluge_origin* origin)
 {
     uintptr_t dst_offset;
     uintptr_t src_offset;
@@ -672,8 +719,8 @@ static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, 
            non-offset-skew version lower in this function can't handle it) and we don't need
            to, since that path could only succeed if there were only integers on both sides of
            the copy. */
-        check_int(dst_ptr, dst_lower, dst_upper, dst_type, count);
-        check_int(src_ptr, src_lower, src_upper, src_type, count);
+        check_int(dst_ptr, dst_lower, dst_upper, dst_type, count, origin);
+        check_int(src_ptr, src_lower, src_upper, src_type, count, origin);
         return;
     }
 
@@ -682,102 +729,136 @@ static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, 
     first_src_word_type_index = src_offset / 8;
 
     for (word_type_index_offset = num_word_types; word_type_index_offset--;) {
-        PAS_ASSERT(deluge_type_get_word_type(dst_type, first_dst_word_type_index + word_type_index_offset)
-                   ==
-                   deluge_type_get_word_type(src_type, first_src_word_type_index + word_type_index_offset));
+        DELUGE_ASSERT(
+            deluge_type_get_word_type(dst_type, first_dst_word_type_index + word_type_index_offset)
+            ==
+            deluge_type_get_word_type(src_type, first_src_word_type_index + word_type_index_offset),
+            origin);
     }
 
     /* We cannot copy parts of pointers. */
     word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index);
-    if (dst_offset % 8)
-        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-    else
-        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
+    if (dst_offset % 8) {
+        DELUGE_ASSERT(
+            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            origin);
+    } else {
+        DELUGE_ASSERT(
+            word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            origin);
+    }
     word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index + num_word_types - 1);
-    if ((dst_offset + count) % 8)
-        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4);
-    else
-        PAS_ASSERT(word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3);
+    if ((dst_offset + count) % 8) {
+        DELUGE_ASSERT(
+            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            origin);
+    } else {
+        DELUGE_ASSERT(
+            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3,
+            origin);
+    }
 }
 
 static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                        void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                       size_t count)
+                       size_t count, const deluge_origin* origin)
 {
-    check_access_common(dst_ptr, dst_lower, dst_upper, dst_type, count);
-    check_access_common(src_ptr, src_lower, src_upper, src_type, count);
+    check_access_common(dst_ptr, dst_lower, dst_upper, dst_type, count, origin);
+    check_access_common(src_ptr, src_lower, src_upper, src_type, count, origin);
     check_type_overlap(dst_ptr, dst_lower, dst_upper, dst_type,
                        src_ptr, src_lower, src_upper, src_type,
-                       count);
+                       count, origin);
 }
 
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                        size_t count)
+                        size_t count, const deluge_origin* origin)
 {
     if (!count)
         return;
     
     check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
                src_ptr, src_lower, src_upper, src_type,
-               count);
+               count, origin);
     
     memcpy(dst_ptr, src_ptr, count);
 }
 
 void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                          void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                         size_t count)
+                         size_t count, const deluge_origin* origin)
 {
     if (!count)
         return;
     
     check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
                src_ptr, src_lower, src_upper, src_type,
-               count);
+               count, origin);
     
     memmove(dst_ptr, src_ptr, count);
 }
 
 void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
-                           void* new_upper, const deluge_type* new_type)
+                           void* new_upper, const deluge_type* new_type, const deluge_origin* origin)
 {
-    check_access_common(ptr, lower, upper, type, (char*)new_upper - (char*)ptr);
-    DELUGE_CHECK(new_type, "cannot restrict to NULL type\n");
+    check_access_common(ptr, lower, upper, type, (char*)new_upper - (char*)ptr, origin);
+    DELUGE_CHECK(new_type, origin, "cannot restrict to NULL type");
     check_type_overlap(ptr, ptr, new_upper, new_type,
                        ptr, lower, upper, type,
-                       (char*)new_upper - (char*)ptr);
+                       (char*)new_upper - (char*)ptr, origin);
 }
 
-const char* deluge_check_and_get_str(deluge_ptr str)
+const char* deluge_check_and_get_str(deluge_ptr str, const deluge_origin* origin)
 {
     size_t available;
     size_t length;
-    check_access_common(str.ptr, str.lower, str.upper, str.type, 1);
+    check_access_common(str.ptr, str.lower, str.upper, str.type, 1, origin);
     available = (char*)str.upper - (char*)str.ptr;
     length = strnlen((char*)str.ptr, available);
     PAS_ASSERT(length < available);
     PAS_ASSERT(length + 1 <= available);
-    check_int(str.ptr, str.lower, str.upper, str.type, length + 1);
+    check_int(str.ptr, str.lower, str.upper, str.type, length + 1, origin);
     return (char*)str.ptr;
 }
 
 void* deluge_va_arg_impl(
     void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
-    size_t count, size_t alignment, const deluge_type* type)
+    size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin)
 {
     deluge_ptr va_list;
     deluge_ptr* va_list_impl;
     void* result;
     va_list = deluge_ptr_forge(va_list_ptr, va_list_lower, va_list_upper, va_list_type);
-    deluge_check_access_ptr(va_list);
+    deluge_check_access_ptr(va_list, origin);
     va_list_impl = (deluge_ptr*)va_list.ptr;
-    return deluge_ptr_get_next(va_list_impl, count, alignment, type).ptr;
+    return deluge_ptr_get_next(va_list_impl, count, alignment, type, origin).ptr;
 }
 
-void deluge_error(void)
+void deluge_panic(const deluge_origin* origin, const char* format, ...)
 {
-    PAS_ASSERT(!"deluge error");
+    va_list args;
+    if (origin) {
+        pas_log("%s:", origin->filename);
+        if (origin->line) {
+            pas_log("%u:", origin->line);
+            if (origin->column)
+                pas_log("%u:", origin->column);
+        }
+        pas_log(" ");
+        if (origin->function)
+            pas_log("%s: ", origin->function);
+    } else
+        pas_log("<somewhere>: ");
+    va_start(args, format);
+    pas_vlog(format, args);
+    va_end(args);
+    pas_log("\n");
+    pas_panic("memory safety violation; further execution is not possible.\n");
+}
+
+void deluge_error(const deluge_origin* origin)
+{
+    deluge_panic(origin, "deluge_error called");
 }
 
 static void print_str(const char* str)
@@ -798,19 +879,31 @@ static void print_str(const char* str)
 
 void deluded_zprint(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zprint",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr str;
-    str = deluge_ptr_get_next_ptr(&args);
+    str = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
-    print_str(deluge_check_and_get_str(str));
+    print_str(deluge_check_and_get_str(str, &origin));
 }
 
 void deluded_zprint_long(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zprint_long",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     long x;
     char buf[100];
-    x = deluge_ptr_get_next_long(&args);
+    x = deluge_ptr_get_next_long(&args, &origin);
     DELUDED_DELETE_ARGS();
     snprintf(buf, sizeof(buf), "%ld", x);
     print_str(buf);
@@ -818,11 +911,17 @@ void deluded_zprint_long(DELUDED_SIGNATURE)
 
 void deluded_zprint_ptr(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zprint_ptr",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr ptr;
     pas_allocation_config allocation_config;
     pas_string_stream stream;
-    ptr = deluge_ptr_get_next_ptr(&args);
+    ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     initialize_utility_allocation_config(&allocation_config);
     pas_string_stream_construct(&stream, &allocation_config);
@@ -834,49 +933,73 @@ void deluded_zprint_ptr(DELUDED_SIGNATURE)
 
 void deluded_zerror(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zerror",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
-    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args));
+    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
     pas_panic("zerror() called with: %s\n", str);
 }
 
 void deluded_zstrlen(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zstrlen",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args));
+    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_int(rets, sizeof(int));
+    deluge_check_access_int(rets, sizeof(int), &origin);
     *(int*)rets.ptr = strlen(str);
 }
 
 void deluded_zstrchr(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zstrlen",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args);
-    const char* str = deluge_check_and_get_str(str_ptr);
-    int chr = deluge_ptr_get_next_int(&args);
+    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    const char* str = deluge_check_and_get_str(str_ptr, &origin);
+    int chr = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets);
+    deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)rets.ptr =
         deluge_ptr_forge(strchr(str, chr), str_ptr.lower, str_ptr.upper, str_ptr.type);
 }
 
 void deluded_zmemchr(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zmemchr",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args);
-    int chr = deluge_ptr_get_next_int(&args);
-    size_t length = deluge_ptr_get_next_size_t(&args);
+    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    int chr = deluge_ptr_get_next_int(&args, &origin);
+    size_t length = deluge_ptr_get_next_size_t(&args, &origin);
     void* result;
     DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets);
+    deluge_check_access_ptr(rets, &origin);
     if (!length)
         result = NULL;
     else {
-        deluge_check_access_int(str_ptr, length);
+        deluge_check_access_int(str_ptr, length, &origin);
         result = memchr(str_ptr.ptr, chr, length);
     }
     *(deluge_ptr*)rets.ptr =
@@ -885,11 +1008,17 @@ void deluded_zmemchr(DELUDED_SIGNATURE)
 
 void deluded_zisdigit(DELUDED_SIGNATURE)
 {
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zisdigit",
+        .line = 0,
+        .column = 0
+    };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    int chr = deluge_ptr_get_next_int(&args);
+    int chr = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
-    deluge_check_access_int(rets, sizeof(int));
+    deluge_check_access_int(rets, sizeof(int), &origin);
     *(int*)rets.ptr = isdigit(chr);
 }
 

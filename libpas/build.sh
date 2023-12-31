@@ -7,7 +7,7 @@ mkdir -p build/test
 rm -f build/deluded-*.o
 for x in ../deluge/src/*.c
 do
-    xcrun ../build/bin/clang -O3 -W -Werror -Wno-pointer-to-int-cast -c -o build/deluded-`basename $x .c`.o $x -I../deluge/include &
+    xcrun ../build/bin/clang -O3 -g -W -Werror -Wno-pointer-to-int-cast -c -o build/deluded-`basename $x .c`.o $x -I../deluge/include &
 done
 
 do_build() {

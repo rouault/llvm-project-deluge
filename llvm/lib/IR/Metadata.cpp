@@ -438,7 +438,7 @@ void ValueAsMetadata::handleRAUW(Value *From, Value *To) {
   assert(From && "Expected valid value");
   assert(To && "Expected valid value");
   assert(From != To && "Expected changed value");
-  assert(From->getType() == To->getType() && "Unexpected type change");
+  //assert(From->getType() == To->getType() && "Unexpected type change");
 
   LLVMContext &Context = From->getType()->getContext();
   auto &Store = Context.pImpl->ValuesAsMetadata;

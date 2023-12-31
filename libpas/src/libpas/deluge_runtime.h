@@ -14,9 +14,11 @@ PAS_BEGIN_EXTERN_C;
 
 /* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
 
+struct deluge_origin;
 struct deluge_ptr;
 struct deluge_type;
 struct pas_stream;
+typedef struct deluge_origin deluge_origin;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
 typedef struct pas_stream pas_stream;
@@ -60,16 +62,49 @@ struct deluge_type {
     deluge_word_type word_types[1];
 };
 
+struct deluge_origin {
+    const char* function;
+    const char* filename;
+    unsigned line;
+    unsigned column;
+};
+
 extern const deluge_type deluge_int_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
 PAS_DECLARE_LOCK(deluge);
 
-#define DELUGE_CHECK(exp, ...) do { \
+void deluge_panic(const deluge_origin* origin, const char* format, ...);
+
+#define DELUGE_CHECK(exp, origin, ...) do {     \
         if ((exp)) \
             break; \
-        pas_panic(__VA_ARGS__); \
+        deluge_panic(origin, __VA_ARGS__); \
+    } while (0)
+
+/* Ideally, all DELUGE_ASSERTs would be turned into DELUGE_CHECKs.
+ 
+   Also, some DELUGE_ASSERTs are asserting things that cannot happen unless the deluge runtime or
+   compiler are broken or memory safey was violated some other way; it would be great to better
+   distinguish those. Most of them aren't DELUGE_TESTING_ASSERTs. */
+#define DELUGE_ASSERT(exp, origin) do { \
+        if ((exp)) \
+            break; \
+        deluge_panic( \
+            origin, \
+            "%s:%d: %s: safety assertion %s failed.", \
+            __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
+    } while (0)
+
+#define DELUGE_TESTING_ASSERT(exp, origin) do { \
+        if (!PAS_ENABLE_TESTING) \
+            break; \
+        if ((exp)) \
+            break; \
+        deluge_panic( \
+            origin, "%s:%d: %s: testing assertion %s failed.", \
+            __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
     } while (0)
 
 #define DELUDED_SIGNATURE \
@@ -127,7 +162,7 @@ static inline deluge_word_type deluge_type_get_word_type(const deluge_type* type
 /* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The
    compiler is expected to only produce types that pass this check, and we provide no path for
    the user to create types (unless they write unsafe code). */
-void deluge_validate_type(const deluge_type* type);
+void deluge_validate_type(const deluge_type* type, const deluge_origin* origin);
 
 bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b);
 unsigned deluge_type_hash(const deluge_type* type);
@@ -220,71 +255,75 @@ void deluded_zgettype(DELUDED_SIGNATURE);
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
    safety! */
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
+void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type, const deluge_origin* origin);
 
-static inline void deluge_validate_ptr(deluge_ptr ptr)
+static inline void deluge_validate_ptr(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
+    deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
 }
 
-void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes);
-void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
+void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                  uintptr_t bytes, const deluge_origin* origin);
+void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                  const deluge_origin* origin);
 
-static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes)
+static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes, const deluge_origin* origin)
 {
-    deluge_check_access_int_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, bytes);
+    deluge_check_access_int_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, bytes, origin);
 }
-static inline void deluge_check_access_ptr(deluge_ptr ptr)
+static inline void deluge_check_access_ptr(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
+    deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
 }
 
-void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type);
+void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                     const deluge_origin* origin);
 
-static inline void deluge_check_function_call(deluge_ptr ptr)
+static inline void deluge_check_function_call(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_check_function_call_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type);
+    deluge_check_function_call_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
-                        unsigned value, size_t count);
+                        unsigned value, size_t count, const deluge_origin* origin);
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                        size_t count);
+                        size_t count, const deluge_origin* origin);
 void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
                          void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                         size_t count);
+                         size_t count, const deluge_origin* origin);
 
-static inline void deluge_memset(deluge_ptr ptr, unsigned value, size_t count)
+static inline void deluge_memset(deluge_ptr ptr, unsigned value, size_t count, const deluge_origin* origin)
 {
-    deluge_memset_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, value, count);
+    deluge_memset_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, value, count, origin);
 }
 
-static inline void deluge_memcpy(deluge_ptr dst, deluge_ptr src, size_t count)
+static inline void deluge_memcpy(deluge_ptr dst, deluge_ptr src, size_t count, const deluge_origin* origin)
 {
     deluge_memcpy_impl(dst.ptr, dst.lower, dst.upper, dst.type,
                        src.ptr, src.lower, src.upper, src.type,
-                       count);
+                       count, origin);
 }
 
-static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count)
+static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count, const deluge_origin* origin)
 {
     deluge_memmove_impl(dst.ptr, dst.lower, dst.upper, dst.type,
                         src.ptr, src.lower, src.upper, src.type,
-                        count);
+                        count, origin);
 }
 
 /* Correct uses of this should always pass new_upper = ptr + K * new_type->size. This function does
    not have to check that you did that. This property is ensured by the compiler and the fact that
    the user-visible API (zrestrict) takes a count. */
 void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
-                           void* new_upper, const deluge_type* new_type);
+                           void* new_upper, const deluge_type* new_type, const deluge_origin* origin);
 
-static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const deluge_type* new_type)
+static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const deluge_type* new_type,
+                                         const deluge_origin* origin)
 {
     void* new_upper;
     new_upper = (char*)ptr.ptr + count * new_type->size;
-    deluge_check_restrict(ptr.ptr, ptr.lower, ptr.upper, ptr.type, new_upper, new_type);
+    deluge_check_restrict(ptr.ptr, ptr.lower, ptr.upper, ptr.type, new_upper, new_type, origin);
     ptr.lower = ptr.ptr;
     ptr.upper = new_upper;
     ptr.type = new_type;
@@ -296,50 +335,51 @@ static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const del
    
    It's safe to call legacy C string functions on strings returned from this, since if they lacked
    an in-bounds terminator, then this would have trapped. */
-const char* deluge_check_and_get_str(deluge_ptr ptr);
+const char* deluge_check_and_get_str(deluge_ptr ptr, const deluge_origin* origin);
 
 /* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge
    code will have to use this kind of API to parse the flights. */
 static inline deluge_ptr deluge_ptr_get_next(
-    deluge_ptr* ptr, size_t count, size_t alignment, const deluge_type* type)
+    deluge_ptr* ptr, size_t count, size_t alignment, const deluge_type* type,
+    const deluge_origin* origin)
 {
     return deluge_restrict(deluge_ptr_get_next_bytes(
                                ptr, count * type->size, alignment),
-                           count, type);
+                           count, type, origin);
 }
 
 /* NOTE: It's tempting to add a macro that takes a type and does get_next, but I don't see how
    that would handle pointers correctly. */
 
-static inline deluge_ptr deluge_ptr_get_next_ptr(deluge_ptr* ptr)
+static inline deluge_ptr deluge_ptr_get_next_ptr(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, 32, 8);
-    deluge_check_access_ptr(slot_ptr);
+    deluge_check_access_ptr(slot_ptr, origin);
     return *(deluge_ptr*)slot_ptr.ptr;
 }
 
-static inline int deluge_ptr_get_next_int(deluge_ptr* ptr)
+static inline int deluge_ptr_get_next_int(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
-    deluge_check_access_int(slot_ptr, sizeof(int));
+    deluge_check_access_int(slot_ptr, sizeof(int), origin);
     return *(int*)slot_ptr.ptr;
 }
 
-static inline long deluge_ptr_get_next_long(deluge_ptr* ptr)
+static inline long deluge_ptr_get_next_long(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(long), alignof(long));
-    deluge_check_access_int(slot_ptr, sizeof(long));
+    deluge_check_access_int(slot_ptr, sizeof(long), origin);
     return *(long*)slot_ptr.ptr;
 }
 
-static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr)
+static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
-    deluge_check_access_int(slot_ptr, sizeof(size_t));
+    deluge_check_access_int(slot_ptr, sizeof(size_t), origin);
     return *(size_t*)slot_ptr.ptr;
 }
 
@@ -351,9 +391,9 @@ static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr)
    - of all that goes well, returns a ptr you can load/store from safely according to that type */
 void* deluge_va_arg_impl(
     void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
-    size_t count, size_t alignment, const deluge_type* type);
+    size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin);
 
-void deluge_error(void);
+void deluge_error(const deluge_origin* origin);
 
 void deluded_zprint(DELUDED_SIGNATURE);
 void deluded_zprint_long(DELUDED_SIGNATURE);

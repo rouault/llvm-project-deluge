@@ -5,9 +5,9 @@ require 'pathname'
 require 'shellwords'
 require 'yaml'
 
-raise unless system("xcrun clang -c -o deluge/main/main.o deluge/main/main.c -Ilibpas/src/libpas")
-raise unless system("xcrun clang -c -o deluge/tests/legacy_utils.o deluge/tests/legacy_utils.c -Ilibpas/src/libpas")
-raise unless system("xcrun build/bin/clang -c -o deluge/tests/utils.o deluge/tests/utils.c -Ideluge/include")
+raise unless system("xcrun clang -c -o deluge/main/main.o deluge/main/main.c -Ilibpas/src/libpas -g")
+raise unless system("xcrun clang -c -o deluge/tests/legacy_utils.o deluge/tests/legacy_utils.c -Ilibpas/src/libpas -g")
+raise unless system("xcrun build/bin/clang -O3 -c -o deluge/tests/utils.o deluge/tests/utils.c -Ideluge/include -g")
 
 $testDirectory = Pathname.new("deluge/tests")
 
@@ -52,7 +52,7 @@ $testDirectory.each_entry {
             outp.print " "
             outp.print Shellwords.shellescape(fullPath + entry)
         }
-        outp.puts " deluge/main/main.o deluge/tests/legacy_utils.o deluge/tests/utils.o -Ideluge/tests -Ideluge/include -Llibpas/build -ldeluge -O2 >& #{Shellwords.shellescape(compilerOutput)}"
+        outp.puts " deluge/main/main.o deluge/tests/legacy_utils.o deluge/tests/utils.o -Ideluge/tests -Ideluge/include -Llibpas/build -ldeluge -O2 -g >& #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "if [ $? -ne 0 ]"
         outp.puts "then"
         outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile"))
