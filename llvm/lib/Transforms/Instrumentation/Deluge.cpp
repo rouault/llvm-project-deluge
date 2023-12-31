@@ -683,6 +683,9 @@ class Deluge {
     if (isa<ConstantPointerNull>(C))
       return LowWideNull;
 
+    if (isa<ConstantAggregateZero>(C))
+      return ConstantAggregateZero::get(lowerType(C->getType()));
+
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       Type* LowT = GlobalLowTypes[G];
       return forgePtrConstantWithLowType(G, LowT);
@@ -698,9 +701,15 @@ class Deluge {
       return ConstantArray::get(cast<ArrayType>(lowerType(CA->getType())), Args);
     }
     if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
+      if (verbose)
+        errs() << "Dealing with CS = " << *CS << "\n";
       std::vector<Constant*> Args;
-      for (size_t Index = 0; Index < CS->getNumOperands(); ++Index)
-        Args.push_back(lowerConstant(CS->getOperand(Index)));
+      for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
+        Constant* LowC = lowerConstant(CS->getOperand(Index));
+        if (verbose)
+          errs() << "Index = " << Index << ", LowC = " << *LowC << "\n";
+        Args.push_back(LowC);
+      }
       return ConstantStruct::get(cast<StructType>(lowerType(CS->getType())), Args);
     }
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {

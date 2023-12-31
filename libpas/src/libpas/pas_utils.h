@@ -262,11 +262,6 @@ static inline void pas_memcpy(volatile void* to, const volatile void* from, size
 #define PAS_UNUSED __attribute__((unused))
 #endif
 
-#define PAS_PP_THIRD_ARG(a, b, c, ...) c
-#define PAS_VA_OPT_SUPPORTED_I(...) PAS_PP_THIRD_ARG(__VA_OPT__(,),true,false,)
-#define PAS_VA_OPT_SUPPORTED PAS_VA_OPT_SUPPORTED_I(?)
-
-
 #if PAS_ARM64 && !PAS_ARM64E && !PAS_OS(MAC) && !defined(__ARM_FEATURE_ATOMICS)
 /* Just using LL/SC does not guarantee that the ordering of accesses around the loop. For example,
  *

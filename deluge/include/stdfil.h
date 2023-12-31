@@ -1,6 +1,8 @@
 #ifndef DELUGE_STDFIL_H
 #define DELUGE_STDFIL_H
 
+/* Opaque representation of the Deluge type. It's not possible to access the contents of a Deluge
+   type except through whatever APIs we provide. */
 struct ztype;
 typedef struct ztype ztype;
 
