@@ -42,7 +42,8 @@ const deluge_type deluge_type_type = {
 
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
 
-PAS_DEFINE_LOCK(deluge);
+PAS_DEFINE_LOCK(deluge_type);
+PAS_DEFINE_LOCK(deluge_global_initialization);
 
 static void* allocate_utility_for_allocation_config(
     size_t size, const char* name, pas_allocation_kind allocation_kind, void* arg)
@@ -226,9 +227,9 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type)
         pas_log("\n");
     }
     PAS_ASSERT(type != &deluge_int_type);
-    deluge_lock_lock();
+    deluge_type_lock_lock();
     result = get_heap_impl(type);
-    deluge_lock_unlock();
+    deluge_type_lock_unlock();
     return result;
 }
 
@@ -834,14 +835,24 @@ void* deluge_va_arg_impl(
     return deluge_ptr_get_next(va_list_impl, count, alignment, type, origin).ptr;
 }
 
-deluge_global_initialization_context* deluge_global_initialization_context_find(
+deluge_global_initialization_context* deluge_global_initialization_context_lock_and_find(
     deluge_global_initialization_context* context, void* global_getter)
 {
+    if (!context) {
+        deluge_global_initialization_lock_lock();
+        return NULL;
+    }
     for (; context; context = context->outer) {
         if (context->global_getter == global_getter)
             return context;
     }
     return NULL;
+}
+
+void deluge_global_initialization_context_unlock(deluge_global_initialization_context* context)
+{
+    if (!context)
+        deluge_global_initialization_lock_unlock();
 }
 
 void deluge_panic(const deluge_origin* origin, const char* format, ...)

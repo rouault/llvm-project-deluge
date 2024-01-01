@@ -81,7 +81,8 @@ extern const deluge_type deluge_int_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
-PAS_DECLARE_LOCK(deluge);
+PAS_DECLARE_LOCK(deluge_type);
+PAS_DECLARE_LOCK(deluge_global_initialization);
 
 void deluge_panic(const deluge_origin* origin, const char* format, ...);
 
@@ -401,8 +402,9 @@ void* deluge_va_arg_impl(
     void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
     size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin);
 
-deluge_global_initialization_context* deluge_global_initialization_context_find(
+deluge_global_initialization_context* deluge_global_initialization_context_lock_and_find(
     deluge_global_initialization_context* context, void* global_getter);
+void deluge_global_initialization_context_unlock(deluge_global_initialization_context* context);
 
 void deluge_error(const deluge_origin* origin);
 

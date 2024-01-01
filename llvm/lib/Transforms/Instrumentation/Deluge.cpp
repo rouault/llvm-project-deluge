@@ -223,7 +223,8 @@ class Deluge {
   FunctionCallee Memmove;
   FunctionCallee CheckRestrict;
   FunctionCallee VAArgImpl;
-  FunctionCallee GlobalInitializationContextFind;
+  FunctionCallee GlobalInitializationContextLockAndFind;
+  FunctionCallee GlobalInitializationContextUnlock;
   FunctionCallee Error;
   FunctionCallee RealMemset;
 
@@ -1640,7 +1641,8 @@ public:
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
-    GlobalInitializationContextFind = M.getOrInsertFunction("deluge_global_initialization_context_find", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+    GlobalInitializationContextLockAndFind = M.getOrInsertFunction("deluge_global_initialization_context_lock_and_find", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+    GlobalInitializationContextUnlock = M.getOrInsertFunction("deluge_global_initialization_context_unlock", VoidTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
@@ -1699,7 +1701,7 @@ public:
       ReturnInst::Create(C, LoadWidePtr, FastBB);
 
       Instruction* Find = CallInst::Create(
-        GlobalInitializationContextFind, { NewF->getArg(0), NewF }, "deluge_context_find", SlowBB);
+        GlobalInitializationContextLockAndFind, { NewF->getArg(0), NewF }, "deluge_context_find", SlowBB);
       Cmp = new ICmpInst(
         *SlowBB, ICmpInst::ICMP_EQ, Find, LowRawNull, "deluge_check_find");
       BranchInst::Create(BuildBB, RecurseBB, Cmp, SlowBB);
@@ -1725,7 +1727,7 @@ public:
         BuildBB);
       new StoreInst(NewF, GetterPtr, BuildBB);
       new StoreInst(NewF->getArg(0), OuterPtr, BuildBB);
-      // FIXME: What if we're dealing with an array? Right now, we'll create a type that O(array size).
+      // FIXME: What if we're dealing with an array? Right now, we'll create a type that is O(array size).
       // We could at least detect repeats here.
       DelugeTypeData* DTD = dataForLowType(LowT);
       Instruction* Alloc;
@@ -1761,6 +1763,7 @@ public:
       new StoreInst(WidePtr, Alloc, Return);
       new FenceInst(this->C, AtomicOrdering::AcquireRelease, SyncScope::System, Return);
       new StoreInst(Alloc, NewG, Return);
+      CallInst::Create(GlobalInitializationContextUnlock, { NewF->getArg(0) }, "", Return);
       Return->getOperandUse(0) = WidePtr;
     }
     for (Function* F : Functions) {
