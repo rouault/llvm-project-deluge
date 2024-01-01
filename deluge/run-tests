@@ -15,8 +15,8 @@ $tests = []
 
 def handleArray(thing)
     return [] unless thing
-    return [thing] unless thing.is_a? Array
-    thing
+    return thing if thing.is_a? Array
+    [thing]
 end
 
 $testDirectory.each_entry {

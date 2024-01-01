@@ -4,7 +4,7 @@ output-includes:
    - Bench mark starting
    - Starting
    - finished
-   - qpkt count = 2326410  holdcount = 930563
+   - qpkt count = 23246  holdcount = 9297
    - These results are correct
    - end of run
 output-excludes:

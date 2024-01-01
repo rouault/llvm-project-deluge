@@ -20,7 +20,9 @@
 
 #include <stdfil.h>
 
-#define bench100 1
+// LMAO if Deluge wasn't so fucking slow, we'd be able to test this the real way. For now though, if
+// we flip this, tests will take way too long.
+//#define bench100 1
 
 #ifdef bench100
 #define                Count           (10000*100)

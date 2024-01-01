@@ -123,6 +123,8 @@ char* zasprintf(const char* format, ...);
 void zvprintf(const char* format, __builtin_va_list args);
 void zprintf(const char* format, ...);
 
+/* This prints the given message and then shuts down the program using the same shutdown codepath
+   used for memory safety violatins (i.e. it's designed to really kill the shit out of the process). */
 void zerror(const char* str);
 
 #endif /* DELUGE_STDFIL_H */
