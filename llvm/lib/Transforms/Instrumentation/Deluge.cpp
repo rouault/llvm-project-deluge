@@ -188,7 +188,9 @@ class Deluge {
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
   StructType* OriginTy;
+  StructType* GlobalInitializationContextTy;
   FunctionType* DeludedFuncTy;
+  FunctionType* GlobalGetterTy;
   Constant* LowRawNull;
   Constant* LowWideNull;
   BitCastInst* Dummy;
@@ -221,6 +223,7 @@ class Deluge {
   FunctionCallee Memmove;
   FunctionCallee CheckRestrict;
   FunctionCallee VAArgImpl;
+  FunctionCallee GlobalInitializationContextFind;
   FunctionCallee Error;
   FunctionCallee RealMemset;
 
@@ -240,13 +243,15 @@ class Deluge {
   std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
   std::unordered_map<Type*, Type*> LoweredTypes;
-  std::unordered_map<Constant*, Constant*> ForgedConstants;
 
   std::unordered_map<Type*, DelugeTypeData*> TypeMap;
   std::unordered_map<DelugeType, std::unique_ptr<DelugeTypeData>> TypeDatas;
   DelugeTypeData Int;
   DelugeTypeData FunctionDTD;
   DelugeTypeData Invalid;
+
+  std::unordered_map<GlobalVariable*, Function*> GlobalToGetter;
+  std::unordered_map<Function*, GlobalVariable*> GetterToGlobal;
 
   std::vector<ConstantPoolEntry> ConstantPoolEntries;
   std::unordered_map<ConstantPoolEntry, size_t> ConstantPoolEntryIndex;
@@ -603,7 +608,9 @@ class Deluge {
     if (StructType* ST = dyn_cast<StructType>(LowT)) {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
-        Value *InnerP = GetElementPtrInst::Create(ST, P, { 0, Index }, "deluge_InnerP_struct", InsertBefore);
+        Value *InnerP = GetElementPtrInst::Create(
+          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
+          "deluge_InnerP_struct", InsertBefore);
         checkRecurse(InnerT, HighP, InnerP, InsertBefore);
       }
       return;
@@ -611,7 +618,9 @@ class Deluge {
       
     if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
       for (uint64_t Index = AT->getNumElements(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(AT, P, { 0, Index }, "deluge_InnerP_array", InsertBefore);
+        Value *InnerP = GetElementPtrInst::Create(
+          AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "deluge_InnerP_array", InsertBefore);
         checkRecurse(AT->getElementType(), HighP, InnerP, InsertBefore);
       }
       return;
@@ -619,7 +628,9 @@ class Deluge {
       
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(VT, P, { 0, Index }, "deluge_InnerP_vector", InsertBefore);
+        Value *InnerP = GetElementPtrInst::Create(
+          VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "deluge_InnerP_vector", InsertBefore);
         checkRecurse(VT->getElementType(), HighP, InnerP, InsertBefore);
       }
       return;
@@ -638,13 +649,6 @@ class Deluge {
       LowRawPtrTy, HighP, { 0 }, "deluge_getlowptr", InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
-  }
-
-  Constant* lowerPtrConstant(Constant* HighP) {
-    ConstantStruct* CS = cast<ConstantStruct>(HighP);
-    assert(CS->getNumOperands() == 4);
-    assert(CS->getType() == LowWidePtrTy);
-    return CS->getOperand(0);
   }
 
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
@@ -720,100 +724,7 @@ class Deluge {
     return reforgePtr(LowWideNull, Ptr, InsertionPoint);
   }
 
-  Constant* lowerConstantImpl(Constant* C) {
-    if (isa<ConstantPointerNull>(C))
-      return LowWideNull;
-
-    if (isa<ConstantAggregateZero>(C))
-      return ConstantAggregateZero::get(lowerType(C->getType()));
-
-    if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
-      Type* LowT = GlobalLowTypes[G];
-      return forgePtrConstantWithLowType(G, LowT);
-    }
-
-    if (isa<ConstantData>(C))
-      return C;
-
-    if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
-      std::vector<Constant*> Args;
-      for (size_t Index = 0; Index < CA->getNumOperands(); ++Index)
-        Args.push_back(lowerConstant(CA->getOperand(Index)));
-      return ConstantArray::get(cast<ArrayType>(lowerType(CA->getType())), Args);
-    }
-    if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
-      if (verbose)
-        errs() << "Dealing with CS = " << *CS << "\n";
-      std::vector<Constant*> Args;
-      for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
-        Constant* LowC = lowerConstant(CS->getOperand(Index));
-        if (verbose)
-          errs() << "Index = " << Index << ", LowC = " << *LowC << "\n";
-        Args.push_back(LowC);
-      }
-      return ConstantStruct::get(cast<StructType>(lowerType(CS->getType())), Args);
-    }
-    if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
-      std::vector<Constant*> Args;
-      for (size_t Index = 0; Index < CV->getNumOperands(); ++Index)
-        Args.push_back(lowerConstant(CV->getOperand(Index)));
-      return ConstantVector::get(Args);
-    }
-
-    assert(isa<ConstantExpr>(C));
-    ConstantExpr* CE = cast<ConstantExpr>(C);
-
-    if (verbose)
-      errs() << "Lowering CE = " << *CE << "\n";
-
-    switch (CE->getOpcode()) {
-    case Instruction::GetElementPtr: {
-      GEPOperator* GO = cast<GEPOperator>(CE);
-      Constant* LowPtr = lowerConstant(CE->getOperand(0));
-      if (verbose)
-        errs() << "LowPtr = " << *LowPtr << "\n";
-      std::vector<Constant*> Args;
-      for (size_t Index = 1; Index < CE->getNumOperands(); ++Index)
-        Args.push_back(lowerConstant(CE->getOperand(Index)));
-      return reforgePtrConstant(
-        LowPtr,
-        ConstantExpr::getGetElementPtr(
-          lowerType(GO->getSourceElementType()), lowerPtrConstant(LowPtr), Args, GO->isInBounds()));
-    }
-    case Instruction::BitCast:
-      if (CE->getType() == LowRawPtrTy) {
-        Constant* LowPtr = lowerConstant(CE->getOperand(0));
-        return reforgePtrConstant(LowPtr, ConstantExpr::getBitCast(lowerPtrConstant(LowPtr), CE->getType()));
-      }
-      return ConstantExpr::getBitCast(lowerConstant(CE->getOperand(0)), CE->getType());
-    case Instruction::IntToPtr:
-      return reforgePtrConstant(
-        LowWideNull, ConstantExpr::getIntToPtr(lowerConstant(CE->getOperand(0)), CE->getType()));
-    case Instruction::AddrSpaceCast:
-      return reforgePtrConstant(
-        LowWideNull, ConstantExpr::getAddrSpaceCast(lowerConstant(CE->getOperand(0)), CE->getType()));
-    case Instruction::PtrToInt:
-      return ConstantExpr::getPtrToInt(lowerPtrConstant(lowerConstant(CE->getOperand(0))), CE->getType());
-    default: {
-      assert(CE->getType() != LowRawPtrTy);
-      std::vector<Constant*> Args;
-      for (size_t Index = 0; Index < CE->getNumOperands(); ++Index)
-        Args.push_back(lowerConstant(CE->getOperand(Index)));
-      if (verbose) {
-        errs() << "Going to replace operands for " << *CE << "\n";
-        errs() << "Operands: ";
-        for (size_t Index = 0; Index < Args.size(); ++Index) {
-          if (Index)
-            errs() << ", ";
-          errs() << *Args[Index];
-        }
-        errs() << "\n";
-      }
-      return CE->getWithOperands(Args);
-    } }
-  }
-
-  Constant* lowerConstant(Constant* C) {
+  Value* lowerConstant(Constant* C, Instruction* InsertBefore, Value* InitializationContext) {
     assert(C->getType() != LowWidePtrTy);
     
     if (isa<UndefValue>(C)) {
@@ -826,22 +737,88 @@ class Deluge {
       return ConstantAggregateZero::get(C->getType());
     }
     
-    auto iter = ForgedConstants.find(C);
-    if (iter != ForgedConstants.end()) {
-      if (ultraVerbose) {
-        errs() << "lowerConstant for C = " << C << ", " << *C << " got a hit in the table, which "
-               << "gives = " << iter->second << ", " << *iter->second << "\n";
+    if (isa<ConstantPointerNull>(C))
+      return LowWideNull;
+
+    if (isa<ConstantAggregateZero>(C))
+      return ConstantAggregateZero::get(lowerType(C->getType()));
+
+    if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
+      Type* LowT = GlobalLowTypes[G];
+      assert(!GlobalToGetter.count(nullptr));
+      assert(!GetterToGlobal.count(nullptr));
+      if (GlobalToGetter.count(dyn_cast<GlobalVariable>(G)) ||
+          GetterToGlobal.count(dyn_cast<Function>(G))) {
+        Function* Getter;
+        if (!(Getter = dyn_cast<Function>(G)))
+          Getter = GlobalToGetter[cast<GlobalVariable>(G)];
+        assert(Getter);
+        Instruction* Result = CallInst::Create(
+          GlobalGetterTy, Getter, { InitializationContext }, "deluge_call_getter", InsertBefore);
+        Result->setDebugLoc(InsertBefore->getDebugLoc());
+        return Result;
       }
-      return iter->second;
+      assert(isa<Function>(G));
+      return forgePtrConstantWithLowType(G, LowT);
     }
 
-    Constant* LowC = lowerConstantImpl(C);
-    if (ultraVerbose) {
-      errs() << "lowerConstant for C = " << C << ", " << *C << " had to call slow, which gave = "
-             << LowC << ", " << *LowC << "\n";
+    if (isa<ConstantData>(C))
+      return C;
+
+    if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
+      Value* Result = UndefValue::get(lowerType(CA->getType()));
+      for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
+        Instruction* Insert = InsertValueInst::Create(
+          Result, lowerConstant(CA->getOperand(Index), InsertBefore, InitializationContext),
+          static_cast<unsigned>(Index), "deluge_insert_array", InsertBefore);
+        Insert->setDebugLoc(InsertBefore->getDebugLoc());
+        Result = Insert;
+      }
+      return Result;
     }
-    ForgedConstants[C] = LowC;
-    return LowC;
+    if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
+      if (verbose)
+        errs() << "Dealing with CS = " << *CS << "\n";
+      Value* Result = UndefValue::get(lowerType(CS->getType()));
+      for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
+        Value* LowC = lowerConstant(CS->getOperand(Index), InsertBefore, InitializationContext);
+        if (verbose)
+          errs() << "Index = " << Index << ", LowC = " << *LowC << "\n";
+        Instruction* Insert = InsertValueInst::Create(
+          Result, LowC, static_cast<unsigned>(Index), "deluge_insert_array", InsertBefore);
+        Insert->setDebugLoc(InsertBefore->getDebugLoc());
+        Result = Insert;
+      }
+      return Result;
+    }
+    if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
+      Value* Result = UndefValue::get(lowerType(CV->getType()));
+      for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
+        Instruction* Insert = InsertElementInst::Create(
+          Result, lowerConstant(CV->getOperand(Index), InsertBefore, InitializationContext),
+          ConstantInt::get(IntPtrTy, Index), "deluge_insert_array", InsertBefore);
+        Insert->setDebugLoc(InsertBefore->getDebugLoc());
+        Result = Insert;
+      }
+      return Result;
+    }
+
+    assert(isa<ConstantExpr>(C));
+    ConstantExpr* CE = cast<ConstantExpr>(C);
+
+    if (verbose)
+      errs() << "Lowering CE = " << *CE << "\n";
+
+    Instruction* CEInst = CE->getAsInstruction(InsertBefore);
+    CEInst->setDebugLoc(InsertBefore->getDebugLoc());
+
+    // I am the worst compiler programmer.
+    StoreInst* DummyUser = new StoreInst(
+      CEInst, LowRawNull, false, Align(), AtomicOrdering::NotAtomic, SyncScope::System);
+    lowerInstruction(CEInst);
+    Value* Result = DummyUser->getOperand(0);
+    delete DummyUser;
+    return Result;
   }
 
   Value* makeIntPtr(Value* V, Instruction *InsertionPoint) {
@@ -1155,7 +1132,7 @@ class Deluge {
       if (Constant* C = dyn_cast<Constant>(U)) {
         if (ultraVerbose)
           errs() << "At Index = " << Index << ", got U = " << *U << ", C = " << *C << "\n";
-        Constant* NewC = lowerConstant(C);
+        Value* NewC = lowerConstant(C, I, LowRawNull);
         if (ultraVerbose)
           errs() << "At Index = " << Index << ", got NewC = " << *NewC <<"\n";
         U = NewC;
@@ -1571,9 +1548,13 @@ public:
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
     OriginTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "deluge_origin");
+    GlobalInitializationContextTy = StructType::create(
+      {LowRawPtrTy, LowWidePtrTy, LowRawPtrTy}, "deluge_global_initialization_context");
     // See DELUDED_SIGNATURE in deluge_runtime.h.
     DeludedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);
+    GlobalGetterTy = FunctionType::get(
+      LowWidePtrTy, { LowRawPtrTy }, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     ZunsafeForgeImpl = M.getOrInsertFunction(
@@ -1659,6 +1640,7 @@ public:
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     CheckRestrict = M.getOrInsertFunction("deluge_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
+    GlobalInitializationContextFind = M.getOrInsertFunction("deluge_global_initialization_context_find", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
@@ -1670,19 +1652,116 @@ public:
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
       GlobalLowTypes[NewG] = GlobalLowTypes[G];
     };
+
+    for (GlobalVariable* G : Globals) {
+      Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
+                                        "deluded_g_" + G->getName(), &M);
+      GlobalToGetter[G] = NewF;
+      GetterToGlobal[NewF] = G;
+      FixupTypes(G, NewF);
+    }
     
     for (GlobalVariable* G : Globals) {
-      GlobalVariable* NewG = new GlobalVariable(
-        M, lowerType(G->getValueType()), G->isConstant(), G->getLinkage(),
-        G->hasInitializer() ? lowerConstant(G->getInitializer()) : nullptr,
-        "deluded_" + G->getName(), nullptr, G->getThreadLocalMode(), G->getAddressSpace(),
-        G->isExternallyInitialized());
-      FixupTypes(G, NewG);
-      NewG->copyAttributesFrom(G);
-      G->replaceAllUsesWith(NewG);
-      ForgedConstants.erase(G);
-      G->eraseFromParent();
+      // FIXME: We can probably make this work, but who gives a shit for now?
+      assert(G->getThreadLocalMode() == GlobalValue::NotThreadLocal);
 
+      Function* NewF = GlobalToGetter[G];
+      assert(NewF);
+      assert(NewF->isDeclaration());
+
+      if (verbose)
+        errs() << "Dealing with global: " << *G << "\n";
+
+      if (G->isDeclaration())
+        continue;
+
+      Type* T = G->getValueType();
+      Type* LowT = lowerType(T);
+
+      GlobalVariable* NewG = new GlobalVariable(
+        M, LowRawPtrTy, false, GlobalValue::PrivateLinkage, LowRawNull, "deluge_gptr_" + G->getName());
+      
+      BasicBlock* RootBB = BasicBlock::Create(C, "deluge_global_getter_root", NewF);
+      BasicBlock* FastBB = BasicBlock::Create(C, "deluge_global_getter_fast", NewF);
+      BasicBlock* SlowBB = BasicBlock::Create(C, "deluge_global_getter_slow", NewF);
+      BasicBlock* RecurseBB = BasicBlock::Create(C, "deluge_global_getter_recurse", NewF);
+      BasicBlock* BuildBB = BasicBlock::Create(C, "deluge_global_getter_build", NewF);
+
+      Instruction* MyInitializationContext = new AllocaInst(
+        GlobalInitializationContextTy, 0, ConstantInt::get(IntPtrTy, 1), "deluge_initialization_context",
+        RootBB);
+      Instruction* LoadPtr = new LoadInst(LowRawPtrTy, NewG, "deluge_fast_load_global", RootBB);
+      Instruction* Cmp = new ICmpInst(
+        *RootBB, ICmpInst::ICMP_EQ, LoadPtr, LowRawNull, "deluge_check_global");
+      BranchInst::Create(SlowBB, FastBB, Cmp, RootBB);
+
+      Instruction* LoadWidePtr = new LoadInst(LowWidePtrTy, LoadPtr, "deluge_fast_load_wide", FastBB);
+      ReturnInst::Create(C, LoadWidePtr, FastBB);
+
+      Instruction* Find = CallInst::Create(
+        GlobalInitializationContextFind, { NewF->getArg(0), NewF }, "deluge_context_find", SlowBB);
+      Cmp = new ICmpInst(
+        *SlowBB, ICmpInst::ICMP_EQ, Find, LowRawNull, "deluge_check_find");
+      BranchInst::Create(BuildBB, RecurseBB, Cmp, SlowBB);
+
+      Instruction* WidePtrPtr = GetElementPtrInst::Create(
+        GlobalInitializationContextTy, Find,
+        { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+        "deluge_context_ptr_ptr", RecurseBB);
+      LoadWidePtr = new LoadInst(LowWidePtrTy, WidePtrPtr, "deluge_recurse_load_wide", RecurseBB);
+      ReturnInst::Create(C, LoadWidePtr, RecurseBB);
+
+      Instruction* GetterPtr = GetElementPtrInst::Create(
+        GlobalInitializationContextTy, MyInitializationContext,
+        { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) }, "deluge_context_getter",
+        BuildBB);
+      WidePtrPtr = GetElementPtrInst::Create(
+        GlobalInitializationContextTy, MyInitializationContext,
+        { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) }, "deluge_context_ptr",
+        BuildBB);
+      Instruction* OuterPtr = GetElementPtrInst::Create(
+        GlobalInitializationContextTy, MyInitializationContext,
+        { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) }, "deluge_context_outer",
+        BuildBB);
+      new StoreInst(NewF, GetterPtr, BuildBB);
+      new StoreInst(NewF->getArg(0), OuterPtr, BuildBB);
+      // FIXME: What if we're dealing with an array? Right now, we'll create a type that O(array size).
+      // We could at least detect repeats here.
+      DelugeTypeData* DTD = dataForLowType(LowT);
+      Instruction* Alloc;
+      if (DTD == &Int) {
+        assert(!hasPtrsForCheck(LowT));
+        size_t Alignment = DL.getABITypeAlign(LowT).value();
+        size_t Size = DL.getTypeStoreSize(LowT);
+        if (Alignment > MinAlign) {
+          Alloc = CallInst::Create(
+            AllocateIntWithAlignment,
+            { ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment) },
+            "deluge_alloc_int", BuildBB);
+        } else {
+          Alloc = CallInst::Create(
+            AllocateInt, { ConstantInt::get(IntPtrTy, Size) }, "deluge_alloc_int", BuildBB);
+        }
+      } else {
+        // It's probably not worth it to use the heap constant pool for this.
+        Value* Heap = CallInst::Create(GetHeap, { DTD->TypeRep }, "deluge_get_heap", BuildBB);
+        Alloc = CallInst::Create(AllocateOne, { Heap }, "deluge_alloc_one", BuildBB);
+      }
+      Instruction* Upper = GetElementPtrInst::Create(
+        LowT, Alloc, { ConstantInt::get(IntPtrTy, 1) }, "deluge_alloc_upper", BuildBB);
+      Instruction* Return = ReturnInst::Create(C, LowWideNull, BuildBB);
+      Value* WidePtr = forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, Return);
+      new StoreInst(WidePtr, WidePtrPtr, Return);
+      Value* C = lowerConstant(G->getInitializer(), Return, MyInitializationContext);
+      new StoreInst(C, Alloc, Return);
+      DTD = dataForLowType(LowWidePtrTy);
+      // This could be so much more efficient, but whatever.
+      Value* Heap = CallInst::Create(GetHeap, { DTD->TypeRep }, "deluge_get_heap", Return);
+      Alloc = CallInst::Create(AllocateOne, { Heap }, "deluge_alloc_one", Return);
+      new StoreInst(WidePtr, Alloc, Return);
+      new FenceInst(this->C, AtomicOrdering::AcquireRelease, SyncScope::System, Return);
+      new StoreInst(Alloc, NewG, Return);
+      Return->getOperandUse(0) = WidePtr;
     }
     for (Function* F : Functions) {
       if (F->isIntrinsic() ||
@@ -1699,7 +1778,7 @@ public:
       OldF = F;
       NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
                               F->getLinkage(), F->getAddressSpace(),
-                              "deluded_" + F->getName(), &M);
+                              "deluded_f_" + F->getName(), &M);
       FixupTypes(F, NewF);
       std::vector<BasicBlock*> Blocks;
       for (BasicBlock& BB : *F)
@@ -1830,7 +1909,6 @@ public:
       NewF->copyAttributesFrom(F);
       NewF->setAttributes(AttributeList());
       F->replaceAllUsesWith(NewF);
-      ForgedConstants.erase(F);
       F->eraseFromParent();
       
       FunctionName = "<internal>";
@@ -1839,29 +1917,33 @@ public:
         errs() << "New function: " << *NewF << "\n";
     }
     for (GlobalAlias* G : Aliases) {
+      llvm_unreachable("don't know what to do with global aliases yet");
       // FIXME: The GlobalAlias constant expression may produce something that is not at all a valid
       // pointer. It's not at all clear that we get the right behavior here. Probably, we want there to
       // be a compile-time or runtime check that we're producing a pointer that makes sense with a type
       // that makes sense.
       GlobalAlias* NewG = GlobalAlias::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "deluded_" + G->getName(),
+                                              G->getLinkage(), "deluded_a_" + G->getName(),
                                               G->getAliasee(), &M);
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
-      ForgedConstants.erase(G);
       G->eraseFromParent();
     }
     for (GlobalIFunc* G : IFuncs) {
+      llvm_unreachable("don't know what to do with global ifuncs yet");
       GlobalIFunc* NewG = GlobalIFunc::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "deluded_" + G->getName(),
+                                              G->getLinkage(), "deluded_i_" + G->getName(),
                                               G->getResolver(), &M);
       FixupTypes(G, NewG);
       NewG->copyAttributesFrom(G);
       G->replaceAllUsesWith(NewG);
-      ForgedConstants.erase(G);
       G->eraseFromParent();
     }
+
+    // Kill the remnants of the original globals.
+    for (GlobalVariable* G : Globals)
+      G->setLinkage(GlobalValue::PrivateLinkage);
 
     Function* MakeConstantPoolFunc = cast<Function>(MakeConstantPool.getCallee());
     MakeConstantPoolFunc->setLinkage(GlobalValue::PrivateLinkage);

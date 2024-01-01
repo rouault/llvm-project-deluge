@@ -1861,8 +1861,9 @@ GetElementPtrInst::GetElementPtrInst(const GetElementPtrInst &GEPI)
 
 Type *GetElementPtrInst::getTypeAtIndex(Type *Ty, Value *Idx) {
   if (auto *Struct = dyn_cast<StructType>(Ty)) {
-    if (!Struct->indexValid(Idx))
+    if (!Struct->indexValid(Idx)) {
       return nullptr;
+    }
     return Struct->getTypeAtIndex(Idx);
   }
   if (!Idx->getType()->isIntOrIntVectorTy())
@@ -1876,8 +1877,9 @@ Type *GetElementPtrInst::getTypeAtIndex(Type *Ty, Value *Idx) {
 
 Type *GetElementPtrInst::getTypeAtIndex(Type *Ty, uint64_t Idx) {
   if (auto *Struct = dyn_cast<StructType>(Ty)) {
-    if (Idx >= Struct->getNumElements())
+    if (Idx >= Struct->getNumElements()) {
       return nullptr;
+    }
     return Struct->getElementType(Idx);
   }
   if (auto *Array = dyn_cast<ArrayType>(Ty))

@@ -14,10 +14,12 @@ PAS_BEGIN_EXTERN_C;
 
 /* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
 
+struct deluge_global_initialization_context;
 struct deluge_origin;
 struct deluge_ptr;
 struct deluge_type;
 struct pas_stream;
+typedef struct deluge_global_initialization_context deluge_global_initialization_context;
 typedef struct deluge_origin deluge_origin;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
@@ -67,6 +69,12 @@ struct deluge_origin {
     const char* filename;
     unsigned line;
     unsigned column;
+};
+
+struct deluge_global_initialization_context {
+    void* global_getter; /* This is a function pointer, but we cannot give it a signature in C. */
+    deluge_ptr ptr;
+    deluge_global_initialization_context* outer;
 };
 
 extern const deluge_type deluge_int_type;
@@ -236,11 +244,11 @@ void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t al
 void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 
 void deluge_deallocate(void* ptr);
-void deluded_zfree(DELUDED_SIGNATURE);
+void deluded_f_zfree(DELUDED_SIGNATURE);
 
-void deluded_zgetlower(DELUDED_SIGNATURE);
-void deluded_zgetupper(DELUDED_SIGNATURE);
-void deluded_zgettype(DELUDED_SIGNATURE);
+void deluded_f_zgetlower(DELUDED_SIGNATURE);
+void deluded_f_zgetupper(DELUDED_SIGNATURE);
+void deluded_f_zgettype(DELUDED_SIGNATURE);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
@@ -393,16 +401,19 @@ void* deluge_va_arg_impl(
     void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
     size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin);
 
+deluge_global_initialization_context* deluge_global_initialization_context_find(
+    deluge_global_initialization_context* context, void* global_getter);
+
 void deluge_error(const deluge_origin* origin);
 
-void deluded_zprint(DELUDED_SIGNATURE);
-void deluded_zprint_long(DELUDED_SIGNATURE);
-void deluded_zprint_ptr(DELUDED_SIGNATURE);
-void deluded_zerror(DELUDED_SIGNATURE);
-void deluded_zstrlen(DELUDED_SIGNATURE);
-void deluded_zstrchr(DELUDED_SIGNATURE);
-void deluded_zmemchr(DELUDED_SIGNATURE);
-void deluded_zisdigit(DELUDED_SIGNATURE);
+void deluded_f_zprint(DELUDED_SIGNATURE);
+void deluded_f_zprint_long(DELUDED_SIGNATURE);
+void deluded_f_zprint_ptr(DELUDED_SIGNATURE);
+void deluded_f_zerror(DELUDED_SIGNATURE);
+void deluded_f_zstrlen(DELUDED_SIGNATURE);
+void deluded_f_zstrchr(DELUDED_SIGNATURE);
+void deluded_f_zmemchr(DELUDED_SIGNATURE);
+void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

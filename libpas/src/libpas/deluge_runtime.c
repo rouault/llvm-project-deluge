@@ -410,7 +410,7 @@ void deluge_deallocate(void* ptr)
     pas_deallocate(ptr, DELUGE_HEAP_CONFIG);
 }
 
-void deluded_zfree(DELUDED_SIGNATURE)
+void deluded_f_zfree(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -423,7 +423,7 @@ void deluded_zfree(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
 }
 
-void deluded_zgetlower(DELUDED_SIGNATURE)
+void deluded_f_zgetlower(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -439,7 +439,7 @@ void deluded_zgetlower(DELUDED_SIGNATURE)
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.lower, ptr.lower, ptr.upper, ptr.type);
 }
 
-void deluded_zgetupper(DELUDED_SIGNATURE)
+void deluded_f_zgetupper(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -455,7 +455,7 @@ void deluded_zgetupper(DELUDED_SIGNATURE)
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.upper, ptr.lower, ptr.upper, ptr.type);
 }
 
-void deluded_zgettype(DELUDED_SIGNATURE)
+void deluded_f_zgettype(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -834,6 +834,16 @@ void* deluge_va_arg_impl(
     return deluge_ptr_get_next(va_list_impl, count, alignment, type, origin).ptr;
 }
 
+deluge_global_initialization_context* deluge_global_initialization_context_find(
+    deluge_global_initialization_context* context, void* global_getter)
+{
+    for (; context; context = context->outer) {
+        if (context->global_getter == global_getter)
+            return context;
+    }
+    return NULL;
+}
+
 void deluge_panic(const deluge_origin* origin, const char* format, ...)
 {
     va_list args;
@@ -877,7 +887,7 @@ static void print_str(const char* str)
     }
 }
 
-void deluded_zprint(DELUDED_SIGNATURE)
+void deluded_f_zprint(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -892,7 +902,7 @@ void deluded_zprint(DELUDED_SIGNATURE)
     print_str(deluge_check_and_get_str(str, &origin));
 }
 
-void deluded_zprint_long(DELUDED_SIGNATURE)
+void deluded_f_zprint_long(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -909,7 +919,7 @@ void deluded_zprint_long(DELUDED_SIGNATURE)
     print_str(buf);
 }
 
-void deluded_zprint_ptr(DELUDED_SIGNATURE)
+void deluded_f_zprint_ptr(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -931,7 +941,7 @@ void deluded_zprint_ptr(DELUDED_SIGNATURE)
     pas_string_stream_destruct(&stream);
 }
 
-void deluded_zerror(DELUDED_SIGNATURE)
+void deluded_f_zerror(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -945,7 +955,7 @@ void deluded_zerror(DELUDED_SIGNATURE)
     pas_panic("zerror() called with: %s\n", str);
 }
 
-void deluded_zstrlen(DELUDED_SIGNATURE)
+void deluded_f_zstrlen(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -961,7 +971,7 @@ void deluded_zstrlen(DELUDED_SIGNATURE)
     *(int*)rets.ptr = strlen(str);
 }
 
-void deluded_zstrchr(DELUDED_SIGNATURE)
+void deluded_f_zstrchr(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -980,7 +990,7 @@ void deluded_zstrchr(DELUDED_SIGNATURE)
         deluge_ptr_forge(strchr(str, chr), str_ptr.lower, str_ptr.upper, str_ptr.type);
 }
 
-void deluded_zmemchr(DELUDED_SIGNATURE)
+void deluded_f_zmemchr(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
@@ -1006,7 +1016,7 @@ void deluded_zmemchr(DELUDED_SIGNATURE)
         deluge_ptr_forge(result, str_ptr.lower, str_ptr.upper, str_ptr.type);
 }
 
-void deluded_zisdigit(DELUDED_SIGNATURE)
+void deluded_f_zisdigit(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
