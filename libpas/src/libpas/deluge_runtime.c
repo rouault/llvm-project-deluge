@@ -874,7 +874,7 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...)
     pas_vlog(format, args);
     va_end(args);
     pas_log("\n");
-    pas_panic("detected possible attempt to violate memory safety; further execution is not possible.\n");
+    pas_panic("thwarted a futile attempt to violate memory safety.\n");
 }
 
 void deluge_error(const deluge_origin* origin)
