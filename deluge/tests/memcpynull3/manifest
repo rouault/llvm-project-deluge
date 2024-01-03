@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - Yo!
+output-excludes:
+  - No!
