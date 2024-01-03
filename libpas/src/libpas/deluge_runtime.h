@@ -61,7 +61,7 @@ struct deluge_type {
     size_t size;
     size_t alignment;
     const deluge_type* trailing_array;
-    deluge_word_type word_types[1];
+    deluge_word_type word_types[];
 };
 
 struct deluge_origin {
@@ -236,6 +236,7 @@ void* deluge_allocate_int_with_alignment(size_t size, size_t alignment);
 void* deluge_try_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
+void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
 
 void* deluge_allocate_utility(size_t size);
 

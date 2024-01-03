@@ -353,6 +353,18 @@ void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
+PAS_CREATE_TRY_ALLOCATE_ARRAY(
+    deluge_allocate_many_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_typed_runtime_config.base,
+    &deluge_allocator_counts,
+    pas_allocation_result_crash_on_error);
+
+void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
+{
+    return (void*)deluge_allocate_many_impl_by_count(ref, count, 1).begin;
+}
+
 PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     deluge_allocate_utility_impl,
     DELUGE_HEAP_CONFIG,
