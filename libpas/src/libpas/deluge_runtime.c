@@ -41,6 +41,8 @@ const deluge_type deluge_type_type = {
 };
 
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
+pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table =
+    PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 
 PAS_DEFINE_LOCK(deluge_type);
 PAS_DEFINE_LOCK(deluge_global_initialization);
@@ -217,6 +219,12 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
     return add_result.entry->heap;
 }
 
+static unsigned fast_type_hash(const void* type, void* arg)
+{
+    PAS_ASSERT(!arg);
+    return (uintptr_t)type / sizeof(deluge_type);
+}
+
 pas_heap_ref* deluge_get_heap(const deluge_type* type)
 {
     static const bool verbose = false;
@@ -227,9 +235,18 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type)
         pas_log("\n");
     }
     PAS_ASSERT(type != &deluge_int_type);
+    result = (pas_heap_ref*)pas_lock_free_read_ptr_ptr_hashtable_find(
+        &deluge_fast_type_table, fast_type_hash, NULL, type);
+    if (result)
+        return result;
     deluge_type_lock_lock();
     result = get_heap_impl(type);
     deluge_type_lock_unlock();
+    pas_heap_lock_lock();
+    pas_lock_free_read_ptr_ptr_hashtable_set(
+        &deluge_fast_type_table, fast_type_hash, NULL, type, result,
+        pas_lock_free_read_ptr_ptr_hashtable_set_maybe_existing);
+    pas_heap_lock_unlock();
     return result;
 }
 
@@ -363,6 +380,37 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
 {
     return (void*)deluge_allocate_many_impl_by_count(ref, count, 1).begin;
+}
+
+void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "deluge_try_allocate_with_type",
+        .line = 0,
+        .column = 0
+    };
+    if (type == &deluge_int_type)
+        return deluge_try_allocate_int(size);
+    DELUGE_CHECK(
+        !(size % type->size),
+        &origin,
+        "cannot allocate %zu bytes of type %s (have %zu remainder).",
+        size, deluge_type_to_new_string(type), size % type->size);
+    DELUGE_CHECK(
+        type != &deluge_function_type && type != &deluge_type_type,
+        &origin,
+        "cannot allocate special type %s.",
+        deluge_type_to_new_string(type));
+    return deluge_try_allocate_many(deluge_get_heap(type), size / type->size);
+}
+
+void* deluge_allocate_with_type(const deluge_type* type, size_t size)
+{
+    void* result = deluge_try_allocate_with_type(type, size);
+    if (!result)
+        pas_panic_on_out_of_memory_error();
+    return result;
 }
 
 PAS_CREATE_TRY_ALLOCATE_INTRINSIC(

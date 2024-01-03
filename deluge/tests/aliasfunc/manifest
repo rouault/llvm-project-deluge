@@ -1,0 +1,6 @@
+return:
+  success
+output-includes:
+  - str = hello
+  - str = world
+  - x = 42, y = 42

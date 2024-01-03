@@ -9,6 +9,7 @@
 #include "pas_hashtable.h"
 #include "pas_heap_ref.h"
 #include "pas_lock.h"
+#include "pas_lock_free_read_ptr_ptr_hashtable.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -80,6 +81,8 @@ struct deluge_global_initialization_context {
 extern const deluge_type deluge_int_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
+
+extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table;
 
 PAS_DECLARE_LOCK(deluge_type);
 PAS_DECLARE_LOCK(deluge_global_initialization);
@@ -221,8 +224,8 @@ static inline deluge_ptr deluge_ptr_get_next_bytes(
 /* Gives you a heap for the given type. This looks up the heap based on the structural equality
    of the type, so equal types get the same heap.
 
-   It's correct to call this every type you do a memory allocation, but it's not a super great
-   idea. Currently it grabs global locks.
+   It's correct to call this every type you do a memory allocation. It's not the greatest idea, but
+   it will be lock-free (and basically fence-free) in the common case.
 
    The type you pass here must be immortal. The runtime may refer to it forever. (That's not
    strictly necessary so we could change that if we needed to.) */
@@ -237,6 +240,11 @@ void* deluge_try_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
+
+/* This can allocate any type (ints or not), but it's considerably slower than the other allocation
+   entrypoints. The compiler avoids this in most cases. */
+void* deluge_try_allocate_with_type(const deluge_type* type, size_t size);
+void* deluge_allocate_with_type(const deluge_type* type, size_t size);
 
 void* deluge_allocate_utility(size_t size);
 

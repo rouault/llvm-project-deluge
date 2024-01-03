@@ -751,7 +751,9 @@ class Deluge {
       if (GlobalToGetter.count(dyn_cast<GlobalVariable>(G)) ||
           GetterToGlobal.count(dyn_cast<Function>(G))) {
         Function* Getter;
-        if (!(Getter = dyn_cast<Function>(G)))
+        if (GetterToGlobal.count(dyn_cast<Function>(G)))
+          Getter = cast<Function>(G);
+        else
           Getter = GlobalToGetter[cast<GlobalVariable>(G)];
         assert(Getter);
         Instruction* Result = CallInst::Create(
@@ -759,7 +761,8 @@ class Deluge {
         Result->setDebugLoc(InsertBefore->getDebugLoc());
         return Result;
       }
-      assert(isa<Function>(G));
+      assert(isa<Function>(G) ||
+             (isa<GlobalAlias>(G) && isa<Function>(cast<GlobalAlias>(G)->getAliasee())));
       return forgePtrConstantWithLowType(G, LowT);
     }
 
@@ -1930,6 +1933,23 @@ public:
         errs() << "New function: " << *NewF << "\n";
     }
     for (GlobalAlias* G : Aliases) {
+      Constant* C = G->getAliasee();
+      if (Function* TargetF = dyn_cast<Function>(C)) {
+        Function* NewF = Function::Create(DeludedFuncTy, G->getLinkage(), G->getAddressSpace(),
+                                          "deluded_f_" + G->getName(), &M);
+        BasicBlock* BB = BasicBlock::Create(this->C, "deluge_alias_call", NewF);
+        CallInst::Create(
+          DeludedFuncTy, TargetF,
+          { NewF->getArg(0), NewF->getArg(1), NewF->getArg(2), NewF->getArg(3), NewF->getArg(4),
+            NewF->getArg(5) },
+          "", BB);
+        ReturnInst::Create(this->C, BB);
+        FixupTypes(G, NewF);
+        G->replaceAllUsesWith(NewF);
+        G->eraseFromParent();
+        continue;
+      }
+      
       llvm_unreachable("don't know what to do with global aliases yet");
       // FIXME: The GlobalAlias constant expression may produce something that is not at all a valid
       // pointer. It's not at all clear that we get the right behavior here. Probably, we want there to
