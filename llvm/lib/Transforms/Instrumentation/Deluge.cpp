@@ -822,13 +822,17 @@ class Deluge {
     return Result;
   }
 
-  Value* makeIntPtr(Value* V, Instruction *InsertionPoint) {
-    if (V->getType() == IntPtrTy)
+  Value* castInt(Value* V, Type* T, Instruction *InsertionPoint) {
+    if (V->getType() == T)
       return V;
     Instruction* Result =
-      CastInst::CreateIntegerCast(V, IntPtrTy, false, "deluge_makeintptr", InsertionPoint);
+      CastInst::CreateIntegerCast(V, T, false, "deluge_makeintptr", InsertionPoint);
     Result->setDebugLoc(InsertionPoint->getDebugLoc());
     return Result;
+  }
+
+  Value* makeIntPtr(Value* V, Instruction *InsertionPoint) {
+    return castInt(V, IntPtrTy, InsertionPoint);
   }
 
   template<typename Func>
@@ -921,8 +925,8 @@ class Deluge {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
             Memset,
-            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
-              getOrigin(II->getDebugLoc()) });
+            { II->getArgOperand(0), castInt(II->getArgOperand(1), Int32Ty, II),
+              makeIntPtr(II->getArgOperand(2), II), getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
