@@ -972,7 +972,8 @@ class Deluge {
         if (!II->getCalledFunction()->doesNotAccessMemory()) {
           if (verbose)
             llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
-          CallInst::Create(Error, "", II)->setDebugLoc(II->getDebugLoc());
+          CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", II)
+            ->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
           if (hasPtrsForCheck(U->getType()))
@@ -1279,8 +1280,13 @@ class Deluge {
     }
     
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
-      if (CI->isInlineAsm())
-        llvm_unreachable("Don't support InlineAsm, because that shit's not memory safe");
+      if (CI->isInlineAsm()) {
+        CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", I)
+          ->setDebugLoc(I->getDebugLoc());
+        CI->replaceAllUsesWith(UndefValue::get(lowerType(I->getType())));
+        CI->eraseFromParent();
+        return;
+      }
 
       if (verbose)
         errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
