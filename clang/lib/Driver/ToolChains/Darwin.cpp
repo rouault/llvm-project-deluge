@@ -1526,10 +1526,18 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     CmdArgs.push_back("DriverKit");
   }
 
+  if ((true)) {
+    SmallString<128> P(getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "libpas", "build");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+  }
+  
   // Otherwise link libSystem, then the dynamic runtime library, and finally any
   // target specific static runtime library.
-  if (!isTargetDriverKit())
+  if (!isTargetDriverKit()) {
     CmdArgs.push_back("-lSystem");
+    CmdArgs.push_back("-ldeluge");
+  }
 
   // Select the dynamic runtime library and the target specific static library.
   if (isTargetIOSBased()) {
@@ -2383,11 +2391,18 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
   bool ForceBuiltinInc = DriverArgs.hasFlag(
       options::OPT_ibuiltininc, options::OPT_nobuiltininc, /*Default=*/false);
 
+  if ((true)) {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "deluge", "include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+    return;
+  }
+
   // Add <sysroot>/usr/local/include
   if (!NoStdInc && !NoStdlibInc) {
-      SmallString<128> P(Sysroot);
-      llvm::sys::path::append(P, "usr", "local", "include");
-      addSystemInclude(DriverArgs, CC1Args, P);
+    SmallString<128> P(Sysroot);
+    llvm::sys::path::append(P, "usr", "local", "include");
+    addSystemInclude(DriverArgs, CC1Args, P);
   }
 
   // Add the Clang builtin headers (<resource>/include)
@@ -3262,6 +3277,8 @@ static void addDefaultCRTLinkArgs(const Darwin &D, const ArgList &Args,
   else if (D.isMacosxVersionLT(10, 8))
     CmdArgs.push_back("-lcrt1.10.6.o");
   // darwin_crt2 spec is empty.
+
+  CmdArgs.push_back("-ldeluge_crt");
 }
 
 void Darwin::addStartObjectFileArgs(const ArgList &Args,

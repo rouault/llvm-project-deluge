@@ -1313,6 +1313,10 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
     } else if (A->getOption().matches(options::OPT_ibuiltininc)) {
       // This is used only by the driver. No need to pass to cc1.
       continue;
+    } else if (A->getOption().matches(options::OPT_isysroot)) {
+      // In Deluge, we ignore isysroot, except for the linker (which I think only happens on Darwin,
+      // elsewhere it's jsut plain ignored).
+      continue;
     }
 
     // Not translated, render as usual.
@@ -1337,13 +1341,15 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
   if (Arg *A = Args.getLastArg(options::OPT_I_))
     D.Diag(diag::err_drv_I_dash_not_supported) << A->getAsString(Args);
 
-  // If we have a --sysroot, and don't have an explicit -isysroot flag, add an
-  // -isysroot to the CC1 invocation.
-  StringRef sysroot = C.getSysRoot();
-  if (sysroot != "") {
-    if (!Args.hasArg(options::OPT_isysroot)) {
-      CmdArgs.push_back("-isysroot");
-      CmdArgs.push_back(C.getArgs().MakeArgString(sysroot));
+  if ((false)) {
+    // If we have a --sysroot, and don't have an explicit -isysroot flag, add an
+    // -isysroot to the CC1 invocation.
+    StringRef sysroot = C.getSysRoot();
+    if (sysroot != "") {
+      if (!Args.hasArg(options::OPT_isysroot)) {
+        CmdArgs.push_back("-isysroot");
+        CmdArgs.push_back(C.getArgs().MakeArgString(sysroot));
+      }
     }
   }
 

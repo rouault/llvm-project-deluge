@@ -1348,8 +1348,10 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       CompilerPath = Split.second;
     }
   }
-  if (const Arg *A = Args.getLastArg(options::OPT__sysroot_EQ))
+  if (const Arg *A = Args.getLastArg(options::OPT__sysroot_EQ)) {
     SysRoot = A->getValue();
+    //Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << "sysroot";
+  }
   if (const Arg *A = Args.getLastArg(options::OPT__dyld_prefix_EQ))
     DyldPrefix = A->getValue();
 
