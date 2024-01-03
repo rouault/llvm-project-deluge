@@ -7,6 +7,7 @@
 #include <llvm/TargetParser/Triple.h>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace llvm;
 
@@ -251,8 +252,8 @@ class Deluge {
   DelugeTypeData FunctionDTD;
   DelugeTypeData Invalid;
 
-  std::unordered_map<GlobalVariable*, Function*> GlobalToGetter;
-  std::unordered_map<Function*, GlobalVariable*> GetterToGlobal;
+  std::unordered_map<GlobalValue*, Function*> GlobalToGetter;
+  std::unordered_set<Value*> Getters;
 
   std::vector<ConstantPoolEntry> ConstantPoolEntries;
   std::unordered_map<ConstantPoolEntry, size_t> ConstantPoolEntryIndex;
@@ -747,14 +748,10 @@ class Deluge {
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       Type* LowT = GlobalLowTypes[G];
       assert(!GlobalToGetter.count(nullptr));
-      assert(!GetterToGlobal.count(nullptr));
-      if (GlobalToGetter.count(dyn_cast<GlobalVariable>(G)) ||
-          GetterToGlobal.count(dyn_cast<Function>(G))) {
-        Function* Getter;
-        if (GetterToGlobal.count(dyn_cast<Function>(G)))
-          Getter = cast<Function>(G);
-        else
-          Getter = GlobalToGetter[cast<GlobalVariable>(G)];
+      assert(!Getters.count(nullptr));
+      assert(!Getters.count(G));
+      if (GlobalToGetter.count(G)) {
+        Function* Getter = GlobalToGetter[G];
         assert(Getter);
         Instruction* Result = CallInst::Create(
           GlobalGetterTy, Getter, { InitializationContext }, "deluge_call_getter", InsertBefore);
@@ -1668,12 +1665,18 @@ public:
       GlobalLowTypes[NewG] = GlobalLowTypes[G];
     };
 
-    for (GlobalVariable* G : Globals) {
+    auto HandleGlobal = [&] (GlobalValue* G) {
       Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
                                         "deluded_g_" + G->getName(), &M);
       GlobalToGetter[G] = NewF;
-      GetterToGlobal[NewF] = G;
+      Getters.insert(NewF);
       FixupTypes(G, NewF);
+    };
+    for (GlobalVariable* G : Globals)
+      HandleGlobal(G);
+    for (GlobalAlias* G : Aliases) {
+      if (isa<GlobalVariable>(G->getAliasee()))
+        HandleGlobal(G);
     }
     
     for (GlobalVariable* G : Globals) {
@@ -1947,6 +1950,19 @@ public:
         FixupTypes(G, NewF);
         G->replaceAllUsesWith(NewF);
         G->eraseFromParent();
+        continue;
+      }
+
+      if (GlobalVariable* GV = dyn_cast<GlobalVariable>(C)) {
+        Function* NewF = GlobalToGetter[G];
+        Function* TargetF = GlobalToGetter[GV];
+        assert(NewF);
+        assert(TargetF);
+        BasicBlock* BB = BasicBlock::Create(this->C, "deluge_alias_global", NewF);
+        ReturnInst::Create(
+          this->C,
+          CallInst::Create(GlobalGetterTy, TargetF, { NewF->getArg(0) }, "deluge_forward_global", BB),
+          BB);
         continue;
       }
       
