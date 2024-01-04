@@ -348,7 +348,7 @@ AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadic,
     } else {
       Alignment =
           std::max(getContext().getTypeAlign(Ty),
-                   (unsigned)getTarget().getPointerWidth(LangAS::Default));
+                   (unsigned)getTarget().getConstexprPointerWidth(LangAS::Default)); // LMAO, WTF
     }
     Size = llvm::alignTo(Size, Alignment);
 
