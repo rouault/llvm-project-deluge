@@ -151,13 +151,14 @@ enum class AlignRequirementKind {
 
 struct TypeInfo {
   uint64_t Width = 0;
+  uint64_t ConstexprWidth = 0;
   unsigned Align = 0;
   AlignRequirementKind AlignRequirement;
 
   TypeInfo() : AlignRequirement(AlignRequirementKind::None) {}
-  TypeInfo(uint64_t Width, unsigned Align,
+  TypeInfo(uint64_t Width, uint64_t ConstexprWidth, unsigned Align,
            AlignRequirementKind AlignRequirement)
-      : Width(Width), Align(Align), AlignRequirement(AlignRequirement) {}
+    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), AlignRequirement(AlignRequirement) {}
   bool isAlignRequired() {
     return AlignRequirement != AlignRequirementKind::None;
   }
@@ -165,13 +166,14 @@ struct TypeInfo {
 
 struct TypeInfoChars {
   CharUnits Width;
+  CharUnits ConstexprWidth;
   CharUnits Align;
   AlignRequirementKind AlignRequirement;
 
   TypeInfoChars() : AlignRequirement(AlignRequirementKind::None) {}
-  TypeInfoChars(CharUnits Width, CharUnits Align,
+  TypeInfoChars(CharUnits Width, CharUnits ConstexprWidth, CharUnits Align,
                 AlignRequirementKind AlignRequirement)
-      : Width(Width), Align(Align), AlignRequirement(AlignRequirement) {}
+    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), AlignRequirement(AlignRequirement) {}
   bool isAlignRequired() {
     return AlignRequirement != AlignRequirementKind::None;
   }
@@ -2296,6 +2298,9 @@ public:
   uint64_t getTypeSize(QualType T) const { return getTypeInfo(T).Width; }
   uint64_t getTypeSize(const Type *T) const { return getTypeInfo(T).Width; }
 
+  uint64_t getConstexprTypeSize(QualType T) const { return getTypeInfo(T).ConstexprWidth; }
+  uint64_t getConstepxrTypeSize(const Type *T) const { return getTypeInfo(T).ConstexprWidth; }
+
   /// Return the size of the character type, in bits.
   uint64_t getCharWidth() const {
     return getTypeSize(CharTy);
@@ -2311,6 +2316,8 @@ public:
   /// characters.
   CharUnits getTypeSizeInChars(QualType T) const;
   CharUnits getTypeSizeInChars(const Type *T) const;
+  CharUnits getConstexprTypeSizeInChars(QualType T) const;
+  CharUnits getConstexprTypeSizeInChars(const Type *T) const;
 
   std::optional<CharUnits> getTypeSizeInCharsIfKnown(QualType Ty) const {
     if (Ty->isIncompleteType() || Ty->isDependentType())

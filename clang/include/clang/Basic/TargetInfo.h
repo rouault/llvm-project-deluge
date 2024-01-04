@@ -83,6 +83,7 @@ enum class FloatModeKind {
 /// CPU target.
 struct TransferrableTargetInfo {
   unsigned short PointerWidth, PointerAlign;
+  unsigned char ConstexprPointerWidth;
   unsigned char BoolWidth, BoolAlign;
   unsigned char IntWidth, IntAlign;
   unsigned char HalfWidth, HalfAlign;
@@ -449,6 +450,10 @@ public:
   /// specified address space.
   uint64_t getPointerWidth(LangAS AddrSpace) const {
     return AddrSpace == LangAS::Default ? PointerWidth
+                                        : getPointerWidthV(AddrSpace);
+  }
+  uint64_t getConstexprPointerWidth(LangAS AddrSpace) const {
+    return AddrSpace == LangAS::Default ? ConstexprPointerWidth
                                         : getPointerWidthV(AddrSpace);
   }
   uint64_t getPointerAlign(LangAS AddrSpace) const {
