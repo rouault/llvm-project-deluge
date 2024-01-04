@@ -915,6 +915,61 @@ void deluge_global_initialization_context_unlock(deluge_global_initialization_co
         deluge_global_initialization_lock_unlock();
 }
 
+void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca)
+{
+    if (stack->size >= stack->capacity) {
+        void** new_array;
+        size_t new_capacity;
+        PAS_ASSERT(stack->size == stack->capacity);
+
+        new_capacity = (stack->capacity + 1) * 2;
+        new_array = (void**)deluge_allocate_utility(new_capacity * sizeof(void*));
+
+        memcpy(new_array, stack->array, stack->size * sizeof(void*));
+
+        stack->array = new_array;
+        stack->capacity = new_capacity;
+
+        PAS_ASSERT(stack->size < stack->capacity);
+    }
+    PAS_ASSERT(stack->size < stack->capacity);
+
+    stack->array[stack->size++] = alloca;
+}
+
+void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size)
+{
+    // We use our own origin because the compiler would have had to mess up real bad for an error to
+    // happen here. Not sure it's possible for an error to happen here other than via a miscompile. But,
+    // even in case of miscompile, we'll always do the type-safe thing here. Worst case, we free allocas
+    // too soon, but then they are freed into the right heap.
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "deluge_alloca_stack_restore",
+        .line = 0,
+        .column = 0
+    };
+    DELUGE_CHECK(
+        size <= stack->size,
+        &origin,
+        "cannot restore alloca stack to %zu, size is %zu.\n",
+        size, stack->size);
+    for (size_t index = size; index < stack->size; ++index)
+        deluge_deallocate(stack->array[index]);
+    stack->size = size;
+}
+
+void deluge_alloca_stack_destroy(deluge_alloca_stack* stack)
+{
+    size_t index;
+
+    PAS_ASSERT(stack->size <= stack->capacity);
+
+    for (index = stack->size; index--;)
+        deluge_deallocate(stack->array[index]);
+    deluge_deallocate(stack->array);
+}
+
 void deluge_panic(const deluge_origin* origin, const char* format, ...)
 {
     va_list args;

@@ -15,11 +15,13 @@ PAS_BEGIN_EXTERN_C;
 
 /* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
 
+struct deluge_alloca_stack;
 struct deluge_global_initialization_context;
 struct deluge_origin;
 struct deluge_ptr;
 struct deluge_type;
 struct pas_stream;
+typedef struct deluge_alloca_stack deluge_alloca_stack;
 typedef struct deluge_global_initialization_context deluge_global_initialization_context;
 typedef struct deluge_origin deluge_origin;
 typedef struct deluge_ptr deluge_ptr;
@@ -77,6 +79,18 @@ struct deluge_global_initialization_context {
     deluge_ptr ptr;
     deluge_global_initialization_context* outer;
 };
+
+struct deluge_alloca_stack {
+    void** array;
+    size_t size;
+    size_t capacity;
+};
+
+#define DELUGE_ALLOCA_STACK_INITIALIZER { \
+        .array = NULL, \
+        .size = 0, \
+        .capacity = 0 \
+    }
 
 extern const deluge_type deluge_int_type;
 extern const deluge_type deluge_function_type;
@@ -414,6 +428,11 @@ void* deluge_va_arg_impl(
 deluge_global_initialization_context* deluge_global_initialization_context_lock_and_find(
     deluge_global_initialization_context* context, void* global_getter);
 void deluge_global_initialization_context_unlock(deluge_global_initialization_context* context);
+
+void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca);
+static inline size_t deluge_alloca_stack_save(deluge_alloca_stack* stack) { return stack->size; }
+void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size);
+void deluge_alloca_stack_destroy(deluge_alloca_stack* stack);
 
 void deluge_error(const deluge_origin* origin);
 

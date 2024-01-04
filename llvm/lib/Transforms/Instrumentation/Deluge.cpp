@@ -190,6 +190,7 @@ class Deluge {
   StructType* LowWidePtrTy;
   StructType* OriginTy;
   StructType* GlobalInitializationContextTy;
+  StructType* AllocaStackTy;
   FunctionType* DeludedFuncTy;
   FunctionType* GlobalGetterTy;
   Constant* LowRawNull;
@@ -211,6 +212,7 @@ class Deluge {
   FunctionCallee TryAllocateOne;
   FunctionCallee AllocateOne;
   FunctionCallee TryAllocateMany;
+  FunctionCallee AllocateMany;
   FunctionCallee AllocateUtility;
   FunctionCallee TryReallocateInt;
   FunctionCallee TryReallocateIntWithAlignment;
@@ -226,6 +228,9 @@ class Deluge {
   FunctionCallee VAArgImpl;
   FunctionCallee GlobalInitializationContextLockAndFind;
   FunctionCallee GlobalInitializationContextUnlock;
+  FunctionCallee AllocaStackPush;
+  FunctionCallee AllocaStackRestore;
+  FunctionCallee AllocaStackDestroy;
   FunctionCallee Error;
   FunctionCallee RealMemset;
 
@@ -270,6 +275,7 @@ class Deluge {
   BitCastInst* FutureIntFrame;
   BitCastInst* FutureTypedFrame;
   BitCastInst* FutureReturnBuffer;
+  BitCastInst* FutureAllocaStack;
 
   size_t IntFrameSize;
   size_t IntFrameAlignment;
@@ -1015,6 +1021,32 @@ class Deluge {
         II->eraseFromParent();
         return true;
 
+      case Intrinsic::stacksave: {
+        Instruction* SizePtr = GetElementPtrInst::Create(
+          AllocaStackTy, FutureAllocaStack,
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+          "deluge_alloca_stack_size_ptr", II);
+        SizePtr->setDebugLoc(II->getDebugLoc());
+        Instruction* Load = new LoadInst(IntPtrTy, SizePtr, "deluge_alloca_stack_size", II);
+        Load->setDebugLoc(II->getDebugLoc());
+        Instruction* Cast = new IntToPtrInst(Load, LowRawPtrTy, "deluge_alloca_stack_size_to_ptr", II);
+        Cast->setDebugLoc(II->getDebugLoc());
+        II->replaceAllUsesWith(forgeBadPtr(Cast, II));
+        II->eraseFromParent();
+        return true;
+      }
+
+      case Intrinsic::stackrestore: {
+        lowerConstantOperand(II->getArgOperandUse(0), I);
+        Instruction* Cast = new PtrToIntInst(
+          lowerPtr(II->getArgOperand(0), II), IntPtrTy, "deluge_alloca_stack_size", II);
+        Cast->setDebugLoc(II->getDebugLoc());
+        CallInst::Create(AllocaStackRestore, { FutureAllocaStack, Cast }, "", II)
+          ->setDebugLoc(II->getDebugLoc());
+        II->eraseFromParent();
+        return true;
+      }
+
       default:
         if (!II->getCalledFunction()->doesNotAccessMemory()) {
           if (verbose)
@@ -1184,16 +1216,51 @@ class Deluge {
     lowerConstantOperands(I);
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
-      assert(AI->getParent() == FirstRealBlock); // FIXME: We could totally support this.
       if (!AI->hasNUsesOrMore(1)) {
         // By this point we may have dead allocas, due to earlyLowerInstruction. Only happens for allocas
         // used as type hacks for stdfil API.
         return;
       }
       Type* LowT = lowerType(AI->getAllocatedType());
+      DelugeTypeData* DTD = dataForLowType(LowT);
+      if (AI->getParent() != FirstRealBlock || AI->isArrayAllocation()) {
+        // This is the especially fun case of a dynamic alloca! We allocate something and then pool it
+        // until return.
+        Instruction* Alloc = nullptr;;
+        if (DTD == &Int) {
+          size_t Alignment = DL.getABITypeAlign(LowT).value();
+          size_t Size = DL.getTypeStoreSize(LowT);
+          Instruction* Mul = BinaryOperator::CreateMul(
+            AI->getArraySize(), ConstantInt::get(IntPtrTy, Size), "deluge_alloca_mul", AI);
+          Mul->setDebugLoc(AI->getDebugLoc());
+          if (Alignment > MinAlign) {
+            Alloc = CallInst::Create(
+              AllocateIntWithAlignment, { Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              "deluge_alloca_int", AI);
+          } else
+            Alloc = CallInst::Create(AllocateInt, { Mul }, "deluge_alloca_int", AI);
+        } else {
+          Value* Heap = getHeap(DTD, AI);
+          if (Constant* C = dyn_cast<Constant>(AI->getArraySize())) {
+            if (C->isOneValue())
+              Alloc = CallInst::Create(AllocateOne, { Heap }, "deluge_alloca_one", AI);
+          }
+          if (!Alloc) {
+            Alloc = CallInst::Create(
+              AllocateMany, { Heap, AI->getArraySize() }, "deluge_alloc_many", AI);
+          }
+        }
+        Alloc->setDebugLoc(AI->getDebugLoc());
+        CallInst::Create(
+          AllocaStackPush, { FutureAllocaStack, Alloc }, "", AI)->setDebugLoc(AI->getDebugLoc());
+        Instruction* Upper = GetElementPtrInst::Create(
+          LowT, Alloc, { AI->getArraySize() }, "deluge_alloca_upper", AI);
+        AI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, AI));
+        AI->eraseFromParent();
+        return;
+      }
       Value* Base;
       size_t Offset;
-      DelugeTypeData* DTD = dataForLowType(LowT);
       if (!hasPtrsForCheck(LowT)) {
         assert(DTD == &Int);
         size_t Alignment = DL.getABITypeAlign(LowT).value();
@@ -1590,10 +1657,10 @@ public:
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create(
       {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "deluge_wide_ptr");
-    OriginTy = StructType::create(
-      {LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "deluge_origin");
+    OriginTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "deluge_origin");
     GlobalInitializationContextTy = StructType::create(
       {LowRawPtrTy, LowWidePtrTy, LowRawPtrTy}, "deluge_global_initialization_context");
+    AllocaStackTy = StructType::create({LowRawPtrTy, IntPtrTy, IntPtrTy}, "deluge_alloca_bag");
     // See DELUDED_SIGNATURE in deluge_runtime.h.
     DeludedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);
@@ -1662,6 +1729,7 @@ public:
     FutureIntFrame = makeDummy(LowRawPtrTy);
     FutureTypedFrame = makeDummy(LowRawPtrTy);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
+    FutureAllocaStack = makeDummy(LowRawPtrTy);
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
@@ -1671,6 +1739,7 @@ public:
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
     TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
@@ -1686,6 +1755,10 @@ public:
     VAArgImpl = M.getOrInsertFunction("deluge_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
     GlobalInitializationContextLockAndFind = M.getOrInsertFunction("deluge_global_initialization_context_lock_and_find", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     GlobalInitializationContextUnlock = M.getOrInsertFunction("deluge_global_initialization_context_unlock", VoidTy, LowRawPtrTy);
+    AllocaStackPush = M.getOrInsertFunction("deluge_alloca_stack_push", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    AllocaStackRestore = M.getOrInsertFunction(
+      "deluge_alloca_stack_restore", VoidTy, LowRawPtrTy, IntPtrTy);
+    AllocaStackDestroy = M.getOrInsertFunction("deluge_alloca_stack_destroy", VoidTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
@@ -1927,6 +2000,19 @@ public:
           assert(!ReturnBufferAlignment);
         }
 
+        if (FutureAllocaStack->hasNUsesOrMore(1)) {
+          AllocaInst* AllocaStack =
+            new AllocaInst(AllocaStackTy, 0, "deluge_alloca_bag_alloca", InsertionPoint);
+          CallInst::Create(
+            RealMemset,
+            { AllocaStack, ConstantInt::get(Int8Ty, 0),
+              ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(AllocaStackTy)),
+              ConstantInt::get(Int1Ty, false) },
+            "", InsertionPoint);
+          FutureAllocaStack->replaceAllUsesWith(AllocaStack);
+          CallInst::Create(AllocaStackDestroy, { AllocaStack }, "", Return);
+        }
+
         InsertionPoint = &*FirstRealBlock->getFirstInsertionPt();
         
         if (IntFrameSize) {
@@ -2053,6 +2139,7 @@ public:
     delete FutureIntFrame;
     delete FutureTypedFrame;
     delete FutureReturnBuffer;
+    delete FutureAllocaStack;
 
     if (verbose)
       errs() << "Here's the deluded module:\n" << M << "\n";
