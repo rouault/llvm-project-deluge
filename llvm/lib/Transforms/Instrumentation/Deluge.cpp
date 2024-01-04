@@ -3,6 +3,7 @@
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Operator.h>
 #include <llvm/IR/TypedPointerType.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/TargetParser/Triple.h>
 #include <vector>
@@ -896,8 +897,8 @@ class Deluge {
     }
   }
 
-  void lowerConstantOperand(Use& U, Instruction* I)
-  {
+  void lowerConstantOperand(Use& U, Instruction* I) {
+    assert(!isa<PHINode>(I));
     if (Constant* C = dyn_cast<Constant>(U)) {
       if (ultraVerbose)
         errs() << "Got U = " << *U << ", C = " << *C << "\n";
@@ -1213,6 +1214,13 @@ class Deluge {
     if (verbose)
       errs() << "Lowering: " << *I << "\n";
 
+    if (PHINode* P = dyn_cast<PHINode>(I)) {
+      for (unsigned Index = P->getNumIncomingValues(); Index--;)
+        lowerConstantOperand(P->getOperandUse(Index), P->getIncomingBlock(Index)->getTerminator());
+      P->mutateType(lowerType(P->getType()));
+      return;
+    }
+
     lowerConstantOperands(I);
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
@@ -1359,7 +1367,9 @@ class Deluge {
         isa<UIToFPInst>(I) ||
         isa<SIToFPInst>(I) ||
         isa<FPToUIInst>(I) ||
-        isa<FPToSIInst>(I)) {
+        isa<FPToSIInst>(I) ||
+        isa<BinaryOperator>(I) ||
+        isa<UnaryOperator>(I)) {
       // We're gucci.
       return;
     }
@@ -1537,7 +1547,6 @@ class Deluge {
         isa<ShuffleVectorInst>(I) ||
         isa<ExtractValueInst>(I) ||
         isa<InsertValueInst>(I) ||
-        isa<PHINode>(I) ||
         isa<SelectInst>(I)) {
       I->mutateType(lowerType(I->getType()));
       return;
@@ -1634,6 +1643,27 @@ class Deluge {
       }
       return;
     }
+
+    errs() << "Unrecognized instruction: " << *I << "\n";
+    llvm_unreachable("Unknown instruction");
+  }
+
+  // This utility function runs before we've set up any of the rest of the pass's state. It has two jobs:
+  // - Ensure that the module can safely be manipulated by this pass; if not, we ICE. This doesn't catch
+  //   all possible Deluge-affecting issues. Some issues are caught by the pass's later logic. This only
+  //   catches issues that would cause that logic to go unsafely off the rails.
+  // - Split critical edges. The rest of this pass strongly depends on all critical edges being split.
+  void prepare() {
+    for (Function& F : M.functions()) {
+      for (BasicBlock& BB : F) {
+        for (Instruction& I : BB) {
+          if (isa<IndirectBrInst>(&I))
+            llvm_unreachable("Don't support IndirectBr yet (and maybe never will)");
+        }
+      }
+
+      SplitAllCriticalEdges(F);
+    }
   }
 
 public:
@@ -1644,6 +1674,11 @@ public:
   void run() {
     if (verbose)
       errs() << "Going to town on module:\n" << M << "\n";
+
+    prepare();
+
+    if (verbose)
+      errs() << "Prepared module:\n" << M << "\n";
 
     FunctionName = "<internal>";
     
@@ -2143,6 +2178,7 @@ public:
 
     if (verbose)
       errs() << "Here's the deluded module:\n" << M << "\n";
+    verifyModule(M);
   }
 };
 
