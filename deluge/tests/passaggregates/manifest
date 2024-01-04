@@ -1,0 +1,21 @@
+return:
+  success
+output-includes:
+  - foo.x = 1
+  - foo.y = 2
+  - bar.x = 1.5
+  - bar.y = 2.3
+  - baz.x = hello
+  - baz.y = world
+  - stuff.x = 3
+  - stuff.y = 4
+  - stuff.z = 5
+  - stuff.w = 6
+  - thingy.x = 3.8
+  - thingy.y = 4.1
+  - thingy.z = 5.3
+  - thingy.w = 6.6
+  - blah.x = za wolnosc
+  - blah.y = nasza
+  - blah.z = i
+  - blah.w = wasza

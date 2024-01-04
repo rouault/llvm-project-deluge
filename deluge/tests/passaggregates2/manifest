@@ -1,0 +1,34 @@
+return:
+  success
+output-includes:
+  - foo/a = 42
+  - foo.x = 1
+  - foo.y = 2
+  - foo/b = yo
+  - bar/a = spoko
+  - bar.x = 1.5
+  - bar.y = 2.3
+  - bar/b = 3.14
+  - baz/a = 2.17
+  - baz.x = hello
+  - baz.y = world
+  - baz/b = F
+  - stuff/a = bardzo
+  - stuff.x = 3
+  - stuff.y = 4
+  - stuff.z = 5
+  - stuff.w = 6
+  - stuff/b = dobrze
+  - thingy/a = 9.99
+  - thingy.x = 3.8
+  - thingy.y = 4.1
+  - thingy.z = 5.3
+  - thingy.w = 6.6
+  - thingy/b = wat
+  - blah/a = liberum
+  - blah.x = za wolnosc
+  - blah.y = nasza
+  - blah.z = i
+  - blah.w = wasza
+  - blah/b = veto
+
