@@ -1204,16 +1204,6 @@ class Deluge {
     return false;
   }
   
-  // FIXME: Eventually, global variables in a module will have some kind of checking associated with
-  // them so that if one module uses a global variable defined in another, then you cannot get a type
-  // confused wide pointer, with any combination of these things used as the enforcement mechanism:
-  // - Accessing a global requires checking some side-state of the global that tells you the type
-  //   that the global was really allocated with
-  // - Extern globals are implemented as function calls that return a wide pointer with the right type.
-  // - Runtime maintains a global registry of types associated with globals, and every module that
-  //   knows of a global tells the runtime what it expects of the type. The runtime may then trap if
-  //   it detects a contradiction.
-
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
   void lowerInstruction(Instruction *I) {
     if (verbose)
