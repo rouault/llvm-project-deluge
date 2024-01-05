@@ -719,23 +719,45 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
 
   bool NoStdOrDefaultLibs =
-      Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs);
+    Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs);
   bool ForceLinkBuiltins = Args.hasArg(options::OPT_fapple_link_rtlib);
-  if (!NoStdOrDefaultLibs || ForceLinkBuiltins) {
-    // link_ssp spec is empty.
+  if ((true)) {
+    SmallString<128> P(getToolChain().getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "libpas", "build");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-ldeluge");
+    
+    // libdeluge depends on libSystem, so lets make sure it's there.
+    getMachOToolChain().AddLinkRuntimeLibArgs(Args, CmdArgs,
+                                              ForceLinkBuiltins);
+    
+    // No need to do anything for pthreads. Claim argument to avoid warning.
+    Args.ClaimAllArgs(options::OPT_pthread);
+    Args.ClaimAllArgs(options::OPT_pthreads);
 
-    // If we have both -nostdlib/nodefaultlibs and -fapple-link-rtlib then
-    // we just want to link the builtins, not the other libs like libSystem.
-    if (NoStdOrDefaultLibs && ForceLinkBuiltins) {
-      getMachOToolChain().AddLinkRuntimeLib(Args, CmdArgs, "builtins");
-    } else {
-      // Let the tool chain choose which runtime library to link.
-      getMachOToolChain().AddLinkRuntimeLibArgs(Args, CmdArgs,
-                                                ForceLinkBuiltins);
+    if (!NoStdOrDefaultLibs) {
+      SmallString<128> P(getToolChain().getDriver().InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "musl", "lib");
+      CmdArgs.push_back(Args.MakeArgString("-L" + P));
+      CmdArgs.push_back("-ldeluded_c");
+    }
+  } else {
+    if (!NoStdOrDefaultLibs || ForceLinkBuiltins) {
+      // link_ssp spec is empty.
 
-      // No need to do anything for pthreads. Claim argument to avoid warning.
-      Args.ClaimAllArgs(options::OPT_pthread);
-      Args.ClaimAllArgs(options::OPT_pthreads);
+      // If we have both -nostdlib/nodefaultlibs and -fapple-link-rtlib then
+      // we just want to link the builtins, not the other libs like libSystem.
+      if (NoStdOrDefaultLibs && ForceLinkBuiltins) {
+        getMachOToolChain().AddLinkRuntimeLib(Args, CmdArgs, "builtins");
+      } else {
+        // Let the tool chain choose which runtime library to link.
+        getMachOToolChain().AddLinkRuntimeLibArgs(Args, CmdArgs,
+                                                  ForceLinkBuiltins);
+
+        // No need to do anything for pthreads. Claim argument to avoid warning.
+        Args.ClaimAllArgs(options::OPT_pthread);
+        Args.ClaimAllArgs(options::OPT_pthreads);
+      }
     }
   }
 
@@ -1528,18 +1550,10 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     CmdArgs.push_back("DriverKit");
   }
 
-  if ((true)) {
-    SmallString<128> P(getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "libpas", "build");
-    CmdArgs.push_back(Args.MakeArgString("-L" + P));
-  }
-  
   // Otherwise link libSystem, then the dynamic runtime library, and finally any
   // target specific static runtime library.
-  if (!isTargetDriverKit()) {
+  if (!isTargetDriverKit())
     CmdArgs.push_back("-lSystem");
-    CmdArgs.push_back("-ldeluge");
-  }
 
   // Select the dynamic runtime library and the target specific static library.
   if (isTargetIOSBased()) {
