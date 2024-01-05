@@ -1655,7 +1655,9 @@ class Deluge {
 
   bool shouldPassThrough(Function* F) {
     return (F->getName() == "__divdc3" ||
-            F->getName() == "__muldc3");
+            F->getName() == "__muldc3" ||
+            F->getName() == "__divsc3" ||
+            F->getName() == "__mulsc3");
   }
 
   // This utility function runs before we've set up any of the rest of the pass's state. It has two jobs:
