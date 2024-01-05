@@ -127,5 +127,7 @@ void zprintf(const char* format, ...);
    used for memory safety violatins (i.e. it's designed to really kill the shit out of the process). */
 void zerror(const char* str);
 
+void zfence(void);
+
 #endif /* DELUGE_STDFIL_H */
 

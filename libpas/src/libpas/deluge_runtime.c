@@ -1158,6 +1158,13 @@ void deluded_f_zisdigit(DELUDED_SIGNATURE)
     *(int*)rets.ptr = isdigit(chr);
 }
 
+void deluded_f_zfence(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    DELUDED_DELETE_ARGS();
+    pas_fence();
+}
+
 #endif /* PAS_ENABLE_DELUGE */
 
 #endif /* LIBPAS_ENABLED */
