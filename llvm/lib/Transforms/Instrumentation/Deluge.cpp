@@ -1822,12 +1822,14 @@ public:
       GlobalLowTypes[NewG] = GlobalLowTypes[G];
     };
 
+    std::vector<GlobalValue*> ToDelete;
     auto HandleGlobal = [&] (GlobalValue* G) {
       Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
                                         "deluded_g_" + G->getName(), &M);
       GlobalToGetter[G] = NewF;
       Getters.insert(NewF);
       FixupTypes(G, NewF);
+      ToDelete.push_back(G);
     };
     for (GlobalVariable* G : Globals)
       HandleGlobal(G);
@@ -2192,6 +2194,11 @@ public:
     delete FutureReturnBuffer;
     delete FutureAllocaStack;
 
+    for (GlobalValue* G : ToDelete)
+      G->replaceAllUsesWith(UndefValue::get(G->getType())); // FIXME - should be zero
+    for (GlobalValue* G : ToDelete)
+      G->eraseFromParent();
+    
     if (verbose)
       errs() << "Here's the deluded module:\n" << M << "\n";
     verifyModule(M);
