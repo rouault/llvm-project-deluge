@@ -461,7 +461,6 @@ void deluded_f_zprint_ptr(DELUDED_SIGNATURE);
 void deluded_f_zerror(DELUDED_SIGNATURE);
 void deluded_f_zstrlen(DELUDED_SIGNATURE);
 void deluded_f_zstrchr(DELUDED_SIGNATURE);
-void deluded_f_zmemchr(DELUDED_SIGNATURE);
 void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 void deluded_f_zfence(DELUDED_SIGNATURE);

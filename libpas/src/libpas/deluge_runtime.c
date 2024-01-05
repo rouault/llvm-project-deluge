@@ -1120,32 +1120,6 @@ void deluded_f_zstrchr(DELUDED_SIGNATURE)
         deluge_ptr_forge(strchr(str, chr), str_ptr.lower, str_ptr.upper, str_ptr.type);
 }
 
-void deluded_f_zmemchr(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zmemchr",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    int chr = deluge_ptr_get_next_int(&args, &origin);
-    size_t length = deluge_ptr_get_next_size_t(&args, &origin);
-    void* result;
-    DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets, &origin);
-    if (!length)
-        result = NULL;
-    else {
-        deluge_check_access_int(str_ptr, length, &origin);
-        result = memchr(str_ptr.ptr, chr, length);
-    }
-    *(deluge_ptr*)rets.ptr =
-        deluge_ptr_forge(result, str_ptr.lower, str_ptr.upper, str_ptr.type);
-}
-
 void deluded_f_zisdigit(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
