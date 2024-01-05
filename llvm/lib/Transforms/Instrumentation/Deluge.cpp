@@ -1747,8 +1747,10 @@ public:
       CaptureType(&G);
     }
     for (Function &F : M.functions()) {
-      if (shouldPassThrough(&F))
+      if (shouldPassThrough(&F)) {
+        assert(F.isDeclaration());
         continue;
+      }
       Functions.push_back(&F);
       CaptureType(&F);
     }
