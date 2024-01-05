@@ -734,6 +734,8 @@ class Deluge {
   }
 
   Value* lowerConstant(Constant* C, Instruction* InsertBefore, Value* InitializationContext) {
+    if (ultraVerbose)
+      errs() << "lowerConstant(" << *C << ", ..., " << *InitializationContext << ")\n";
     assert(C->getType() != LowWidePtrTy);
     
     if (isa<UndefValue>(C)) {
@@ -823,7 +825,7 @@ class Deluge {
     // I am the worst compiler programmer.
     StoreInst* DummyUser = new StoreInst(
       CEInst, LowRawNull, false, Align(), AtomicOrdering::NotAtomic, SyncScope::System);
-    lowerInstruction(CEInst);
+    lowerInstruction(CEInst, InitializationContext);
     Value* Result = DummyUser->getOperand(0);
     delete DummyUser;
     return Result;
@@ -897,12 +899,12 @@ class Deluge {
     }
   }
 
-  void lowerConstantOperand(Use& U, Instruction* I) {
+  void lowerConstantOperand(Use& U, Instruction* I, Value* InitializationContext) {
     assert(!isa<PHINode>(I));
     if (Constant* C = dyn_cast<Constant>(U)) {
       if (ultraVerbose)
         errs() << "Got U = " << *U << ", C = " << *C << "\n";
-      Value* NewC = lowerConstant(C, I, LowRawNull);
+      Value* NewC = lowerConstant(C, I, InitializationContext);
       if (ultraVerbose)
         errs() << "Got NewC = " << *NewC <<"\n";
       U = NewC;
@@ -916,13 +918,13 @@ class Deluge {
     }
   }
 
-  void lowerConstantOperands(Instruction* I) {
+  void lowerConstantOperands(Instruction* I, Value* InitializationContext) {
     if (verbose)
       errs() << "Before arg lowering: " << *I << "\n";
 
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Use& U = I->getOperandUse(Index);
-      lowerConstantOperand(U, I);
+      lowerConstantOperand(U, I, InitializationContext);
       if (ultraVerbose)
         errs() << "After Index = " << Index << ", I = " << *I << "\n";
     }
@@ -941,9 +943,9 @@ class Deluge {
       switch (II->getIntrinsicID()) {
       case Intrinsic::memcpy:
       case Intrinsic::memcpy_inline:
-        lowerConstantOperand(II->getArgOperandUse(0), I);
-        lowerConstantOperand(II->getArgOperandUse(1), I);
-        lowerConstantOperand(II->getArgOperandUse(2), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
         // OK, so it seems bad that we're treating memcpy and memcpy_inline the same. But it's fine.
         // The intent of the inline variant is to cover the low-level programming case where you cannot
         // call outside libraries, but you want to describe a memcpy. However, with Deluge, we're always
@@ -963,9 +965,9 @@ class Deluge {
         return true;
       case Intrinsic::memset:
       case Intrinsic::memset_inline:
-        lowerConstantOperand(II->getArgOperandUse(0), I);
-        lowerConstantOperand(II->getArgOperandUse(1), I);
-        lowerConstantOperand(II->getArgOperandUse(2), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
             Memset,
@@ -975,9 +977,9 @@ class Deluge {
         }
         return true;
       case Intrinsic::memmove:
-        lowerConstantOperand(II->getArgOperandUse(0), I);
-        lowerConstantOperand(II->getArgOperandUse(1), I);
-        lowerConstantOperand(II->getArgOperandUse(2), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
@@ -998,7 +1000,7 @@ class Deluge {
         return true;
 
       case Intrinsic::vastart:
-        lowerConstantOperand(II->getArgOperandUse(0), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         checkPtr(II->getArgOperand(0), II);
         (new StoreInst(ArgBufferPtr, lowerPtr(II->getArgOperand(0), II), II))
           ->setDebugLoc(II->getDebugLoc());
@@ -1006,8 +1008,8 @@ class Deluge {
         return true;
         
       case Intrinsic::vacopy: {
-        lowerConstantOperand(II->getArgOperandUse(0), I);
-        lowerConstantOperand(II->getArgOperandUse(1), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
         checkPtr(II->getArgOperand(0), II);
         checkPtr(II->getArgOperand(1), II);
         Instruction* Load = new LoadInst(
@@ -1038,7 +1040,7 @@ class Deluge {
       }
 
       case Intrinsic::stackrestore: {
-        lowerConstantOperand(II->getArgOperandUse(0), I);
+        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         Instruction* Cast = new PtrToIntInst(
           lowerPtr(II->getArgOperand(0), II), IntPtrTy, "deluge_alloca_stack_size", II);
         Cast->setDebugLoc(II->getDebugLoc());
@@ -1056,7 +1058,7 @@ class Deluge {
             ->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
-          lowerConstantOperand(U, I);
+          lowerConstantOperand(U, I, LowRawNull);
           if (hasPtrsForCheck(U->getType()))
             U = lowerPtr(U, II);
         }
@@ -1082,7 +1084,7 @@ class Deluge {
       if (CI->getCalledOperand() == ZunsafeForgeImpl) {
         if (verbose)
           errs() << "Lowering unsafe forge\n";
-        lowerConstantOperands(CI);
+        lowerConstantOperands(CI, LowRawNull);
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
@@ -1099,7 +1101,7 @@ class Deluge {
       if (CI->getCalledOperand() == ZrestrictImpl) {
         if (verbose)
           errs() << "Lowering restrict\n";
-        lowerConstantOperands(CI);
+        lowerConstantOperands(CI, LowRawNull);
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         Value* TypeRep = dataForLowType(LowT)->TypeRep;
@@ -1118,7 +1120,7 @@ class Deluge {
       if (CI->getCalledOperand() == ZallocImpl) {
         if (verbose)
           errs() << "Lowering alloc\n";
-        lowerConstantOperands(CI);
+        lowerConstantOperands(CI, LowRawNull);
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
@@ -1163,7 +1165,7 @@ class Deluge {
       if (CI->getCalledOperand() == ZreallocImpl) {
         if (verbose)
           errs() << "Lowering realloc\n";
-        lowerConstantOperands(CI);
+        lowerConstantOperands(CI, LowRawNull);
         Value* OrigPtr = lowerPtr(CI->getArgOperand(0), CI);
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
@@ -1205,18 +1207,21 @@ class Deluge {
   }
   
   // This lowers the instruction "in place", so all references to it are fixed up after this runs.
-  void lowerInstruction(Instruction *I) {
+  void lowerInstruction(Instruction *I, Value* InitializationContext) {
     if (verbose)
       errs() << "Lowering: " << *I << "\n";
 
     if (PHINode* P = dyn_cast<PHINode>(I)) {
-      for (unsigned Index = P->getNumIncomingValues(); Index--;)
-        lowerConstantOperand(P->getOperandUse(Index), P->getIncomingBlock(Index)->getTerminator());
+      assert(InitializationContext == LowRawNull);
+      for (unsigned Index = P->getNumIncomingValues(); Index--;) {
+        lowerConstantOperand(
+          P->getOperandUse(Index), P->getIncomingBlock(Index)->getTerminator(), LowRawNull);
+      }
       P->mutateType(lowerType(P->getType()));
       return;
     }
 
-    lowerConstantOperands(I);
+    lowerConstantOperands(I, InitializationContext);
     
     if (AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
       if (!AI->hasNUsesOrMore(1)) {
@@ -1919,6 +1924,8 @@ public:
       Instruction* Return = ReturnInst::Create(C, LowWideNull, BuildBB);
       Value* WidePtr = forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, Return);
       new StoreInst(WidePtr, WidePtrPtr, Return);
+      if (verbose)
+        errs() << "Lowering constant " << *G->getInitializer() << " with initialization context = " << *MyInitializationContext << "\n";
       Value* C = lowerConstant(G->getInitializer(), Return, MyInitializationContext);
       new StoreInst(C, Alloc, Return);
       DTD = dataForLowType(LowWidePtrTy);
@@ -2028,7 +2035,7 @@ public:
         
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I); });
         for (Instruction* I : Instructions)
-          lowerInstruction(I);
+          lowerInstruction(I, LowRawNull);
 
         InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         if (FutureReturnBuffer->hasNUsesOrMore(1)) {
