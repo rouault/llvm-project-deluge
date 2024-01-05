@@ -18,6 +18,10 @@
 #include "pas_try_reallocate.h"
 #include "pas_utils.h"
 #include <ctype.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/uio.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -701,8 +705,8 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
         ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
-void deluge_check_access_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
-                                            const deluge_origin* origin)
+void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                     const deluge_origin* origin)
 {
     check_access_common(ptr, lower, upper, type, 1, origin);
     DELUGE_CHECK(
@@ -952,7 +956,7 @@ void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size)
     DELUGE_CHECK(
         size <= stack->size,
         &origin,
-        "cannot restore alloca stack to %zu, size is %zu.\n",
+        "cannot restore alloca stack to %zu, size is %zu.",
         size, stack->size);
     for (size_t index = size; index < stack->size; ++index)
         deluge_deallocate(stack->array[index]);
@@ -1163,6 +1167,262 @@ void deluded_f_zfence(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     DELUDED_DELETE_ARGS();
     pas_fence();
+}
+
+static void (*deluded_errno_handler)(DELUDED_SIGNATURE);
+
+void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zregister_sys_errno_handler",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr errno_handler = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    DELUGE_CHECK(
+        !deluded_errno_handler,
+        &origin,
+        "errno handler already registered.");
+    deluge_check_function_call(errno_handler, &origin);
+    deluded_errno_handler = (void(*)(DELUDED_SIGNATURE))errno_handler.ptr;
+}
+
+static void set_musl_errno(int errno_value)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "set_musl_errno",
+        .line = 0,
+        .column = 0
+    };
+    uintptr_t return_buffer[2];
+    int* args;
+    DELUGE_CHECK(
+        deluded_errno_handler,
+        &origin,
+        "errno handler not registered when trying to set errno = %d.", errno_value);
+    args = (int*)deluge_allocate_int(sizeof(int));
+    *args = errno_value;
+    memset(return_buffer, 0, sizeof(return_buffer));
+    deluded_errno_handler(args, args + 1, &deluge_int_type,
+                          return_buffer, return_buffer + 2, &deluge_int_type);
+}
+
+static int to_musl_errno(int errno_value)
+{
+    // FIXME: This must be in sync with musl's bits/errno.h, which feels wrong.
+    // FIXME: Wouldn't it be infinitely better if we just gave deluded code the real errno?
+    switch (errno_value) {
+    case EPERM          : return  1;
+    case ENOENT         : return  2;
+    case ESRCH          : return  3;
+    case EINTR          : return  4;
+    case EIO            : return  5;
+    case ENXIO          : return  6;
+    case E2BIG          : return  7;
+    case ENOEXEC        : return  8;
+    case EBADF          : return  9;
+    case ECHILD         : return 10;
+    case EAGAIN         : return 11;
+    case ENOMEM         : return 12;
+    case EACCES         : return 13;
+    case EFAULT         : return 14;
+    case ENOTBLK        : return 15;
+    case EBUSY          : return 16;
+    case EEXIST         : return 17;
+    case EXDEV          : return 18;
+    case ENODEV         : return 19;
+    case ENOTDIR        : return 20;
+    case EISDIR         : return 21;
+    case EINVAL         : return 22;
+    case ENFILE         : return 23;
+    case EMFILE         : return 24;
+    case ENOTTY         : return 25;
+    case ETXTBSY        : return 26;
+    case EFBIG          : return 27;
+    case ENOSPC         : return 28;
+    case ESPIPE         : return 29;
+    case EROFS          : return 30;
+    case EMLINK         : return 31;
+    case EPIPE          : return 32;
+    case EDOM           : return 33;
+    case ERANGE         : return 34;
+    case EDEADLK        : return 35;
+    case ENAMETOOLONG   : return 36;
+    case ENOLCK         : return 37;
+    case ENOSYS         : return 38;
+    case ENOTEMPTY      : return 39;
+    case ELOOP          : return 40;
+    case ENOMSG         : return 42;
+    case EIDRM          : return 43;
+    case ENOSTR         : return 60;
+    case ENODATA        : return 61;
+    case ETIME          : return 62;
+    case ENOSR          : return 63;
+    case EREMOTE        : return 66;
+    case ENOLINK        : return 67;
+    case EPROTO         : return 71;
+    case EMULTIHOP      : return 72;
+    case EBADMSG        : return 74;
+    case EOVERFLOW      : return 75;
+    case EILSEQ         : return 84;
+    case EUSERS         : return 87;
+    case ENOTSOCK       : return 88;
+    case EDESTADDRREQ   : return 89;
+    case EMSGSIZE       : return 90;
+    case EPROTOTYPE     : return 91;
+    case ENOPROTOOPT    : return 92;
+    case EPROTONOSUPPORT: return 93;
+    case ESOCKTNOSUPPORT: return 94;
+    case EOPNOTSUPP     : return 95;
+    case ENOTSUP        : return 95;
+    case EPFNOSUPPORT   : return 96;
+    case EAFNOSUPPORT   : return 97;
+    case EADDRINUSE     : return 98;
+    case EADDRNOTAVAIL  : return 99;
+    case ENETDOWN       : return 100;
+    case ENETUNREACH    : return 101;
+    case ENETRESET      : return 102;
+    case ECONNABORTED   : return 103;
+    case ECONNRESET     : return 104;
+    case ENOBUFS        : return 105;
+    case EISCONN        : return 106;
+    case ENOTCONN       : return 107;
+    case ESHUTDOWN      : return 108;
+    case ETOOMANYREFS   : return 109;
+    case ETIMEDOUT      : return 110;
+    case ECONNREFUSED   : return 111;
+    case EHOSTDOWN      : return 112;
+    case EHOSTUNREACH   : return 113;
+    case EALREADY       : return 114;
+    case EINPROGRESS    : return 115;
+    case ESTALE         : return 116;
+    case EDQUOT         : return 122;
+    case ECANCELED      : return 125;
+    case EOWNERDEAD     : return 130;
+    case ENOTRECOVERABLE: return 131;
+    default:
+        // FIXME: Eventually, we'll probably have to map weird host errnos. Or, just get rid of this
+        // madness and have musl use system errno's.
+        PAS_ASSERT(!"Bad errno value");
+        return 0;
+    }
+}
+
+static void set_errno(int errno_value)
+{
+    set_musl_errno(to_musl_errno(errno_value));
+}
+
+struct musl_winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
+
+static int zsys_ioctl_impl(int fd, unsigned long request, deluge_ptr args)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_ioctl_impl",
+        .line = 0,
+        .column = 0
+    };
+    // NOTE: This must use musl's ioctl numbers, and must treat the passed-in struct as having the
+    // deluded musl layout.
+    switch (request) {
+    case 0x5413: { // TIOCGWINSZ
+        deluge_ptr musl_winsize_ptr;
+        struct musl_winsize* musl_winsize;
+        struct winsize winsize;
+        musl_winsize_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+        deluge_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
+        musl_winsize = (struct musl_winsize*)musl_winsize_ptr.ptr;
+        if (ioctl(fd, TIOCGWINSZ, &winsize) < 0) {
+            set_errno(errno);
+            return -1;
+        }
+        musl_winsize->ws_row = winsize.ws_row;
+        musl_winsize->ws_col = winsize.ws_col;
+        musl_winsize->ws_xpixel = winsize.ws_xpixel;
+        musl_winsize->ws_ypixel = winsize.ws_ypixel;
+        return 0;
+    }
+    default:
+        set_errno(EINVAL);
+        return -1;
+    }
+}
+
+void deluded_f_zsys_ioctl(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_ioctl",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    unsigned long request = deluge_ptr_get_next_unsigned_long(&args, &origin);
+    int result = zsys_ioctl_impl(fd, request, args);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    *(int*)rets.ptr = result;
+}
+
+struct musl_iovec { deluge_ptr iov_base; size_t iov_len; };
+
+void deluded_f_zsys_writev(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_writev",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_iov = deluge_ptr_get_next_ptr(&args, &origin);
+    int iovcnt = deluge_ptr_get_next_int(&args, &origin);
+    struct iovec* iov;
+    size_t iov_size;
+    size_t index;
+    ssize_t result;
+    DELUDED_DELETE_ARGS();
+    DELUGE_CHECK(
+        iovcnt >= 0,
+        &origin,
+        "iovcnt cannot be negative; iovcnt = %d.\n", iovcnt);
+    DELUGE_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(struct iovec), iovcnt, &iov_size),
+        &origin,
+        "iovcnt too large, leading to overflow; iovcnt = %d.\n", iovcnt);
+    iov = deluge_allocate_utility(iov_size);
+    for (index = 0; index < (size_t)iovcnt; ++index) {
+        deluge_ptr musl_iov_entry;
+        deluge_ptr musl_iov_base;
+        size_t iov_len;
+        musl_iov_entry = deluge_ptr_with_offset(musl_iov, sizeof(struct musl_iovec) * index);
+        deluge_check_access_ptr(
+            deluge_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_base)),
+            &origin);
+        deluge_check_access_int(
+            deluge_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_len)),
+            sizeof(size_t), &origin);
+        musl_iov_base = ((struct musl_iovec*)musl_iov_entry.ptr)->iov_base;
+        iov_len = ((struct musl_iovec*)musl_iov_entry.ptr)->iov_len;
+        deluge_check_access_int(musl_iov_base, iov_len, &origin);
+        iov[index].iov_base = musl_iov_base.ptr;
+        iov[index].iov_len = iov_len;
+    }
+    result = writev(fd, iov, iovcnt);
+    if (result < 0)
+        set_errno(errno);
+    deluge_deallocate(iov);
+    deluge_check_access_int(rets, sizeof(ssize_t), &origin);
+    *(ssize_t*)rets.ptr = result;
 }
 
 #endif /* PAS_ENABLE_DELUGE */

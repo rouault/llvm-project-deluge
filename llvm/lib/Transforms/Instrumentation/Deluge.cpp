@@ -1793,7 +1793,7 @@ public:
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckAccessFunctionCall = M.getOrInsertFunction("deluge_check_access_function_call_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckAccessFunctionCall = M.getOrInsertFunction("deluge_check_function_call_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     Memset = M.getOrInsertFunction("deluge_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
     Memcpy = M.getOrInsertFunction("deluge_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     Memmove = M.getOrInsertFunction("deluge_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);

@@ -129,5 +129,9 @@ void zerror(const char* str);
 
 void zfence(void);
 
+void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
+int zsys_ioctl(int fd, unsigned long request, ...);
+int zsys_writev(int fd, const void* iov, int iovcnt);
+
 #endif /* DELUGE_STDFIL_H */
 

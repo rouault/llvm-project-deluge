@@ -161,6 +161,16 @@ static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, c
     return result;
 }
 
+static inline deluge_ptr deluge_ptr_with_ptr(deluge_ptr ptr, void* new_ptr)
+{
+    return deluge_ptr_forge(new_ptr, ptr.lower, ptr.upper, ptr.type);
+}
+
+static inline deluge_ptr deluge_ptr_with_offset(deluge_ptr ptr, uintptr_t offset)
+{
+    return deluge_ptr_with_ptr(ptr, (char*)ptr.ptr + offset);
+}
+
 static inline size_t deluge_type_num_words(const deluge_type* type)
 {
     return (type->size + 7) / 8;
@@ -407,6 +417,15 @@ static inline long deluge_ptr_get_next_long(deluge_ptr* ptr, const deluge_origin
     return *(long*)slot_ptr.ptr;
 }
 
+static inline unsigned long deluge_ptr_get_next_unsigned_long(deluge_ptr* ptr,
+                                                              const deluge_origin* origin)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(unsigned long), alignof(unsigned long));
+    deluge_check_access_int(slot_ptr, sizeof(unsigned long), origin);
+    return *(unsigned long*)slot_ptr.ptr;
+}
+
 static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
@@ -446,6 +465,11 @@ void deluded_f_zmemchr(DELUDED_SIGNATURE);
 void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 void deluded_f_zfence(DELUDED_SIGNATURE);
+
+/* Amusingly, the order of these functions tell the story of me porting musl to deluge. */
+void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE);
+void deluded_f_zsys_ioctl(DELUDED_SIGNATURE);
+void deluded_f_zsys_writev(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

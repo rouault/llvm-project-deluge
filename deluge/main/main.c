@@ -117,7 +117,7 @@ int main(int argc, char** argv)
 
     memset(u.return_buffer, 0, sizeof(u.return_buffer));
     deluded_f___init_libc(init_libc_args, init_libc_args + 1, &init_libc_args_type,
-                          u.return_buffer, u.return_buffer + 1, &deluge_int_type);
+                          u.return_buffer, u.return_buffer + 2, &deluge_int_type);
 
     main_args = deluge_allocate_one(deluge_get_heap(&main_args_type));
     main_args->argc = argc;
@@ -125,7 +125,7 @@ int main(int argc, char** argv)
 
     memset(u.return_buffer, 0, sizeof(u.return_buffer));
     deluded_f_main(main_args, main_args + 1, &main_args_type,
-                   u.return_buffer, u.return_buffer + 1, &deluge_int_type);
+                   u.return_buffer, u.return_buffer + 2, &deluge_int_type);
 
     return u.result;
 }
