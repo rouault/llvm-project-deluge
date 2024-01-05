@@ -1073,6 +1073,11 @@ class Deluge {
         if (CI->getCalledOperand())
           errs() << "Callee name = " << CI->getCalledOperand()->getName() << "\n";
       }
+
+      if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+        if (shouldPassThrough(F))
+          return true;
+      }
       
       if (CI->getCalledOperand() == ZunsafeForgeImpl) {
         if (verbose)
@@ -1648,6 +1653,11 @@ class Deluge {
     llvm_unreachable("Unknown instruction");
   }
 
+  bool shouldPassThrough(Function* F) {
+    return (F->getName() == "__divdc3" ||
+            F->getName() == "__muldc3");
+  }
+
   // This utility function runs before we've set up any of the rest of the pass's state. It has two jobs:
   // - Ensure that the module can safely be manipulated by this pass; if not, we ICE. This doesn't catch
   //   all possible Deluge-affecting issues. Some issues are caught by the pass's later logic. This only
@@ -1735,6 +1745,8 @@ public:
       CaptureType(&G);
     }
     for (Function &F : M.functions()) {
+      if (shouldPassThrough(&F))
+        continue;
       Functions.push_back(&F);
       CaptureType(&F);
     }
