@@ -2,9 +2,12 @@
 
 set -e
 
-mkdir -p build/test
+mkdir -p build
+mkdir -p ../deluge/build/test
 
 rm -f build/deluded-*.o
+rm -f ../deluge/build/libdeluge.dylib
+rm -f ../deluge/build/test/libdeluge.dylib
 for x in ../deluge/src/*.c
 do
     xcrun ../build/bin/clang -O3 -g -W -Werror -Wno-pointer-to-int-cast -c -o build/deluded-`basename $x .c`.o $x &
@@ -19,7 +22,7 @@ do_build() {
         xcrun clang -g -O3 -W -Werror -c -o build/$libname-`basename $x .c`.o $x $flags &
     done
     wait
-    xcrun clang -dynamiclib -o build/$libname build/$libname-*.o build/deluded-*.o
+    xcrun clang -dynamiclib -o ../deluge/build/$libname build/$libname-*.o build/deluded-*.o
 }
 
 #do_build test/libpas.dylib ""
@@ -27,5 +30,5 @@ do_build() {
 do_build libdeluge.dylib "-DPAS_DELUGE=1"
 do_build test/libdeluge.dylib "-DPAS_DELUGE=1 -DENABLE_PAS_TESTING=1"
 
-xcrun clang -g -O3 -dynamiclib -o build/libdeluge_crt.dylib ../deluge/main/main.c -Isrc/libpas -undefined dynamic_lookup -DPAS_DELUGE=1
-xcrun clang -g -O3 -dynamiclib -o build/test/libdeluge_crt.dylib ../deluge/main/main.c -Isrc/libpas -undefined dynamic_lookup -DPAS_DELUGE=1 -DENABLE_PAS_TESTING=1
+xcrun clang -g -O3 -dynamiclib -o ../deluge/build/libdeluge_crt.dylib ../deluge/main/main.c -Isrc/libpas -undefined dynamic_lookup -DPAS_DELUGE=1
+xcrun clang -g -O3 -dynamiclib -o ../deluge/build/test/libdeluge_crt.dylib ../deluge/main/main.c -Isrc/libpas -undefined dynamic_lookup -DPAS_DELUGE=1 -DENABLE_PAS_TESTING=1

@@ -40,7 +40,7 @@ $testDirectory.each_entry {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
-        outp.puts "DYLD_LIBRARY_PATH=libpas/build/test:musl/lib #{Shellwords.shellescape(binary)}"
+        outp.puts "DYLD_LIBRARY_PATH=deluge/build/test #{Shellwords.shellescape(binary)}"
     }
     File.open(runScript, "w") {
         | outp |

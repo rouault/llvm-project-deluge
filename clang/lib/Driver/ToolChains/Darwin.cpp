@@ -723,7 +723,7 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   bool ForceLinkBuiltins = Args.hasArg(options::OPT_fapple_link_rtlib);
   if ((true)) {
     SmallString<128> P(getToolChain().getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "libpas", "build");
+    llvm::sys::path::append(P, "..", "..", "deluge", "build");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-ldeluge");
     
@@ -735,12 +735,8 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     Args.ClaimAllArgs(options::OPT_pthread);
     Args.ClaimAllArgs(options::OPT_pthreads);
 
-    if (!NoStdOrDefaultLibs) {
-      SmallString<128> P(getToolChain().getDriver().InstalledDir);
-      llvm::sys::path::append(P, "..", "..", "musl", "lib");
-      CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    if (!NoStdOrDefaultLibs)
       CmdArgs.push_back("-ldeluded_c");
-    }
   } else {
     if (!NoStdOrDefaultLibs || ForceLinkBuiltins) {
       // link_ssp spec is empty.
