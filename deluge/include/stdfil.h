@@ -158,6 +158,7 @@ int zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
 int zsys_readv(int fd, void* buf, __SIZE_TYPE__ size);
 int zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
 int zsys_close(int fd);
+long zsys_lseek(int fd, long offset, int whence);
 
 #endif /* DELUGE_STDFIL_H */
 

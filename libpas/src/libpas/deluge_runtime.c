@@ -1045,7 +1045,7 @@ static void print_str(const char* str)
     size_t length;
     length = strlen(str);
     while (length) {
-        ssize_t result = write(1, str, length);
+        ssize_t result = write(2, str, length);
         PAS_ASSERT(result);
         if (result < 0 && errno == EINTR)
             continue;
@@ -1535,6 +1535,27 @@ void deluded_f_zsys_close(DELUDED_SIGNATURE)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(int), &origin);
     *(int*)rets.ptr = result;
+}
+
+void deluded_f_zsys_lseek(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_lseek",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    long offset = deluge_ptr_get_next_long(&args, &origin);
+    int whence = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    long result = lseek(fd, offset, whence);
+    if (result < 0)
+        set_errno(errno);
+    deluge_check_access_int(rets, sizeof(long), &origin);
+    *(long*)rets.ptr = result;
 }
 
 #endif /* PAS_ENABLE_DELUGE */
