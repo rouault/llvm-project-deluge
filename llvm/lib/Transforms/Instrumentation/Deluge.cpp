@@ -202,6 +202,7 @@ class Deluge {
   Value* ZunsafeForgeImpl;
   Value* ZrestrictImpl;
   Value* ZallocImpl;
+  Value* ZalignedAllocImpl;
   Value* ZreallocImpl;
 
   // Low-level functions used by codegen.
@@ -213,6 +214,7 @@ class Deluge {
   FunctionCallee TryAllocateOne;
   FunctionCallee AllocateOne;
   FunctionCallee TryAllocateMany;
+  FunctionCallee TryAllocateManyWithAlignment;
   FunctionCallee AllocateMany;
   FunctionCallee AllocateUtility;
   FunctionCallee TryReallocateInt;
@@ -1162,6 +1164,49 @@ class Deluge {
         return true;
       }
 
+      if (CI->getCalledOperand() == ZalignedAllocImpl) {
+        if (verbose)
+          errs() << "Lowering alloc\n";
+        lowerConstantOperands(CI, LowRawNull);
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
+        Instruction* Alloc;
+        
+        DelugeTypeData *DTD = dataForLowType(LowT);
+        Value* Count = CI->getArgOperand(2);
+        Value* PassedAlignment = CI->getArgOperand(1);
+        if (!hasPtrsForCheck(HighT)) {
+          assert(DTD == &Int);
+          size_t Alignment = DL.getABITypeAlign(LowT).value();
+          size_t Size = DL.getTypeStoreSize(LowT);
+          Instruction* Mul = BinaryOperator::CreateMul(
+            Count, ConstantInt::get(IntPtrTy, Size), "deluge_alloc_mul", CI);
+          Mul->setDebugLoc(CI->getDebugLoc());
+          Value* TypeAlignment = ConstantInt::get(IntPtrTy, Alignment);
+          Instruction* Compare = new ICmpInst(
+            CI, ICmpInst::ICMP_ULT, PassedAlignment, TypeAlignment, "deluge_aligned_alloc_compare");
+          Compare->setDebugLoc(CI->getDebugLoc());
+          Instruction* AlignmentValue = SelectInst::Create(
+            Compare, TypeAlignment, PassedAlignment, "deluge_aligned_alloc_select", CI);
+          AlignmentValue->setDebugLoc(CI->getDebugLoc());
+          Alloc = CallInst::Create(
+            TryAllocateIntWithAlignment, { Mul, AlignmentValue }, "deluge_alloc_int", CI);
+        } else {
+          Value* Heap = getHeap(DTD, CI);
+          Alloc = CallInst::Create(
+            TryAllocateManyWithAlignment, { Heap, Count, PassedAlignment }, "deluge_alloc_many", CI);
+        }
+        
+        Alloc->setDebugLoc(CI->getDebugLoc());
+        Instruction* Upper = GetElementPtrInst::Create(
+          LowT, Alloc, { CI->getArgOperand(1) }, "deluge_alloc_upper", CI);
+        Upper->setDebugLoc(CI->getDebugLoc());
+        CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
+
       if (CI->getCalledOperand() == ZreallocImpl) {
         if (verbose)
           errs() << "Lowering realloc\n";
@@ -1716,18 +1761,22 @@ public:
       "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZallocImpl = M.getOrInsertFunction(
       "zalloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZalignedAllocImpl = M.getOrInsertFunction(
+      "zaligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
     ZreallocImpl = M.getOrInsertFunction(
       "zrealloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
 
     assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
     assert(cast<Function>(ZrestrictImpl)->isDeclaration());
     assert(cast<Function>(ZallocImpl)->isDeclaration());
+    assert(cast<Function>(ZalignedAllocImpl)->isDeclaration());
     assert(cast<Function>(ZreallocImpl)->isDeclaration());
     
     if (verbose) {
       errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
       errs() << "zrestrict_impl = " << ZrestrictImpl << "\n";
       errs() << "zalloc_impl = " << ZallocImpl << "\n";
+      errs() << "zaligned_lloc_impl = " << ZalignedAllocImpl << "\n";
       errs() << "zrealloc_impl = " << ZreallocImpl << "\n";
     }
 
@@ -1779,12 +1828,13 @@ public:
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
-    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy);
+    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy);
     AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
     TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
@@ -1943,6 +1993,7 @@ public:
           F == ZunsafeForgeImpl ||
           F == ZrestrictImpl ||
           F == ZallocImpl ||
+          F == ZalignedAllocImpl ||
           F == ZreallocImpl)
         continue;
       

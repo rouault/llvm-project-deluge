@@ -11,6 +11,7 @@ typedef struct ztype ztype;
 void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
 void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
 void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
+void* zaligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
@@ -48,6 +49,11 @@ void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 #define zalloc(type, count) ({ \
         type __d_temporary; \
         (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
+    })
+
+#define zaligned_alloc(type, alignment, count) ({ \
+        type __d_temporary; \
+        (type*)zaligned_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(alignment), (__SIZE_TYPE__)(count)); \
     })
 
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at

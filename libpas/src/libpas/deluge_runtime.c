@@ -254,6 +254,15 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type)
     return result;
 }
 
+static void set_errno(int errno_value);
+
+static PAS_ALWAYS_INLINE pas_allocation_result allocation_result_set_errno(pas_allocation_result result)
+{
+    if (!result.did_succeed)
+        set_errno(ENOMEM);
+    return result;
+}
+
 pas_allocator_counts deluge_allocator_counts;
 
 pas_intrinsic_heap_support deluge_int_heap_support =
@@ -283,7 +292,7 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     DELUGE_HEAP_CONFIG,
     &deluge_intrinsic_runtime_config.base,
     &deluge_allocator_counts,
-    pas_allocation_result_identity,
+    allocation_result_set_errno,
     &deluge_int_heap,
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_designated);
@@ -298,7 +307,7 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     DELUGE_HEAP_CONFIG,
     &deluge_intrinsic_runtime_config.base,
     &deluge_allocator_counts,
-    pas_allocation_result_identity,
+    allocation_result_set_errno,
     &deluge_int_heap,
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_not_designated);
@@ -343,7 +352,7 @@ PAS_CREATE_TRY_ALLOCATE(
     DELUGE_HEAP_CONFIG,
     &deluge_typed_runtime_config.base,
     &deluge_allocator_counts,
-    pas_allocation_result_identity);
+    allocation_result_set_errno);
 
 void* deluge_try_allocate_one(pas_heap_ref* ref)
 {
@@ -367,11 +376,16 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
     DELUGE_HEAP_CONFIG,
     &deluge_typed_runtime_config.base,
     &deluge_allocator_counts,
-    pas_allocation_result_identity);
+    allocation_result_set_errno);
 
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
 {
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
+}
+
+void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment)
+{
+    return (void*)deluge_try_allocate_many_impl_by_count(ref, count, alignment).begin;
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
@@ -1286,7 +1300,7 @@ static int to_musl_errno(int errno_value)
     }
 }
 
-static void set_errno(int errno_value)
+static PAS_NEVER_INLINE void set_errno(int errno_value)
 {
     set_musl_errno(to_musl_errno(errno_value));
 }
