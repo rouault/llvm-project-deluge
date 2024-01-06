@@ -153,10 +153,10 @@ void zfence(void);
 
 void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
 int zsys_ioctl(int fd, unsigned long request, ...);
-int zsys_writev(int fd, const void* iov, int iovcnt);
-int zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
-int zsys_readv(int fd, void* buf, __SIZE_TYPE__ size);
-int zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
+long zsys_writev(int fd, const void* iov, int iovcnt);
+long zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
+long zsys_readv(int fd, void* buf, __SIZE_TYPE__ size);
+long zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
 int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
 
