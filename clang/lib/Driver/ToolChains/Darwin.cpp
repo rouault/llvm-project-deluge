@@ -2408,6 +2408,13 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
     llvm::sys::path::append(P, "..", "..", "deluge", "include");
     addSystemInclude(DriverArgs, CC1Args, P);
     
+    // Add the Clang builtin headers that are allowlisted for Deluge
+    if (!(NoStdInc && !ForceBuiltinInc) && !NoBuiltinInc) {
+      SmallString<128> P(D.InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "deluge", "builtins");
+      addSystemInclude(DriverArgs, CC1Args, P);
+    }
+
     if (!NoStdInc && !NoStdlibInc) {
       SmallString<128> P(D.InstalledDir);
       llvm::sys::path::append(P, "..", "..", "musl", "prefix");
