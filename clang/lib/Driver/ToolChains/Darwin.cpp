@@ -2410,12 +2410,9 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
     
     if (!NoStdInc && !NoStdlibInc) {
       SmallString<128> P(D.InstalledDir);
-      llvm::sys::path::append(P, "..", "..", "musl", "include");
+      llvm::sys::path::append(P, "..", "..", "musl", "prefix");
+      llvm::sys::path::append(P, "include");
       addSystemInclude(DriverArgs, CC1Args, P);
-      SmallString<128> P2(D.InstalledDir);
-      llvm::sys::path::append(P2, "..", "..", "musl", "obj");
-      llvm::sys::path::append(P2, "include");
-      addSystemInclude(DriverArgs, CC1Args, P2);
     }
     return;
   }
