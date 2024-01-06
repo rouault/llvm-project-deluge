@@ -33,7 +33,7 @@
 PAS_BEGIN_EXTERN_C;
 
 #define PAS_LOG_MAX_BYTES 1024
-#define PAS_LOG_DEFAULT_FD 1
+#define PAS_LOG_DEFAULT_FD 2
 
 /* If this is set to non-NULL, then all pthread_log calls from other threads wait. */
 extern PAS_API pas_system_thread_id pas_thread_that_is_crash_logging;

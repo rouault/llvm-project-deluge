@@ -12,7 +12,8 @@ void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
 void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
 void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
 void* zaligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
-void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
+void* zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
+_Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
    
@@ -49,6 +50,21 @@ void *zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 #define zalloc(type, count) ({ \
         type __d_temporary; \
         (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
+    })
+
+#define zalloc_zero(type, count) ({ \
+        type __d_temporary; \
+        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
+        type* __d_result = (type*)zalloc_impl(&__d_temporary, __d_count); \
+        if (__d_result) \
+            __builtin_memset(__d_result, 0, sizeof(type) * __d_count); \
+        __d_result; \
+    })
+
+#define zcalloc(type, something_to_multiply, another_thing_to_multiply) ({ \
+        __SIZE_TYPE__ __d_size; \
+        _Bool __d_mul = zcalloc_multiply((something_to_multiply), (another_thing_to_multiply), &__d_size); \
+        __d_mul ? zalloc_zero(type, __d_size) : NULL; \
     })
 
 #define zaligned_alloc(type, alignment, count) ({ \
@@ -138,6 +154,10 @@ void zfence(void);
 void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
 int zsys_ioctl(int fd, unsigned long request, ...);
 int zsys_writev(int fd, const void* iov, int iovcnt);
+int zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
+int zsys_readv(int fd, void* buf, __SIZE_TYPE__ size);
+int zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
+int zsys_close(int fd);
 
 #endif /* DELUGE_STDFIL_H */
 

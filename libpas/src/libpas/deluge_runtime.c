@@ -502,6 +502,31 @@ void deluded_f_zfree(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
 }
 
+void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zcalloc_multiply",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    size_t left = deluge_ptr_get_next_size_t(&args, &origin);
+    size_t right = deluge_ptr_get_next_size_t(&args, &origin);
+    deluge_ptr result = deluge_ptr_get_next_ptr(&args, &origin);
+    bool return_value;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(result, sizeof(size_t), &origin);
+    if (__builtin_mul_overflow(left, right, (size_t*)result.ptr)) {
+        return_value = false;
+        set_errno(ENOMEM);
+    } else
+        return_value = true;
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    *(bool*)rets.ptr = return_value;
+}
+
 void deluded_f_zgetlower(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -1361,24 +1386,17 @@ void deluded_f_zsys_ioctl(DELUDED_SIGNATURE)
 
 struct musl_iovec { deluge_ptr iov_base; size_t iov_len; };
 
-void deluded_f_zsys_writev(DELUDED_SIGNATURE)
+static struct iovec* prepare_iovec(deluge_ptr musl_iov, int iovcnt)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zsys_writev",
+        .function = "prepare_iovec",
         .line = 0,
         .column = 0
     };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    int fd = deluge_ptr_get_next_int(&args, &origin);
-    deluge_ptr musl_iov = deluge_ptr_get_next_ptr(&args, &origin);
-    int iovcnt = deluge_ptr_get_next_int(&args, &origin);
     struct iovec* iov;
     size_t iov_size;
     size_t index;
-    ssize_t result;
-    DELUDED_DELETE_ARGS();
     DELUGE_CHECK(
         iovcnt >= 0,
         &origin,
@@ -1405,12 +1423,118 @@ void deluded_f_zsys_writev(DELUDED_SIGNATURE)
         iov[index].iov_base = musl_iov_base.ptr;
         iov[index].iov_len = iov_len;
     }
+    return iov;
+}
+
+void deluded_f_zsys_writev(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_writev",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_iov = deluge_ptr_get_next_ptr(&args, &origin);
+    int iovcnt = deluge_ptr_get_next_int(&args, &origin);
+    ssize_t result;
+    DELUDED_DELETE_ARGS();
+    struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
     result = writev(fd, iov, iovcnt);
     if (result < 0)
         set_errno(errno);
     deluge_deallocate(iov);
     deluge_check_access_int(rets, sizeof(ssize_t), &origin);
     *(ssize_t*)rets.ptr = result;
+}
+
+void deluded_f_zsys_read(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_read",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr buf = deluge_ptr_get_next_ptr(&args, &origin);
+    ssize_t size = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(buf, size, &origin);
+    int result = read(fd, buf.ptr, size);
+    if (result < 0)
+        set_errno(errno);
+    deluge_check_access_int(rets, sizeof(ssize_t), &origin);
+    *(ssize_t*)rets.ptr = result;
+}
+
+void deluded_f_zsys_readv(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_readv",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_iov = deluge_ptr_get_next_ptr(&args, &origin);
+    int iovcnt = deluge_ptr_get_next_int(&args, &origin);
+    ssize_t result;
+    DELUDED_DELETE_ARGS();
+    struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
+    result = readv(fd, iov, iovcnt);
+    if (result < 0)
+        set_errno(errno);
+    deluge_deallocate(iov);
+    deluge_check_access_int(rets, sizeof(ssize_t), &origin);
+    *(ssize_t*)rets.ptr = result;
+}
+
+void deluded_f_zsys_write(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_write",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr buf = deluge_ptr_get_next_ptr(&args, &origin);
+    ssize_t size = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(buf, size, &origin);
+    int result = write(fd, buf.ptr, size);
+    if (result < 0)
+        set_errno(errno);
+    deluge_check_access_int(rets, sizeof(ssize_t), &origin);
+    *(ssize_t*)rets.ptr = result;
+}
+
+void deluded_f_zsys_close(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_close",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    int result = close(fd);
+    if (result < 0)
+        set_errno(errno);
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    *(int*)rets.ptr = result;
 }
 
 #endif /* PAS_ENABLE_DELUGE */

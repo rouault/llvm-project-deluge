@@ -281,6 +281,8 @@ void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 void deluge_deallocate(void* ptr);
 void deluded_f_zfree(DELUDED_SIGNATURE);
 
+void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE);
+
 void deluded_f_zgetlower(DELUDED_SIGNATURE);
 void deluded_f_zgetupper(DELUDED_SIGNATURE);
 void deluded_f_zgettype(DELUDED_SIGNATURE);
@@ -470,6 +472,10 @@ void deluded_f_zfence(DELUDED_SIGNATURE);
 void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE);
 void deluded_f_zsys_ioctl(DELUDED_SIGNATURE);
 void deluded_f_zsys_writev(DELUDED_SIGNATURE);
+void deluded_f_zsys_read(DELUDED_SIGNATURE);
+void deluded_f_zsys_readv(DELUDED_SIGNATURE);
+void deluded_f_zsys_write(DELUDED_SIGNATURE);
+void deluded_f_zsys_close(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 
