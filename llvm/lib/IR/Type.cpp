@@ -334,8 +334,6 @@ IntegerType *IntegerType::get(LLVMContext &C, unsigned NumBits) {
   assert(NumBits >= MIN_INT_BITS && "bitwidth too small");
   assert(NumBits <= MAX_INT_BITS && "bitwidth too large");
 
-  assert(NumBits != 256);
-
   // Check for the built-in integer types
   switch (NumBits) {
   case   1: return cast<IntegerType>(Type::getInt1Ty(C));
