@@ -151,6 +151,8 @@ void zerror(const char* str);
 
 void zfence(void);
 
+void zrun_deferred_global_ctors(void);
+
 void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
 int zsys_ioctl(int fd, unsigned long request, ...);
 long zsys_writev(int fd, const void* iov, int iovcnt);

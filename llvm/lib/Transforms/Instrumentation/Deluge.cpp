@@ -12,9 +12,40 @@
 
 using namespace llvm;
 
+// Oh man this'll be great for you to read. You'll love this, I promise. Just don't take offense.
+// I know I'm doing it wrong and I don't even care, so neither should you.
+//
+// Think of what you're about to see as like listening to Howard Stern in his earlier years.
+//
+// It was brilliant, but also vulgar and unhinged.
+//
+// This is the early 2000's Howard Stern of compiler passes.
+//
+// Some shit to look out for, I'm not even kidding:
+//
+// - I have no idea how to use IRBuilder correctly and I don't even care, so get used to direct
+//   Instruction construction.
+//
+// - I'm RAUW'ing to a different type, so I had to comment out asserts throughout the rest of
+//   llvm to make this pass work. I think that llvm wants me to do this by creating new IR based
+//   on the existing IR, but I ain't got time for that shit.
+//
+// - This pass is meant to issue compiler errors, like clang would. There are probably smart ways
+//   to do that! This doesn't do any of them! Make sure to compile llvm with asserts enabled
+//   (i.e. -DLLVM_ENABLE_ASSERTIONS=ON) or this pass won't actually catch any errors.
+//
+// - Look out for the use of dummy instructions to perform RAUW hacks, those are the best.
+//
+// - Bunch of other stuff. Look, I know how to architect compilers, and I have exquisite tastes
+//   when I put that hat on. I did not put that hat on when writing this pass. I wrote this pass
+//   to check if my programming language design - a memory safe C, no less! - actually works.
+//
+// Think of this as prototype code. If you put that hat on, you'll get it, and you'll be hella
+// amused, I promise.
+
 namespace {
 
-static constexpr bool verbose = false;
+static constexpr bool verbose = true;
 static constexpr bool ultraVerbose = false;
 
 static constexpr size_t MinAlign = 16;
@@ -194,6 +225,7 @@ class Deluge {
   StructType* AllocaStackTy;
   FunctionType* DeludedFuncTy;
   FunctionType* GlobalGetterTy;
+  FunctionType* CtorDtorTy;
   Constant* LowRawNull;
   Constant* LowWideNull;
   BitCastInst* Dummy;
@@ -234,6 +266,7 @@ class Deluge {
   FunctionCallee AllocaStackPush;
   FunctionCallee AllocaStackRestore;
   FunctionCallee AllocaStackDestroy;
+  FunctionCallee DeferOrRunGlobalCtor;
   FunctionCallee Error;
   FunctionCallee RealMemset;
 
@@ -762,6 +795,7 @@ class Deluge {
       return ConstantAggregateZero::get(lowerType(C->getType()));
 
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
+      assert(!shouldPassThrough(G));
       if (GlobalToGetter.count(G))
         return nullptr;
       Type* LowT = GlobalLowTypes[G];
@@ -908,6 +942,7 @@ class Deluge {
       return ConstantAggregateZero::get(lowerType(C->getType()));
 
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
+      assert(!shouldPassThrough(G));
       Type* LowT = GlobalLowTypes[G];
       assert(!GlobalToGetter.count(nullptr));
       assert(!Getters.count(nullptr));
@@ -1230,6 +1265,28 @@ class Deluge {
       }
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+        if (F->getName() == "__cxa_atexit") {
+          assert(CI->getArgOperand(1) == LowRawNull);
+          assert(cast<GlobalVariable>(CI->getArgOperand(2))->getName() == "__dso_handle");
+          assert(isa<Function>(CI->getArgOperand(0)));
+
+          Function* NewF = Function::Create(
+            CtorDtorTy, GlobalValue::PrivateLinkage, 0, "deluge_atexit_forwarder", &M);
+          BasicBlock* RootBB = BasicBlock::Create(C, "deluge_atexit_forwarder_root", NewF);
+          AllocaInst* ReturnBuffer = new AllocaInst(
+            Int8Ty, 0, ConstantInt::get(IntPtrTy, 16), "deluge_atexit_return", RootBB);
+          Instruction* Upper = GetElementPtrInst::Create(
+            Int8Ty, ReturnBuffer, ConstantInt::get(IntPtrTy, 16), "deluge_atexit_return_upper", RootBB);
+          CallInst::Create(
+            DeludedFuncTy, CI->getArgOperand(0),
+            { LowRawNull, LowRawNull, LowRawNull, ReturnBuffer, Upper, Int.TypeRep },
+            "", RootBB);
+          ReturnInst::Create(C, RootBB);
+
+          CI->getArgOperandUse(0) = NewF;
+          return true;
+        }
+        
         if (shouldPassThrough(F))
           return true;
       }
@@ -1848,7 +1905,22 @@ class Deluge {
     return (F->getName() == "__divdc3" ||
             F->getName() == "__muldc3" ||
             F->getName() == "__divsc3" ||
-            F->getName() == "__mulsc3");
+            F->getName() == "__mulsc3" ||
+            F->getName() == "__cxa_atexit");
+  }
+
+  bool shouldPassThrough(GlobalVariable* G) {
+    return (G->getName() == "llvm.global_ctors" ||
+            G->getName() == "llvm.global_dtors" ||
+            G->getName() == "__dso_handle");
+  }
+
+  bool shouldPassThrough(GlobalValue* G) {
+    if (Function* F = dyn_cast<Function>(G))
+      return shouldPassThrough(F);
+    if (GlobalVariable* V = dyn_cast<GlobalVariable>(G))
+      return shouldPassThrough(V);
+    return false;
   }
 
   // This utility function runs before we've set up any of the rest of the pass's state. It has two jobs:
@@ -1902,8 +1974,8 @@ public:
     // See DELUDED_SIGNATURE in deluge_runtime.h.
     DeludedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);
-    GlobalGetterTy = FunctionType::get(
-      LowWidePtrTy, { LowRawPtrTy }, false);
+    GlobalGetterTy = FunctionType::get(LowWidePtrTy, { LowRawPtrTy }, false);
+    CtorDtorTy = FunctionType::get(VoidTy, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     ZunsafeForgeImpl = M.getOrInsertFunction(
@@ -1936,8 +2008,10 @@ public:
       GlobalHighTypes[G] = G->getValueType();
       GlobalLowTypes[G] = lowerType(G->getValueType());
     };
-    
+
     for (GlobalVariable &G : M.globals()) {
+      if (shouldPassThrough(&G))
+        continue;
       Globals.push_back(&G);
       CaptureType(&G);
     }
@@ -2006,12 +2080,56 @@ public:
     AllocaStackRestore = M.getOrInsertFunction(
       "deluge_alloca_stack_restore", VoidTy, LowRawPtrTy, IntPtrTy);
     AllocaStackDestroy = M.getOrInsertFunction("deluge_alloca_stack_destroy", VoidTy, LowRawPtrTy);
+    DeferOrRunGlobalCtor = M.getOrInsertFunction("deluge_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
 
     GlobalConstantPoolPtr = new GlobalVariable(
       M, LowRawPtrTy, false, GlobalValue::PrivateLinkage, LowRawNull, "deluge_global_constantpool_ptr");
+
+    if (GlobalVariable* GlobalCtors = M.getGlobalVariable("llvm.global_ctors")) {
+      ConstantArray* Array = cast<ConstantArray>(GlobalCtors->getInitializer());
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
+        ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
+        assert(Struct->getOperand(2) == LowRawNull);
+        Function* Ctor = cast<Function>(Struct->getOperand(1));
+        Function* NewF = Function::Create(
+          CtorDtorTy, GlobalValue::PrivateLinkage, 0, "deluge_ctor_forwarder", &M);
+        BasicBlock* RootBB = BasicBlock::Create(C, "deluge_ctor_forwarder_root", NewF);
+        CallInst::Create(DeferOrRunGlobalCtor, { Ctor }, "", RootBB);
+        ReturnInst::Create(C, RootBB);
+        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
+      }
+      GlobalCtors->setInitializer(ConstantArray::get(Array->getType(), Args));
+    }
+
+    // NOTE: This *might* be dead code, since modern C/C++ says that the compiler has to do __cxa_atexit
+    // from a global constructor instead of registering a global destructor.
+    if (GlobalVariable* GlobalDtors = M.getGlobalVariable("llvm.global_dtors")) {
+      ConstantArray* Array = cast<ConstantArray>(GlobalDtors->getInitializer());
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
+        ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
+        assert(Struct->getOperand(2) == LowRawNull);
+        Function* Dtor = cast<Function>(Struct->getOperand(1));
+        Function* NewF = Function::Create(
+          CtorDtorTy, GlobalValue::PrivateLinkage, 0, "deluge_dtor_forwarder", &M);
+        BasicBlock* RootBB = BasicBlock::Create(C, "deluge_dtor_forwarder_root", NewF);
+        AllocaInst* ReturnBuffer = new AllocaInst(
+          Int8Ty, 0, ConstantInt::get(IntPtrTy, 16), "deluge_dtor_return", RootBB);
+        Instruction* Upper = GetElementPtrInst::Create(
+          Int8Ty, ReturnBuffer, ConstantInt::get(IntPtrTy, 16), "deluge_dtor_return_upper", RootBB);
+        CallInst::Create(
+          DeludedFuncTy, Dtor,
+          { LowRawNull, LowRawNull, LowRawNull, ReturnBuffer, Upper, Int.TypeRep },
+          "", RootBB);
+        ReturnInst::Create(C, RootBB);
+        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
+      }
+      GlobalDtors->setInitializer(ConstantArray::get(Array->getType(), Args));
+    }
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];

@@ -1013,6 +1013,68 @@ void deluge_alloca_stack_destroy(deluge_alloca_stack* stack)
     deluge_deallocate(stack->array);
 }
 
+static bool did_run_deferred_global_ctors = false;
+static void (**deferred_global_ctors)(DELUDED_SIGNATURE) = NULL; 
+static size_t num_deferred_global_ctors = 0;
+static size_t deferred_global_ctors_capacity = 0;
+
+void deluge_defer_or_run_global_ctor(void (*global_ctor)(DELUDED_SIGNATURE))
+{
+    if (did_run_deferred_global_ctors) {
+        uintptr_t return_buffer[2];
+        global_ctor(NULL, NULL, NULL, return_buffer, return_buffer + 2, &deluge_int_type);
+        return;
+    }
+
+    if (num_deferred_global_ctors >= deferred_global_ctors_capacity) {
+        void (**new_deferred_global_ctors)(DELUDED_SIGNATURE);
+        size_t new_deferred_global_ctors_capacity;
+
+        PAS_ASSERT(num_deferred_global_ctors == deferred_global_ctors_capacity);
+
+        new_deferred_global_ctors_capacity = (deferred_global_ctors_capacity + 1) * 2;
+        new_deferred_global_ctors = (void (**)(DELUDED_SIGNATURE))deluge_allocate_utility(
+            new_deferred_global_ctors_capacity * sizeof(void (*)(DELUDED_SIGNATURE)));
+
+        memcpy(new_deferred_global_ctors, deferred_global_ctors,
+               num_deferred_global_ctors * sizeof(void (*)(DELUDED_SIGNATURE)));
+
+        deferred_global_ctors = new_deferred_global_ctors;
+        deferred_global_ctors_capacity = new_deferred_global_ctors_capacity;
+    }
+
+    deferred_global_ctors[num_deferred_global_ctors++] = global_ctor;
+}
+
+void deluge_run_deferred_global_ctors(void)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "deluge_run_deferred_global_ctors",
+        .line = 0,
+        .column = 0
+    };
+    uintptr_t return_buffer[2];
+    DELUGE_CHECK(
+        !did_run_deferred_global_ctors,
+        &origin,
+        "cannot run deferred global constructors twice.");
+    did_run_deferred_global_ctors = true;
+    /* It's important to run the destructors in exactly the order in which they were deferred, since
+       this allows us to match the priority semantics despite not having the priority. */
+    for (size_t index = 0; index < num_deferred_global_ctors; ++index)
+        deferred_global_ctors[index](NULL, NULL, NULL, return_buffer, return_buffer + 2, &deluge_int_type);
+    deluge_deallocate(deferred_global_ctors);
+    num_deferred_global_ctors = 0;
+    deferred_global_ctors_capacity = 0;
+}
+
+void deluded_f_zrun_deferred_global_ctors(DELUDED_SIGNATURE)
+{
+    DELUDED_DELETE_ARGS();
+    deluge_run_deferred_global_ctors();
+}
+
 void deluge_panic(const deluge_origin* origin, const char* format, ...)
 {
     va_list args;

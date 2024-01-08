@@ -119,6 +119,8 @@ int main(int argc, char** argv)
     deluded_f___init_libc(init_libc_args, init_libc_args + 1, &init_libc_args_type,
                           u.return_buffer, u.return_buffer + 2, &deluge_int_type);
 
+    deluge_run_deferred_global_ctors();
+
     main_args = deluge_allocate_one(deluge_get_heap(&main_args_type));
     main_args->argc = argc;
     main_args->argv = deluded_argv;

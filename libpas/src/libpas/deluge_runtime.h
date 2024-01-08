@@ -13,7 +13,26 @@
 
 PAS_BEGIN_EXTERN_C;
 
-/* Internal Deluge runtime header, defining how the Deluge runtime maintains its state. */
+/* Internal Deluge runtime header, defining how the Deluge runtime maintains its state.
+ 
+   Currently, including this header is the only way to perform FFI to Deluge code, and the API for
+   that is too low-level for comfort. That's probably fine, since the Deluge ABI is going to
+   change the moment I start giving a shit about performance.
+
+   This runtime is engineered under the following principles:
+
+   - It's based on libpas, so we get fully correct isoheap semantics and the perf of allocation in
+     those heaps is as good as what I can come up with after ~5 years of effort. The isoheap code
+     has been thoroughly battle-tested and we can trust it.
+
+   - Coding standards have to be extremely high, and assert usage should be full-ass
+     belt-and-suspenders. The goal of this code is to achieve memory safety under the Deluge
+     "Bounded P^I" type system. It's fine to take extra cycles or bytes to achieve that goal.
+
+   - There are no optimizations yet, but the structure of this code is such that when I choose to 
+     go into optimization mode, I will be able to wreak havoc and take many prisoners. I pity the
+     fool who bets against my ability to make this hella fucking fast. I'm just holding back from
+     going there, for now. */
 
 struct deluge_alloca_stack;
 struct deluge_global_initialization_context;
@@ -248,7 +267,7 @@ static inline deluge_ptr deluge_ptr_get_next_bytes(
 /* Gives you a heap for the given type. This looks up the heap based on the structural equality
    of the type, so equal types get the same heap.
 
-   It's correct to call this every type you do a memory allocation. It's not the greatest idea, but
+   It's correct to call this every time you do a memory allocation. It's not the greatest idea, but
    it will be lock-free (and basically fence-free) in the common case.
 
    The type you pass here must be immortal. The runtime may refer to it forever. (That's not
@@ -289,8 +308,9 @@ void deluded_f_zgettype(DELUDED_SIGNATURE);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
-   even for user-forged pointers using unsafe API, so the only way to break these asserts is to
-   forge the pointer by hand using the struct and then to get some invariant wrong.
+   even for user-forged pointers using unsafe API, so the only way to break these asserts is if there
+   is a bug in deluge itself (compiler or runtime), or by unsafely forging a pointer and then using
+   that to corrupt the bits of a pointer.
    
    One example invariant: lower/upper must be aligned on the type's required alignment.
    Another example invariant: !((upper - lower) % type->size)
@@ -300,7 +320,8 @@ void deluded_f_zgettype(DELUDED_SIGNATURE);
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
    safety! */
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type, const deluge_origin* origin);
+void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                              const deluge_origin* origin);
 
 static inline void deluge_validate_ptr(deluge_ptr ptr, const deluge_origin* origin)
 {
@@ -455,6 +476,13 @@ void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca);
 static inline size_t deluge_alloca_stack_save(deluge_alloca_stack* stack) { return stack->size; }
 void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size);
 void deluge_alloca_stack_destroy(deluge_alloca_stack* stack);
+
+void deluge_defer_or_run_global_ctor(void (*global_ctor)(DELUDED_SIGNATURE));
+void deluge_run_deferred_global_ctors(void); /* Important safety property: libc must call this before
+                                                letting the user start threads. But it's OK if the
+                                                deferred constructors that this calls start threads,
+                                                as far as safety goes. */
+void deluded_f_zrun_deferred_global_ctors(DELUDED_SIGNATURE);
 
 void deluge_error(const deluge_origin* origin);
 
