@@ -45,7 +45,7 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = true;
+static constexpr bool verbose = false;
 static constexpr bool ultraVerbose = false;
 
 static constexpr size_t MinAlign = 16;
