@@ -294,6 +294,7 @@ class Deluge {
   DelugeTypeData Invalid;
 
   std::unordered_map<GlobalValue*, Function*> GlobalToGetter;
+  std::unordered_map<GlobalValue*, GlobalVariable*> GlobalToGlobal;
   std::unordered_set<Value*> Getters;
 
   std::vector<ConstantPoolEntry> ConstantPoolEntries;
@@ -696,6 +697,8 @@ class Deluge {
   }
 
   Constant* lowerPtrConstant(Constant* HighP) {
+    if (isa<ConstantAggregateZero>(HighP))
+      return LowRawNull;
     ConstantStruct* CS = cast<ConstantStruct>(HighP);
     assert(CS->getNumOperands() == 4);
     assert(CS->getType() == LowWidePtrTy);
@@ -775,7 +778,11 @@ class Deluge {
     return reforgePtr(LowWideNull, Ptr, InsertionPoint);
   }
 
-  Constant* tryLowerConstantToConstant(Constant* C) {
+  enum class ResultMode {
+    NeedConstant,
+    NeedNullOrNot
+  };
+  Constant* tryLowerConstantToConstant(Constant* C, ResultMode RM = ResultMode::NeedConstant) {
     assert(C->getType() != LowWidePtrTy);
     
     if (isa<UndefValue>(C)) {
@@ -796,9 +803,18 @@ class Deluge {
 
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
-      if (GlobalToGetter.count(G))
-        return nullptr;
       Type* LowT = GlobalLowTypes[G];
+      if (GlobalVariable* GV = dyn_cast<GlobalVariable>(G)) {
+        if (!GV->isDeclaration() &&
+            tryLowerConstantToConstant(
+              GV->getInitializer(), ResultMode::NeedNullOrNot)) {
+          if (GlobalToGlobal.count(GV))
+            return forgePtrConstantWithLowType(GlobalToGlobal[GV], LowT);
+          assert(RM == ResultMode::NeedNullOrNot);
+          return LowWideNull;
+        }
+        return nullptr;
+      }
       return forgePtrConstantWithLowType(G, LowT);
     }
 
@@ -808,7 +824,7 @@ class Deluge {
     if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CA->getOperand(Index));
+        Constant* LowC = tryLowerConstantToConstant(CA->getOperand(Index), RM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
@@ -820,7 +836,7 @@ class Deluge {
         errs() << "Dealing with CS = " << *CS << "\n";
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CS->getOperand(Index));
+        Constant* LowC = tryLowerConstantToConstant(CS->getOperand(Index), RM);
         if (!LowC)
           return nullptr;
         if (verbose)
@@ -832,7 +848,7 @@ class Deluge {
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CV->getOperand(Index));
+        Constant* LowC = tryLowerConstantToConstant(CV->getOperand(Index), RM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
@@ -849,14 +865,14 @@ class Deluge {
     switch (CE->getOpcode()) {
     case Instruction::GetElementPtr: {
       GEPOperator* GO = cast<GEPOperator>(CE);
-      Constant* LowPtr = tryLowerConstantToConstant(CE->getOperand(0));
+      Constant* LowPtr = tryLowerConstantToConstant(CE->getOperand(0), RM);
       if (!LowPtr)
         return nullptr;
       if (verbose)
         errs() << "LowPtr = " << *LowPtr << "\n";
       std::vector<Constant*> Args;
       for (size_t Index = 1; Index < CE->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CE->getOperand(Index));
+        Constant* LowC = tryLowerConstantToConstant(CE->getOperand(Index), RM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
@@ -867,7 +883,7 @@ class Deluge {
           lowerType(GO->getSourceElementType()), lowerPtrConstant(LowPtr), Args, GO->isInBounds()));
     }
     case Instruction::BitCast: {
-      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0));
+      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0), RM);
       if (!LowC)
         return nullptr;
       if (CE->getType() == LowRawPtrTy)
@@ -875,21 +891,21 @@ class Deluge {
       return ConstantExpr::getBitCast(LowC, CE->getType());
     }
     case Instruction::IntToPtr: {
-      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0));
+      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0), RM);
       if (!LowC)
         return nullptr;
       return reforgePtrConstant(
         LowWideNull, ConstantExpr::getIntToPtr(LowC, CE->getType()));
     }
     case Instruction::AddrSpaceCast: {
-      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0));
+      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0), RM);
       if (!LowC)
         return nullptr;
       return reforgePtrConstant(
         LowWideNull, ConstantExpr::getAddrSpaceCast(LowC, CE->getType()));
     }
     case Instruction::PtrToInt: {
-      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0));
+      Constant* LowC = tryLowerConstantToConstant(CE->getOperand(0), RM);
       if (!LowC)
         return nullptr;
       return ConstantExpr::getPtrToInt(lowerPtrConstant(LowC), CE->getType());
@@ -898,7 +914,7 @@ class Deluge {
       assert(CE->getType() != LowRawPtrTy);
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CE->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CE->getOperand(Index));
+        Constant* LowC = tryLowerConstantToConstant(CE->getOperand(Index), RM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
@@ -2044,6 +2060,8 @@ public:
     Invalid.TypeRep = LowRawNull;
     
     LowWideNull = forgePtrConstant(LowRawNull, LowRawNull, LowRawNull, Invalid.TypeRep);
+    if (verbose)
+      errs() << "LowWideNull = " << *LowWideNull << "\n";
 
     Dummy = makeDummy(Int32Ty);
     FutureIntFrame = makeDummy(LowRawPtrTy);
@@ -2145,8 +2163,18 @@ public:
       FixupTypes(G, NewF);
       ToDelete.push_back(G);
     };
-    for (GlobalVariable* G : Globals)
+    for (GlobalVariable* G : Globals) {
+      if (!G->isDeclaration()) {
+        Type* T = G->getValueType();
+        Type* LowT = lowerType(T);
+        if (tryLowerConstantToConstant(G->getInitializer(), ResultMode::NeedNullOrNot)) {
+          GlobalToGlobal[G] = new GlobalVariable(
+            M, LowT, G->isConstant(), GlobalValue::PrivateLinkage, UndefValue::get(LowT),
+            "deluge_hidden_global");
+        }
+      }
       HandleGlobal(G);
+    }
     for (GlobalAlias* G : Aliases) {
       if (isa<GlobalVariable>(G->getAliasee()))
         HandleGlobal(G);
@@ -2172,11 +2200,15 @@ public:
       BasicBlock* RootBB = BasicBlock::Create(C, "deluge_global_getter_root", NewF);
 
       if (Constant* LowC = tryLowerConstantToConstant(G->getInitializer())) {
-        GlobalVariable* NewG = new GlobalVariable(
-          M, LowT, G->isConstant(), GlobalValue::PrivateLinkage, LowC, "deluge_hidden_global");
+        assert(GlobalToGlobal.count(G));
+        GlobalVariable* NewG = GlobalToGlobal[G];
+        assert(NewG);
+        NewG->setInitializer(LowC);
         ReturnInst::Create(C, forgePtrConstantWithLowType(NewG, LowT), RootBB);
+        GlobalToGlobal[G] = NewG;
         continue;
-      }
+      } else
+        assert(!GlobalToGlobal.count(G));
 
       GlobalVariable* NewG = new GlobalVariable(
         M, LowRawPtrTy, false, GlobalValue::PrivateLinkage, LowRawNull, "deluge_gptr_" + G->getName());
