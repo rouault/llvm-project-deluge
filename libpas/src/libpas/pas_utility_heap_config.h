@@ -89,6 +89,7 @@ PAS_API void pas_utility_heap_config_dump_shared_page_directory_arg(
         .get_type_size = NULL, \
         .get_type_alignment = NULL, \
         .dump_type = NULL, \
+        .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
         .large_alignment = PAS_INTERNAL_MIN_ALIGN, \
         .small_segregated_config = { \
             .base = { \

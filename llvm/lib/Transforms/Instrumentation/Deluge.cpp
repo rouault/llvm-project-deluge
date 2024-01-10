@@ -58,8 +58,6 @@ enum class DelugeWordType {
   PtrPart2 = 3,
   PtrPart3 = 4,
   PtrPart4 = 5,
-  Function = 6,
-  Type = 7,
 };
 
 struct CoreDelugeType {
@@ -442,10 +440,12 @@ class Deluge {
     assert(T.Main.Size);
     assert(T.Main.Alignment);
     assert(!(T.Main.Size % T.Main.Alignment));
+    assert(!(T.Main.Size % 8));
 
     std::vector<Constant*> Constants;
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size));
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Alignment));
+    Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size / 8));
     if (TrailingData)
       Constants.push_back(ConstantExpr::getPtrToInt(TrailingData->TypeRep, IntPtrTy));
     else

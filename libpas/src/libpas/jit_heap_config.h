@@ -160,6 +160,7 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(jit_heap_config);
         .get_type_size = jit_type_size, \
         .get_type_alignment = jit_type_alignment, \
         .dump_type = jit_type_dump, \
+        .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
         .large_alignment = PAS_MIN_CONST(JIT_SMALL_SEGREGATED_MIN_ALIGN, JIT_SMALL_BITFIT_MIN_ALIGN), \
         .small_segregated_config = { \
             .base = { \

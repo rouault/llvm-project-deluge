@@ -39,12 +39,14 @@ struct deluge_global_initialization_context;
 struct deluge_origin;
 struct deluge_ptr;
 struct deluge_type;
+struct pas_basic_heap_runtime_config;
 struct pas_stream;
 typedef struct deluge_alloca_stack deluge_alloca_stack;
 typedef struct deluge_global_initialization_context deluge_global_initialization_context;
 typedef struct deluge_origin deluge_origin;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
+typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
 
 typedef uint8_t deluge_word_type;
@@ -73,13 +75,21 @@ struct deluge_ptr {
     const deluge_type* type;
 };
 
-/* Zero-sized types are unique; they are only equal by pointer equality.
+/* Zero-word types are unique; they are only equal by pointer equality. They may or may not have
+   a size. If they have a size, they must have an alignment, and they may be allocated. Zero-word
+   types have a pas_heap_runtime_config* instead of a trailing_array.
    
-   Non-zero-sized types are equal if they are structurally the same. */
+   Non-zero-word types are equal if they are structurally the same. They must have a size that
+   matches num_words, as in: (size + 7) / 8 == num_words. They must have an alignment. And, they
+   have a trailing_array instead of a runtime_config. */
 struct deluge_type {
     size_t size;
     size_t alignment;
-    const deluge_type* trailing_array;
+    size_t num_words;
+    union {
+        const deluge_type* trailing_array;
+        pas_basic_heap_runtime_config* runtime_config;
+    } u;
     deluge_word_type word_types[];
 };
 
@@ -187,28 +197,18 @@ static inline deluge_ptr deluge_ptr_with_offset(deluge_ptr ptr, uintptr_t offset
     return deluge_ptr_with_ptr(ptr, (char*)ptr.ptr + offset);
 }
 
-static inline size_t deluge_type_num_words(const deluge_type* type)
-{
-    return (type->size + 7) / 8;
-}
-
-static inline size_t deluge_type_num_words_exact(const deluge_type* type)
-{
-    PAS_TESTING_ASSERT(!(type->size % 8));
-    return type->size / 8;
-}
-
 static inline deluge_word_type deluge_type_get_word_type(const deluge_type* type,
                                                          uintptr_t word_type_index)
 {
-    if (type->trailing_array) {
-        uintptr_t num_words = deluge_type_num_words_exact(type);
-        if (word_type_index >= num_words) {
-            word_type_index -= num_words;
-            type = type->trailing_array;
+    PAS_TESTING_ASSERT(type->num_words);
+    
+    if (type->u.trailing_array) {
+        if (word_type_index >= type->num_words) {
+            word_type_index -= type->num_words;
+            type = type->u.trailing_array;
         }
     }
-    return type->word_types[word_type_index % deluge_type_num_words(type)];
+    return type->word_types[word_type_index % type->num_words];
 }
 
 /* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The
@@ -222,18 +222,27 @@ unsigned deluge_type_hash(const deluge_type* type);
 static inline size_t deluge_type_representation_size(const deluge_type* type)
 {
     return PAS_OFFSETOF(deluge_type, word_types)
-        + sizeof(deluge_word_type) * deluge_type_num_words(type);
+        + sizeof(deluge_word_type) * type->num_words;
 }
     
-static inline size_t deluge_type_as_heap_type_get_type_size(const pas_heap_type* type)
+static inline size_t deluge_type_as_heap_type_get_type_size(const pas_heap_type* heap_type)
 {
-    return ((const deluge_type*)type)->size;
+    const deluge_type* type = (const deluge_type*)heap_type;
+    PAS_TESTING_ASSERT(type->size);
+    PAS_TESTING_ASSERT(type->alignment);
+    return type->size;
 }
 
-static inline size_t deluge_type_as_heap_type_get_type_alignment(const pas_heap_type* type)
+static inline size_t deluge_type_as_heap_type_get_type_alignment(const pas_heap_type* heap_type)
 {
-    return ((const deluge_type*)type)->alignment;
+    const deluge_type* type = (const deluge_type*)heap_type;
+    PAS_TESTING_ASSERT(type->size);
+    PAS_TESTING_ASSERT(type->alignment);
+    return type->alignment;
 }
+
+PAS_API pas_heap_runtime_config* deluge_type_as_heap_type_get_runtime_config(
+    const pas_heap_type* type, pas_heap_runtime_config* config);
 
 PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
 

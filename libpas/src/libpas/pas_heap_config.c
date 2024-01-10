@@ -29,6 +29,13 @@
 
 #include "pas_heap_config.h"
 
+pas_heap_runtime_config* pas_heap_type_get_runtime_config_identity(
+    const pas_heap_type* type, pas_heap_runtime_config* config)
+{
+    PAS_UNUSED_PARAM(type);
+    return config;
+}
+
 bool pas_heap_config_activate(const pas_heap_config* config)
 {
     pas_heap_lock_assert_held();

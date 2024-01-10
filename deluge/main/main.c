@@ -22,7 +22,10 @@ struct main_args {
 static deluge_type ptr_type = {
     .size = sizeof(deluge_ptr),
     .alignment = alignof(deluge_ptr),
-    .trailing_array = NULL,
+    .num_words = sizeof(deluge_ptr) / 8,
+    .u = {
+        .trailing_array = NULL,
+    },
     .word_types = {
         DELUGE_WORD_TYPE_PTR_PART1,
         DELUGE_WORD_TYPE_PTR_PART2,
@@ -34,7 +37,10 @@ static deluge_type ptr_type = {
 struct deluge_type init_libc_args_type = {
     .size = sizeof(struct init_libc_args),
     .alignment = alignof(struct init_libc_args),
-    .trailing_array = NULL,
+    .num_words = sizeof(struct init_libc_args) / 8,
+    .u = {
+        .trailing_array = NULL,
+    },
     .word_types = {
         DELUGE_WORD_TYPE_PTR_PART1,
         DELUGE_WORD_TYPE_PTR_PART2,
@@ -50,7 +56,10 @@ struct deluge_type init_libc_args_type = {
 static deluge_type main_args_type = {
     .size = sizeof(struct main_args),
     .alignment = alignof(struct main_args),
-    .trailing_array = NULL,
+    .num_words = sizeof(struct main_args) / 8,
+    .u = {
+        .trailing_array = NULL,
+    },
     .word_types = {
         DELUGE_WORD_TYPE_INT,
         DELUGE_WORD_TYPE_PTR_PART1,

@@ -49,6 +49,7 @@ PAS_API void bmalloc_heap_config_activate(void);
     .get_type_size = bmalloc_type_as_heap_type_get_type_size, \
     .get_type_alignment = bmalloc_type_as_heap_type_get_type_alignment, \
     .dump_type = bmalloc_type_as_heap_type_dump, \
+    .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
     .check_deallocation = false, \
     .small_segregated_min_align_shift = BMALLOC_MINALIGN_SHIFT, \
     .small_segregated_sharing_shift = BMALLOC_SMALL_SHARING_SHIFT, \

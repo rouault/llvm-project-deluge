@@ -16,6 +16,7 @@ PAS_API void deluge_heap_config_activate(void);
     .get_type_size = deluge_type_as_heap_type_get_type_size, \
     .get_type_alignment = deluge_type_as_heap_type_get_type_alignment, \
     .dump_type = deluge_type_as_heap_type_dump, \
+    .get_type_runtime_config = deluge_type_as_heap_type_get_runtime_config, \
     .check_deallocation = true, \
     .small_segregated_min_align_shift = PAS_MIN_ALIGN_SHIFT, \
     .small_segregated_sharing_shift = PAS_SMALL_SHARING_SHIFT, \

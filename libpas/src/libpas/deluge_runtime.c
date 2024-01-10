@@ -26,21 +26,30 @@
 const deluge_type deluge_int_type = {
     .size = 1,
     .alignment = 1,
-    .trailing_array = NULL,
+    .num_words = 1,
+    .u = {
+        .trailing_array = NULL,
+    },
     .word_types = { DELUGE_WORD_TYPE_INT }
 };
 
 const deluge_type deluge_function_type = {
     .size = 0,
     .alignment = 0,
-    .trailing_array = NULL,
+    .num_words = 0,
+    .u = {
+        .runtime_config = NULL,
+    },
     .word_types = { }
 };
 
 const deluge_type deluge_type_type = {
     .size = 0,
     .alignment = 0,
-    .trailing_array = NULL,
+    .num_words = 0,
+    .u = {
+        .runtime_config = NULL,
+    },
     .word_types = { }
 };
 
@@ -88,14 +97,17 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
         DELUGE_ASSERT(type->alignment, origin);
         DELUGE_ASSERT(pas_is_power_of_2(type->alignment), origin);
         DELUGE_ASSERT(!(type->size % type->alignment), origin);
-        if (type->trailing_array) {
-            DELUGE_ASSERT(!type->trailing_array->trailing_array, origin);
-            DELUGE_ASSERT(type->trailing_array->size, origin);
-            deluge_validate_type(type->trailing_array, origin);
-        }
-    } else {
+    } else
         DELUGE_ASSERT(!type->alignment, origin);
-        DELUGE_ASSERT(!type->trailing_array, origin);
+    if (type->num_words) {
+        DELUGE_ASSERT((type->size + 7) / 8 == type->num_words, origin);
+        if (type->u.trailing_array) {
+            DELUGE_ASSERT(type->u.trailing_array->num_words, origin);
+            DELUGE_ASSERT(!type->u.trailing_array->u.trailing_array, origin);
+            DELUGE_ASSERT(type->u.trailing_array->size, origin);
+            DELUGE_ASSERT(type->u.trailing_array->alignment <= type->alignment, origin);
+            deluge_validate_type(type->u.trailing_array, origin);
+        }
     }
 }
 
@@ -104,19 +116,21 @@ bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b)
     size_t index;
     if (a == b)
         return true;
-    if (a->size != b->size)
+    if (a->num_words != b->num_words)
         return false;
-    if (!a->size)
+    if (!a->num_words)
+        return false;
+    if (a->size != b->size)
         return false;
     if (a->alignment != b->alignment)
         return false;
-    if (a->trailing_array) {
-        if (!b->trailing_array)
+    if (a->u.trailing_array) {
+        if (!b->u.trailing_array)
             return false;
-        return deluge_type_is_equal(a->trailing_array, b->trailing_array);
-    } else if (b->trailing_array)
+        return deluge_type_is_equal(a->u.trailing_array, b->u.trailing_array);
+    } else if (b->u.trailing_array)
         return false;
-    for (index = deluge_type_num_words(a); index--;) {
+    for (index = a->num_words; index--;) {
         if (a->word_types[index] != b->word_types[index])
             return false;
     }
@@ -127,12 +141,12 @@ unsigned deluge_type_hash(const deluge_type* type)
 {
     unsigned result;
     size_t index;
-    if (!type->size)
+    if (!type->num_words)
         return pas_hash_ptr(type);
     result = type->size + 3 * type->alignment;
-    if (type->trailing_array)
-        result += 7 * deluge_type_hash(type->trailing_array);
-    for (index = deluge_type_num_words(type); index--;) {
+    if (type->u.trailing_array)
+        result += 7 * deluge_type_hash(type->u.trailing_array);
+    for (index = type->num_words; index--;) {
         result *= 11;
         result += type->word_types[index];
     }
@@ -195,19 +209,33 @@ void deluge_type_dump(const deluge_type* type, pas_stream* stream)
         return;
     }
 
-    if (!type->size) {
-        pas_stream_printf(stream, "delty{unique:%p}", type);
+    if (!type->num_words) {
+        pas_stream_printf(stream, "delty{unique:%p", type);
+        if (type->size)
+            pas_stream_printf(stream, ",%zu,%zu", type->size, type->alignment);
+        if (type->u.runtime_config)
+            pas_stream_printf(stream, ",%p", type->u.runtime_config);
+        pas_stream_printf(stream, "}");
         return;
     }
     
     pas_stream_printf(stream, "delty{%zu,%zu,", type->size, type->alignment);
-    if (type->trailing_array) {
-        deluge_type_dump(type->trailing_array, stream);
+    if (type->u.trailing_array) {
+        deluge_type_dump(type->u.trailing_array, stream);
         pas_stream_printf(stream, ",");
     }
-    for (index = 0; index < deluge_type_num_words(type); ++index)
+    for (index = 0; index < type->num_words; ++index)
         deluge_word_type_dump(type->word_types[index], stream);
     pas_stream_printf(stream, "}");
+}
+
+pas_heap_runtime_config* deluge_type_as_heap_type_get_runtime_config(
+    const pas_heap_type* heap_type, pas_heap_runtime_config* config)
+{
+    const deluge_type* type = (const deluge_type*)heap_type;
+    if (!type->num_words && type->u.runtime_config)
+        return &type->u.runtime_config->base;
+    return config;
 }
 
 void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream)
@@ -230,6 +258,9 @@ static pas_heap_ref* get_heap_impl(const deluge_type* type)
     pas_allocation_config allocation_config;
     deluge_type_table_add_result add_result;
 
+    PAS_ASSERT(type != &deluge_int_type);
+    PAS_ASSERT(type->size);
+    PAS_ASSERT(type->alignment);
     deluge_validate_type(type, NULL);
     
     initialize_utility_allocation_config(&allocation_config);
@@ -261,7 +292,6 @@ pas_heap_ref* deluge_get_heap(const deluge_type* type)
         deluge_type_dump(type, &pas_log_stream.base);
         pas_log("\n");
     }
-    PAS_ASSERT(type != &deluge_int_type);
     result = (pas_heap_ref*)pas_lock_free_read_ptr_ptr_hashtable_find(
         &deluge_fast_type_table, fast_type_hash, NULL, type);
     if (result)
@@ -689,7 +719,7 @@ static void check_access_common(void* ptr, void* lower, void* upper, const delug
     check_access_common_maybe_opaque(ptr, lower, upper, type, bytes, origin);
     
     DELUGE_CHECK(
-        type->size,
+        type->num_words,
         origin,
         "cannot access %zu bytes, span has opaque type (ptr = %p,%p,%p,%s).\n",
         bytes, ptr, lower, upper, deluge_type_to_new_string(type));
@@ -744,13 +774,13 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
         "cannot access memory as ptr without 8-byte alignment; in this case ptr %% 8 = %zu (ptr = %p,%p,%p,%s).",
         (size_t)(offset % 8), ptr, lower, upper, deluge_type_to_new_string(type));
     word_type_index = offset / 8;
-    if (type->trailing_array) {
-        uintptr_t num_words = deluge_type_num_words_exact(type);
+    if (type->u.trailing_array) {
+        uintptr_t num_words = type->num_words;
         if (word_type_index < num_words)
             DELUGE_ASSERT(word_type_index + 3 < num_words, origin);
         else {
             word_type_index -= num_words;
-            type = type->trailing_array;
+            type = type->u.trailing_array;
         }
     }
     DELUGE_CHECK(

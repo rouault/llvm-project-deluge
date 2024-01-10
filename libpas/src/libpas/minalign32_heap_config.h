@@ -52,6 +52,7 @@ PAS_API void minalign32_heap_config_activate(void);
     .get_type_size = pas_simple_type_as_heap_type_get_type_size, \
     .get_type_alignment = pas_simple_type_as_heap_type_get_type_alignment, \
     .dump_type = pas_simple_type_as_heap_type_dump, \
+    .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
     .check_deallocation = false, \
     .small_segregated_min_align_shift = MINALIGN32_MINALIGN_SHIFT, \
     .small_segregated_sharing_shift = MINALIGN32_SMALL_SHARING_SHIFT, \

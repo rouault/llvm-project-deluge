@@ -73,6 +73,7 @@ typedef struct {
     pas_heap_config_get_type_size get_type_size;
     pas_heap_config_get_type_alignment get_type_alignment;
     pas_heap_config_dump_type dump_type;
+    pas_heap_config_get_type_runtime_config get_type_runtime_config;
     bool check_deallocation;
     uint8_t small_segregated_min_align_shift;
     uint8_t small_segregated_sharing_shift;
@@ -339,6 +340,7 @@ typedef struct {
         .get_type_size = ((pas_basic_heap_config_arguments){__VA_ARGS__}).get_type_size, \
         .get_type_alignment = ((pas_basic_heap_config_arguments){__VA_ARGS__}).get_type_alignment, \
         .dump_type = ((pas_basic_heap_config_arguments){__VA_ARGS__}).dump_type, \
+        .get_type_runtime_config = ((pas_basic_heap_config_arguments){__VA_ARGS__}).get_type_runtime_config, \
         .large_alignment = \
             (size_t)1 << ((pas_basic_heap_config_arguments){__VA_ARGS__}).small_segregated_min_align_shift, \
         PAS_BASIC_HEAP_CONFIG_SEGREGATED_HEAP_FIELDS(name, __VA_ARGS__) \

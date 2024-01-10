@@ -66,6 +66,8 @@ typedef void (*pas_heap_config_activate_callback)(void);
 typedef size_t (*pas_heap_config_get_type_size)(const pas_heap_type*);
 typedef size_t (*pas_heap_config_get_type_alignment)(const pas_heap_type*);
 typedef void (*pas_heap_config_dump_type)(const pas_heap_type*, pas_stream* stream);
+typedef pas_heap_runtime_config* (*pas_heap_config_get_type_runtime_config)(
+    const pas_heap_type*, pas_heap_runtime_config*);
 typedef pas_fast_megapage_kind (*pas_heap_config_fast_megapage_kind_func)(uintptr_t begin);
 typedef pas_page_base* (*pas_heap_config_page_header_func)(uintptr_t begin);
 typedef pas_aligned_allocation_result (*pas_heap_config_aligned_allocator)(
@@ -118,6 +120,9 @@ typedef bool (*pas_heap_config_specialized_try_deallocate_not_small_exclusive_se
     pas_deallocation_mode deallocation_mode,
     pas_fast_megapage_kind megapage_kind);
 
+PAS_API pas_heap_runtime_config* pas_heap_type_get_runtime_config_identity(
+    const pas_heap_type* type, pas_heap_runtime_config* config);
+
 struct pas_heap_config {
     /* This always self-points. It's useful for going from a config to a config_ptr. */
     const pas_heap_config* config_ptr;
@@ -135,6 +140,9 @@ struct pas_heap_config {
 
     /* Tells the type to dump information about itself into a stream. */
     pas_heap_config_dump_type dump_type;
+
+    /* Allows the type to select a different runtime config. */
+    pas_heap_config_get_type_runtime_config get_type_runtime_config;
     
     /* Alignment requirement of large objects. */
     size_t large_alignment;

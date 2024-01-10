@@ -95,6 +95,7 @@ PAS_API extern const unsigned inline_non_committable_granules_config_non_committ
 		.get_type_size = pas_simple_type_as_heap_type_get_type_size, \
 		.get_type_alignment = pas_simple_type_as_heap_type_get_type_alignment, \
 		.dump_type = pas_simple_type_as_heap_type_dump, \
+                .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
 		.large_alignment = INLINE_NON_COMMITTABLE_GRANULES_MIN_ALIGN, \
 		.small_segregated_config = { \
 		    .base = { \

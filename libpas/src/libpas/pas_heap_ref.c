@@ -46,7 +46,9 @@ pas_heap* pas_ensure_heap_slow(pas_heap_ref* heap_ref,
     pas_heap_lock_lock();
     heap = heap_ref->heap;
     if (!heap) {
-        heap = pas_heap_create(heap_ref, heap_ref_kind, config, runtime_config);
+        heap = pas_heap_create(
+            heap_ref, heap_ref_kind, config,
+            config->get_type_runtime_config(heap_ref->type, runtime_config));
         pas_store_store_fence();
         heap_ref->heap = heap;
     }
