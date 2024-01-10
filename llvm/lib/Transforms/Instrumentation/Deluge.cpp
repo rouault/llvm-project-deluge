@@ -1333,6 +1333,7 @@ class Deluge {
         Instruction* Alloc = nullptr;
         
         DelugeTypeData *DTD = dataForLowType(LowT);
+        assert(DTD->Type.Main.Size);
         if (!hasPtrsForCheck(HighT)) {
           assert(DTD == &Int);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
@@ -1378,6 +1379,7 @@ class Deluge {
         Instruction* Alloc;
         
         DelugeTypeData *DTD = dataForLowType(LowT);
+        assert(DTD->Type.Main.Size);
         Value* Count = CI->getArgOperand(2);
         Value* PassedAlignment = CI->getArgOperand(1);
         if (!hasPtrsForCheck(HighT)) {
@@ -1422,6 +1424,7 @@ class Deluge {
         Instruction* Alloc = nullptr;
         
         DelugeTypeData *DTD = dataForLowType(LowT);
+        assert(DTD->Type.Main.Size);
         if (!hasPtrsForCheck(HighT)) {
           assert(DTD == &Int);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
@@ -1480,6 +1483,7 @@ class Deluge {
       }
       Type* LowT = lowerType(AI->getAllocatedType());
       DelugeTypeData* DTD = dataForLowType(LowT);
+      assert(DTD->Type.Main.Size);
       if (AI->getParent() != FirstRealBlock || AI->isArrayAllocation()) {
         // This is the especially fun case of a dynamic alloca! We allocate something and then pool it
         // until return.
@@ -1776,6 +1780,7 @@ class Deluge {
       size_t Size = DL.getTypeStoreSize(LowT);
       size_t Alignment = DL.getABITypeAlign(LowT).value();
       DelugeTypeData* DTD = dataForLowType(LowT);
+      assert(DTD->Type.Main.Size);
       assert(!DTD->Type.Trailing.isValid());
       assert(!(Size % DTD->Type.Main.Size));
       CallInst* Call = CallInst::Create(
@@ -2035,8 +2040,7 @@ public:
     Int.Type.Main.WordTypes.push_back(DelugeWordType::Int);
     Int.TypeRep = new GlobalVariable(
       M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_int_type");
-    FunctionDTD.Type = DelugeType(1, 1);
-    FunctionDTD.Type.Main.WordTypes.push_back(DelugeWordType::Function);
+    FunctionDTD.Type = DelugeType(0, 0);
     FunctionDTD.TypeRep = new GlobalVariable(
       M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_function_type");
     Invalid.Type = DelugeType(0, 0);
@@ -2242,6 +2246,7 @@ public:
       // FIXME: What if we're dealing with an array? Right now, we'll create a type that is O(array size).
       // We could at least detect repeats here.
       DelugeTypeData* DTD = dataForLowType(LowT);
+      assert(DTD->Type.Main.Size);
       Instruction* Alloc;
       if (DTD == &Int) {
         assert(!hasPtrsForCheck(LowT));
@@ -2271,6 +2276,7 @@ public:
       Value* C = lowerConstant(G->getInitializer(), Return, MyInitializationContext);
       new StoreInst(C, Alloc, Return);
       DTD = dataForLowType(LowWidePtrTy);
+      assert(DTD->Type.Main.Size);
       // This could be so much more efficient, but whatever.
       Value* Heap = CallInst::Create(GetHeap, { DTD->TypeRep }, "deluge_get_heap", Return);
       Alloc = CallInst::Create(AllocateOne, { Heap }, "deluge_alloc_one", Return);

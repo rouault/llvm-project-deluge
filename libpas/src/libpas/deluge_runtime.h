@@ -51,9 +51,7 @@ typedef uint8_t deluge_word_type;
 
 /* Note that any statement like "64-bit word" below needs to be understood with the caveat that ptr
    access also checks bounds. So, a pointer might say it has type "64-bit int" but bounds that say
-   "1 byte", in which case you get the intersection: "1 byte int". A similar thing happens with
-   function pointers and any pointer to opaque libdeluge state: the bounds will claim that the pointer
-   points at 1 byte. */
+   "1 byte", in which case you get the intersection: "1 byte int". */
 #define DELUGE_WORD_TYPE_OFF_LIMITS        ((uint8_t)0)     /* 64-bit that cannot be accessed. */
 #define DELUGE_WORD_TYPE_INT               ((uint8_t)1)     /* 64-bit word that contains ints.
                                                                Primitive ptrs may have bounds that
@@ -67,10 +65,6 @@ typedef uint8_t deluge_word_type;
                                                                of a wide ptr (the upper). */
 #define DELUGE_WORD_TYPE_PTR_PART4         ((uint8_t)5)     /* 64-bit word that contains the fourth
                                                                part of a wide ptr (the type). */
-#define DELUGE_WORD_TYPE_FUNCTION          ((uint8_t)6)     /* "64-bit word" that contains the start
-                                                               of a function. */
-#define DELUGE_WORD_TYPE_TYPE              ((uint8_t)7)     /* "64-bit word" that contains the start
-                                                               of a deluge type object. */
 
 struct deluge_ptr {
     void* ptr;
@@ -79,6 +73,9 @@ struct deluge_ptr {
     const deluge_type* type;
 };
 
+/* Zero-sized types are unique; they are only equal by pointer equality.
+   
+   Non-zero-sized types are equal if they are structurally the same. */
 struct deluge_type {
     size_t size;
     size_t alignment;

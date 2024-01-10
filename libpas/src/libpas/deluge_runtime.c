@@ -31,17 +31,17 @@ const deluge_type deluge_int_type = {
 };
 
 const deluge_type deluge_function_type = {
-    .size = 1,
-    .alignment = 1,
+    .size = 0,
+    .alignment = 0,
     .trailing_array = NULL,
-    .word_types = { DELUGE_WORD_TYPE_FUNCTION }
+    .word_types = { }
 };
 
 const deluge_type deluge_type_type = {
-    .size = 1,
-    .alignment = 1,
+    .size = 0,
+    .alignment = 0,
     .trailing_array = NULL,
-    .word_types = { DELUGE_WORD_TYPE_TYPE }
+    .word_types = { }
 };
 
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
@@ -84,13 +84,18 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
         DELUGE_ASSERT(type == &deluge_function_type, origin);
     if (deluge_type_is_equal(type, &deluge_type_type))
         DELUGE_ASSERT(type == &deluge_type_type, origin);
-    DELUGE_ASSERT(type->size, origin);
-    DELUGE_ASSERT(type->alignment, origin);
-    DELUGE_ASSERT(pas_is_power_of_2(type->alignment), origin);
-    DELUGE_ASSERT(!(type->size % type->alignment), origin);
-    if (type->trailing_array) {
-        DELUGE_ASSERT(!type->trailing_array->trailing_array, origin);
-        deluge_validate_type(type->trailing_array, origin);
+    if (type->size) {
+        DELUGE_ASSERT(type->alignment, origin);
+        DELUGE_ASSERT(pas_is_power_of_2(type->alignment), origin);
+        DELUGE_ASSERT(!(type->size % type->alignment), origin);
+        if (type->trailing_array) {
+            DELUGE_ASSERT(!type->trailing_array->trailing_array, origin);
+            DELUGE_ASSERT(type->trailing_array->size, origin);
+            deluge_validate_type(type->trailing_array, origin);
+        }
+    } else {
+        DELUGE_ASSERT(!type->alignment, origin);
+        DELUGE_ASSERT(!type->trailing_array, origin);
     }
 }
 
@@ -100,6 +105,8 @@ bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b)
     if (a == b)
         return true;
     if (a->size != b->size)
+        return false;
+    if (!a->size)
         return false;
     if (a->alignment != b->alignment)
         return false;
@@ -120,6 +127,8 @@ unsigned deluge_type_hash(const deluge_type* type)
 {
     unsigned result;
     size_t index;
+    if (!type->size)
+        return pas_hash_ptr(type);
     result = type->size + 3 * type->alignment;
     if (type->trailing_array)
         result += 7 * deluge_type_hash(type->trailing_array);
@@ -145,12 +154,6 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     case DELUGE_WORD_TYPE_PTR_PART4:
         pas_stream_printf(stream, "P%u", type - DELUGE_WORD_TYPE_PTR_PART1 + 1);
         return;
-    case DELUGE_WORD_TYPE_FUNCTION:
-        pas_stream_printf(stream, "Fu");
-        return;
-    case DELUGE_WORD_TYPE_TYPE:
-        pas_stream_printf(stream, "Ty");
-        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -173,7 +176,27 @@ void deluge_type_dump(const deluge_type* type, pas_stream* stream)
         pas_stream_printf(stream, "%p:", type);
 
     if (!type) {
-        pas_stream_printf(stream, "delty{invalid}");
+        pas_stream_printf(stream, "delty{null}");
+        return;
+    }
+
+    if (type == &deluge_function_type) {
+        pas_stream_printf(stream, "delty{function}");
+        return;
+    }
+
+    if (type == &deluge_type_type) {
+        pas_stream_printf(stream, "delty{type}");
+        return;
+    }
+
+    if (type == &deluge_int_type) {
+        pas_stream_printf(stream, "delty{int}");
+        return;
+    }
+
+    if (!type->size) {
+        pas_stream_printf(stream, "delty{unique:%p}", type);
         return;
     }
     
@@ -589,12 +612,6 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
         pas_log("\n");
     }
     
-    if (type == &deluge_function_type || type == &deluge_type_type) {
-        DELUGE_ASSERT(lower == ptr, origin);
-        DELUGE_ASSERT((char*)upper == (char*)ptr + 1, origin);
-        return;
-    }
-
     if (!lower || !upper || !type) {
         /* It's possible for part of the ptr to fall off into a page that gets decommitted.
            In that case part of it will become null, and we'll treat the ptr as valid but
@@ -604,14 +621,16 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
 
     DELUGE_ASSERT(upper > lower, origin);
     DELUGE_ASSERT(upper <= (void*)PAS_MAX_ADDRESS, origin);
-    DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
-    DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
-    DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+    if (type->size) {
+        DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
+        DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
+        DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+    }
     deluge_validate_type(type, origin);
 }
 
-static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
-                                uintptr_t bytes, const deluge_origin* origin)
+static void check_access_common_maybe_opaque(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                             uintptr_t bytes, const deluge_origin* origin)
 {
     if (PAS_ENABLE_TESTING)
         deluge_validate_ptr_impl(ptr, lower, upper, type, origin);
@@ -662,6 +681,18 @@ static void check_access_common(void* ptr, void* lower, void* upper, const delug
         origin,
         "cannot access ptr with null type (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
+}
+
+static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
+                                uintptr_t bytes, const deluge_origin* origin)
+{
+    check_access_common_maybe_opaque(ptr, lower, upper, type, bytes, origin);
+    
+    DELUGE_CHECK(
+        type->size,
+        origin,
+        "cannot access %zu bytes, span has opaque type (ptr = %p,%p,%p,%s).\n",
+        bytes, ptr, lower, upper, deluge_type_to_new_string(type));
 }
 
 static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
@@ -747,7 +778,7 @@ void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const del
 void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                                      const deluge_origin* origin)
 {
-    check_access_common(ptr, lower, upper, type, 1, origin);
+    check_access_common_maybe_opaque(ptr, lower, upper, type, 1, origin);
     DELUGE_CHECK(
         type == &deluge_function_type,
         origin,
