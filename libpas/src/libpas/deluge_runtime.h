@@ -505,6 +505,7 @@ void deluded_f_zsys_readv(DELUDED_SIGNATURE);
 void deluded_f_zsys_write(DELUDED_SIGNATURE);
 void deluded_f_zsys_close(DELUDED_SIGNATURE);
 void deluded_f_zsys_lseek(DELUDED_SIGNATURE);
+void deluded_f_zsys_exit(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

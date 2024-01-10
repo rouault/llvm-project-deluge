@@ -1620,6 +1620,21 @@ void deluded_f_zsys_lseek(DELUDED_SIGNATURE)
     *(long*)rets.ptr = result;
 }
 
+void deluded_f_zsys_exit(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_exit",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    int return_code = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    _exit(return_code);
+    PAS_ASSERT(!"Should not be reached");
+}
+
 #endif /* PAS_ENABLE_DELUGE */
 
 #endif /* LIBPAS_ENABLED */

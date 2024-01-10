@@ -815,6 +815,8 @@ class Deluge {
         }
         return nullptr;
       }
+      if (GlobalAlias* A = dyn_cast<GlobalAlias>(G))
+        return nullptr;
       return forgePtrConstantWithLowType(G, LowT);
     }
 
@@ -1281,28 +1283,6 @@ class Deluge {
       }
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
-        if (F->getName() == "__cxa_atexit") {
-          assert(CI->getArgOperand(1) == LowRawNull);
-          assert(cast<GlobalVariable>(CI->getArgOperand(2))->getName() == "__dso_handle");
-          assert(isa<Function>(CI->getArgOperand(0)));
-
-          Function* NewF = Function::Create(
-            CtorDtorTy, GlobalValue::PrivateLinkage, 0, "deluge_atexit_forwarder", &M);
-          BasicBlock* RootBB = BasicBlock::Create(C, "deluge_atexit_forwarder_root", NewF);
-          AllocaInst* ReturnBuffer = new AllocaInst(
-            Int8Ty, 0, ConstantInt::get(IntPtrTy, 16), "deluge_atexit_return", RootBB);
-          Instruction* Upper = GetElementPtrInst::Create(
-            Int8Ty, ReturnBuffer, ConstantInt::get(IntPtrTy, 16), "deluge_atexit_return_upper", RootBB);
-          CallInst::Create(
-            DeludedFuncTy, CI->getArgOperand(0),
-            { LowRawNull, LowRawNull, LowRawNull, ReturnBuffer, Upper, Int.TypeRep },
-            "", RootBB);
-          ReturnInst::Create(C, RootBB);
-
-          CI->getArgOperandUse(0) = NewF;
-          return true;
-        }
-        
         if (shouldPassThrough(F))
           return true;
       }
@@ -1921,14 +1901,12 @@ class Deluge {
     return (F->getName() == "__divdc3" ||
             F->getName() == "__muldc3" ||
             F->getName() == "__divsc3" ||
-            F->getName() == "__mulsc3" ||
-            F->getName() == "__cxa_atexit");
+            F->getName() == "__mulsc3");
   }
 
   bool shouldPassThrough(GlobalVariable* G) {
     return (G->getName() == "llvm.global_ctors" ||
-            G->getName() == "llvm.global_dtors" ||
-            G->getName() == "__dso_handle");
+            G->getName() == "llvm.global_dtors");
   }
 
   bool shouldPassThrough(GlobalValue* G) {
@@ -1939,11 +1917,6 @@ class Deluge {
     return false;
   }
 
-  // This utility function runs before we've set up any of the rest of the pass's state. It has two jobs:
-  // - Ensure that the module can safely be manipulated by this pass; if not, we ICE. This doesn't catch
-  //   all possible Deluge-affecting issues. Some issues are caught by the pass's later logic. This only
-  //   catches issues that would cause that logic to go unsafely off the rails.
-  // - Split critical edges. The rest of this pass strongly depends on all critical edges being split.
   void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
@@ -1994,6 +1967,13 @@ public:
     CtorDtorTy = FunctionType::get(VoidTy, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
+    // Fuck the DSO!
+    if (GlobalVariable* DSO = M.getGlobalVariable("__dso_handle")) {
+      assert(DSO->isDeclaration());
+      DSO->replaceAllUsesWith(LowRawNull);
+      DSO->eraseFromParent();
+    }
+    
     ZunsafeForgeImpl = M.getOrInsertFunction(
       "zunsafe_forge_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZrestrictImpl = M.getOrInsertFunction(
@@ -2033,7 +2013,10 @@ public:
     }
     for (Function &F : M.functions()) {
       if (shouldPassThrough(&F)) {
-        assert(F.isDeclaration());
+        if (!F.isDeclaration()) {
+          errs() << "Cannot define " << F.getName() << "\n";
+          llvm_unreachable("Attempt to define pass-through function.");
+        }
         continue;
       }
       Functions.push_back(&F);

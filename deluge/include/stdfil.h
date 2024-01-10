@@ -161,6 +161,7 @@ long zsys_readv(int fd, const void* iov, int iovcnt);
 long zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
 int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
+void zsys_exit(int return_code);
 
 #endif /* DELUGE_STDFIL_H */
 

@@ -7,6 +7,7 @@ extern char** environ;
 
 void deluded_f___init_libc(DELUDED_SIGNATURE);
 void deluded_f_main(DELUDED_SIGNATURE);
+void deluded_f_exit(DELUDED_SIGNATURE);
 
 struct init_libc_args {
     deluge_ptr environ;
@@ -67,6 +68,7 @@ int main(int argc, char** argv)
     } u;
     struct init_libc_args* init_libc_args;
     struct main_args* main_args;
+    int* exit_args;
     deluge_ptr deluded_argv;
     int index;
     size_t environ_size;
@@ -129,6 +131,12 @@ int main(int argc, char** argv)
     deluded_f_main(main_args, main_args + 1, &main_args_type,
                    u.return_buffer, u.return_buffer + 2, &deluge_int_type);
 
-    return u.result;
+    exit_args = deluge_allocate_int(sizeof(int));
+    *exit_args = u.result;
+    deluded_f_exit(exit_args, exit_args + 1, &deluge_int_type,
+                   u.return_buffer, u.return_buffer + 2, &deluge_int_type);
+
+    PAS_ASSERT(!"Should not get here");
+    return 1;
 }
 
