@@ -55,6 +55,8 @@ struct pas_heap_runtime_config {
     unsigned max_bitfit_object_size;
 
     pas_heap_runtime_config_view_cache_capacity_for_object_size_callback view_cache_capacity_for_object_size;
+
+    void (*initialize_fresh_memory)(void* begin, void* end);
 };
 
 PAS_API uint8_t pas_heap_runtime_config_view_cache_capacity_for_object_size(

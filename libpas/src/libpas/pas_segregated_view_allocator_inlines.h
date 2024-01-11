@@ -212,6 +212,18 @@ pas_segregated_view_will_start_allocating(pas_segregated_view view,
                 was_stolen,
                 (const pas_segregated_page_config*)page_config.base.page_config_ptr);
 
+            if (size_directory->heap->runtime_config->initialize_fresh_memory) {
+                char* boundary;
+
+                boundary = (char*)exclusive->page_boundary;
+                
+                size_directory->heap->runtime_config->initialize_fresh_memory(
+                    boundary + pas_segregated_page_offset_from_page_boundary_to_first_object_exclusive(
+                        size_directory->object_size, page_config),
+                    boundary + pas_segregated_page_offset_from_page_boundary_to_end_of_last_object_exclusive(
+                        size_directory->object_size, page_config));
+            }
+
             pas_lock_lock_conditionally(&exclusive->ownership_lock, heap_lock_hold_mode);
             exclusive->is_owned = true;
             if (verbose) {

@@ -1,0 +1,6 @@
+return:
+  success
+output-includes:
+  - "value before set: 0"
+  - "value after set: 29a"
+  - "value after delete: 0"

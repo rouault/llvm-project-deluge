@@ -19,21 +19,6 @@ struct main_args {
     deluge_ptr argv;
 };
 
-static deluge_type ptr_type = {
-    .size = sizeof(deluge_ptr),
-    .alignment = alignof(deluge_ptr),
-    .num_words = sizeof(deluge_ptr) / 8,
-    .u = {
-        .trailing_array = NULL,
-    },
-    .word_types = {
-        DELUGE_WORD_TYPE_PTR_PART1,
-        DELUGE_WORD_TYPE_PTR_PART2,
-        DELUGE_WORD_TYPE_PTR_PART3,
-        DELUGE_WORD_TYPE_PTR_PART4
-    }
-};
-
 struct deluge_type init_libc_args_type = {
     .size = sizeof(struct init_libc_args),
     .alignment = alignof(struct init_libc_args),
@@ -84,10 +69,10 @@ int main(int argc, char** argv)
 
     PAS_ASSERT(argc >= 1);
 
-    deluded_argv.ptr = deluge_allocate_many(deluge_get_heap(&ptr_type), argc);
+    deluded_argv.ptr = deluge_allocate_many(deluge_get_heap(&deluge_ptr_type), argc);
     deluded_argv.lower = deluded_argv.ptr;
     deluded_argv.upper = (deluge_ptr*)deluded_argv.ptr + argc;
-    deluded_argv.type = &ptr_type;
+    deluded_argv.type = &deluge_ptr_type;
 
     for (index = 0; index < argc; ++index) {
         deluge_ptr* arg_ptr = (deluge_ptr*)deluded_argv.ptr + index;
@@ -103,10 +88,10 @@ int main(int argc, char** argv)
     environ_size++;
 
     init_libc_args = deluge_allocate_one(deluge_get_heap(&init_libc_args_type));
-    init_libc_args->environ.ptr = deluge_allocate_many(deluge_get_heap(&ptr_type), environ_size);
+    init_libc_args->environ.ptr = deluge_allocate_many(deluge_get_heap(&deluge_ptr_type), environ_size);
     init_libc_args->environ.lower = init_libc_args->environ.ptr;
     init_libc_args->environ.upper = (deluge_ptr*)init_libc_args->environ.ptr + environ_size;
-    init_libc_args->environ.type = &ptr_type;
+    init_libc_args->environ.type = &deluge_ptr_type;
     init_libc_args->program_name = ((deluge_ptr*)deluded_argv.ptr)[0];
 
     for (index = 0; index < environ_size; ++index) {

@@ -119,6 +119,7 @@ struct deluge_alloca_stack {
     }
 
 extern const deluge_type deluge_int_type;
+extern const deluge_type deluge_ptr_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
@@ -356,6 +357,9 @@ static inline void deluge_check_function_call(deluge_ptr ptr, const deluge_origi
     deluge_check_function_call_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
 }
 
+void deluge_check_access_opaque(
+    deluge_ptr ptr, const deluge_type* expected_type, const deluge_origin* origin);
+
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                         unsigned value, size_t count, const deluge_origin* origin);
 void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
@@ -512,6 +516,11 @@ void deluded_f_zsys_write(DELUDED_SIGNATURE);
 void deluded_f_zsys_close(DELUDED_SIGNATURE);
 void deluded_f_zsys_lseek(DELUDED_SIGNATURE);
 void deluded_f_zsys_exit(DELUDED_SIGNATURE);
+
+void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
+void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
+void deluded_f_zthread_setspecific(DELUDED_SIGNATURE);
+void deluded_f_zthread_getspecific(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

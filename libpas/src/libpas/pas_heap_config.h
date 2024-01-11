@@ -179,7 +179,7 @@ struct pas_heap_config {
     /* Things passed down to the large free heap. The arg that the large free heap will pass is
        the pas_large_heap instance. */
     pas_heap_config_aligned_allocator aligned_allocator;
-    bool aligned_allocator_talks_to_sharing_pool;
+    bool aligned_allocator_talks_to_sharing_pool; /* FIXME: Why isn't this a runtime_config thing? */
     pas_deallocator deallocator;
 
     /* Tells if it's OK to call mmap on memory managed by this heap.

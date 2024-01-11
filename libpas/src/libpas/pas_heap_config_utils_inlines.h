@@ -65,6 +65,7 @@ typedef struct {
                 PAS_INTRINSIC_MAX_BITFIT_OBJECT_SIZE, \
             .view_cache_capacity_for_object_size = \
                 ((pas_basic_heap_config_definitions_arguments){__VA_ARGS__}).intrinsic_view_cache_capacity, \
+            .initialize_fresh_memory = NULL \
         }, \
         .page_caches = &name ## _page_caches \
     }; \
@@ -85,6 +86,7 @@ typedef struct {
             .max_bitfit_object_size = \
                 PAS_PRIMITIVE_MAX_BITFIT_OBJECT_SIZE, \
             .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
+            .initialize_fresh_memory = NULL \
         }, \
         .page_caches = &name ## _page_caches \
     }; \
@@ -105,6 +107,7 @@ typedef struct {
             .max_bitfit_object_size = \
                 PAS_TYPED_MAX_BITFIT_OBJECT_SIZE, \
             .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
+            .initialize_fresh_memory = NULL \
         }, \
         .page_caches = &name ## _page_caches \
     }; \
@@ -125,6 +128,7 @@ typedef struct {
             .max_bitfit_object_size = \
                 PAS_FLEX_MAX_BITFIT_OBJECT_SIZE, \
             .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
+            .initialize_fresh_memory = NULL \
         }, \
         .page_caches = &name ## _page_caches \
     }; \

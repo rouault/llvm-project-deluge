@@ -140,7 +140,8 @@ pas_heap_runtime_config jit_heap_runtime_config = {
     .directory_size_bound_for_no_view_cache = 0,
     .max_segregated_object_size = 2000,
     .max_bitfit_object_size = UINT_MAX,
-    .view_cache_capacity_for_object_size = pas_heap_runtime_config_aggressive_view_cache_capacity
+    .view_cache_capacity_for_object_size = pas_heap_runtime_config_aggressive_view_cache_capacity,
+    .initialize_fresh_memory = NULL
 };
 
 jit_heap_config_root_data jit_root_data = {

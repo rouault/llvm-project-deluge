@@ -33,6 +33,21 @@ const deluge_type deluge_int_type = {
     .word_types = { DELUGE_WORD_TYPE_INT }
 };
 
+const deluge_type deluge_ptr_type = {
+    .size = sizeof(deluge_ptr),
+    .alignment = alignof(deluge_ptr),
+    .num_words = 4,
+    .u = {
+        .trailing_array = NULL,
+    },
+    .word_types = {
+        DELUGE_WORD_TYPE_PTR_PART1,
+        DELUGE_WORD_TYPE_PTR_PART2,
+        DELUGE_WORD_TYPE_PTR_PART3,
+        DELUGE_WORD_TYPE_PTR_PART4
+    }
+};
+
 const deluge_type deluge_function_type = {
     .size = 0,
     .alignment = 0,
@@ -814,6 +829,19 @@ void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const 
         origin,
         "attempt to call pointer that is not a function (ptr = %p,%p,%p,%s).",
         ptr, lower, upper, deluge_type_to_new_string(type));
+}
+
+void deluge_check_access_opaque(
+    deluge_ptr ptr, const deluge_type* expected_type, const deluge_origin* origin)
+{
+    PAS_TESTING_ASSERT(!expected_type->num_words);
+    check_access_common_maybe_opaque(ptr.ptr, ptr.lower, ptr.upper, ptr.type, 1, origin);
+    DELUGE_CHECK(
+        ptr.type == expected_type,
+        origin,
+        "expected ptr to %s during internal opaque access (ptr = %p,%p,%p,%s).",
+        deluge_type_to_new_string(expected_type),
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
 }
 
 void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
@@ -1694,6 +1722,219 @@ void deluded_f_zsys_exit(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     _exit(return_code);
     PAS_ASSERT(!"Should not be reached");
+}
+
+#define DEFINE_RUNTIME_CONFIG(name, passed_initialize_fresh_memory) \
+    static pas_basic_heap_runtime_config name = { \
+        .base = { \
+            .sharing_mode = pas_do_not_share_pages, \
+            .statically_allocated = false, \
+            .is_part_of_heap = true, \
+            .directory_size_bound_for_partial_views = 0, \
+            .directory_size_bound_for_baseline_allocators = PAS_TYPED_BOUND_FOR_BASELINE_ALLOCATORS, \
+            .directory_size_bound_for_no_view_cache = PAS_TYPED_BOUND_FOR_NO_VIEW_CACHE, \
+            .max_segregated_object_size = PAS_TYPED_MAX_SEGREGATED_OBJECT_SIZE, \
+            .max_bitfit_object_size = 0, \
+            .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
+            .initialize_fresh_memory = (passed_initialize_fresh_memory) \
+        }, \
+        .page_caches = &deluge_page_caches \
+    }
+
+typedef struct {
+    pas_lock lock;
+    void (*destructor)(DELUDED_SIGNATURE);
+    pthread_key_t key;
+    uint64_t version;
+} thread_specific;
+
+static void thread_specific_initialize_fresh_memory(void* begin, void* end)
+{
+    PAS_ASSERT(!(((char*)end - (char*)begin) % sizeof(thread_specific)));
+    for (thread_specific* current = (thread_specific*)begin;
+         current != (thread_specific*)end;
+         ++current)
+        pas_lock_construct(&current->lock);
+    pas_fence();
+}
+
+DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific_initialize_fresh_memory);
+
+static deluge_type thread_specific_type = {
+    .size = sizeof(thread_specific),
+    .alignment = alignof(thread_specific),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &thread_specific_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref thread_specific_heap = {
+    .type = (const pas_heap_type*)&thread_specific_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+typedef struct {
+    thread_specific* parent;
+    uint64_t version;
+    deluge_ptr value;
+} thread_specific_value;
+
+static void my_destructor(void* untyped_value)
+{
+    thread_specific_value* value;
+    void (*destructor)(DELUDED_SIGNATURE);
+
+    value = (thread_specific_value*)untyped_value;
+    if (!value)
+        return;
+    
+    destructor = value->parent->destructor;
+    if (destructor && value->version == value->parent->version) {
+        deluge_ptr* args;
+        uintptr_t return_buffer[2];
+        
+        args = deluge_allocate_one(deluge_get_heap(&deluge_ptr_type));
+        *args = value->value;
+        destructor(args, args + 1, &deluge_ptr_type, return_buffer, return_buffer + 2, &deluge_int_type);
+    }
+    
+    deluge_deallocate(value);
+}
+
+void deluded_f_zthread_key_create(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_key_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr destructor_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    if (destructor_ptr.ptr)
+        deluge_check_function_call(destructor_ptr, &origin);
+
+    thread_specific* result = deluge_try_allocate_one(&thread_specific_heap);
+    if (!result)
+        return;
+
+    uint64_t version = result->version;
+    pas_fence();
+    if (!version) {
+        pas_lock_lock(&result->lock);
+        version = result->version;
+        pas_fence();
+        if (!version) {
+            int my_errno;
+            my_errno = pthread_key_create(&result->key, my_destructor);
+            if (my_errno) {
+                set_errno(my_errno);
+                pas_lock_unlock(&result->lock);
+                deluge_deallocate(result);
+                return;
+            }
+            pas_fence();
+            result->version = 1;
+        }
+        pas_lock_unlock(&result->lock);
+    }
+
+    result->destructor = (void(*)(DELUDED_SIGNATURE))destructor_ptr.ptr;
+
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, result + 1, &thread_specific_type);
+}
+
+void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_key_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
+
+    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    specific->version++; /* This can be racy, since:
+                            
+                            - Users aren't supposed to use it in a racy way, so any memory safe
+                              outcome is acceptable if they do.
+
+                            - Version has no memory safety implications. */
+
+    deluge_deallocate(specific);
+}
+
+void deluded_f_zthread_setspecific(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_key_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
+
+    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    thread_specific_value* specific_value = pthread_getspecific(specific->key);
+    if (!specific_value) {
+        int my_errno;
+        specific_value = deluge_allocate_utility(sizeof(thread_specific_value));
+        specific_value->parent = specific;
+        specific_value->version = specific->version;
+        my_errno = pthread_setspecific(specific->key, specific_value);
+        if (my_errno) {
+            set_errno(my_errno);
+            return;
+        }
+    }
+
+    specific_value->value = value;
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_key_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
+
+    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    thread_specific_value* value = pthread_getspecific(specific->key);
+    if (!value)
+        return;
+
+    if (value->version != value->parent->version)
+        return;
+
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)rets.ptr = value->value;
 }
 
 #endif /* PAS_ENABLE_DELUGE */

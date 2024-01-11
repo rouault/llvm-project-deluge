@@ -51,7 +51,8 @@ pas_heap_runtime_config outline_non_committable_granules_runtime_config = {
     .directory_size_bound_for_no_view_cache = 0,
     .max_segregated_object_size = UINT_MAX,
     .max_bitfit_object_size = UINT_MAX,
-    .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity
+    .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
+    .initialize_fresh_memory = NULL
 };
 
 pas_page_base* outline_non_committable_granules_config_header_for_boundary_remote(pas_enumerator* enumerator, void* boundary)

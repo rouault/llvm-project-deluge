@@ -163,5 +163,11 @@ int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
 void zsys_exit(int return_code);
 
+void* zthread_key_create(void (*destructor)(void*));
+void zthread_key_delete(void* key);
+_Bool zthread_setspecific(void* key, const void* value); /* returns true on success, sets errno
+                                                            otherwise */
+void* zthread_getspecific(void* key);
+
 #endif /* DELUGE_STDFIL_H */
 
