@@ -120,6 +120,15 @@ struct CoreDelugeType {
     Size += Other.Size;
     return Result;
   }
+
+  void truncate(size_t NewSize) {
+    assert(NewSize <= Size);
+    if (NewSize == Size)
+      return;
+    Size = NewSize;
+    while (WordTypes.size() > (Size + 7) / 8)
+      WordTypes.pop_back();
+  }
 };
 
 struct DelugeType {
@@ -132,7 +141,7 @@ struct DelugeType {
     : Main(Size, Alignment) {
   }
 
-  bool canBeInt() const { return Main.canBeInt() && !Trailing.isValid(); }
+  bool canBeInt() const { return Main.canBeInt() && (!Trailing.isValid() || Trailing.canBeInt()); }
 
   bool operator==(const DelugeType& Other) const {
     return Main == Other.Main && Trailing == Other.Trailing;
@@ -232,10 +241,12 @@ class Deluge {
   Value* ZunsafeForgeImpl;
   Value* ZrestrictImpl;
   Value* ZallocImpl;
+  Value* ZallocFlexImpl;
   Value* ZalignedAllocImpl;
   Value* ZreallocImpl;
 
   // Low-level functions used by codegen.
+  FunctionCallee ValidateType;
   FunctionCallee GetHeap;
   FunctionCallee TryAllocateInt;
   FunctionCallee TryAllocateIntWithAlignment;
@@ -246,6 +257,9 @@ class Deluge {
   FunctionCallee TryAllocateMany;
   FunctionCallee TryAllocateManyWithAlignment;
   FunctionCallee AllocateMany;
+  FunctionCallee TryAllocateIntFlex;
+  FunctionCallee TryAllocateIntFlexWithAlignment;
+  FunctionCallee TryAllocateFlex;
   FunctionCallee AllocateUtility;
   FunctionCallee TryReallocateInt;
   FunctionCallee TryReallocateIntWithAlignment;
@@ -1456,6 +1470,73 @@ class Deluge {
         CI->eraseFromParent();
         return true;
       }
+
+      if (CI->getCalledOperand() == ZallocFlexImpl) {
+        if (verbose)
+          errs() << "Lowering alloc_flex\n";
+        lowerConstantOperands(CI, LowRawNull);
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
+        Type* HighTrailingT = cast<AllocaInst>(CI->getArgOperand(2))->getAllocatedType();
+        Type* LowTrailingT = lowerType(HighTrailingT);
+        assert(hasPtrsForCheck(HighTrailingT) == hasPtrsForCheck(LowTrailingT));
+        Instruction* Alloc;
+        
+        DelugeTypeData* BaseDTD = dataForLowType(LowT);
+        DelugeTypeData* TrailingDTD = dataForLowType(LowTrailingT);
+        assert(BaseDTD->Type.Main.Size);
+        assert(TrailingDTD->Type.Main.Size);
+
+        DelugeType FlexType = BaseDTD->Type;
+        FlexType.Main.truncate(static_cast<size_t>(cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue()));
+        assert(!FlexType.Trailing.isValid());
+        assert(!TrailingDTD->Type.Trailing.isValid());
+        FlexType.Trailing = TrailingDTD->Type.Main;
+        FlexType.Main.Alignment = std::max(FlexType.Main.Alignment, FlexType.Trailing.Alignment);
+
+        DelugeTypeData* DTD;
+        if (FlexType.canBeInt())
+          DTD = &Int;
+        else
+          DTD = dataForType(FlexType); 
+        
+        size_t BaseSize = FlexType.Main.Size;
+        size_t ElementSize = FlexType.Trailing.Size;
+        Value* Count = CI->getArgOperand(3);
+        if (DTD == &Int) {
+          size_t Alignment = FlexType.Main.Alignment;
+          if (Alignment > MinAlign) {
+            Alloc = CallInst::Create(
+              TryAllocateIntFlexWithAlignment,
+              { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize),
+                Count, ConstantInt::get(IntPtrTy, Alignment) },
+              "deluge_alloc_int", CI);
+          } else {
+            Alloc = CallInst::Create(
+              TryAllocateIntFlex,
+              { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
+              "deluge_alloc_int", CI);
+          }
+        } else {
+          Value* Heap = getHeap(DTD, CI);
+          Alloc = CallInst::Create(
+            TryAllocateFlex,
+            { Heap, ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
+            "deluge_alloc_many", CI);
+        }
+        
+        Alloc->setDebugLoc(CI->getDebugLoc());
+        assert(ElementSize == DL.getTypeStoreSize(LowTrailingT));
+        Instruction* Upper = GetElementPtrInst::Create(
+          Int8Ty, Alloc, { ConstantInt::get(IntPtrTy, BaseSize) }, "deluge_alloc_upper", CI);
+        Upper->setDebugLoc(CI->getDebugLoc());
+        Upper = GetElementPtrInst::Create(LowTrailingT, Upper, { Count }, "deluge_alloc_upper2", CI);
+        Upper->setDebugLoc(CI->getDebugLoc());
+        CI->replaceAllUsesWith(forgePtr(Alloc, Alloc, Upper, DTD->TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
     }
     
     return false;
@@ -1667,6 +1748,7 @@ class Deluge {
       assert(CI->getCalledOperand() != ZunsafeForgeImpl);
       assert(CI->getCalledOperand() != ZrestrictImpl);
       assert(CI->getCalledOperand() != ZallocImpl);
+      assert(CI->getCalledOperand() != ZallocFlexImpl);
       assert(CI->getCalledOperand() != ZreallocImpl);
       
       CallInst::Create(
@@ -1994,6 +2076,8 @@ public:
       "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZallocImpl = M.getOrInsertFunction(
       "zalloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZallocFlexImpl = M.getOrInsertFunction(
+      "zalloc_flex_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZalignedAllocImpl = M.getOrInsertFunction(
       "zaligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
     ZreallocImpl = M.getOrInsertFunction(
@@ -2002,6 +2086,7 @@ public:
     assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
     assert(cast<Function>(ZrestrictImpl)->isDeclaration());
     assert(cast<Function>(ZallocImpl)->isDeclaration());
+    assert(cast<Function>(ZallocFlexImpl)->isDeclaration());
     assert(cast<Function>(ZalignedAllocImpl)->isDeclaration());
     assert(cast<Function>(ZreallocImpl)->isDeclaration());
     
@@ -2009,6 +2094,7 @@ public:
       errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
       errs() << "zrestrict_impl = " << ZrestrictImpl << "\n";
       errs() << "zalloc_impl = " << ZallocImpl << "\n";
+      errs() << "zalloc_flex_impl = " << ZallocFlexImpl << "\n";
       errs() << "zaligned_lloc_impl = " << ZalignedAllocImpl << "\n";
       errs() << "zrealloc_impl = " << ZreallocImpl << "\n";
     }
@@ -2065,6 +2151,7 @@ public:
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
     FutureAllocaStack = makeDummy(LowRawPtrTy);
 
+    ValidateType = M.getOrInsertFunction("deluge_validate_type", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
     TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
@@ -2075,6 +2162,9 @@ public:
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    TryAllocateIntFlex = M.getOrInsertFunction("deluge_try_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryAllocateFlex = M.getOrInsertFunction("deluge_try_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
     TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
@@ -2303,6 +2393,7 @@ public:
           F == ZunsafeForgeImpl ||
           F == ZrestrictImpl ||
           F == ZallocImpl ||
+          F == ZallocFlexImpl ||
           F == ZalignedAllocImpl ||
           F == ZreallocImpl)
         continue;
@@ -2529,6 +2620,8 @@ public:
     Function* MakeConstantPoolFunc = cast<Function>(MakeConstantPool.getCallee());
     MakeConstantPoolFunc->setLinkage(GlobalValue::PrivateLinkage);
     BasicBlock* BB = BasicBlock::Create(C, "deluge_make_constantpool_block", MakeConstantPoolFunc);
+    for (auto& pair : TypeDatas)
+      CallInst::Create(ValidateType, { pair.second->TypeRep, LowRawNull}, "", BB);
     Instruction* ConstantPoolPtr = CallInst::Create(
       AllocateUtility, { ConstantInt::get(IntPtrTy, 8 * ConstantPoolEntries.size()) },
       "deluge_allocate_constantpool", BB);

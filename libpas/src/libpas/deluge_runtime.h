@@ -178,6 +178,34 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...);
         PAS_UNUSED_PARAM(deluded_ret_type); \
     } while (false)
 
+/* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
+   are expected to be valid by construction. This asserts properties that are going to be true
+   even for user-forged pointers using unsafe API, so the only way to break these asserts is if there
+   is a bug in deluge itself (compiler or runtime), or by unsafely forging a pointer and then using
+   that to corrupt the bits of a pointer.
+   
+   One example invariant: lower/upper must be aligned on the type's required alignment.
+   Another example invariant: !((upper - lower) % type->size)
+   
+   There may be others.
+   
+   This does not check if the pointer is in bounds or that it's pointing at something that has any
+   particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
+   safety! */
+void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+                              const deluge_origin* origin);
+
+static inline void deluge_validate_ptr(deluge_ptr ptr, const deluge_origin* origin)
+{
+    deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
+}
+
+static inline void deluge_testing_validate_ptr(deluge_ptr ptr)
+{
+    if (PAS_ENABLE_TESTING)
+        deluge_validate_ptr(ptr, NULL);
+}
+
 static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
     deluge_ptr result;
@@ -185,6 +213,18 @@ static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, c
     result.lower = lower;
     result.upper = upper;
     result.type = type;
+    deluge_testing_validate_ptr(result);
+    return result;
+}
+
+static inline deluge_ptr deluge_ptr_forge_byte(void* ptr, const deluge_type* type)
+{
+    deluge_ptr result;
+    result.ptr = ptr;
+    result.lower = ptr;
+    result.upper = (char*)ptr + 1;
+    result.type = type;
+    deluge_testing_validate_ptr(result);
     return result;
 }
 
@@ -196,6 +236,13 @@ static inline deluge_ptr deluge_ptr_with_ptr(deluge_ptr ptr, void* new_ptr)
 static inline deluge_ptr deluge_ptr_with_offset(deluge_ptr ptr, uintptr_t offset)
 {
     return deluge_ptr_with_ptr(ptr, (char*)ptr.ptr + offset);
+}
+
+static inline const deluge_type* deluge_type_get_trailing_array(const deluge_type* type)
+{
+    if (type->num_words)
+        return type->u.trailing_array;
+    return NULL;
 }
 
 static inline deluge_word_type deluge_type_get_word_type(const deluge_type* type,
@@ -291,7 +338,13 @@ void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+
+void* deluge_try_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
+void* deluge_try_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
+                                                  size_t alignment);
 void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
+void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
+                                              size_t count, size_t alignment);
 
 /* This can allocate any type (ints or not), but it's considerably slower than the other allocation
    entrypoints. The compiler avoids this in most cases. */
@@ -313,28 +366,6 @@ void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE);
 void deluded_f_zgetlower(DELUDED_SIGNATURE);
 void deluded_f_zgetupper(DELUDED_SIGNATURE);
 void deluded_f_zgettype(DELUDED_SIGNATURE);
-
-/* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
-   are expected to be valid by construction. This asserts properties that are going to be true
-   even for user-forged pointers using unsafe API, so the only way to break these asserts is if there
-   is a bug in deluge itself (compiler or runtime), or by unsafely forging a pointer and then using
-   that to corrupt the bits of a pointer.
-   
-   One example invariant: lower/upper must be aligned on the type's required alignment.
-   Another example invariant: !((upper - lower) % type->size)
-   
-   There may be others.
-   
-   This does not check if the pointer is in bounds or that it's pointing at something that has any
-   particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
-   safety! */
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
-                              const deluge_origin* origin);
-
-static inline void deluge_validate_ptr(deluge_ptr ptr, const deluge_origin* origin)
-{
-    deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
-}
 
 void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                                   uintptr_t bytes, const deluge_origin* origin);

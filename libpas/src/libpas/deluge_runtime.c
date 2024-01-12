@@ -111,17 +111,41 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
     if (type->size) {
         DELUGE_ASSERT(type->alignment, origin);
         DELUGE_ASSERT(pas_is_power_of_2(type->alignment), origin);
-        DELUGE_ASSERT(!(type->size % type->alignment), origin);
+        if (!deluge_type_get_trailing_array(type))
+            DELUGE_ASSERT(!(type->size % type->alignment), origin);
     } else
         DELUGE_ASSERT(!type->alignment, origin);
-    if (type->num_words) {
-        DELUGE_ASSERT((type->size + 7) / 8 == type->num_words, origin);
-        if (type->u.trailing_array) {
-            DELUGE_ASSERT(type->u.trailing_array->num_words, origin);
-            DELUGE_ASSERT(!type->u.trailing_array->u.trailing_array, origin);
-            DELUGE_ASSERT(type->u.trailing_array->size, origin);
-            DELUGE_ASSERT(type->u.trailing_array->alignment <= type->alignment, origin);
-            deluge_validate_type(type->u.trailing_array, origin);
+    if (type != &deluge_int_type) {
+        if (type->num_words) {
+            size_t index;
+            if (type->u.trailing_array == &deluge_int_type) {
+                /* You could have an int trailing array starting at an offset that is not a multiple of 8.
+                   That's fine so long as the word in which it starts is itself an int. The math inside of
+                   deluge_type_get_word_type() ends up being wrong in a benign way in that case; for any
+                   byte in the trailing array it might return the int word from the tail end of the base
+                   type or the int word from the trailing type, and it's arbitrary which you get, and it
+                   doesn't matter. These assertions are all about making sure you get int either way,
+                   which is right. */
+                DELUGE_ASSERT((type->size + 7) / 8 == type->num_words, origin);
+                DELUGE_ASSERT(
+                    type->size == type->num_words * 8 ||
+                    type->word_types[type->size - 1] == DELUGE_WORD_TYPE_INT,
+                    origin);
+            } else
+                DELUGE_ASSERT(type->size == type->num_words * 8, origin);
+            if (type->u.trailing_array) {
+                DELUGE_ASSERT(type->u.trailing_array->num_words, origin);
+                DELUGE_ASSERT(!type->u.trailing_array->u.trailing_array, origin);
+                DELUGE_ASSERT(type->u.trailing_array->size, origin);
+                DELUGE_ASSERT(type->u.trailing_array->alignment <= type->alignment, origin);
+                deluge_validate_type(type->u.trailing_array, origin);
+            }
+            for (index = type->num_words; index--;) {
+                DELUGE_ASSERT(
+                    (type->word_types[index] >= DELUGE_WORD_TYPE_OFF_LIMITS) &&
+                    (type->word_types[index] <= DELUGE_WORD_TYPE_PTR_PART4),
+                    origin);
+            }
         }
     }
 }
@@ -440,6 +464,7 @@ PAS_CREATE_TRY_ALLOCATE(
 
 void* deluge_try_allocate_one(pas_heap_ref* ref)
 {
+    PAS_TESTING_ASSERT(!deluge_type_get_trailing_array((const deluge_type*)ref->type));
     return deluge_try_allocate_one_impl_ptr(ref);
 }
 
@@ -452,6 +477,7 @@ PAS_CREATE_TRY_ALLOCATE(
 
 void* deluge_allocate_one(pas_heap_ref* ref)
 {
+    PAS_TESTING_ASSERT(!deluge_type_get_trailing_array((const deluge_type*)ref->type));
     return deluge_allocate_one_impl_ptr(ref);
 }
 
@@ -464,11 +490,15 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
 
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
 {
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
+    PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
 void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment)
 {
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
+    PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, alignment).begin;
 }
 
@@ -481,7 +511,42 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
 
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
 {
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
+    PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
     return (void*)deluge_allocate_many_impl_by_count(ref, count, 1).begin;
+}
+
+static bool get_flex_size(size_t base_size, size_t element_size, size_t count, size_t* total_size)
+{
+    size_t extra_size;
+    if (pas_mul_uintptr_overflow(element_size, count, &extra_size)) {
+        set_errno(ENOMEM);
+        return false;
+    }
+
+    if (pas_mul_uintptr_overflow(base_size, extra_size, total_size)) {
+        set_errno(ENOMEM);
+        return false;
+    }
+
+    return true;
+}
+
+void* deluge_try_allocate_int_flex(size_t base_size, size_t element_size, size_t count)
+{
+    size_t total_size;
+    if (!get_flex_size(base_size, element_size, count, &total_size))
+        return NULL;
+    return deluge_try_allocate_int_impl_ptr(total_size, 1);
+}
+
+void* deluge_try_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
+                                                  size_t alignment)
+{
+    size_t total_size;
+    if (!get_flex_size(base_size, element_size, count, &total_size))
+        return NULL;
+    return deluge_try_allocate_int_impl_ptr(total_size, alignment);
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
@@ -493,19 +558,23 @@ PAS_CREATE_TRY_ALLOCATE_ARRAY(
 
 void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count)
 {
-    size_t extra_size;
-    if (pas_mul_uintptr_overflow(element_size, count, &extra_size)) {
-        set_errno(ENOMEM);
-        return NULL;
-    }
-
     size_t total_size;
-    if (pas_mul_uintptr_overflow(base_size, extra_size, &total_size)) {
-        set_errno(ENOMEM);
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->u.trailing_array);
+    if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
-    }
-
     return (void*)deluge_try_allocate_flex_impl_by_size(ref, total_size, 1).begin;
+}
+
+void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
+                                              size_t count, size_t alignment)
+{
+    size_t total_size;
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
+    PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->u.trailing_array);
+    if (!get_flex_size(base_size, element_size, count, &total_size))
+        return NULL;
+    return (void*)deluge_try_allocate_flex_impl_by_size(ref, total_size, alignment).begin;
 }
 
 void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
@@ -516,6 +585,8 @@ void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
         .line = 0,
         .column = 0
     };
+    DELUGE_ASSERT(type->num_words, &origin);
+    DELUGE_ASSERT(!type->u.trailing_array, &origin);
     if (type == &deluge_int_type)
         return deluge_try_allocate_int(size, 1);
     DELUGE_CHECK(
@@ -715,10 +786,20 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
     DELUGE_ASSERT(upper > lower, origin);
     DELUGE_ASSERT(upper <= (void*)PAS_MAX_ADDRESS, origin);
     if (type->size) {
+        const deluge_type* trailing_type;
         DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
-        DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
-        DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+        if (type->num_words) {
+            DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
+            trailing_type = type->u.trailing_array;
+            if (trailing_type) {
+                DELUGE_ASSERT((size_t)(upper - lower) >= type->size, origin);
+                DELUGE_ASSERT(!((upper - lower - type->size) % trailing_type->size), origin);
+            } else
+                DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+        }
     }
+    if (!type->num_words)
+        DELUGE_ASSERT((char*)upper == (char*)lower + 1, origin);
     deluge_validate_type(type, origin);
 }
 
@@ -1906,7 +1987,7 @@ void deluded_f_zthread_key_create(DELUDED_SIGNATURE)
     result->destructor = (void(*)(DELUDED_SIGNATURE))destructor_ptr.ptr;
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, result + 1, &thread_specific_type);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &thread_specific_type);
 }
 
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
@@ -2036,7 +2117,7 @@ void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE)
         return;
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, result + 1, &rwlock_type);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &rwlock_type);
 }
 
 void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE)
