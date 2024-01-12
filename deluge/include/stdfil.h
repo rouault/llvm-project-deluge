@@ -148,6 +148,16 @@ void zprintf(const char* format, ...);
 /* This prints the given message and then shuts down the program using the same shutdown codepath
    used for memory safety violatins (i.e. it's designed to really kill the shit out of the process). */
 void zerror(const char* str);
+void zerrorf(const char* str, ...);
+
+/* Definitely assert something. This is not some kind of optional assert that you can compile out.
+   It's gonna be there and do its thing no matter what, even in production, like a real assert
+   should. */
+#define ZASSERT(exp) do { \
+        if ((exp)) \
+            break; \
+        zerrorf("%s:%d: %s: assertion %s failed.", __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
+    } while (0)
 
 void zfence(void);
 
@@ -163,11 +173,19 @@ int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
 void zsys_exit(int return_code);
 
+/* Functions that return bool: they return true on success, false on error. All of these set errno
+   on error. */
 void* zthread_key_create(void (*destructor)(void*));
 void zthread_key_delete(void* key);
-_Bool zthread_setspecific(void* key, const void* value); /* returns true on success, sets errno
-                                                            otherwise */
+_Bool zthread_setspecific(void* key, const void* value);
 void* zthread_getspecific(void* key);
+void* zthread_rwlock_create(void);
+void zthread_rwlock_delete(void* rwlock);
+_Bool zthread_rwlock_rdlock(void* rwlock);
+_Bool zthread_rwlock_tryrdlock(void* rwlock);
+_Bool zthread_rwlock_wrlock(void* rwlock);
+_Bool zthread_rwlock_trywrlock(void* rwlock);
+_Bool zthread_rwlock_unlock(void* rwlock);
 
 #endif /* DELUGE_STDFIL_H */
 

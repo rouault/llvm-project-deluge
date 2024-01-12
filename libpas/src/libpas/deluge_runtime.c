@@ -1272,7 +1272,7 @@ void deluded_f_zerror(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
-    pas_panic("zerror() called with: %s\n", str);
+    pas_panic("zerror: %s\n", str);
 }
 
 void deluded_f_zstrlen(DELUDED_SIGNATURE)
@@ -1724,7 +1724,13 @@ void deluded_f_zsys_exit(DELUDED_SIGNATURE)
     PAS_ASSERT(!"Should not be reached");
 }
 
-#define DEFINE_RUNTIME_CONFIG(name, passed_initialize_fresh_memory) \
+#define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor) \
+    static void name ## _initialize_fresh_memory(void* begin, void* end) \
+    { \
+        PAS_TESTING_ASSERT(((char*)end - (char*)begin) >= (ptrdiff_t)sizeof(type)); \
+        fresh_memory_constructor(begin); \
+    } \
+    \
     static pas_basic_heap_runtime_config name = { \
         .base = { \
             .sharing_mode = pas_do_not_share_pages, \
@@ -1736,7 +1742,7 @@ void deluded_f_zsys_exit(DELUDED_SIGNATURE)
             .max_segregated_object_size = PAS_TYPED_MAX_SEGREGATED_OBJECT_SIZE, \
             .max_bitfit_object_size = 0, \
             .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
-            .initialize_fresh_memory = (passed_initialize_fresh_memory) \
+            .initialize_fresh_memory = name ## _initialize_fresh_memory \
         }, \
         .page_caches = &deluge_page_caches \
     }
@@ -1748,17 +1754,12 @@ typedef struct {
     uint64_t version;
 } thread_specific;
 
-static void thread_specific_initialize_fresh_memory(void* begin, void* end)
+static void thread_specific_construct(thread_specific* specific)
 {
-    PAS_ASSERT(!(((char*)end - (char*)begin) % sizeof(thread_specific)));
-    for (thread_specific* current = (thread_specific*)begin;
-         current != (thread_specific*)end;
-         ++current)
-        pas_lock_construct(&current->lock);
-    pas_fence();
+    pas_lock_construct(&specific->lock);
 }
 
-DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific_initialize_fresh_memory);
+DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific, thread_specific_construct);
 
 static deluge_type thread_specific_type = {
     .size = sizeof(thread_specific),
@@ -1855,7 +1856,7 @@ void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zthread_key_create",
+        .function = "zthread_key_delete",
         .line = 0,
         .column = 0
     };
@@ -1879,7 +1880,7 @@ void deluded_f_zthread_setspecific(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zthread_key_create",
+        .function = "zthread_setspecific",
         .line = 0,
         .column = 0
     };
@@ -1914,7 +1915,7 @@ void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zthread_key_create",
+        .function = "zthread_getspecific",
         .line = 0,
         .column = 0
     };
@@ -1935,6 +1936,193 @@ void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
 
     deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)rets.ptr = value->value;
+}
+
+static void rwlock_construct(pthread_rwlock_t* rwlock)
+{
+    int result = pthread_rwlock_init(rwlock, NULL);
+    PAS_ASSERT(!result);
+}
+
+DEFINE_RUNTIME_CONFIG(rwlock_runtime_config, pthread_rwlock_t, rwlock_construct);
+
+static deluge_type rwlock_type = {
+    .size = sizeof(pthread_rwlock_t),
+    .alignment = alignof(pthread_rwlock_t),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &rwlock_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref rwlock_heap = {
+    .type = (const pas_heap_type*)&rwlock_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+
+    pthread_rwlock_t* result = (pthread_rwlock_t*)deluge_try_allocate_one(&rwlock_heap);
+    if (!result)
+        return;
+
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, result + 1, &rwlock_type);
+}
+
+void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_delete",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    deluge_deallocate(rwlock);
+}
+
+void deluded_f_zthread_rwlock_rdlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_rdlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    int my_errno = pthread_rwlock_rdlock(rwlock);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_tryrdlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    int my_errno = pthread_rwlock_tryrdlock(rwlock);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_wrlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    int my_errno = pthread_rwlock_wrlock(rwlock);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_trywrlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    int my_errno = pthread_rwlock_trywrlock(rwlock);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_rwlock_unlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr rwlock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    int my_errno = pthread_rwlock_unlock(rwlock);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
 }
 
 #endif /* PAS_ENABLE_DELUGE */

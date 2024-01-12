@@ -521,6 +521,13 @@ void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
 void deluded_f_zthread_setspecific(DELUDED_SIGNATURE);
 void deluded_f_zthread_getspecific(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_rdlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

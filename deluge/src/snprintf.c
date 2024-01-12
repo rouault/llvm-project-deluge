@@ -1264,3 +1264,13 @@ void zprintf(const char* format, ...)
     __builtin_va_end(args);
 }
 
+void zerrorf(const char* format, ...)
+{
+    char* str;
+    __builtin_va_list args;
+    __builtin_va_start(args, format);
+    str = zvasprintf(format, args);
+    __builtin_va_end(args);
+    zerror(str);
+}
+
