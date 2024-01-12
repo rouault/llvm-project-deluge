@@ -11,6 +11,8 @@ typedef struct ztype ztype;
 void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
 void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
 void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
+void* zalloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
+                       void* trailing_type_like, __SIZE_TYPE__ count);
 void* zaligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void* zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
@@ -70,6 +72,39 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
 #define zaligned_alloc(type, alignment, count) ({ \
         type __d_temporary; \
         (type*)zaligned_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(alignment), (__SIZE_TYPE__)(count)); \
+    })
+
+/* Allocates a flex object - that is, an object with a trailing array - with the given array length.
+
+   struct_type is a type expression; this must be a struct (or a typedef for a struct). field is the
+   name of a field in struct_type; this field is taken to be the trailing array. count must be
+   __SIZE_TYPE__ ish.
+
+   Misuse of this API may cause logic errors, or more likely, a situation where the returned pointer
+   has a type that is incompatible with all subsequent accesses, leading to deluge thwarting your
+   program's execution. */
+#define zalloc_flex(struct_type, field, count) ({ \
+        type __d_temporary; \
+        typeof(__d_temporary.field) __d_trailing_temporary; \
+        (struct_type*)zalloc_flex_impl( \
+            &__d_temporary, __builtin_offsetof(struct_type, field), \
+            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
+    })
+
+#define zalloc_flex_zero(struct_type, field, count) ({ \
+        type __d_temporary; \
+        typeof(__d_temporary.field) __d_trailing_temporary; \
+        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
+        struct_type* __d_result = (struct_type*)zalloc_flex_impl( \
+            &__d_temporary, __builtin_offsetof(struct_type, field), \
+            &__d_trailing_temporary, __d_count); \
+        if (__d_result) { \
+            __builtin_memset( \
+                __d_result, 0, \
+                __builtin_offsetof(struct_type, field) \
+                + sizeof(typeof(__d_temporary.field)) * __d_count); \
+        } \
+        __d_result; \
     })
 
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at

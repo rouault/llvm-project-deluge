@@ -291,6 +291,7 @@ void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
 
 /* This can allocate any type (ints or not), but it's considerably slower than the other allocation
    entrypoints. The compiler avoids this in most cases. */

@@ -468,6 +468,30 @@ void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
     return (void*)deluge_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
+PAS_CREATE_TRY_ALLOCATE_ARRAY(
+    deluge_try_allocate_flex_impl,
+    DELUGE_HEAP_CONFIG,
+    &deluge_flex_runtime_config.base,
+    &deluge_allocator_counts,
+    allocation_result_set_errno);
+
+void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count)
+{
+    size_t extra_size;
+    if (pas_mul_uintptr_overflow(element_size, count, &extra_size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
+
+    size_t total_size;
+    if (pas_mul_uintptr_overflow(base_size, extra_size, &total_size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
+
+    return (void*)deluge_try_allocate_flex_impl_by_size(ref, total_size, 1).begin;
+}
+
 void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
 {
     static deluge_origin origin = {
@@ -770,6 +794,15 @@ void deluge_check_access_int_impl(
     void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
     const deluge_origin* origin)
 {
+    /* NOTE: the compiler will never generate a zero-byte check, but the runtime may do it. There
+       are times when we are passed a primitive vector and a length and we run this check. If the
+       length is zero, we want to permit any pointer (even a null or non-int ptr), since we're
+       saying we aren't actually going to access it.
+       
+       If we ever want to optimize this check out, we just need to move it onto the paths where the
+       runtime calls into this function, and allow the compiler to emit code that bypasses it. */
+    if (!bytes)
+        return;
     check_access_common(ptr, lower, upper, type, bytes, origin);
     check_int(ptr, lower, upper, type, bytes, origin);
 }
