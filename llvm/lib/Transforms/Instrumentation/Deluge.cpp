@@ -1338,16 +1338,18 @@ class Deluge {
           assert(DTD == &Int);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
           size_t Size = DL.getTypeStoreSize(LowT);
-          Instruction* Mul = BinaryOperator::CreateMul(
-            CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
-            "deluge_alloc_mul", CI);
-          Mul->setDebugLoc(CI->getDebugLoc());
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              TryAllocateIntWithAlignment, { Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              TryAllocateIntWithAlignment,
+              { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
+                ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloc_int", CI);
-          } else
-            Alloc = CallInst::Create(TryAllocateInt, { Mul }, "deluge_alloc_int", CI);
+          } else {
+            Alloc = CallInst::Create(
+              TryAllocateInt,
+              { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size) },
+              "deluge_alloc_int", CI);
+          }
         } else {
           Value* Heap = getHeap(DTD, CI);
           if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
@@ -1386,9 +1388,6 @@ class Deluge {
           assert(DTD == &Int);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
           size_t Size = DL.getTypeStoreSize(LowT);
-          Instruction* Mul = BinaryOperator::CreateMul(
-            Count, ConstantInt::get(IntPtrTy, Size), "deluge_alloc_mul", CI);
-          Mul->setDebugLoc(CI->getDebugLoc());
           Value* TypeAlignment = ConstantInt::get(IntPtrTy, Alignment);
           Instruction* Compare = new ICmpInst(
             CI, ICmpInst::ICMP_ULT, PassedAlignment, TypeAlignment, "deluge_aligned_alloc_compare");
@@ -1397,7 +1396,9 @@ class Deluge {
             Compare, TypeAlignment, PassedAlignment, "deluge_aligned_alloc_select", CI);
           AlignmentValue->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(
-            TryAllocateIntWithAlignment, { Mul, AlignmentValue }, "deluge_alloc_int", CI);
+            TryAllocateIntWithAlignment,
+            { Count, ConstantInt::get(IntPtrTy, Size), AlignmentValue },
+            "deluge_alloc_int", CI);
         } else {
           Value* Heap = getHeap(DTD, CI);
           Alloc = CallInst::Create(
@@ -1429,16 +1430,18 @@ class Deluge {
           assert(DTD == &Int);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
           size_t Size = DL.getTypeStoreSize(LowT);
-          Instruction* Mul = BinaryOperator::CreateMul(
-            CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
-            "deluge_alloc_mul", CI);
-          Mul->setDebugLoc(CI->getDebugLoc());
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              TryReallocateIntWithAlignment, { OrigPtr, Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              TryReallocateIntWithAlignment,
+              { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
+                ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_realloc_int", CI);
-          } else
-            Alloc = CallInst::Create(TryReallocateInt, { OrigPtr, Mul }, "deluge_realloc_int", CI);
+          } else {
+            Alloc = CallInst::Create(
+              TryReallocateInt,
+              { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size) },
+              "deluge_realloc_int", CI);
+          }
         } else {
           Value* Heap = getHeap(DTD, CI);
           Alloc = CallInst::Create(
@@ -1491,15 +1494,18 @@ class Deluge {
         if (DTD == &Int) {
           size_t Alignment = DL.getABITypeAlign(LowT).value();
           size_t Size = DL.getTypeStoreSize(LowT);
-          Instruction* Mul = BinaryOperator::CreateMul(
-            AI->getArraySize(), ConstantInt::get(IntPtrTy, Size), "deluge_alloca_mul", AI);
-          Mul->setDebugLoc(AI->getDebugLoc());
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              AllocateIntWithAlignment, { Mul, ConstantInt::get(IntPtrTy, Alignment) },
+              AllocateIntWithAlignment,
+              { AI->getArraySize(), ConstantInt::get(IntPtrTy, Size),
+                ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloca_int", AI);
-          } else
-            Alloc = CallInst::Create(AllocateInt, { Mul }, "deluge_alloca_int", AI);
+          } else {
+            Alloc = CallInst::Create(
+              AllocateInt,
+              { AI->getArraySize(), ConstantInt::get(IntPtrTy, Size) },
+              "deluge_alloca_int", AI);
+          }
         } else {
           Value* Heap = getHeap(DTD, AI);
           if (Constant* C = dyn_cast<Constant>(AI->getArraySize())) {
@@ -1694,11 +1700,14 @@ class Deluge {
             ArgBufferRawPtr = CallInst::Create(
               AllocateIntWithAlignment,
               { ConstantInt::get(IntPtrTy, ArgType.Main.Size),
+                ConstantInt::get(IntPtrTy, 1),
                 ConstantInt::get(IntPtrTy, ArgType.Main.Alignment) },
               "deluge_allocate_args", CI);
           } else {
             ArgBufferRawPtr = CallInst::Create(
-              AllocateInt, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) }, "deluge_allocate_args", CI);
+              AllocateInt,
+              { ConstantInt::get(IntPtrTy, ArgType.Main.Size), ConstantInt::get(IntPtrTy, 1) },
+              "deluge_allocate_args", CI);
           }
         } else {
           ArgDTD = dataForType(ArgType);
@@ -2057,18 +2066,18 @@ public:
     FutureAllocaStack = makeDummy(LowRawPtrTy);
 
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
-    TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy);
-    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy);
-    AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy);
-    AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
+    AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
-    TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     TryReallocate = M.getOrInsertFunction("deluge_try_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
@@ -2255,11 +2264,14 @@ public:
         if (Alignment > MinAlign) {
           Alloc = CallInst::Create(
             AllocateIntWithAlignment,
-            { ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment) },
+            { ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, 1),
+              ConstantInt::get(IntPtrTy, Alignment) },
             "deluge_alloc_int", BuildBB);
         } else {
           Alloc = CallInst::Create(
-            AllocateInt, { ConstantInt::get(IntPtrTy, Size) }, "deluge_alloc_int", BuildBB);
+            AllocateInt,
+            { ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, 1) },
+            "deluge_alloc_int", BuildBB);
         }
       } else {
         // It's probably not worth it to use the heap constant pool for this.
@@ -2419,12 +2431,14 @@ public:
           if (IntFrameAlignment > MinAlign) {
             AllocateIntFrame = CallInst::Create(
               AllocateIntWithAlignment,
-              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, IntFrameAlignment) },
+              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, 1),
+                ConstantInt::get(IntPtrTy, IntFrameAlignment) },
               "deluge_allocate_int_frame", InsertionPoint);
           } else {
             AllocateIntFrame = CallInst::Create(
-              AllocateInt, { ConstantInt::get(IntPtrTy, IntFrameSize) }, "deluge_allocate_int_frame",
-              InsertionPoint);
+              AllocateInt,
+              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, 1) },
+              "deluge_allocate_int_frame", InsertionPoint);
           }
           FutureIntFrame->replaceAllUsesWith(AllocateIntFrame);
           CallInst::Create(Deallocate, { AllocateIntFrame }, "", Return);

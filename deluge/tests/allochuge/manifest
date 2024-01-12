@@ -1,0 +1,8 @@
+return:
+  failure
+output-includes:
+  - huge = 0
+  - deluge panic
+  - cannot access pointer with null lower
+output-excludes:
+  - "*huge = 42"

@@ -281,10 +281,10 @@ static inline deluge_ptr deluge_ptr_get_next_bytes(
    strictly necessary so we could change that if we needed to.) */
 pas_heap_ref* deluge_get_heap(const deluge_type* type);
 
-void* deluge_try_allocate_int(size_t size);
-void* deluge_try_allocate_int_with_alignment(size_t size, size_t alignment);
-void* deluge_allocate_int(size_t size);
-void* deluge_allocate_int_with_alignment(size_t size, size_t alignment);
+void* deluge_try_allocate_int(size_t size, size_t count);
+void* deluge_try_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
+void* deluge_allocate_int(size_t size, size_t cout);
+void* deluge_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
 
 void* deluge_try_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_one(pas_heap_ref* ref);
@@ -300,8 +300,8 @@ void* deluge_allocate_with_type(const deluge_type* type, size_t size);
 
 void* deluge_allocate_utility(size_t size);
 
-void* deluge_try_reallocate_int(void* ptr, size_t size);
-void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t alignment);
+void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count);
+void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment);
 
 void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 

@@ -77,7 +77,7 @@ int main(int argc, char** argv)
     for (index = 0; index < argc; ++index) {
         deluge_ptr* arg_ptr = (deluge_ptr*)deluded_argv.ptr + index;
         size_t size = strlen(argv[index]) + 1;
-        arg_ptr->ptr = deluge_allocate_int(size);
+        arg_ptr->ptr = deluge_allocate_int(size, 1);
         arg_ptr->lower = arg_ptr->ptr;
         arg_ptr->upper = (char*)arg_ptr->ptr + size;
         arg_ptr->type = &deluge_int_type;
@@ -103,7 +103,7 @@ int main(int argc, char** argv)
             size_t size;
             PAS_ASSERT(environ[index]);
             size = strlen(environ[index]) + 1;
-            env_ptr->ptr = deluge_allocate_int(size);
+            env_ptr->ptr = deluge_allocate_int(size, 1);
             env_ptr->lower = env_ptr->ptr;
             env_ptr->upper = (char*)env_ptr->ptr + size;
             env_ptr->type = &deluge_int_type;
@@ -125,7 +125,7 @@ int main(int argc, char** argv)
     deluded_f_main(main_args, main_args + 1, &main_args_type,
                    u.return_buffer, u.return_buffer + 2, &deluge_int_type);
 
-    exit_args = deluge_allocate_int(sizeof(int));
+    exit_args = deluge_allocate_int(sizeof(int), 1);
     *exit_args = u.result;
     deluded_f_exit(exit_args, exit_args + 1, &deluge_int_type,
                    u.return_buffer, u.return_buffer + 2, &deluge_int_type);

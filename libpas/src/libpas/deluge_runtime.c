@@ -365,8 +365,12 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_designated);
 
-void* deluge_try_allocate_int(size_t size)
+void* deluge_try_allocate_int(size_t size, size_t count)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return deluge_try_allocate_int_impl_ptr(size, 1);
 }
 
@@ -380,8 +384,12 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_not_designated);
 
-void* deluge_try_allocate_int_with_alignment(size_t size, size_t alignment)
+void* deluge_try_allocate_int_with_alignment(size_t size, size_t count, size_t alignment)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return deluge_try_allocate_int_with_alignment_impl_ptr(size, alignment);
 }
 
@@ -395,8 +403,12 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_designated);
 
-void* deluge_allocate_int(size_t size)
+void* deluge_allocate_int(size_t size, size_t count)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return deluge_allocate_int_impl_ptr(size, 1);
 }
 
@@ -410,8 +422,12 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     &deluge_int_heap_support,
     pas_intrinsic_heap_is_not_designated);
 
-void* deluge_allocate_int_with_alignment(size_t size, size_t alignment)
+void* deluge_allocate_int_with_alignment(size_t size, size_t count, size_t alignment)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return deluge_allocate_int_with_alignment_impl_ptr(size, alignment);
 }
 
@@ -501,7 +517,7 @@ void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
         .column = 0
     };
     if (type == &deluge_int_type)
-        return deluge_try_allocate_int(size);
+        return deluge_try_allocate_int(size, 1);
     DELUGE_CHECK(
         !(size % type->size),
         &origin,
@@ -538,8 +554,12 @@ void* deluge_allocate_utility(size_t size)
     return deluge_allocate_utility_impl_ptr(size, 1);
 }
 
-void* deluge_try_reallocate_int(void* ptr, size_t size)
+void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return pas_try_reallocate_intrinsic(
         ptr,
         &deluge_int_heap,
@@ -550,8 +570,12 @@ void* deluge_try_reallocate_int(void* ptr, size_t size)
         pas_reallocate_free_if_successful);
 }
 
-void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t alignment)
+void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment)
 {
+    if (pas_mul_uintptr_overflow(size, count, &size)) {
+        set_errno(ENOMEM);
+        return NULL;
+    }
     return pas_try_reallocate_intrinsic_with_alignment(
         ptr,
         &deluge_int_heap,
@@ -1401,7 +1425,7 @@ static void set_musl_errno(int errno_value)
         deluded_errno_handler,
         &origin,
         "errno handler not registered when trying to set errno = %d.", errno_value);
-    args = (int*)deluge_allocate_int(sizeof(int));
+    args = (int*)deluge_allocate_int(sizeof(int), 1);
     *args = errno_value;
     memset(return_buffer, 0, sizeof(return_buffer));
     deluded_errno_handler(args, args + 1, &deluge_int_type,
