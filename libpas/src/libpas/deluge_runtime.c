@@ -810,6 +810,7 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
     }
     if (!type->num_words)
         DELUGE_ASSERT((char*)upper == (char*)lower + 1, origin);
+
     deluge_validate_type(type, origin);
 }
 
