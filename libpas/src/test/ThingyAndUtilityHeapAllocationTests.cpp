@@ -634,13 +634,13 @@ void testLargeAllocation(const Allocator& allocator,
         },
         [&] () {
             CHECK_EQUAL(
-                allocator.heap()->large_heap.free_heap.num_mapped_bytes,
+                allocator.heap()->large_heap.u.free_heap.num_mapped_bytes,
                 expectedNumberOfAllocatedPageBytes);
             CHECK_LESS_EQUAL(pas_bootstrap_free_heap.private_base.num_mapped_bytes,
                              expectedNumberOfBootstrapBytes);
         });
     
-    CHECK_EQUAL(allocator.heap()->large_heap.free_heap.num_mapped_bytes,
+    CHECK_EQUAL(allocator.heap()->large_heap.u.free_heap.num_mapped_bytes,
                 expectedNumberOfAllocatedPageBytes);
     CHECK_LESS_EQUAL(pas_bootstrap_free_heap.private_base.num_mapped_bytes,
                      expectedNumberOfBootstrapBytes);
@@ -1590,7 +1590,7 @@ void testComplexLargeAllocationImpl(const ComplexAllocator& allocator,
 #if SEGHEAP
     CHECK_EQUAL(numCommittedViews(allocator.heap()), 0);
 #endif
-    expectedNumMappedBytes.check(allocator.heap()->large_heap.free_heap.num_mapped_bytes);
+    expectedNumMappedBytes.check(allocator.heap()->large_heap.u.free_heap.num_mapped_bytes);
 }
 
 template<typename... Arguments>

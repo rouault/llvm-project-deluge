@@ -27,6 +27,7 @@
 #ifndef PAS_COMMITTED_PAGES_VECTOR_H
 #define PAS_COMMITTED_PAGES_VECTOR_H
 
+#include "pas_log.h"
 #include "pas_utils.h"
 
 #ifndef _WIN32

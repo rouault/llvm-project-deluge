@@ -42,6 +42,7 @@ pas_heap_runtime_config pas_utility_heap_runtime_config = {
     .sharing_mode = pas_share_pages,
     .statically_allocated = true,
     .is_part_of_heap = false,
+    .is_flex = false,
     .directory_size_bound_for_partial_views = PAS_UTILITY_BOUND_FOR_PARTIAL_VIEWS,
     .directory_size_bound_for_baseline_allocators = PAS_UTILITY_BOUND_FOR_BASELINE_ALLOCATORS,
     .directory_size_bound_for_no_view_cache = PAS_UTILITY_BOUND_FOR_NO_VIEW_CACHE,

@@ -247,7 +247,7 @@ PAS_API void pas_red_black_tree_insert(pas_red_black_tree* tree,
                                        pas_red_black_tree_node_compare_callback compare_callback,
                                        pas_red_black_tree_jettisoned_nodes* jettisoned_nodes);
 
-PAS_API pas_red_black_tree_node*
+PAS_API void
 pas_red_black_tree_remove(pas_red_black_tree* tree,
                           pas_red_black_tree_node* node,
                           pas_red_black_tree_jettisoned_nodes* jettisoned_nodes);

@@ -60,7 +60,7 @@ static PAS_ALWAYS_INLINE bool pas_try_shrink(void* ptr,
     }
     case pas_not_a_fast_megapage_kind: {
         pas_page_base* page_base;
-        bool shrink_result;
+        pas_large_shrink_result shrink_result;
 
         page_base = config.page_header_func(begin);
         if (page_base) {
@@ -96,9 +96,17 @@ static PAS_ALWAYS_INLINE bool pas_try_shrink(void* ptr,
         pas_heap_lock_lock();
         shrink_result = pas_large_heap_try_shrink(begin, new_size, config.config_ptr);
         pas_heap_lock_unlock();
-        if (!shrink_result)
+        switch (shrink_result) {
+        case pas_large_shrink_no_object:
             pas_deallocation_did_fail("Object not allocated", begin);
-        return true;
+            return false;
+        case pas_large_shrink_not_supported:
+            return false;
+        case pas_large_shrink_success:
+            return true;
+        }
+        PAS_ASSERT(!"Should not be reached");
+        return false;
     } }
 
     PAS_ASSERT(!"Should not be reached");

@@ -1874,6 +1874,7 @@ void deluded_f_zsys_exit(DELUDED_SIGNATURE)
             .sharing_mode = pas_do_not_share_pages, \
             .statically_allocated = false, \
             .is_part_of_heap = true, \
+            .is_flex = false, \
             .directory_size_bound_for_partial_views = 0, \
             .directory_size_bound_for_baseline_allocators = PAS_TYPED_BOUND_FOR_BASELINE_ALLOCATORS, \
             .directory_size_bound_for_no_view_cache = PAS_TYPED_BOUND_FOR_NO_VIEW_CACHE, \

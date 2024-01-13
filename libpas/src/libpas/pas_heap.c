@@ -64,6 +64,8 @@ pas_heap* pas_heap_create(pas_heap_ref* heap_ref,
     heap->type = heap_ref->type;
     pas_segregated_heap_construct(
         &heap->segregated_heap, heap, config, runtime_config);
+    /* This must run after segregated heap construction, because this will idiotically access the
+       segregated heap because I'm a bad programmer. */
     pas_large_heap_construct(&heap->large_heap);
     heap->heap_ref = heap_ref;
     heap->heap_ref_kind = heap_ref_kind;

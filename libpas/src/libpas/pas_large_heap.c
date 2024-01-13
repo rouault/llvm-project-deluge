@@ -35,6 +35,7 @@
 #include "pas_heap.h"
 #include "pas_heap_config.h"
 #include "pas_heap_lock.h"
+#include "pas_heap_runtime_config.h"
 #include "pas_large_free_heap_config.h"
 #include "pas_large_sharing_pool.h"
 #include "pas_large_map.h"
@@ -44,9 +45,23 @@
 void pas_large_heap_construct(pas_large_heap* heap)
 {
     /* Warning: anything you do here must be duplicated in
-       pas_try_allocate_intrinsic.h. */
-    
-    pas_fast_large_free_heap_construct(&heap->free_heap);
+       pas_try_allocate_intrinsic.h, sort of ... since that header is allowed to just assume that
+       we're not flex. */
+
+    if (pas_large_heap_is_flex(heap))
+        pas_flex_large_free_heap_construct(&heap->u.flex_free_heap);
+    else
+        pas_fast_large_free_heap_construct(&heap->u.free_heap);
+}
+
+pas_heap_runtime_config* pas_large_heap_get_runtime_config(pas_large_heap* heap)
+{
+    return pas_heap_for_large_heap(heap)->segregated_heap.runtime_config;
+}
+
+bool pas_large_heap_is_flex(pas_large_heap* heap)
+{
+    return pas_large_heap_get_runtime_config(heap)->is_flex;
 }
 
 typedef struct {
@@ -115,33 +130,61 @@ static pas_allocation_result allocate_impl(pas_large_heap* heap,
     
     if (verbose) {
         printf("Allocating large object of size %zu\n", *size);
-        printf("Cartesian tree minimum = %p\n", pas_cartesian_tree_minimum(&heap->free_heap.tree));
-        printf("Num mapped bytes = %zu\n", heap->free_heap.num_mapped_bytes);
+        if (!pas_large_heap_is_flex(heap)) {
+            printf("Cartesian tree minimum = %p\n", pas_cartesian_tree_minimum(&heap->u.free_heap.tree));
+            printf("Num mapped bytes = %zu\n", heap->u.free_heap.num_mapped_bytes);
+        }
     }
     
     initialize_config(&config, &data, heap, heap_config);
-    
-    result = pas_fast_large_free_heap_try_allocate(
-        &heap->free_heap,
-        *size,
-        pas_alignment_create_traditional(*alignment),
-        &config);
+
+    if (pas_large_heap_is_flex(heap)) {
+        pas_range flex_result;
+
+        flex_result = pas_flex_large_free_heap_try_allocate(
+            &heap->u.flex_free_heap, *size, *alignment, &config);
+
+        if (pas_range_is_empty(flex_result))
+            result = pas_allocation_result_create_failure();
+        else {
+            result = pas_allocation_result_create_success(flex_result.begin);
+            PAS_ASSERT(pas_range_size(flex_result) >= *size);
+            *size = pas_range_size(flex_result);
+        }
+    } else {
+        result = pas_fast_large_free_heap_try_allocate(
+            &heap->u.free_heap,
+            *size,
+            pas_alignment_create_traditional(*alignment),
+            &config);
+    }
     
     if (!result.did_succeed)
         return pas_allocation_result_create_failure();
 
     if (verbose)
         pas_log("Committing the memory we allocated starting at %p.\n", (void*)result.begin);
-    
+
+    /* Even if our runtime config doesn't want us to decommit, we need to make sure that we do commit
+       the memory we just got. It could be fresh memory coming from the large sharing cache, which
+       does (and should) participate in decommit. If the runtime config indeed doesn't want us to share
+       pages, then allocate_and_commit will only do anything in those cases where we got fresh
+       decommitted memory from the cache, rather than free memory from our own heap. Hence we don't
+       even ask the runtime config what it thinks here. */
     if (heap_config->aligned_allocator_talks_to_sharing_pool &&
         !pas_large_sharing_pool_allocate_and_commit(
             pas_range_create(result.begin, result.begin + *size),
             transaction,
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
             heap_config->mmap_capability)) {
-        pas_fast_large_free_heap_deallocate(
-            &heap->free_heap, result.begin, result.begin + *size,
-            result.zero_mode, &config);
+        if (pas_large_heap_is_flex(heap)) {
+            pas_flex_large_free_heap_deallocate(
+                &heap->u.flex_free_heap, pas_range_create(result.begin, result.begin + *size));
+        } else {
+            pas_fast_large_free_heap_deallocate(
+                &heap->u.free_heap, result.begin, result.begin + *size,
+                result.zero_mode, &config);
+        }
         return pas_allocation_result_create_failure();
     }
 
@@ -190,7 +233,8 @@ bool pas_large_heap_try_deallocate(uintptr_t begin,
                    pas_heap_for_large_heap(map_entry.heap)->config_kind)
                == heap_config);
 
-    if (heap_config->aligned_allocator_talks_to_sharing_pool) {
+    if (heap_config->aligned_allocator_talks_to_sharing_pool
+        && pas_large_heap_get_runtime_config(map_entry.heap)->sharing_mode == pas_share_pages) {
         pas_large_sharing_pool_free(
             pas_range_create(map_entry.begin, map_entry.end),
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
@@ -198,18 +242,23 @@ bool pas_large_heap_try_deallocate(uintptr_t begin,
     }
 
     initialize_config(&config, NULL, map_entry.heap, heap_config);
-    pas_fast_large_free_heap_deallocate(&map_entry.heap->free_heap,
-                                        map_entry.begin,
-                                        map_entry.end,
-                                        pas_zero_mode_may_have_non_zero,
-                                        &config);
+    if (pas_large_heap_is_flex(map_entry.heap)) {
+        pas_flex_large_free_heap_deallocate(&map_entry.heap->u.flex_free_heap,
+                                            pas_range_create(map_entry.begin, map_entry.end));
+    } else {
+        pas_fast_large_free_heap_deallocate(&map_entry.heap->u.free_heap,
+                                            map_entry.begin,
+                                            map_entry.end,
+                                            pas_zero_mode_may_have_non_zero,
+                                            &config);
+    }
     
     return true;
 }
 
-bool pas_large_heap_try_shrink(uintptr_t begin,
-                               size_t new_size,
-                               const pas_heap_config* heap_config)
+pas_large_shrink_result pas_large_heap_try_shrink(uintptr_t begin,
+                                                  size_t new_size,
+                                                  const pas_heap_config* heap_config)
 {
     /* FIXME: This doesn't play nice with enumeration. I think that's fine for now because shrink()
        isn't a real malloc API. But it would be possible to make this work well with enumeration if
@@ -226,9 +275,12 @@ bool pas_large_heap_try_shrink(uintptr_t begin,
     map_entry = pas_large_map_take(begin);
 
     if (pas_large_map_entry_is_empty(map_entry))
-        return false;
+        return pas_large_shrink_no_object;
 
     heap = map_entry.heap;
+    if (pas_large_heap_is_flex(heap))
+        return pas_large_shrink_not_supported;
+    
     type = pas_heap_for_large_heap(heap)->type;
 
     if (!new_size)
@@ -243,7 +295,8 @@ bool pas_large_heap_try_shrink(uintptr_t begin,
                    pas_heap_for_large_heap(heap)->config_kind)
                == heap_config);
 
-    if (heap_config->aligned_allocator_talks_to_sharing_pool) {
+    if (heap_config->aligned_allocator_talks_to_sharing_pool
+        && pas_large_heap_get_runtime_config(map_entry.heap)->sharing_mode == pas_share_pages) {
         pas_large_sharing_pool_free(
             pas_range_create(map_entry.begin + new_size, map_entry.end),
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
@@ -251,7 +304,7 @@ bool pas_large_heap_try_shrink(uintptr_t begin,
     }
 
     initialize_config(&config, NULL, heap, heap_config);
-    pas_fast_large_free_heap_deallocate(&heap->free_heap,
+    pas_fast_large_free_heap_deallocate(&heap->u.free_heap,
                                         map_entry.begin + new_size,
                                         map_entry.end,
                                         pas_zero_mode_may_have_non_zero,
@@ -260,22 +313,7 @@ bool pas_large_heap_try_shrink(uintptr_t begin,
     map_entry.end = map_entry.begin + new_size;
     pas_large_map_add(map_entry);
 
-    return true;
-}
-
-void pas_large_heap_shove_into_free(pas_large_heap* heap,
-                                    uintptr_t begin,
-                                    uintptr_t end,
-                                    pas_zero_mode zero_mode,
-                                    const pas_heap_config* heap_config)
-{
-    pas_large_free_heap_config config;
-    initialize_config(&config, NULL, heap, heap_config);
-    pas_fast_large_free_heap_deallocate(&heap->free_heap,
-                                        begin,
-                                        end,
-                                        zero_mode,
-                                        &config);
+    return pas_large_shrink_success;
 }
 
 typedef struct {
@@ -324,7 +362,9 @@ pas_large_heap* pas_large_heap_for_object(uintptr_t begin)
 
 size_t pas_large_heap_get_num_free_bytes(pas_large_heap* heap)
 {
-    return pas_fast_large_free_heap_get_num_free_bytes(&heap->free_heap);
+    if (pas_large_heap_is_flex(heap))
+        return pas_flex_large_free_heap_get_num_free_bytes(&heap->u.flex_free_heap);
+    return pas_fast_large_free_heap_get_num_free_bytes(&heap->u.free_heap);
 }
 
 static bool compute_summary_live_object_callback(pas_large_heap* heap,
@@ -348,11 +388,19 @@ pas_heap_summary pas_large_heap_compute_summary(pas_large_heap* heap)
     
     pas_large_heap_for_each_live_object(
         heap, compute_summary_live_object_callback, &result);
-    pas_fast_large_free_heap_for_each_free(
-        &heap->free_heap,
-        pas_compute_summary_dead_object_callback_for_config(
-            pas_heap_config_kind_get_config(pas_heap_for_large_heap(heap)->config_kind)),
-        &result);
+    if (pas_large_heap_is_flex(heap)) {
+        pas_flex_large_free_heap_for_each_free(
+            &heap->u.flex_free_heap,
+            pas_compute_summary_dead_object_callback_for_config(
+                pas_heap_config_kind_get_config(pas_heap_for_large_heap(heap)->config_kind)),
+            &result);
+    } else {
+        pas_fast_large_free_heap_for_each_free(
+            &heap->u.free_heap,
+            pas_compute_summary_dead_object_callback_for_config(
+                pas_heap_config_kind_get_config(pas_heap_for_large_heap(heap)->config_kind)),
+            &result);
+    }
     
     return result;
 }

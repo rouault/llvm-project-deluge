@@ -307,10 +307,9 @@ void pas_red_black_tree_insert(pas_red_black_tree* tree,
                                       pas_red_black_tree_color_black);
 }
 
-pas_red_black_tree_node*
-pas_red_black_tree_remove(pas_red_black_tree* tree,
-                          pas_red_black_tree_node* z,
-                          pas_red_black_tree_jettisoned_nodes* jettisoned_nodes)
+void pas_red_black_tree_remove(pas_red_black_tree* tree,
+                               pas_red_black_tree_node* z,
+                               pas_red_black_tree_jettisoned_nodes* jettisoned_nodes)
 {
     pas_red_black_tree_node* x;
     pas_red_black_tree_node* y;
@@ -399,8 +398,6 @@ pas_red_black_tree_remove(pas_red_black_tree* tree,
     root = pas_red_black_tree_get_root(tree);
     if (root)
         PAS_ASSERT(pas_red_black_tree_node_get_color(root) == pas_red_black_tree_color_black);
-    
-    return z;
 }
 
 size_t pas_red_black_tree_size(pas_red_black_tree* tree)

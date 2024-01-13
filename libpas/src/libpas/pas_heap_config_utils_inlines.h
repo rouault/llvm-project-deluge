@@ -53,6 +53,7 @@ typedef struct {
             .sharing_mode = pas_share_pages, \
             .statically_allocated = true, \
             .is_part_of_heap = true, \
+            .is_flex = false, \
             .directory_size_bound_for_partial_views = \
                 PAS_INTRINSIC_BOUND_FOR_PARTIAL_VIEWS, \
             .directory_size_bound_for_baseline_allocators = \
@@ -75,6 +76,7 @@ typedef struct {
             .sharing_mode = pas_share_pages, \
             .statically_allocated = false, \
             .is_part_of_heap = true, \
+            .is_flex = false, \
             .directory_size_bound_for_partial_views = \
                 PAS_PRIMITIVE_BOUND_FOR_PARTIAL_VIEWS, \
             .directory_size_bound_for_baseline_allocators = \
@@ -96,6 +98,7 @@ typedef struct {
             .sharing_mode = pas_share_pages, \
             .statically_allocated = false, \
             .is_part_of_heap = true, \
+            .is_flex = false, \
             .directory_size_bound_for_partial_views = \
                 PAS_TYPED_BOUND_FOR_PARTIAL_VIEWS, \
             .directory_size_bound_for_baseline_allocators = \
@@ -117,6 +120,7 @@ typedef struct {
             .sharing_mode = pas_share_pages, \
             .statically_allocated = false, \
             .is_part_of_heap = true, \
+            .is_flex = true, \
             .directory_size_bound_for_partial_views = \
                 PAS_FLEX_BOUND_FOR_PARTIAL_VIEWS, \
             .directory_size_bound_for_baseline_allocators = \

@@ -64,7 +64,9 @@ PAS_BEGIN_EXTERN_C;
 #define PAS_INTRINSIC_HEAP_INITIALIZER(heap_ptr, primitive_type, intrinsic_support, passed_config, runtime_config) { \
         PAS_INTRINSIC_HEAP_SEGREGATED_HEAP_FIELDS(heap_ptr, intrinsic_support, runtime_config) \
         .large_heap = { \
-            .free_heap = PAS_FAST_LARGE_FREE_HEAP_INITIALIZER, \
+            .u = { \
+                .free_heap = PAS_FAST_LARGE_FREE_HEAP_INITIALIZER, \
+            } \
         }, \
         .type = (const pas_heap_type*)(primitive_type), \
         .heap_ref = NULL, \

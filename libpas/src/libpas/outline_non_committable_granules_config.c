@@ -46,6 +46,7 @@ pas_heap_runtime_config outline_non_committable_granules_runtime_config = {
     .sharing_mode = pas_share_pages,
     .statically_allocated = true,
     .is_part_of_heap = true,
+    .is_flex = false,
     .directory_size_bound_for_partial_views = 0,
     .directory_size_bound_for_baseline_allocators = 0,
     .directory_size_bound_for_no_view_cache = 0,

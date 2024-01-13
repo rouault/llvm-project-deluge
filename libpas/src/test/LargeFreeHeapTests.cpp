@@ -102,7 +102,7 @@ struct Action {
     Kind kind { Allocate };
     uintptr_t base { 0 };
     size_t size { 0 };
-    pas_alignment alignment { 0 };
+    pas_alignment alignment { pas_alignment_create_trivial() };
     function<pas_aligned_allocation_result(size_t size, pas_alignment alignment)> allocator;
     function<void(void* base, size_t size)> deallocator;
     uintptr_t result { 0 };
@@ -150,7 +150,7 @@ struct Allocation {
     }
     
     size_t expectedSize { 0 };
-    pas_alignment expectedAlignment { 0 };
+    pas_alignment expectedAlignment { pas_alignment_create_trivial() };
     uintptr_t leftPadding { 0 };
     uintptr_t resultBase { 0 };
     uintptr_t rightPadding { 0 };
