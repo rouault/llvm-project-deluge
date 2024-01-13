@@ -84,7 +84,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    has a type that is incompatible with all subsequent accesses, leading to deluge thwarting your
    program's execution. */
 #define zalloc_flex(struct_type, field, count) ({ \
-        type __d_temporary; \
+        struct_type __d_temporary; \
         typeof(__d_temporary.field) __d_trailing_temporary; \
         (struct_type*)zalloc_flex_impl( \
             &__d_temporary, __builtin_offsetof(struct_type, field), \
@@ -92,7 +92,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
     })
 
 #define zalloc_flex_zero(struct_type, field, count) ({ \
-        type __d_temporary; \
+        struct_type __d_temporary; \
         typeof(__d_temporary.field) __d_trailing_temporary; \
         __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
         struct_type* __d_result = (struct_type*)zalloc_flex_impl( \
