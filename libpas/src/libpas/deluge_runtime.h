@@ -278,7 +278,7 @@ static inline size_t deluge_type_as_heap_type_get_type_size(const pas_heap_type*
     const deluge_type* type = (const deluge_type*)heap_type;
     PAS_TESTING_ASSERT(type->size);
     PAS_TESTING_ASSERT(type->alignment);
-    return type->size;
+    return pas_round_up_to_power_of_2(type->size, type->alignment);
 }
 
 static inline size_t deluge_type_as_heap_type_get_type_alignment(const pas_heap_type* heap_type)

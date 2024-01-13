@@ -129,7 +129,7 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
                 DELUGE_ASSERT((type->size + 7) / 8 == type->num_words, origin);
                 DELUGE_ASSERT(
                     type->size == type->num_words * 8 ||
-                    type->word_types[type->size - 1] == DELUGE_WORD_TYPE_INT,
+                    type->word_types[type->num_words - 1] == DELUGE_WORD_TYPE_INT,
                     origin);
             } else
                 DELUGE_ASSERT(type->size == type->num_words * 8, origin);

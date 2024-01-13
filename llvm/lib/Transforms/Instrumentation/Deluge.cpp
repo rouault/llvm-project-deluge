@@ -453,7 +453,7 @@ class Deluge {
 
     assert(T.Main.Size);
     assert(T.Main.Alignment);
-    assert(!(T.Main.Size % T.Main.Alignment));
+    assert(!(T.Main.Size % T.Main.Alignment) || T.Trailing.isValid());
     if (verbose) {
       errs() << "T.Trailing.isValid() = " << T.Trailing.isValid() << "\n";
       errs() << "T.Trailing.canBeInt() = " << T.Trailing.canBeInt() << "\n";
