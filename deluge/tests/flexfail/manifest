@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - span contains non-ints
+output-excludes:
+  FAIL

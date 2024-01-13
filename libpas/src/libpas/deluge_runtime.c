@@ -213,43 +213,37 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     }
 }
 
-void deluge_type_dump(const deluge_type* type, pas_stream* stream)
+static void type_dump_impl(const deluge_type* type, pas_stream* stream)
 {
     static const bool dump_ptr = false;
-    static const bool dump_only_ptr = false;
-    
+
     size_t index;
 
-    if (dump_only_ptr) {
-        pas_stream_printf(stream, "%p", type);
-        return;
-    }
-
     if (dump_ptr)
-        pas_stream_printf(stream, "%p:", type);
+        pas_stream_printf(stream, "@%p", type);
 
     if (!type) {
-        pas_stream_printf(stream, "delty{null}");
+        pas_stream_printf(stream, "{null}");
         return;
     }
 
     if (type == &deluge_function_type) {
-        pas_stream_printf(stream, "delty{function}");
+        pas_stream_printf(stream, "{function}");
         return;
     }
 
     if (type == &deluge_type_type) {
-        pas_stream_printf(stream, "delty{type}");
+        pas_stream_printf(stream, "{type}");
         return;
     }
 
     if (type == &deluge_int_type) {
-        pas_stream_printf(stream, "delty{int}");
+        pas_stream_printf(stream, "{int}");
         return;
     }
 
     if (!type->num_words) {
-        pas_stream_printf(stream, "delty{unique:%p", type);
+        pas_stream_printf(stream, "{unique:%p", type);
         if (type->size)
             pas_stream_printf(stream, ",%zu,%zu", type->size, type->alignment);
         if (type->u.runtime_config)
@@ -258,14 +252,27 @@ void deluge_type_dump(const deluge_type* type, pas_stream* stream)
         return;
     }
     
-    pas_stream_printf(stream, "delty{%zu,%zu,", type->size, type->alignment);
-    if (type->u.trailing_array) {
-        deluge_type_dump(type->u.trailing_array, stream);
-        pas_stream_printf(stream, ",");
-    }
+    pas_stream_printf(stream, "{%zu,%zu,", type->size, type->alignment);
     for (index = 0; index < type->num_words; ++index)
         deluge_word_type_dump(type->word_types[index], stream);
+    if (type->u.trailing_array) {
+        pas_stream_printf(stream, ",trail");
+        type_dump_impl(type->u.trailing_array, stream);
+    }
     pas_stream_printf(stream, "}");
+}
+
+void deluge_type_dump(const deluge_type* type, pas_stream* stream)
+{
+    static const bool dump_only_ptr = false;
+    
+    if (dump_only_ptr) {
+        pas_stream_printf(stream, "%p", type);
+        return;
+    }
+
+    pas_stream_printf(stream, "type");
+    type_dump_impl(type, stream);
 }
 
 pas_heap_runtime_config* deluge_type_as_heap_type_get_runtime_config(

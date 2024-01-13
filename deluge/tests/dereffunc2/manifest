@@ -3,7 +3,7 @@ return:
 output-includes:
   - deluge panic
   - span has opaque type
-  - delty{function}
+  - type{function}
 output-excludes:
   - blah
   - bytes when upper - ptr
