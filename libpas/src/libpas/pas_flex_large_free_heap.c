@@ -51,6 +51,8 @@ pas_range pas_flex_large_free_heap_try_allocate(pas_flex_large_free_heap* heap,
                                                 size_t alignment,
                                                 pas_large_free_heap_config* config)
 {
+    static const bool verbose = false;
+    
     pas_red_black_tree_node* node;
     pas_aligned_allocation_result aligned_result;
 
@@ -58,6 +60,9 @@ pas_range pas_flex_large_free_heap_try_allocate(pas_flex_large_free_heap* heap,
 
     PAS_ASSERT(pas_is_aligned(size, alignment));
     PAS_ASSERT(alignment >= config->min_alignment);
+
+    if (verbose)
+        pas_log("Here! size = %zu\n", size);
 
     for (node = pas_red_black_tree_find_least_greater_than_or_equal(
              &heap->tree, (void*)size, node_to_size_compare_callback);

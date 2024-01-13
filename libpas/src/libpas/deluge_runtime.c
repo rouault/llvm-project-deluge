@@ -526,12 +526,13 @@ void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
 static bool get_flex_size(size_t base_size, size_t element_size, size_t count, size_t* total_size)
 {
     size_t extra_size;
+
     if (pas_mul_uintptr_overflow(element_size, count, &extra_size)) {
         set_errno(ENOMEM);
         return false;
     }
 
-    if (pas_mul_uintptr_overflow(base_size, extra_size, total_size)) {
+    if (pas_add_uintptr_overflow(base_size, extra_size, total_size)) {
         set_errno(ENOMEM);
         return false;
     }
