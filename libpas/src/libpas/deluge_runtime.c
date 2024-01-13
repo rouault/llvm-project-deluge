@@ -797,13 +797,15 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
         const deluge_type* trailing_type;
         DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
         if (type->num_words) {
-            DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
             trailing_type = type->u.trailing_array;
             if (trailing_type) {
+                DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, trailing_type->alignment), origin);
                 DELUGE_ASSERT((size_t)(upper - lower) >= type->size, origin);
                 DELUGE_ASSERT(!((upper - lower - type->size) % trailing_type->size), origin);
-            } else
+            } else {
+                DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
                 DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+            }
         }
     }
     if (!type->num_words)

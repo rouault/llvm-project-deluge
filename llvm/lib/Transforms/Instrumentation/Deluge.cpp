@@ -454,12 +454,17 @@ class Deluge {
     assert(T.Main.Size);
     assert(T.Main.Alignment);
     assert(!(T.Main.Size % T.Main.Alignment));
-    assert(!(T.Main.Size % 8));
+    if (verbose) {
+      errs() << "T.Trailing.isValid() = " << T.Trailing.isValid() << "\n";
+      errs() << "T.Trailing.canBeInt() = " << T.Trailing.canBeInt() << "\n";
+    }
+    assert(!(T.Main.Size % 8) || (T.Trailing.isValid() && T.Trailing.canBeInt()));
 
     std::vector<Constant*> Constants;
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size));
     Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Alignment));
-    Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size / 8));
+    assert((T.Main.Size + 7) / 8 == T.Main.WordTypes.size());
+    Constants.push_back(ConstantInt::get(IntPtrTy, (T.Main.Size + 7) / 8));
     if (TrailingData)
       Constants.push_back(ConstantExpr::getPtrToInt(TrailingData->TypeRep, IntPtrTy));
     else
@@ -488,6 +493,9 @@ class Deluge {
   }
 
   DelugeTypeData* dataForType(const DelugeType& T) {
+    if (T.canBeInt())
+      return &Int;
+    
     auto iter = TypeDatas.find(T);
     if (iter != TypeDatas.end())
       return iter->second.get();
@@ -1492,7 +1500,15 @@ class Deluge {
         FlexType.Main.truncate(static_cast<size_t>(cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue()));
         assert(!FlexType.Trailing.isValid());
         assert(!TrailingDTD->Type.Trailing.isValid());
+        if (verbose) {
+          errs() << "TrailingDTD->Type.Main.isValid() = " << TrailingDTD->Type.Main.isValid() << "\n";
+          errs() << "TrailingDTD->Type.Main.canBeInt() = " << TrailingDTD->Type.Main.canBeInt() << "\n";
+        }
         FlexType.Trailing = TrailingDTD->Type.Main;
+        if (verbose) {
+          errs() << "FlexType.Trailing.isValid() = " << FlexType.Trailing.isValid() << "\n";
+          errs() << "FlexType.Trailing.canBeInt() = " << FlexType.Trailing.canBeInt() << "\n";
+        }
         FlexType.Main.Alignment = std::max(FlexType.Main.Alignment, FlexType.Trailing.Alignment);
 
         DelugeTypeData* DTD;
@@ -1502,7 +1518,7 @@ class Deluge {
           DTD = dataForType(FlexType); 
         
         size_t BaseSize = FlexType.Main.Size;
-        size_t ElementSize = FlexType.Trailing.Size;
+        size_t ElementSize = DL.getTypeStoreSize(LowTrailingT);
         Value* Count = CI->getArgOperand(3);
         if (DTD == &Int) {
           size_t Alignment = FlexType.Main.Alignment;
@@ -1527,7 +1543,6 @@ class Deluge {
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
-        assert(ElementSize == DL.getTypeStoreSize(LowTrailingT));
         Instruction* Upper = GetElementPtrInst::Create(
           Int8Ty, Alloc, { ConstantInt::get(IntPtrTy, BaseSize) }, "deluge_alloc_upper", CI);
         Upper->setDebugLoc(CI->getDebugLoc());
