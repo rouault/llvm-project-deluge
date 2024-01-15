@@ -2039,7 +2039,7 @@ void deluded_f_zsys_signal(DELUDED_SIGNATURE)
     int signum = from_musl_signum(musl_signum);
     if (signum < 0) {
         set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
         return;
     }
     DELUGE_CHECK(signum != SIGILL, &origin, "cannot override SIGILL.");
