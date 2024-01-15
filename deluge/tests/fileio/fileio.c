@@ -1,4 +1,5 @@
 #include <stdfil.h>
+#include <stdio.h>
 
 int main(int argc, char** argv)
 {
@@ -9,8 +10,15 @@ int main(int argc, char** argv)
     __builtin_memset(buf, 0, sizeof(buf));
     int result = zsys_read(fd, buf, sizeof(buf));
     ZASSERT(result == 14);
+    zprintf("read the zsys way: %s", buf);
 
-    zprintf("read: %s", buf);
+    FILE* fin = fopen("deluge/tests/fileio/test.txt", "r");
+    ZASSERT(fin);
+    __builtin_memset(buf, 0, sizeof(buf));
+    result = fread(buf, 1, sizeof(buf), fin);
+    ZASSERT(result == 14);
+    printf("read the fread way: %s", buf);
+    
     return 0;
 }
 

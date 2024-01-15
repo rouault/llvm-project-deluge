@@ -1,4 +1,5 @@
 return:
   success
 output-includes:
-  - "read: Hello, world!"
+  - "read the zsys way: Hello, world!"
+  - "read the fread way: Hello, world!"
