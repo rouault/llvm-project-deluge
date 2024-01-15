@@ -229,9 +229,14 @@ void pas_page_malloc_zero_fill(void* base, size_t size)
 
 bool pas_page_malloc_lock(void* base, size_t size)
 {
+    static const bool verbose = false;
+
     PAS_ASSERT(pas_is_aligned((uintptr_t)base, pas_page_malloc_alignment()));
     PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
 
+    if (verbose)
+        pas_log("locking %p...%p\n", base, (char*)base + size);
+    
     if (mlock(base, size)) {
         PAS_ASSERT(errno == EAGAIN);
         return false;
@@ -265,10 +270,15 @@ static void posix_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capa
 
 void pas_page_malloc_protect_reservation(void* base, size_t size)
 {
+    static const bool verbose = false;
+    
     int result;
 
     PAS_ASSERT(pas_is_aligned((uintptr_t)base, pas_page_malloc_alignment()));
     PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+
+    if (verbose)
+        pas_log("protecting %p...%p\n", base, (char*)base + size);
 
     result = mprotect(base, size, PROT_NONE);
     PAS_ASSERT(!result);

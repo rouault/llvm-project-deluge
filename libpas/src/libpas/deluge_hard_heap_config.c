@@ -149,7 +149,7 @@ pas_aligned_allocation_result deluge_hard_aligned_allocator(
 
     pas_reservation_commit((void*)(allocation_result.begin + actual_alignment), actual_payload_size);
     lock_result = pas_page_malloc_lock((void*)(allocation_result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE),
-                                       PAS_SMALL_PAGE_DEFAULT_SIZE);
+                                       actual_payload_size);
     PAS_ASSERT(lock_result); /* FIXME: We could handle this, but it would require returning memory to the
                                 sharing cache, which would require implementing another function, and I
                                 don't feel like it right now. */
