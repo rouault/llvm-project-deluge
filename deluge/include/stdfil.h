@@ -245,6 +245,11 @@ _Bool zthread_rwlock_tryrdlock(void* rwlock);
 _Bool zthread_rwlock_wrlock(void* rwlock);
 _Bool zthread_rwlock_trywrlock(void* rwlock);
 _Bool zthread_rwlock_unlock(void* rwlock);
+void* zthread_mutex_create(void);
+void zthread_mutex_delete(void* mutex);
+_Bool zthread_mutex_lock(void* mutex);
+_Bool zthread_mutex_trylock(void* mutex);
+_Bool zthread_mutex_unlock(void* mutex);
 
 #endif /* DELUGE_STDFIL_H */
 

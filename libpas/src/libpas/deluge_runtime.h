@@ -568,6 +568,11 @@ void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE);
 void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE);
 void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE);
 void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_mutex_create(DELUDED_SIGNATURE);
+void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE);
+void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE);
+void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE);
+void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

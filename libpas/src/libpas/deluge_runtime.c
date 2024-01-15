@@ -2388,6 +2388,143 @@ void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE)
     *(bool*)rets.ptr = true;
 }
 
+static void mutex_construct(pthread_mutex_t* mutex)
+{
+    int result = pthread_mutex_init(mutex, NULL);
+    PAS_ASSERT(!result);
+}
+
+DEFINE_RUNTIME_CONFIG(mutex_runtime_config, pthread_mutex_t, mutex_construct);
+
+static deluge_type mutex_type = {
+    .size = sizeof(pthread_mutex_t),
+    .alignment = alignof(pthread_mutex_t),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &mutex_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref mutex_heap = {
+    .type = (const pas_heap_type*)&mutex_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+void deluded_f_zthread_mutex_create(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_mutex_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+
+    pthread_mutex_t* result = (pthread_mutex_t*)deluge_try_allocate_one(&mutex_heap);
+    if (!result)
+        return;
+
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &mutex_type);
+}
+
+void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_mutex_delete",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr mutex_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    deluge_deallocate(mutex);
+}
+
+void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_mutex_lock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr mutex_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    int my_errno = pthread_mutex_lock(mutex);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_mutex_trylock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr mutex_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    int my_errno = pthread_mutex_trylock(mutex);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
+void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_mutex_unlock",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr mutex_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+
+    deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    int my_errno = pthread_mutex_unlock(mutex);
+    if (my_errno) {
+        set_errno(my_errno);
+        return;
+    }
+    *(bool*)rets.ptr = true;
+}
+
 #endif /* PAS_ENABLE_DELUGE */
 
 #endif /* LIBPAS_ENABLED */
