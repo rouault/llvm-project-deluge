@@ -228,10 +228,11 @@ bool pas_large_heap_try_deallocate(uintptr_t begin,
     
     if (pas_large_map_entry_is_empty(map_entry))
         return false;
-    
-    PAS_ASSERT(pas_heap_config_kind_get_config(
-                   pas_heap_for_large_heap(map_entry.heap)->config_kind)
-               == heap_config);
+
+    if (pas_heap_config_kind_get_config(
+            pas_heap_for_large_heap(map_entry.heap)->config_kind)
+        != heap_config)
+        return false;
 
     if (heap_config->aligned_allocator_talks_to_sharing_pool
         && pas_large_heap_get_runtime_config(map_entry.heap)->sharing_mode == pas_share_pages) {

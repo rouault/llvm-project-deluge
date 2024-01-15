@@ -27,6 +27,7 @@
 #define PAS_GET_ALLOCATION_SIZE_H
 
 #include "pas_get_page_base_and_kind_for_small_other_in_fast_megapage.h"
+#include "pas_heap.h"
 #include "pas_heap_config.h"
 #include "pas_heap_lock.h"
 #include "pas_large_map.h"
@@ -36,8 +37,7 @@
 PAS_BEGIN_EXTERN_C;
 
 /* Returns zero if we don't own this object. */
-static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr,
-                                                        pas_heap_config config)
+static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_config config)
 {
     uintptr_t begin;
     
@@ -121,14 +121,15 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr,
         pas_heap_lock_lock();
         
         entry = pas_large_map_find(begin);
-        
+
+        result = 0;
         if (!pas_large_map_entry_is_empty(entry)) {
             PAS_ASSERT(entry.begin == begin);
             PAS_ASSERT(entry.end > begin);
             
-            result = entry.end - begin;
-        } else
-            result = 0;
+            if (pas_heap_for_large_heap(entry.heap)->config_kind == config.kind)
+                result = entry.end - begin;
+        }
         
         pas_heap_lock_unlock();
         

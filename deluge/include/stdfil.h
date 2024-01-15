@@ -139,6 +139,13 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    decommitted at any time (so many start to trap or suddenly become all-zero). */
 void zfree(void* ptr);
 
+/* If the allocator owns this pointer, returns the number of bytes allocated. This can be more than
+   the number of bytes in the pointer's capability, so you may not actually be able to use all of
+   the memory. The number of bytes allocated is always greater than zero.
+
+   If the allocator does not own this pointer, returns zero. */
+__SIZE_TYPE__ zgetallocsize(void* ptr);
+
 /* Allocate integer-only memory of the given size in the hard heap.
    
    The hard heap is intended for storing cryptographic secrets that cannot be written to swap, core
@@ -154,6 +161,7 @@ void zfree(void* ptr);
    and decommitted. */
 void* zhard_alloc(__SIZE_TYPE__ size);
 void zhard_free(void* ptr);
+__SIZE_TYPE__ zhard_getallocsize(void* ptr);
 
 /* Accessors for the bounds. */
 void* zgetlower(void* ptr);

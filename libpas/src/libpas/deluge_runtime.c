@@ -701,6 +701,22 @@ void deluded_f_zfree(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
 }
 
+void deluded_f_zgetallocsize(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zgetallocsize",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(size_t), &origin);
+    *(size_t*)rets.ptr = pas_get_allocation_size(ptr.ptr, DELUGE_HEAP_CONFIG);
+}
+
 void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -801,6 +817,22 @@ void deluded_f_zhard_free(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_hard_deallocate(ptr.ptr);
+}
+
+void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zhard_getallocsize",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(size_t), &origin);
+    *(size_t*)rets.ptr = pas_get_allocation_size(ptr.ptr, DELUGE_HARD_HEAP_CONFIG);
 }
 
 void deluded_f_zgetlower(DELUDED_SIGNATURE)

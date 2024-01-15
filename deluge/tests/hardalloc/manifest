@@ -1,4 +1,6 @@
 return:
   success
 output-includes:
-  thingy = hello, world!!!
+  - hard size = 672
+  - soft size = 0
+  - thingy = hello, world!!!
