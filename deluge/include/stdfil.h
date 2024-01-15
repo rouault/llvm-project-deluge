@@ -232,6 +232,10 @@ int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
 void zsys_exit(int return_code);
 void* zsys_signal(int signum, void* sighandler);
+unsigned zsys_getuid(void);
+unsigned zsys_geteuid(void);
+unsigned zsys_getgid(void);
+unsigned zsys_getegid(void);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

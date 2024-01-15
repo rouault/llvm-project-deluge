@@ -2067,6 +2067,66 @@ void deluded_f_zsys_signal(DELUDED_SIGNATURE)
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid(result);
 }
 
+void deluded_f_zsys_getuid(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getuid",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    *(unsigned*)rets.ptr = getuid();
+}
+
+void deluded_f_zsys_geteuid(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_geteuid",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    *(unsigned*)rets.ptr = geteuid();
+}
+
+void deluded_f_zsys_getgid(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getgid",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    *(unsigned*)rets.ptr = getgid();
+}
+
+void deluded_f_zsys_getegid(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getegid",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    *(unsigned*)rets.ptr = getegid();
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \
