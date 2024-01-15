@@ -16,6 +16,8 @@ PAS_API extern pas_heap deluge_int_heap;
 PAS_API extern pas_intrinsic_heap_support deluge_int_heap_support;
 PAS_API extern pas_heap deluge_utility_heap;
 PAS_API extern pas_intrinsic_heap_support deluge_utility_heap_support;
+PAS_API extern pas_heap deluge_hard_heap;
+PAS_API extern pas_intrinsic_heap_support deluge_hard_heap_support;
 PAS_API extern pas_allocator_counts deluge_allocator_counts;
 
 PAS_END_EXTERN_C;

@@ -128,5 +128,8 @@ PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_medium_bitfit,
                                    DELUGE_HEAP_CONFIG.medium_bitfit_config)
 PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_marge_bitfit,
                                    DELUGE_HEAP_CONFIG.marge_bitfit_config)
+
+PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(deluge_hard_bitfit,
+                                   DELUGE_HARD_HEAP_CONFIG.small_bitfit_config)
 #endif
 

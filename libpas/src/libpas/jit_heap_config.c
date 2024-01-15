@@ -102,22 +102,23 @@ static pas_allocation_result allocate_committed_from_fresh(size_t size, pas_alig
 
 static pas_allocation_result page_provider(
     size_t size, pas_alignment alignment, const char* name,
-    pas_heap* heap, pas_physical_memory_transaction* transaction, pas_primordial_page_state desired_state, void* arg)
+    pas_heap* heap, pas_physical_memory_transaction* transaction, pas_primordial_page_state desired_state,
+    void* arg)
 {
-	pas_allocation_result result;
+    pas_allocation_result result;
     PAS_UNUSED_PARAM(name);
     PAS_UNUSED_PARAM(heap);
     PAS_UNUSED_PARAM(transaction);
     PAS_ASSERT(!arg);
-	PAS_ASSERT(desired_state == pas_primordial_page_is_shared);
+    PAS_ASSERT(desired_state == pas_primordial_page_is_shared);
     result = allocate_from_fresh(size, alignment);
-	if (result.did_succeed) {
-		pas_large_sharing_pool_boot_reservation(
-			pas_range_create(result.begin, result.begin + size),
-			pas_physical_memory_is_locked_by_virtual_range_common_lock,
-			JIT_HEAP_CONFIG.mmap_capability);
-	}
-	return result;
+    if (result.did_succeed) {
+        pas_large_sharing_pool_boot_reservation(
+            pas_range_create(result.begin, result.begin + size),
+            pas_physical_memory_is_locked_by_virtual_range_common_lock,
+            JIT_HEAP_CONFIG.mmap_capability);
+    }
+    return result;
 }
 
 pas_large_heap_physical_page_sharing_cache jit_large_fresh_memory_heap = {

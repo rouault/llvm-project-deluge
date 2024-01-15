@@ -50,34 +50,34 @@ typedef struct pas_large_sharing_node pas_large_sharing_node;
 typedef struct pas_physical_memory_transaction pas_physical_memory_transaction;
 
 enum pas_large_sharing_node_boot_mode {
-	pas_large_sharing_node_is_not_booted,
-	pas_large_sharing_node_is_booted
+    pas_large_sharing_node_is_not_booted,
+    pas_large_sharing_node_is_booted
 };
 
 typedef enum pas_large_sharing_node_boot_mode pas_large_sharing_node_boot_mode;
 
 static inline const char* pas_large_sharing_node_boot_mode_get_string(pas_large_sharing_node_boot_mode mode)
 {
-	switch (mode) {
-	case pas_large_sharing_node_is_not_booted:
-		return "not_booted";
-	case pas_large_sharing_node_is_booted:
-		return "booted";
-	}
-	PAS_ASSERT(!"Should not be reached");
-	return NULL;
+    switch (mode) {
+    case pas_large_sharing_node_is_not_booted:
+        return "not_booted";
+    case pas_large_sharing_node_is_booted:
+        return "booted";
+    }
+    PAS_ASSERT(!"Should not be reached");
+    return NULL;
 }
 
 struct pas_large_sharing_node {
     pas_red_black_tree_node tree_node;
 
-	unsigned is_booted : 1;
+    unsigned is_booted : 1;
     unsigned is_committed : 1;
     unsigned synchronization_style : 1;
-    unsigned mmap_capability : 1;
+    unsigned mmap_capability : 2;
 
-    unsigned index_in_min_heap : 28; /* it's a one-based index; it's zero to indicate that we're not in
-                                        the min_heap. */
+    unsigned index_in_min_heap; /* it's a one-based index; it's zero to indicate that we're not in
+                                   the min_heap. */
     
     pas_range range; /* Has to be a page range. */
     
@@ -145,11 +145,11 @@ PAS_API extern bool pas_large_sharing_pool_enabled;
    allocated and committed. This has two natural implications:
    
    1) It means that we keep our dirty paws off memory we were never told about, since we
-      naturally keep our dirty paws off allocated memory.
+   naturally keep our dirty paws off allocated memory.
    
    2) We correctly assume that newly reserved memory is also committed. That happens to be
-      true since we reserve memory in a way that causes the OS to give us memory that is
-      also committed (at least by our definition of committing). */
+   true since we reserve memory in a way that causes the OS to give us memory that is
+   also committed (at least by our definition of committing). */
 PAS_API extern pas_red_black_tree pas_large_sharing_tree;
 
 PAS_API extern pas_red_black_tree_jettisoned_nodes pas_large_sharing_tree_jettisoned_nodes;
@@ -206,22 +206,22 @@ PAS_API void pas_large_sharing_pool_validate(void);
    If the range is not on page boundary, then this asserts about the range being booted and having the given synchronization style
    and mmap capability. The "free" part of the assertion becomes a conservative approximation. */
 PAS_API void pas_large_sharing_pool_assert_booted_and_free(
-	pas_range range,
-	pas_physical_memory_synchronization_style expected_synchronization_style,
-	pas_mmap_capability expected_mmap_capability);
+    pas_range range,
+    pas_physical_memory_synchronization_style expected_synchronization_style,
+    pas_mmap_capability expected_mmap_capability);
 static inline void pas_large_sharing_pool_testing_assert_booted_and_free(
-	pas_range range,
-	pas_physical_memory_synchronization_style expected_synchronization_style,
-	pas_mmap_capability expected_mmap_capability)
+    pas_range range,
+    pas_physical_memory_synchronization_style expected_synchronization_style,
+    pas_mmap_capability expected_mmap_capability)
 {
-	if (PAS_ENABLE_TESTING)
-		pas_large_sharing_pool_assert_booted_and_free(range, expected_synchronization_style, expected_mmap_capability);
+    if (PAS_ENABLE_TESTING)
+        pas_large_sharing_pool_assert_booted_and_free(range, expected_synchronization_style, expected_mmap_capability);
 }
 PAS_API void pas_large_sharing_pool_assert_allocated(pas_range range);
 static inline void pas_large_sharing_pool_testing_assert_allocated(pas_range range)
 {
-	if (PAS_ENABLE_TESTING)
-		pas_large_sharing_pool_assert_allocated(range);
+    if (PAS_ENABLE_TESTING)
+        pas_large_sharing_pool_assert_allocated(range);
 }
 
 typedef enum {

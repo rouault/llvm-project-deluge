@@ -363,6 +363,12 @@ void deluded_f_zfree(DELUDED_SIGNATURE);
 
 void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE);
 
+void* deluge_try_hard_allocate(size_t size);
+void deluge_hard_deallocate(void* ptr);
+
+void deluded_f_zhard_alloc(DELUDED_SIGNATURE);
+void deluded_f_zhard_free(DELUDED_SIGNATURE);
+
 void deluded_f_zgetlower(DELUDED_SIGNATURE);
 void deluded_f_zgetupper(DELUDED_SIGNATURE);
 void deluded_f_zgettype(DELUDED_SIGNATURE);

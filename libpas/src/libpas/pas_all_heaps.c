@@ -135,6 +135,8 @@ bool pas_all_heaps_for_each_static_heap(pas_all_heaps_for_each_heap_callback cal
         return false;
     if (!callback(&deluge_utility_heap, arg))
         return false;
+    if (!callback(&deluge_hard_heap, arg))
+        return false;
 #endif
 
     return true;

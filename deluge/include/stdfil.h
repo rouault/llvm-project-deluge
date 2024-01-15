@@ -139,6 +139,22 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    decommitted at any time (so many start to trap or suddenly become all-zero). */
 void zfree(void* ptr);
 
+/* Allocate integer-only memory of the given size in the hard heap.
+   
+   The hard heap is intended for storing cryptographic secrets that cannot be written to swap, core
+   dumped, or kept in memory longer than necessary.
+   
+   This heap is incompatible with zfree(); you have to use zhard_free() to free memory from
+   zhard_alloc().
+   
+   The memory backing this heap is always given guard pages, is always locked (cannot be swapped),
+   and has DONT_DUMP. Additinally, both allocation and free always zero the whole allocation. All
+   underlying page regions allocated into this allocator have guard pages around them. Automatic
+   decommit still works, though. If the heap becomes empty, all of the pages will become unlocked
+   and decommitted. */
+void* zhard_alloc(__SIZE_TYPE__ size);
+void zhard_free(void* ptr);
+
 /* Accessors for the bounds. */
 void* zgetlower(void* ptr);
 void* zgetupper(void* ptr);

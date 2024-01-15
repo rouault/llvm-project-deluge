@@ -227,15 +227,63 @@ void pas_page_malloc_zero_fill(void* base, size_t size)
 #endif
 }
 
+bool pas_page_malloc_lock(void* base, size_t size)
+{
+    PAS_ASSERT(pas_is_aligned((uintptr_t)base, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+
+    if (mlock(base, size)) {
+        PAS_ASSERT(errno == EAGAIN);
+        return false;
+    }
+
+#ifdef MADV_DONTDUMP
+    if (madvise(base, size, MADV_DONTDUMP)) {
+        PAS_ASSERT(!"madvise(MADV_DONTDUMP) failed");
+        return false;
+    }
+#endif
+    
+    return true;
+}
+
+#ifndef _WIN32
+static void posix_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capability)
+{
+#if PAS_OS(DARWIN)
+    if (pas_page_malloc_decommit_zero_fill && mmap_capability)
+        pas_page_malloc_zero_fill(ptr, size);
+    else
+        PAS_SYSCALL(madvise(ptr, size, MADV_FREE_REUSABLE));
+#elif defined(MADV_FREE)
+    PAS_SYSCALL(madvise(ptr, size, MADV_FREE));
+#else
+    PAS_SYSCALL(madvise(ptr, size, MADV_DONTNEED));
+#endif
+}
+#endif // _WIN32
+
+void pas_page_malloc_protect_reservation(void* base, size_t size)
+{
+    int result;
+
+    PAS_ASSERT(pas_is_aligned((uintptr_t)base, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+
+    result = mprotect(base, size, PROT_NONE);
+    PAS_ASSERT(!result);
+}
+
 #ifdef _WIN32
 static bool should_mprotect_win32(bool do_mprotect, pas_mmap_capability mmap_capability)
 {
-    return do_mprotect && mmap_capability;
+    return do_mprotect && mmap_capability != pas_may_not_mmap;
 }
 #else /* _WIN32 -> so !_WIN32 */
 static bool should_mprotect_posix(bool do_mprotect, pas_mmap_capability mmap_capability)
 {
-    return PAS_MPROTECT_DECOMMITTED && do_mprotect && mmap_capability;
+    return (PAS_MPROTECT_DECOMMITTED && do_mprotect && mmap_capability != pas_may_not_mmap)
+        || mmap_capability == pas_mmap_hard;
 }
 #endif /* !_WIN32 */
 
@@ -292,6 +340,8 @@ static bool virtual_decommit_operation(void* ptr, size_t size)
 }
 #endif // _WIN32
 
+/* FIXME: We should really support this failing. On some systems, it can, and it's a meaningful thing
+   to handle as malloc returning NULL. */
 static void commit_impl(void* ptr, size_t size, bool do_mprotect, pas_mmap_capability mmap_capability)
 {
     static const bool verbose = false;
@@ -315,12 +365,11 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, pas_mmap_capab
         return;
 
 #ifdef _WIN32
-    if (should_mprotect_win32(do_mprotect, mmap_capability)) {
+    if (should_mprotect_win32(do_mprotect, mmap_capability))
         perform_virtual_operation_spanning_reservations(ptr, size, virtual_commit_operation);
-        return;
+    else {
+        /* Nothing to do on Windows if we want to commit and we're not mprotecting. */
     }
-
-    /* Nothing to do on Windows if we want to commit and we're not mprotecting. */
 #else /* _WIN32 -> so !_WIN32 */
     if (should_mprotect_posix(do_mprotect, mmap_capability))
         PAS_SYSCALL(mprotect((void*)base_as_int, end_as_int - base_as_int, PROT_READ | PROT_WRITE));
@@ -331,6 +380,18 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, pas_mmap_capab
     PAS_SYSCALL(madvise(ptr, size, MADV_NORMAL));
 #endif
 #endif /* !_WIN32 */
+
+    if (mmap_capability == pas_mmap_hard) {
+        int result;
+
+        result = mlock(ptr, size);
+        PAS_ASSERT(!result);
+
+#ifdef MADV_DONTDUMP
+        result = madvise(base, size, MADV_DONTDUMP);
+        PAS_ASSERT(!result);
+#endif
+    }
 }
 
 void pas_page_malloc_commit(void* ptr, size_t size, pas_mmap_capability mmap_capability)
@@ -366,6 +427,15 @@ static void decommit_impl(void* ptr, size_t size,
     PAS_ASSERT(
         end_as_int == pas_round_down_to_power_of_2(end_as_int, pas_page_malloc_alignment()));
 
+    if (mmap_capability == pas_mmap_hard) {
+        int result;
+
+        pas_zero_memory(ptr, size);
+
+        result = munlock(ptr, size);
+        PAS_ASSERT(!result);
+    }
+
 #ifdef _WIN32
     if (should_mprotect_win32(do_mprotect, mmap_capability)) {
         perform_virtual_operation_spanning_reservations(ptr, size, virtual_decommit_operation);
@@ -374,17 +444,8 @@ static void decommit_impl(void* ptr, size_t size,
 
     perform_virtual_operation_spanning_reservations(ptr, size, virtual_reset_operation);
 #else /* _WIN32 -> so !_WIN32 */
-#if PAS_OS(DARWIN)
-    if (pas_page_malloc_decommit_zero_fill && mmap_capability)
-        pas_page_malloc_zero_fill(ptr, size);
-    else
-        PAS_SYSCALL(madvise(ptr, size, MADV_FREE_REUSABLE));
-#elif defined(MADV_FREE)
-    PAS_SYSCALL(madvise(ptr, size, MADV_FREE));
-#else
-    PAS_SYSCALL(madvise(ptr, size, MADV_DONTNEED));
-#endif
-
+    posix_decommit(ptr, size, mmap_capability);
+    
     if (should_mprotect_posix(do_mprotect, mmap_capability))
         PAS_SYSCALL(mprotect((void*)base_as_int, end_as_int - base_as_int, PROT_NONE));
 #endif /* !_WIN32 */

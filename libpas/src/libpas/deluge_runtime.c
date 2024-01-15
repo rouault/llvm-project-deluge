@@ -6,10 +6,12 @@
 
 #if PAS_ENABLE_DELUGE
 
+#include "deluge_hard_heap_config.h"
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
+#include "pas_get_allocation_size.h"
 #include "pas_hashtable.h"
 #include "pas_string_stream.h"
 #include "pas_try_allocate.h"
@@ -693,6 +695,8 @@ void deluded_f_zfree(DELUDED_SIGNATURE)
         .column = 0
     };
     deluge_ptr args = DELUDED_ARGS;
+    /* FIXME: Could do a bounds check here, or any kind of check, but that would break the case
+       where a zero-sized object was allocated. */
     deluge_deallocate(deluge_ptr_get_next_ptr(&args, &origin).ptr);
     DELUDED_DELETE_ARGS();
 }
@@ -720,6 +724,83 @@ void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE)
         return_value = true;
     deluge_check_access_int(rets, sizeof(bool), &origin);
     *(bool*)rets.ptr = return_value;
+}
+
+pas_intrinsic_heap_support deluge_hard_heap_support =
+    PAS_INTRINSIC_HEAP_SUPPORT_INITIALIZER;
+
+pas_heap deluge_hard_heap =
+    PAS_INTRINSIC_HEAP_INITIALIZER(
+        &deluge_hard_heap,
+        NULL,
+        deluge_hard_heap_support,
+        DELUGE_HARD_HEAP_CONFIG,
+        &deluge_hard_runtime_config);
+
+PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
+    deluge_try_hard_allocate_impl,
+    DELUGE_HARD_HEAP_CONFIG,
+    &deluge_hard_runtime_config,
+    &deluge_allocator_counts,
+    allocation_result_set_errno,
+    &deluge_hard_heap,
+    &deluge_hard_heap_support,
+    pas_intrinsic_heap_is_not_designated);
+
+void* deluge_try_hard_allocate(size_t size)
+{
+    void* result = deluge_try_hard_allocate_impl_ptr(size, 1);
+    pas_zero_memory(result, size);
+    return result;
+}
+
+void deluge_hard_deallocate(void* ptr)
+{
+    if (!ptr)
+        return;
+    
+    size_t size = pas_get_allocation_size(ptr, DELUGE_HARD_HEAP_CONFIG);
+    if (!size) {
+        pas_deallocation_did_fail(
+            "attempt to hard deallocate object not allocated by hard heap", (uintptr_t)ptr);
+    }
+
+    pas_zero_memory(ptr, size);
+
+    pas_deallocate(ptr, DELUGE_HARD_HEAP_CONFIG);
+}
+
+void deluded_f_zhard_alloc(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zhard_alloc",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    size_t size = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+
+    void* result = deluge_try_hard_allocate(size);
+    if (result)
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + size, &deluge_int_type);
+}
+
+void deluded_f_zhard_free(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zhard_free",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_hard_deallocate(ptr.ptr);
 }
 
 void deluded_f_zgetlower(DELUDED_SIGNATURE)
