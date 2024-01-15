@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/uio.h>
+#include <fcntl.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -2125,6 +2126,78 @@ void deluded_f_zsys_getegid(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(unsigned), &origin);
     *(unsigned*)rets.ptr = getegid();
+}
+
+static bool check_and_clear(int* flags, int expected)
+{
+    if ((*flags & expected) == expected) {
+        *flags &= ~expected;
+        return true;
+    }
+    return false;
+}
+
+static int from_musl_open_flags(int musl_flags)
+{
+    int result = 0;
+
+    if (check_and_clear(&musl_flags, 01))
+        result |= O_WRONLY;
+    if (check_and_clear(&musl_flags, 02))
+        result |= O_RDWR;
+    if (check_and_clear(&musl_flags, 0100))
+        result |= O_CREAT;
+    if (check_and_clear(&musl_flags, 0200))
+        result |= O_EXCL;
+    if (check_and_clear(&musl_flags, 0400))
+        result |= O_NOCTTY;
+    if (check_and_clear(&musl_flags, 01000))
+        result |= O_TRUNC;
+    if (check_and_clear(&musl_flags, 02000))
+        result |= O_APPEND;
+    if (check_and_clear(&musl_flags, 04000))
+        result |= O_NONBLOCK;
+    if (check_and_clear(&musl_flags, 0200000))
+        result |= O_DIRECTORY;
+    if (check_and_clear(&musl_flags, 0400000))
+        result |= O_NOFOLLOW;
+    if (check_and_clear(&musl_flags, 02000000))
+        result |= O_CLOEXEC;
+    if (check_and_clear(&musl_flags, 020000))
+        result |= O_ASYNC;
+
+    if (musl_flags)
+        return -1;
+    return result;
+}
+
+void deluded_f_zsys_open(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_open",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr path_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    int musl_flags = deluge_ptr_get_next_int(&args, &origin);
+    int flags = from_musl_open_flags(musl_flags);
+    int mode = 0;
+    if (flags >= 0 && (flags & O_CREAT))
+        mode = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    if (flags < 0) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    int result = open(deluge_check_and_get_str(path_ptr, &origin), flags, mode);
+    if (result < 0)
+        set_errno(errno);
+    *(int*)rets.ptr = result;
 }
 
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \

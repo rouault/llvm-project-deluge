@@ -566,6 +566,7 @@ void deluded_f_zsys_getuid(DELUDED_SIGNATURE);
 void deluded_f_zsys_geteuid(DELUDED_SIGNATURE);
 void deluded_f_zsys_getgid(DELUDED_SIGNATURE);
 void deluded_f_zsys_getegid(DELUDED_SIGNATURE);
+void deluded_f_zsys_open(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);

@@ -155,10 +155,10 @@ __SIZE_TYPE__ zgetallocsize(void* ptr);
    zhard_alloc().
    
    The memory backing this heap is always given guard pages, is always locked (cannot be swapped),
-   and has DONT_DUMP. Additinally, both allocation and free always zero the whole allocation. All
-   underlying page regions allocated into this allocator have guard pages around them. Automatic
-   decommit still works, though. If the heap becomes empty, all of the pages will become unlocked
-   and decommitted. */
+   and has DONT_DUMP (if the OS supports it). Additinally, both allocation and free always zero the
+   whole allocation. All underlying page regions allocated into this allocator have guard pages
+   around them. Automatic decommit still works. If the heap becomes empty, all of the pages will
+   be zeroed, unlocked, decommitted, and protected (PROT_NONE). */
 void* zhard_alloc(__SIZE_TYPE__ size);
 void zhard_free(void* ptr);
 __SIZE_TYPE__ zhard_getallocsize(void* ptr);
@@ -236,6 +236,7 @@ unsigned zsys_getuid(void);
 unsigned zsys_geteuid(void);
 unsigned zsys_getgid(void);
 unsigned zsys_getegid(void);
+int zsys_open(const char* path, int flags, ...);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
