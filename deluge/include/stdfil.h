@@ -231,6 +231,7 @@ long zsys_write(int fd, const void* buf, __SIZE_TYPE__ size);
 int zsys_close(int fd);
 long zsys_lseek(int fd, long offset, int whence);
 void zsys_exit(int return_code);
+void* zsys_signal(int signum, void* sighandler);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

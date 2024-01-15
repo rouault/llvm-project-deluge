@@ -1986,7 +1986,88 @@ void deluded_f_zsys_exit(DELUDED_SIGNATURE)
     PAS_ASSERT(!"Should not be reached");
 }
 
-#define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor) \
+static int from_musl_signum(int signum)
+{
+    switch (signum) {
+    case 1: return SIGHUP;
+    case 2: return SIGINT;
+    case 3: return SIGQUIT;
+    case 4: return SIGILL;
+    case 5: return SIGTRAP;
+    case 6: return SIGABRT;
+    case 7: return SIGBUS;
+    case 8: return SIGFPE;
+    case 9: return SIGKILL;
+    case 10: return SIGUSR1;
+    case 11: return SIGSEGV;
+    case 12: return SIGUSR2;
+    case 13: return SIGPIPE;
+    case 14: return SIGALRM;
+    case 15: return SIGTERM;
+    case 17: return SIGCHLD;
+    case 18: return SIGCONT;
+    case 19: return SIGSTOP;
+    case 20: return SIGTSTP;
+    case 21: return SIGTTIN;
+    case 22: return SIGTTOU;
+    case 23: return SIGURG;
+    case 24: return SIGXCPU;
+    case 25: return SIGXFSZ;
+    case 26: return SIGVTALRM;
+    case 27: return SIGPROF;
+    case 28: return SIGWINCH;
+    case 29: return SIGIO;
+    case 31: return SIGSYS;
+    default: return -1;
+    }
+}
+
+void deluded_f_zsys_signal(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_signal",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int musl_signum = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr sighandler = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    int signum = from_musl_signum(musl_signum);
+    if (signum < 0) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    DELUGE_CHECK(signum != SIGILL, &origin, "cannot override SIGILL.");
+    DELUGE_CHECK(signum != SIGTRAP, &origin, "cannot override SIGTRAP.");
+    DELUGE_CHECK(signum != SIGBUS, &origin, "cannot override SIGBUS.");
+    DELUGE_CHECK(signum != SIGSEGV, &origin, "cannot override SIGSEGV.");
+    DELUGE_CHECK(
+        sighandler.ptr == NULL || sighandler.ptr == (void*)(uintptr_t)1,
+        &origin,
+        "signal handler dan only be SIG_DFL or SIG_IGN.");
+    void* result = signal(signum, sighandler.ptr == NULL ? SIG_DFL : SIG_IGN);
+    if (result == SIG_ERR) {
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
+        set_errno(errno);
+        return;
+    }
+    if (result == SIG_DFL) {
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid(NULL);
+        return;
+    }
+    if (result == SIG_IGN) {
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(uintptr_t)1);
+        return;
+    }
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid(result);
+}
+
+#define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \
         PAS_TESTING_ASSERT(((char*)end - (char*)begin) >= (ptrdiff_t)sizeof(type)); \

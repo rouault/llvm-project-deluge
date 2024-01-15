@@ -228,6 +228,11 @@ static inline deluge_ptr deluge_ptr_forge_byte(void* ptr, const deluge_type* typ
     return result;
 }
 
+static inline deluge_ptr deluge_ptr_forge_invalid(void* ptr)
+{
+    return deluge_ptr_forge(ptr, NULL, NULL, NULL);
+}
+
 static inline deluge_ptr deluge_ptr_with_ptr(deluge_ptr ptr, void* new_ptr)
 {
     return deluge_ptr_forge(new_ptr, ptr.lower, ptr.upper, ptr.type);
@@ -556,6 +561,7 @@ void deluded_f_zsys_write(DELUDED_SIGNATURE);
 void deluded_f_zsys_close(DELUDED_SIGNATURE);
 void deluded_f_zsys_lseek(DELUDED_SIGNATURE);
 void deluded_f_zsys_exit(DELUDED_SIGNATURE);
+void deluded_f_zsys_signal(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
