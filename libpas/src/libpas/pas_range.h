@@ -118,6 +118,22 @@ static inline unsigned pas_range_hash(pas_range range)
     return pas_hash_intptr(range.begin) + 11 * pas_hash_intptr(range.end);
 }
 
+static inline pas_range pas_range_add(pas_range range, uintptr_t offset)
+{
+    pas_range result;
+    PAS_ASSERT(!pas_add_uintptr_overflow(range.begin, offset, &result.begin));
+    PAS_ASSERT(!pas_add_uintptr_overflow(range.end, offset, &result.end));
+    return result;
+}
+
+static inline pas_range pas_range_sub(pas_range range, uintptr_t offset)
+{
+    pas_range result;
+    PAS_ASSERT(!pas_sub_uintptr_overflow(range.begin, offset, &result.begin));
+    PAS_ASSERT(!pas_sub_uintptr_overflow(range.end, offset, &result.end));
+    return result;
+}
+
 PAS_END_EXTERN_C;
 
 #endif /* PAS_RANGE_H */

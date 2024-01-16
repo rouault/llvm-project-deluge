@@ -85,7 +85,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    program's execution. */
 #define zalloc_flex(struct_type, field, count) ({ \
         struct_type __d_temporary; \
-        __typeof__(__d_temporary.field) __d_trailing_temporary; \
+        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
         (struct_type*)zalloc_flex_impl( \
             &__d_temporary, __builtin_offsetof(struct_type, field), \
             &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
@@ -93,7 +93,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
 
 #define zalloc_flex_zero(struct_type, field, count) ({ \
         struct_type __d_temporary; \
-        __typeof__(__d_temporary.field) __d_trailing_temporary; \
+        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
         __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
         struct_type* __d_result = (struct_type*)zalloc_flex_impl( \
             &__d_temporary, __builtin_offsetof(struct_type, field), \
@@ -102,7 +102,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
             __builtin_memset( \
                 __d_result, 0, \
                 __builtin_offsetof(struct_type, field) \
-                + sizeof(typeof(__d_temporary.field)) * __d_count); \
+                + sizeof(__d_trailing_temporary) * __d_count); \
         } \
         __d_result; \
     })

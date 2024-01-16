@@ -359,6 +359,7 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
     deluge_deep_slice_table_add_result add_result;
     pas_allocation_config allocation_config;
     deluge_slice_table_entry new_entry;
+    uintptr_t offset_in_type;
     
     if (type == &deluge_int_type)
         return &deluge_int_type;
@@ -369,7 +370,18 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
         "cannot slice opaque types like %s.",
         deluge_type_to_new_string(type));
 
-    if (!range.begin && range.end == type->size && type->num_words)
+    if (type->u.trailing_array && range.begin >= type->size) {
+        range = pas_range_sub(range, type->size);
+        type = type->u.trailing_array;
+        if (type == &deluge_int_type)
+            return &deluge_int_type;
+    }
+    offset_in_type = range.begin % type->size;
+    PAS_ASSERT(offset_in_type == range.begin || !type->u.trailing_array);
+    PAS_ASSERT(range.begin >= offset_in_type);
+    range = pas_range_sub(range, range.begin - offset_in_type);
+
+    if (!range.begin && range.end == type->size && !type->u.trailing_array)
         return type;
     
     if ((range.begin % 8) || (range.end % 8)) {
@@ -626,6 +638,8 @@ void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
 {
     PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
     PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
+    if (count == 1)
+        return deluge_try_allocate_one(ref);
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
@@ -633,6 +647,8 @@ void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, s
 {
     PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
     PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
+    if (count == 1 && alignment <= PAS_MIN_ALIGN)
+        return deluge_try_allocate_one(ref);
     return (void*)deluge_try_allocate_many_impl_by_count(ref, count, alignment).begin;
 }
 
@@ -647,6 +663,8 @@ void* deluge_allocate_many(pas_heap_ref* ref, size_t count)
 {
     PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->num_words);
     PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
+    if (count == 1)
+        return deluge_allocate_one(ref);
     return (void*)deluge_allocate_many_impl_by_count(ref, count, 1).begin;
 }
 
