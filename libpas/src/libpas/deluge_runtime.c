@@ -9,6 +9,7 @@
 #include "deluge_hard_heap_config.h"
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
+#include "deluge_slice_table.h"
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
 #include "pas_get_allocation_size.h"
@@ -72,6 +73,7 @@ const deluge_type deluge_type_type = {
 };
 
 deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
+deluge_deep_slice_table deluge_global_slice_table = PAS_HASHTABLE_INITIALIZER;
 pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table =
     PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 
@@ -300,6 +302,128 @@ char* deluge_type_to_new_string(const deluge_type* type)
     pas_string_stream_construct(&stream, &allocation_config);
     deluge_type_dump(type, &stream.base);
     return pas_string_stream_take_string(&stream);
+}
+
+static void check_int_slice_range(const deluge_type* type, pas_range range,
+                                  const deluge_origin* origin)
+{
+    uintptr_t offset;
+    uintptr_t first_word_type_index;
+    uintptr_t last_word_type_index;
+    uintptr_t word_type_index;
+
+    offset = range.begin;
+    first_word_type_index = offset / 8;
+    last_word_type_index = (offset + pas_range_size(range) - 1) / 8;
+
+    for (word_type_index = first_word_type_index;
+         word_type_index <= last_word_type_index;
+         word_type_index++) {
+        DELUGE_CHECK(
+            deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT,
+            origin,
+            "cannot slice %zu...%zu as int, span contains non-ints (type = %s).",
+            range.begin, range.end, deluge_type_to_new_string(type));
+    }
+}
+
+/* FIXME: We could skip the overhead of doing the once thing if we just had a deluge runtime
+   initialization. */
+static pas_system_once slice_table_key_once = PAS_SYSTEM_ONCE_INIT;
+static pthread_key_t slice_table_key;
+
+void slice_table_destroy(void* value)
+{
+    deluge_slice_table* table;
+    pas_allocation_config allocation_config;
+
+    table = (deluge_slice_table*)value;
+
+    if (!table)
+        return;
+
+    initialize_utility_allocation_config(&allocation_config);
+    deluge_slice_table_destruct(table, &allocation_config);
+    deluge_deallocate(table);
+}
+
+void slice_table_init(void)
+{
+    pthread_key_create(&slice_table_key, slice_table_destroy);
+}
+
+const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, const deluge_origin* origin)
+{
+    deluge_slice_table* table;
+    deluge_slice_table_key key;
+    deluge_deep_slice_table_add_result add_result;
+    pas_allocation_config allocation_config;
+    deluge_slice_table_entry new_entry;
+    
+    if (type == &deluge_int_type)
+        return &deluge_int_type;
+
+    DELUGE_CHECK(
+        type->num_words,
+        origin,
+        "cannot slice opaque types like %s.",
+        deluge_type_to_new_string(type));
+
+    if (!range.begin && range.end == type->size && type->num_words)
+        return type;
+    
+    if ((range.begin % 8) || (range.end % 8)) {
+        check_int_slice_range(type, range, origin);
+        return &deluge_int_type;
+    }
+
+    PAS_TESTING_ASSERT(!(pas_range_size(range) % 8));
+
+    pas_system_once_run(&slice_table_key_once, slice_table_init);
+    table = pthread_getspecific(slice_table_key);
+    key.base_type = type;
+    key.range = range;
+    if (table) {
+        deluge_slice_table_entry* entry;
+        entry = deluge_slice_table_find(table, key);
+        if (entry)
+            return entry->result_type;
+    } else {
+        table = deluge_allocate_utility(sizeof(deluge_slice_table));
+        pthread_setspecific(slice_table_key, table);
+    }
+
+    initialize_utility_allocation_config(&allocation_config);
+    
+    deluge_type_lock_lock();
+    add_result = deluge_deep_slice_table_add(&deluge_global_slice_table, key, NULL, &allocation_config);
+    if (add_result.is_new_entry) {
+        deluge_type* result_type;
+        size_t index;
+
+        result_type = (deluge_type*)deluge_allocate_utility(
+            PAS_OFFSETOF(deluge_type, word_types) + sizeof(deluge_word_type) * pas_range_size(range) / 8);
+        result_type->size = pas_range_size(range);
+        result_type->alignment = type->alignment;
+        while (!pas_is_aligned(range.begin, result_type->alignment) ||
+               !pas_is_aligned(range.end, result_type->alignment) ||
+               !pas_is_aligned(pas_range_size(range), result_type->alignment))
+            result_type->alignment /= 2;
+        PAS_ASSERT(result_type->alignment >= 8);
+        result_type->num_words = pas_range_size(range) / 8;
+        for (index = pas_range_size(range) / 8; index--;)
+            result_type->word_types[index] = deluge_type_get_word_type(type, index + range.begin / 8);
+        
+        add_result.entry->key = key;
+        add_result.entry->result_type = result_type;
+    }
+    deluge_type_lock_unlock();
+
+    new_entry.key = key;
+    new_entry.result_type = add_result.entry->result_type;
+    deluge_slice_table_add_new(table, new_entry, NULL, &allocation_config);
+
+    return new_entry.result_type;
 }
 
 static pas_heap_ref* get_heap_impl(const deluge_type* type)
@@ -596,20 +720,23 @@ void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
         .line = 0,
         .column = 0
     };
-    DELUGE_ASSERT(type->num_words, &origin);
-    DELUGE_ASSERT(!type->u.trailing_array, &origin);
     if (type == &deluge_int_type)
         return deluge_try_allocate_int(size, 1);
+    DELUGE_CHECK(
+        type->num_words,
+        &origin,
+        "cannot allocate instance of opaque type (type = %s).",
+        deluge_type_to_new_string(type));
+    DELUGE_CHECK(
+        !type->u.trailing_array,
+        &origin,
+        "cannot reflectively allocate instance of type with trailing array (type = %s).",
+        deluge_type_to_new_string(type));
     DELUGE_CHECK(
         !(size % type->size),
         &origin,
         "cannot allocate %zu bytes of type %s (have %zu remainder).",
         size, deluge_type_to_new_string(type), size % type->size);
-    DELUGE_CHECK(
-        type != &deluge_function_type && type != &deluge_type_type,
-        &origin,
-        "cannot allocate special type %s.",
-        deluge_type_to_new_string(type));
     return deluge_try_allocate_many(deluge_get_heap(type), size / type->size);
 }
 
@@ -696,10 +823,41 @@ void deluded_f_zfree(DELUDED_SIGNATURE)
         .column = 0
     };
     deluge_ptr args = DELUDED_ARGS;
-    /* FIXME: Could do a bounds check here, or any kind of check, but that would break the case
-       where a zero-sized object was allocated. */
-    deluge_deallocate(deluge_ptr_get_next_ptr(&args, &origin).ptr);
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
+
+    /* These checks aren't necessary to protect the allocator, which will already rule out
+       pointers that don't belong to it. But, they are necessary to prevent the following:
+       
+       - Attempts to free deluge_types.
+       
+       - Attempts to free other opaque types, which may be allocated in our heap, and which
+         may or may not take kindly to being freed without first doing other things or
+         performing other checks.
+       
+       - Attempts to free someone else's object by doing pointer arithmetic or dreaming up
+         a pointer with an inttoptr cast. */
+    DELUGE_CHECK(
+        ptr.ptr == ptr.lower,
+        &origin,
+        "attempt to free a pointer with ptr != lower (ptr = %p,%p,%p,%s).",
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+    
+    if (!ptr.ptr)
+        return;
+    
+    DELUGE_CHECK(
+        ptr.type,
+        &origin,
+        "attempt to free nonnull pointer with invalid type (ptr = %p,%p,%p,%s).",
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+    DELUGE_CHECK(
+        ptr.type->num_words,
+        &origin,
+        "attempt to free nonnull pointer to opaque type (ptr = %p,%p,%p,%s).",
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+    
+    deluge_deallocate(ptr.ptr);
 }
 
 void deluded_f_zgetallocsize(DELUDED_SIGNATURE)
@@ -817,6 +975,22 @@ void deluded_f_zhard_free(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
+
+    DELUGE_CHECK(
+        ptr.ptr == ptr.lower,
+        &origin,
+        "attempt to hard free a pointer with ptr != lower (ptr = %p,%p,%p,%s).",
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+
+    if (!ptr.ptr)
+        return;
+
+    DELUGE_CHECK(
+        ptr.type == &deluge_int_type,
+        &origin,
+        "attempt to hard free a non-int pointer (ptr = %p,%p,%p,%s).",
+        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+    
     deluge_hard_deallocate(ptr.ptr);
 }
 
@@ -881,7 +1055,28 @@ void deluded_f_zgettype(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge((void*)ptr.type, (void*)ptr.type, (char*)ptr.type + 1, &deluge_type_type);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)ptr.type, &deluge_type_type);
+}
+
+void deluded_f_zslicetype(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zslicetype",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr type_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t begin = deluge_ptr_get_next_size_t(&args, &origin);
+    size_t end = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
+    const deluge_type* result = deluge_type_slice(
+        (const deluge_type*)type_ptr.ptr, pas_range_create(begin, end), &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
 }
 
 void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
@@ -992,6 +1187,53 @@ static void check_access_common(void* ptr, void* lower, void* upper, const delug
         origin,
         "cannot access %zu bytes, span has opaque type (ptr = %p,%p,%p,%s).\n",
         bytes, ptr, lower, upper, deluge_type_to_new_string(type));
+}
+
+void deluded_f_zgettypeslice(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zgettypeslice",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t bytes = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    check_access_common(ptr.ptr, ptr.lower, ptr.upper, ptr.type, bytes, &origin);
+    uintptr_t offset = (char*)ptr.ptr - (char*)ptr.lower;
+    const deluge_type* result = deluge_type_slice(
+        (const deluge_type*)ptr.type, pas_range_create(offset, offset + bytes), &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
+}
+
+void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zalloc_with_type",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr type_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t count = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
+    size_t total_size;
+    const deluge_type* type = (const deluge_type*)type_ptr.ptr;
+    if (pas_mul_uintptr_overflow(count, type->size, &total_size)) {
+        set_errno(ENOMEM);
+        return;
+    }
+    void* result = deluge_try_allocate_with_type((const deluge_type*)type_ptr.ptr, total_size);
+    if (result)
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + total_size, type);
 }
 
 static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,

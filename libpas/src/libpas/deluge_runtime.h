@@ -10,6 +10,7 @@
 #include "pas_heap_ref.h"
 #include "pas_lock.h"
 #include "pas_lock_free_read_ptr_ptr_hashtable.h"
+#include "pas_range.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -303,6 +304,9 @@ PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
 PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
 char* deluge_type_to_new_string(const deluge_type* type);
 
+PAS_API const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range,
+                                             const deluge_origin* origin);
+
 /* This is basically va_arg, but it doesn't check that the type matches. That's fine if the consumer
    of the pointer is code compiled by Deluge, since that will check on every access. That's not fine if
    the consumer is someone writing legacy C code against some Deluge flight API. */
@@ -379,6 +383,10 @@ void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE);
 void deluded_f_zgetlower(DELUDED_SIGNATURE);
 void deluded_f_zgetupper(DELUDED_SIGNATURE);
 void deluded_f_zgettype(DELUDED_SIGNATURE);
+
+void deluded_f_zslicetype(DELUDED_SIGNATURE);
+void deluded_f_zgettypeslice(DELUDED_SIGNATURE);
+void deluded_f_zalloc_with_type(DELUDED_SIGNATURE);
 
 void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                                   uintptr_t bytes, const deluge_origin* origin);

@@ -163,10 +163,29 @@ void* zhard_alloc(__SIZE_TYPE__ size);
 void zhard_free(void* ptr);
 __SIZE_TYPE__ zhard_getallocsize(void* ptr);
 
-/* Accessors for the bounds. */
+/* Accessors for the bounds and type. */
 void* zgetlower(void* ptr);
 void* zgetupper(void* ptr);
 ztype* zgettype(void* ptr);
+
+/* Given a type and a range, returns a type that describes that range. Note that it's valid to ask
+   for a range bigger than the type. It's also valid for this to return a type whose size is smaller
+   than the range, if we can optimize repetitions (for example, InP1P2P3P4 is the same as
+   InP1P2P3P4InP1P2P3P4, so the algorithm could return either, unless the range is too small for
+   InP1P2P3P4InP1P2P3P4). That said, don't expect that this function will definitely do any such
+   optimizations. In particular, if the range is large, then this might (try to) allocate a
+   ginormous type. Since this never returns NULL, failure in those allocations gives you the
+   ultimate security mitigation (i.e. it kills the shit out of your program). */
+ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
+
+/* Gets a type that describes the first bytes of memory starting at where ptr points.
+ 
+   Note that you could implement this using zgetlower, zgetupper, zgettype, and zslicetype, but it
+   would be gross. That's what happens behind the scenes, more or less. */
+ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
+
+/* Allocate an array of count repetitions of the given type, which is given dynamically. */
+void* zalloc_with_type(ztype* type, __SIZE_TYPE__ count);
 
 /* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap

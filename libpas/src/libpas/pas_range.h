@@ -108,6 +108,16 @@ static inline int pas_range_compare(pas_range left, pas_range right)
     return 1;
 }
 
+static inline bool pas_range_is_equal(pas_range left, pas_range right)
+{
+    return left.begin == right.begin && left.end == right.end;
+}
+
+static inline unsigned pas_range_hash(pas_range range)
+{
+    return pas_hash_intptr(range.begin) + 11 * pas_hash_intptr(range.end);
+}
+
 PAS_END_EXTERN_C;
 
 #endif /* PAS_RANGE_H */
