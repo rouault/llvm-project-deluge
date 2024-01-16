@@ -21,14 +21,14 @@ int main(int argc, char** argv)
     unsigned* a = zalloc_zero(unsigned, 100);
 
     ztype* ft = zgettype(f);
-    struct foo* f2 = zalloc_with_type(ft, 1);
+    struct foo* f2 = zalloc_with_type(ft, sizeof(struct foo));
     __builtin_memcpy(f2, f + 10, sizeof(struct foo));
 
     ztype* ft2 = zgettypeslice(f + 5, sizeof(struct foo));
     ZASSERT(ft2 == ft);
 
     ztype* ft3 = zgettypeslice((char*)f + 8, sizeof(struct foo) - 8);
-    void* thingy = zalloc_with_type(ft3, 1);
+    void* thingy = zalloc_with_type(ft3, sizeof(struct foo) - 8);
     __builtin_memcpy(thingy, (char*)(f + 30) + 8, sizeof(struct foo) - 8);
 
     zprintf("Spoko\n");

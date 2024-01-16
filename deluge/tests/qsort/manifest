@@ -1,0 +1,5 @@
+return:
+  success
+output-includes:
+  - "Before sorting the list is: 88 56 100 2 25"
+  - "After sorting the list is: 2 25 56 88 100"

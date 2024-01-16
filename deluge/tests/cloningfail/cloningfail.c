@@ -21,7 +21,7 @@ int main(int argc, char** argv)
     unsigned* a = zalloc_zero(unsigned, 100);
 
     ztype* ft = zgettype(f);
-    struct foo* f2 = zalloc_with_type(ft, 1);
+    struct foo* f2 = zalloc_with_type(ft, sizeof(struct foo));
 
     zprintf("Spoko\n");
     

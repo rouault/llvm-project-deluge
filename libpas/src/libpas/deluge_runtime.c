@@ -1239,19 +1239,14 @@ void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
     deluge_ptr type_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    size_t count = deluge_ptr_get_next_size_t(&args, &origin);
+    size_t size = deluge_ptr_get_next_size_t(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
     deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
-    size_t total_size;
     const deluge_type* type = (const deluge_type*)type_ptr.ptr;
-    if (pas_mul_uintptr_overflow(count, type->size, &total_size)) {
-        set_errno(ENOMEM);
-        return;
-    }
-    void* result = deluge_try_allocate_with_type((const deluge_type*)type_ptr.ptr, total_size);
+    void* result = deluge_try_allocate_with_type(type, size);
     if (result)
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + total_size, type);
+        *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + size, type);
 }
 
 static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,

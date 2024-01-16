@@ -184,8 +184,9 @@ ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
    would be gross. That's what happens behind the scenes, more or less. */
 ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
 
-/* Allocate an array of count repetitions of the given type, which is given dynamically. */
-void* zalloc_with_type(ztype* type, __SIZE_TYPE__ count);
+/* Allocate a bytes-size array of the given type, which is given dynamically. The size must be a
+   multiple of the type's size. */
+void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
 /* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
