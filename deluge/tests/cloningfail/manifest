@@ -1,0 +1,9 @@
+return:
+  failure
+output-excludes:
+  - Kurza melodia
+output-includes:
+  - Spoko
+  - deluge panic
+  - cannot access 80 bytes as int, span contains non-ints
+
