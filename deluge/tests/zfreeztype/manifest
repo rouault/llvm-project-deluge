@@ -1,0 +1,8 @@
+return:
+  failure
+output-excludes:
+  Nie dobrze
+output-includes:
+  - deluge panic
+  - Spoko
+  - attempt to free nonnull pointer to opaque type
