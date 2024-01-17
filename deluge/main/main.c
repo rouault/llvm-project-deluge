@@ -69,9 +69,9 @@ int main(int argc, char** argv)
 
     PAS_ASSERT(argc >= 1);
 
-    deluded_argv.ptr = deluge_allocate_many(deluge_get_heap(&deluge_ptr_type), argc);
+    deluded_argv.ptr = deluge_allocate_many(deluge_get_heap(&deluge_ptr_type), argc + 1);
     deluded_argv.lower = deluded_argv.ptr;
-    deluded_argv.upper = (deluge_ptr*)deluded_argv.ptr + argc;
+    deluded_argv.upper = (deluge_ptr*)deluded_argv.ptr + argc + 1;
     deluded_argv.type = &deluge_ptr_type;
 
     for (index = 0; index < argc; ++index) {
@@ -83,6 +83,8 @@ int main(int argc, char** argv)
         arg_ptr->type = &deluge_int_type;
         memcpy(arg_ptr->ptr, argv[index], size);
     }
+
+    ((deluge_ptr*)deluded_argv.ptr)[argc] = deluge_ptr_forge_invalid(NULL);
 
     for (environ_size = 0; environ[environ_size]; ++environ_size);
     environ_size++;
