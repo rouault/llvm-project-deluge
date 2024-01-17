@@ -20,7 +20,7 @@ const pas_heap_config deluge_hard_heap_config = DELUGE_HARD_HEAP_CONFIG;
 pas_page_header_table deluge_hard_page_header_table =
     PAS_PAGE_HEADER_TABLE_INITIALIZER(PAS_SMALL_PAGE_DEFAULT_SIZE);
 
-pas_heap_runtime_config deluge_hard_runtime_config = {
+pas_heap_runtime_config deluge_hard_int_runtime_config = {
     .sharing_mode = pas_share_pages,
     .statically_allocated = true,
     .is_part_of_heap = true,
@@ -30,12 +30,45 @@ pas_heap_runtime_config deluge_hard_runtime_config = {
     .directory_size_bound_for_no_view_cache = 0,
     .max_segregated_object_size = 0,
     .max_bitfit_object_size = UINT_MAX,
-    .view_cache_capacity_for_object_size = pas_heap_runtime_config_aggressive_view_cache_capacity,
+    .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
     .initialize_fresh_memory = NULL
 };
 
+pas_heap_runtime_config deluge_hard_typed_runtime_config = {
+    .sharing_mode = pas_share_pages,
+    .statically_allocated = false,
+    .is_part_of_heap = true,
+    .is_flex = false,
+    .directory_size_bound_for_partial_views = PAS_TYPED_BOUND_FOR_PARTIAL_VIEWS,
+    .directory_size_bound_for_baseline_allocators = 0,
+    .directory_size_bound_for_no_view_cache = 0,
+    .max_segregated_object_size = UINT_MAX,
+    .max_bitfit_object_size = 0,
+    .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
+    .initialize_fresh_memory = NULL
+};
+
+pas_heap_runtime_config deluge_hard_flex_runtime_config = {
+    .sharing_mode = pas_share_pages,
+    .statically_allocated = false,
+    .is_part_of_heap = true,
+    .is_flex = true,
+    .directory_size_bound_for_partial_views = PAS_FLEX_BOUND_FOR_PARTIAL_VIEWS,
+    .directory_size_bound_for_baseline_allocators = 0,
+    .directory_size_bound_for_no_view_cache = 0,
+    .max_segregated_object_size = UINT_MAX,
+    .max_bitfit_object_size = 0,
+    .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
+    .initialize_fresh_memory = NULL
+};
+
+pas_segregated_shared_page_directory deluge_hard_shared_page_directory =
+    PAS_SEGREGATED_SHARED_PAGE_DIRECTORY_INITIALIZER(
+        DELUGE_HARD_HEAP_CONFIG.small_segregated_config, pas_share_pages, NULL);
+
 deluge_hard_heap_config_root_data deluge_hard_root_data = {
-    .small_page_header_table = &deluge_hard_page_header_table
+    .small_page_header_table = &deluge_hard_page_header_table,
+    .shared_directory = &deluge_hard_shared_page_directory
 };
 
 void deluge_hard_heap_config_activate(void)
@@ -43,24 +76,18 @@ void deluge_hard_heap_config_activate(void)
     pas_heap_config_activate(&deluge_heap_config);
 }
 
-void deluge_hard_type_dump(const pas_heap_type* type, pas_stream* stream)
-{
-    PAS_ASSERT(!type);
-    pas_stream_printf(stream, "DelugeHard");
-}
-
 pas_page_base* deluge_hard_page_header_for_boundary_remote(pas_enumerator* enumerator,
                                                            void* boundary)
 {
-    pas_basic_heap_config_enumerator_data* data;
-    data = (pas_basic_heap_config_enumerator_data*)
+    deluge_hard_heap_config_enumerator_data* data;
+    data = (deluge_hard_heap_config_enumerator_data*)
         enumerator->heap_config_datas[pas_heap_config_kind_deluge_hard];
     PAS_ASSERT(data);
 
     return (pas_page_base*)pas_ptr_hash_map_get(&data->page_header_table, boundary).value;
 }
 
-void* deluge_hard_allocate_page(pas_segregated_heap* heap, pas_physical_memory_transaction* transaction)
+static void* allocate_page(pas_segregated_heap* heap, pas_physical_memory_transaction* transaction)
 {
     pas_allocation_result result;
     bool lock_result;
@@ -90,7 +117,38 @@ void* deluge_hard_allocate_page(pas_segregated_heap* heap, pas_physical_memory_t
     return (void*)(result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE);
 }
 
-pas_page_base* deluge_hard_create_page_header(
+void* deluge_hard_segregated_allocate_page(
+    pas_segregated_heap* heap, pas_physical_memory_transaction* transaction, pas_segregated_page_role role)
+{
+    PAS_UNUSED_PARAM(role);
+    return allocate_page(heap, transaction);
+}
+
+void* deluge_hard_bitfit_allocate_page(
+    pas_segregated_heap* heap, pas_physical_memory_transaction* transaction)
+{
+    return allocate_page(heap, transaction);
+}
+
+pas_page_base* deluge_hard_segregated_create_page_header(
+    void* boundary, pas_page_kind kind, pas_lock_hold_mode heap_lock_hold_mode)
+{
+    pas_page_base* result;
+    PAS_ASSERT(kind == pas_small_shared_segregated_page_kind
+               || kind == pas_small_exclusive_segregated_page_kind);
+    pas_heap_lock_lock_conditionally(heap_lock_hold_mode);
+    result = pas_page_header_table_add(
+        &deluge_hard_page_header_table,
+        PAS_SMALL_PAGE_DEFAULT_SIZE,
+        pas_segregated_page_header_size(
+            DELUGE_HARD_HEAP_CONFIG.small_segregated_config,
+            pas_page_kind_get_segregated_role(kind)),
+        boundary);
+    pas_heap_lock_unlock_conditionally(heap_lock_hold_mode);
+    return result;
+}
+
+pas_page_base* deluge_hard_bitfit_create_page_header(
     void* boundary, pas_page_kind kind, pas_lock_hold_mode heap_lock_hold_mode)
 {
     pas_page_base* result;
@@ -112,6 +170,14 @@ void deluge_hard_destroy_page_header(pas_page_base* page, pas_lock_hold_mode hea
                                  PAS_SMALL_PAGE_DEFAULT_SIZE,
                                  page);
     pas_heap_lock_unlock_conditionally(heap_lock_hold_mode);
+}
+
+pas_segregated_shared_page_directory* deluge_hard_shared_page_directory_selector(
+    pas_segregated_heap* heap, pas_segregated_size_directory* directory)
+{
+    PAS_UNUSED_PARAM(heap);
+    PAS_UNUSED_PARAM(directory);
+    return &deluge_hard_shared_page_directory;
 }
 
 pas_aligned_allocation_result deluge_hard_aligned_allocator(
@@ -173,7 +239,7 @@ pas_aligned_allocation_result deluge_hard_aligned_allocator(
 
 void* deluge_hard_prepare_to_enumerate(pas_enumerator* enumerator)
 {
-    pas_basic_heap_config_enumerator_data* result;
+    deluge_hard_heap_config_enumerator_data* result;
     const pas_heap_config** configs;
     const pas_heap_config* config;
     deluge_hard_heap_config_root_data* root_data;
@@ -194,16 +260,21 @@ void* deluge_hard_prepare_to_enumerate(pas_enumerator* enumerator)
     if (!root_data)
         return NULL;
 
-    result = (pas_basic_heap_config_enumerator_data*)pas_enumerator_allocate(
-        enumerator, sizeof(pas_basic_heap_config_enumerator_data));
+    result = (deluge_hard_heap_config_enumerator_data*)pas_enumerator_allocate(
+        enumerator, sizeof(deluge_hard_heap_config_enumerator_data));
     
     pas_ptr_hash_map_construct(&result->page_header_table);
 
-    if (!pas_basic_heap_config_enumerator_data_add_page_header_table(
-            result,
+    if (!pas_add_remote_page_header_table_for_enumeration(
+            &result->page_header_table,
             enumerator,
             (pas_page_header_table*)pas_enumerator_read(
                 enumerator, root_data->small_page_header_table, sizeof(pas_page_header_table))))
+        return NULL;
+
+    result->shared_directory = pas_enumerator_read(
+        enumerator, root_data->shared_directory, sizeof(pas_segregated_shared_page_directory));
+    if (!result->shared_directory)
         return NULL;
     
     return result;
@@ -216,9 +287,7 @@ bool deluge_hard_for_each_shared_page_directory(
     void* arg)
 {
     PAS_UNUSED_PARAM(heap);
-    PAS_UNUSED_PARAM(callback);
-    PAS_UNUSED_PARAM(arg);
-    return true;
+    return callback(&deluge_hard_shared_page_directory, arg);
 }
 
 bool deluge_hard_for_each_shared_page_directory_remote(
@@ -229,23 +298,29 @@ bool deluge_hard_for_each_shared_page_directory_remote(
                      void* arg),
     void* arg)
 {
-    PAS_UNUSED_PARAM(enumerator);
+    deluge_hard_heap_config_enumerator_data* data;
+
     PAS_UNUSED_PARAM(heap);
-    PAS_UNUSED_PARAM(callback);
-    PAS_UNUSED_PARAM(arg);
-    return true;
+
+    data = (deluge_hard_heap_config_enumerator_data*)
+        enumerator->heap_config_datas[pas_heap_config_kind_deluge_hard];
+    PAS_ASSERT(data);
+    
+    return callback(enumerator, data->shared_directory, arg);
 }
 
 void deluge_hard_dump_shared_page_directory_arg(
     pas_stream* stream, pas_segregated_shared_page_directory* directory)
 {
-    PAS_UNUSED_PARAM(stream);
-    PAS_UNUSED_PARAM(directory);
-    PAS_ASSERT(!"Should not be reached");
+    PAS_ASSERT(!directory->dump_arg);
+    PAS_ASSERT(directory == &deluge_hard_shared_page_directory);
+    pas_stream_printf(stream, "default");
 }
 
+PAS_SEGREGATED_PAGE_CONFIG_SPECIALIZATION_DEFINITIONS(
+    deluge_hard_segregated_config, DELUGE_HARD_HEAP_CONFIG.small_segregated_config);
 PAS_BITFIT_PAGE_CONFIG_SPECIALIZATION_DEFINITIONS(
-    deluge_hard_page_config, DELUGE_HARD_HEAP_CONFIG.small_bitfit_config);
+    deluge_hard_bitfit_config, DELUGE_HARD_HEAP_CONFIG.small_bitfit_config);
 PAS_HEAP_CONFIG_SPECIALIZATION_DEFINITIONS(
     deluge_hard_heap_config, DELUGE_HARD_HEAP_CONFIG);
 

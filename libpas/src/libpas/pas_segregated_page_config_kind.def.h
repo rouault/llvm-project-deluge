@@ -135,5 +135,8 @@ PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_small_segregated,
                                        DELUGE_HEAP_CONFIG.small_segregated_config)
 PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_medium_segregated,
                                        DELUGE_HEAP_CONFIG.medium_segregated_config)
+
+PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_hard_segregated,
+                                       DELUGE_HARD_HEAP_CONFIG.small_segregated_config)
 #endif
 

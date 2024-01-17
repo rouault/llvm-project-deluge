@@ -7,47 +7,50 @@
 
 #include "pas_bitfit_max_free.h"
 #include "pas_heap_config_utils.h"
+#include "pas_ptr_hash_map.h"
 
 PAS_BEGIN_EXTERN_C;
 
+struct deluge_hard_heap_config_enumerator_data;
 struct deluge_hard_heap_config_root_data;
 struct pas_page_header_table;
+typedef struct deluge_hard_heap_config_enumerator_data deluge_hard_heap_config_enumerator_data;
 typedef struct deluge_hard_heap_config_root_data deluge_hard_heap_config_root_data;
 typedef struct pas_page_header_table pas_page_header_table;
 
 struct deluge_hard_heap_config_root_data {
     pas_page_header_table* small_page_header_table;
+    pas_segregated_shared_page_directory* shared_directory;
+};
+
+struct deluge_hard_heap_config_enumerator_data {
+    pas_ptr_hash_map page_header_table;
+    pas_segregated_shared_page_directory* shared_directory;
 };
 
 PAS_API void deluge_hard_heap_config_activate(void);
-
-static PAS_ALWAYS_INLINE size_t deluge_hard_type_size(const pas_heap_type* type)
-{
-    PAS_ASSERT(!type);
-    return 1;
-}
-
-static PAS_ALWAYS_INLINE size_t deluge_hard_type_alignment(const pas_heap_type* type)
-{
-    PAS_ASSERT(!type);
-    return 1;
-}
-
-PAS_API void deluge_hard_type_dump(const pas_heap_type* type, pas_stream* stream);
 
 PAS_API pas_page_base* deluge_hard_page_header_for_boundary_remote(pas_enumerator* enumerator,
                                                                    void* boundary);
 
 static PAS_ALWAYS_INLINE pas_page_base* deluge_hard_page_header_for_boundary(void* boundary);
 static PAS_ALWAYS_INLINE void* deluge_hard_boundary_for_page_header(pas_page_base* page);
-PAS_API void* deluge_hard_allocate_page(
+PAS_API void* deluge_hard_segregated_allocate_page(
+    pas_segregated_heap* heap, pas_physical_memory_transaction* transaction,
+    pas_segregated_page_role role);
+PAS_API void* deluge_hard_bitfit_allocate_page(
     pas_segregated_heap* heap, pas_physical_memory_transaction* transaction);
-PAS_API pas_page_base* deluge_hard_create_page_header(
+PAS_API pas_page_base* deluge_hard_segregated_create_page_header(
+    void* boundary, pas_page_kind kind, pas_lock_hold_mode heap_lock_hold_mode);
+PAS_API pas_page_base* deluge_hard_bitfit_create_page_header(
     void* boundary, pas_page_kind kind, pas_lock_hold_mode heap_lock_hold_mode);
 PAS_API void deluge_hard_destroy_page_header(
     pas_page_base* page, pas_lock_hold_mode heap_lock_hold_mode);
+PAS_API pas_segregated_shared_page_directory* deluge_hard_shared_page_directory_selector(
+    pas_segregated_heap* heap, pas_segregated_size_directory* directory);
 
-PAS_BITFIT_PAGE_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_page_config);
+PAS_SEGREGATED_PAGE_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_segregated_config);
+PAS_BITFIT_PAGE_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_bitfit_config);
 
 static PAS_ALWAYS_INLINE pas_fast_megapage_kind deluge_hard_fast_megapage_kind(uintptr_t begin)
 {
@@ -80,15 +83,48 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_heap_config);
         .config_ptr = &deluge_hard_heap_config, \
         .kind = pas_heap_config_kind_deluge_hard, \
         .activate_callback = deluge_hard_heap_config_activate, \
-        .get_type_size = deluge_hard_type_size, \
-        .get_type_alignment = deluge_hard_type_alignment, \
-        .dump_type = deluge_hard_type_dump, \
-        .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
+        .get_type_size = deluge_type_as_heap_type_get_type_size, \
+        .get_type_alignment = deluge_type_as_heap_type_get_type_alignment, \
+        .dump_type = deluge_type_as_heap_type_dump, \
+        .get_type_runtime_config = deluge_type_as_heap_type_assert_default_runtime_config, \
         .large_alignment = PAS_MIN_ALIGN, \
         .small_segregated_config = { \
             .base = { \
-                .is_enabled = false \
-            } \
+                .is_enabled = true, \
+                .heap_config_ptr = &deluge_hard_heap_config, \
+                .page_config_ptr = &deluge_hard_heap_config.small_segregated_config.base, \
+                .page_config_kind = pas_page_config_kind_segregated, \
+                .min_align_shift = PAS_MIN_ALIGN_SHIFT, \
+                .page_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
+                .granule_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
+                .non_committable_granule_bitvector = NULL, \
+                .max_object_size = PAS_MAX_OBJECT_SIZE(PAS_SMALL_PAGE_DEFAULT_SIZE), \
+                .page_header_for_boundary = deluge_hard_page_header_for_boundary, \
+                .boundary_for_page_header = deluge_hard_boundary_for_page_header, \
+                .page_header_for_boundary_remote = deluge_hard_page_header_for_boundary_remote, \
+                .create_page_header = deluge_hard_segregated_create_page_header, \
+                .destroy_page_header = deluge_hard_destroy_page_header, \
+            }, \
+            .variant = pas_small_segregated_page_config_variant, \
+            .kind = pas_segregated_page_config_kind_deluge_hard_segregated, \
+            .wasteage_handicap = 1., \
+            .sharing_shift = PAS_SMALL_SHARING_SHIFT, \
+            .num_alloc_bits = PAS_BASIC_SEGREGATED_NUM_ALLOC_BITS( \
+                PAS_MIN_ALIGN_SHIFT, PAS_SMALL_PAGE_DEFAULT_SIZE), \
+            .shared_payload_offset = 0, \
+            .exclusive_payload_offset = 0, \
+            .shared_payload_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
+            .exclusive_payload_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
+            .shared_logging_mode = pas_segregated_deallocation_no_logging_mode, \
+            .exclusive_logging_mode = pas_segregated_deallocation_no_logging_mode, \
+            .use_reversed_current_word = PAS_ARM64, \
+            .check_deallocation = true, \
+            .enable_empty_word_eligibility_optimization_for_shared = false, \
+            .enable_empty_word_eligibility_optimization_for_exclusive = false, \
+            .enable_view_cache = false, \
+            .page_allocator = deluge_hard_segregated_allocate_page, \
+            .shared_page_directory_selector = deluge_hard_shared_page_directory_selector, \
+            PAS_SEGREGATED_PAGE_CONFIG_SPECIALIZATIONS(deluge_hard_segregated_config) \
         }, \
         .medium_segregated_config = { \
             .base = { \
@@ -104,20 +140,21 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_heap_config);
                 .min_align_shift = PAS_MIN_ALIGN_SHIFT, \
                 .page_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
                 .granule_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
+                .non_committable_granule_bitvector = NULL, \
                 .max_object_size = \
                     PAS_BITFIT_MAX_FREE_MAX_VALID << PAS_MIN_ALIGN_SHIFT, \
                 .page_header_for_boundary = deluge_hard_page_header_for_boundary, \
                 .boundary_for_page_header = deluge_hard_boundary_for_page_header, \
                 .page_header_for_boundary_remote = deluge_hard_page_header_for_boundary_remote, \
-                .create_page_header = deluge_hard_create_page_header, \
+                .create_page_header = deluge_hard_bitfit_create_page_header, \
                 .destroy_page_header = deluge_hard_destroy_page_header, \
             }, \
             .variant = pas_small_bitfit_page_config_variant, \
             .kind = pas_bitfit_page_config_kind_deluge_hard_bitfit, \
             .page_object_payload_offset = 0, \
             .page_object_payload_size = PAS_SMALL_PAGE_DEFAULT_SIZE, \
-            .page_allocator = deluge_hard_allocate_page, \
-            PAS_BITFIT_PAGE_CONFIG_SPECIALIZATIONS(deluge_hard_page_config), \
+            .page_allocator = deluge_hard_bitfit_allocate_page, \
+            PAS_BITFIT_PAGE_CONFIG_SPECIALIZATIONS(deluge_hard_bitfit_config), \
         }, \
         .medium_bitfit_config = { \
             .base = { \
@@ -149,7 +186,10 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(deluge_hard_heap_config);
 PAS_API extern const pas_heap_config deluge_hard_heap_config;
 
 PAS_API extern pas_page_header_table deluge_hard_page_header_table;
-PAS_API extern pas_heap_runtime_config deluge_hard_runtime_config;
+PAS_API extern pas_heap_runtime_config deluge_hard_int_runtime_config;
+PAS_API extern pas_heap_runtime_config deluge_hard_typed_runtime_config;
+PAS_API extern pas_heap_runtime_config deluge_hard_flex_runtime_config;
+PAS_API extern pas_segregated_shared_page_directory deluge_hard_shared_page_directory;
 PAS_API extern deluge_hard_heap_config_root_data deluge_hard_root_data;
 
 static PAS_ALWAYS_INLINE pas_page_base* deluge_hard_page_header_for_boundary(void* boundary)

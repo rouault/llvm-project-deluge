@@ -297,6 +297,8 @@ static inline size_t deluge_type_as_heap_type_get_type_alignment(const pas_heap_
 
 PAS_API pas_heap_runtime_config* deluge_type_as_heap_type_get_runtime_config(
     const pas_heap_type* type, pas_heap_runtime_config* config);
+PAS_API pas_heap_runtime_config* deluge_type_as_heap_type_assert_default_runtime_config(
+    const pas_heap_type* type, pas_heap_runtime_config* config);
 
 PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
 

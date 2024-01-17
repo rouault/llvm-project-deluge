@@ -289,6 +289,14 @@ pas_heap_runtime_config* deluge_type_as_heap_type_get_runtime_config(
     return config;
 }
 
+pas_heap_runtime_config* deluge_type_as_heap_type_assert_default_runtime_config(
+    const pas_heap_type* heap_type, pas_heap_runtime_config* config)
+{
+    const deluge_type* type = (const deluge_type*)heap_type;
+    PAS_ASSERT(!(!type->num_words && type->u.runtime_config));
+    return config;
+}
+
 void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream)
 {
     deluge_type_dump((const deluge_type*)type, stream);
@@ -925,15 +933,15 @@ pas_intrinsic_heap_support deluge_hard_heap_support =
 pas_heap deluge_hard_heap =
     PAS_INTRINSIC_HEAP_INITIALIZER(
         &deluge_hard_heap,
-        NULL,
+        &deluge_int_type,
         deluge_hard_heap_support,
         DELUGE_HARD_HEAP_CONFIG,
-        &deluge_hard_runtime_config);
+        &deluge_hard_int_runtime_config);
 
 PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
     deluge_try_hard_allocate_impl,
     DELUGE_HARD_HEAP_CONFIG,
-    &deluge_hard_runtime_config,
+    &deluge_hard_int_runtime_config,
     &deluge_allocator_counts,
     allocation_result_set_errno,
     &deluge_hard_heap,

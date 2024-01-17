@@ -41,6 +41,11 @@ struct pas_basic_heap_config_enumerator_data {
     pas_ptr_hash_map page_header_table;
 };
 
+PAS_API bool pas_add_remote_page_header_table_for_enumeration(
+    pas_ptr_hash_map* local_page_header_table,
+    pas_enumerator* enumerator,
+    pas_page_header_table* page_header_table);
+
 PAS_API bool pas_basic_heap_config_enumerator_data_add_page_header_table(
     pas_basic_heap_config_enumerator_data* data,
     pas_enumerator* enumerator,

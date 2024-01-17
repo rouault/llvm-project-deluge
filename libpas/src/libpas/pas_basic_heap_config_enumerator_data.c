@@ -31,8 +31,8 @@
 
 #include "pas_page_header_table.h"
 
-bool pas_basic_heap_config_enumerator_data_add_page_header_table(
-    pas_basic_heap_config_enumerator_data* data,
+bool pas_add_remote_page_header_table_for_enumeration(
+    pas_ptr_hash_map* local_page_header_table,
     pas_enumerator* enumerator,
     pas_page_header_table* page_header_table)
 {
@@ -79,10 +79,19 @@ bool pas_basic_heap_config_enumerator_data_add_page_header_table(
         entry.value = (void*)pas_pair_high(*pair);
         
         pas_ptr_hash_map_add_new(
-            &data->page_header_table, entry, NULL, &enumerator->allocation_config);
+            local_page_header_table, entry, NULL, &enumerator->allocation_config);
     }
     
     return true;
+}
+
+bool pas_basic_heap_config_enumerator_data_add_page_header_table(
+    pas_basic_heap_config_enumerator_data* data,
+    pas_enumerator* enumerator,
+    pas_page_header_table* page_header_table)
+{
+    return pas_add_remote_page_header_table_for_enumeration(
+        &data->page_header_table, enumerator, page_header_table);
 }
 
 #endif /* LIBPAS_ENABLED */
