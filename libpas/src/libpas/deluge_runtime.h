@@ -124,7 +124,8 @@ extern const deluge_type deluge_ptr_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
-extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table;
+extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_heap_table;
+extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_hard_heap_table;
 
 PAS_DECLARE_LOCK(deluge_type);
 PAS_DECLARE_LOCK(deluge_global_initialization);
@@ -375,10 +376,26 @@ void deluded_f_zgetallocsize(DELUDED_SIGNATURE);
 
 void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE);
 
-void* deluge_try_hard_allocate(size_t size);
+pas_heap_ref* deluge_get_hard_heap(const deluge_type* type);
+
+void* deluge_try_hard_allocate_int(size_t size, size_t count);
+void* deluge_try_hard_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
+void* deluge_try_hard_allocate_one(pas_heap_ref* ref);
+void* deluge_try_hard_allocate_many(pas_heap_ref* ref, size_t count);
+void* deluge_try_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+void* deluge_try_hard_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
+void* deluge_try_hard_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
+                                                       size_t alignment);
+void* deluge_try_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
+void* deluge_try_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
+                                                   size_t count, size_t alignment);
+void* deluge_try_hard_reallocate_int(void* ptr, size_t size, size_t count);
+void* deluge_try_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count,
+                                                    size_t alignment);
+
+void* deluge_try_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 void deluge_hard_deallocate(void* ptr);
 
-void deluded_f_zhard_alloc(DELUDED_SIGNATURE);
 void deluded_f_zhard_free(DELUDED_SIGNATURE);
 void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE);
 

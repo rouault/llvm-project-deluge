@@ -65,7 +65,8 @@ PAS_CREATE_HASHTABLE(deluge_type_table,
                      deluge_type_table_entry,
                      deluge_type_table_key);
 
-PAS_API extern deluge_type_table deluge_type_table_instance;
+PAS_API extern deluge_type_table deluge_heap_table;
+PAS_API extern deluge_type_table deluge_hard_heap_table;
 
 PAS_END_EXTERN_C;
 

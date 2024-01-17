@@ -15,6 +15,11 @@ void* zalloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
                        void* trailing_type_like, __SIZE_TYPE__ count);
 void* zaligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void* zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
+void* zhard_alloc_impl(void* type_like, __SIZE_TYPE__ count);
+void* zhard_alloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
+                           void* trailing_type_like, __SIZE_TYPE__ count);
+void* zhard_aligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+void* zhard_realloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
@@ -146,7 +151,7 @@ void zfree(void* ptr);
    If the allocator does not own this pointer, returns zero. */
 __SIZE_TYPE__ zgetallocsize(void* ptr);
 
-/* Allocate integer-only memory of the given size in the hard heap.
+/* Allocate memory in the hard heap.
    
    The hard heap is intended for storing cryptographic secrets that cannot be written to swap, core
    dumped, or kept in memory longer than necessary.
@@ -158,8 +163,34 @@ __SIZE_TYPE__ zgetallocsize(void* ptr);
    and has DONT_DUMP (if the OS supports it). Additinally, both allocation and free always zero the
    whole allocation. All underlying page regions allocated into this allocator have guard pages
    around them. Automatic decommit still works. If the heap becomes empty, all of the pages will
-   be zeroed, unlocked, decommitted, and protected (PROT_NONE). */
-void* zhard_alloc(__SIZE_TYPE__ size);
+   be zeroed, unlocked, decommitted, and protected (PROT_NONE).
+
+   And, of course, the hard heap is totally isoheaped, hence an API that looks like normal zalloc. */
+#define zhard_alloc(type, count) ({ \
+        type __d_temporary; \
+        (type*)zhard_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
+    })
+#define zhard_calloc(type, something_to_multiply, another_thing_to_multiply) ({ \
+        __SIZE_TYPE__ __d_size; \
+        _Bool __d_mul = zcalloc_multiply((something_to_multiply), (another_thing_to_multiply), &__d_size); \
+        __d_mul ? zhard_alloc(type, __d_size) : NULL; \
+    })
+#define zhard_aligned_alloc(type, alignment, count) ({ \
+        type __d_temporary; \
+        (type*)zhard_aligned_alloc_impl( \
+            &__d_temporary, (__SIZE_TYPE__)(alignment), (__SIZE_TYPE__)(count)); \
+    })
+#define zhard_alloc_flex(struct_type, field, count) ({ \
+        struct_type __d_temporary; \
+        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
+        (struct_type*)zhard_alloc_flex_impl( \
+            &__d_temporary, __builtin_offsetof(struct_type, field), \
+            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
+    })
+#define zhard_realloc(ptr, type, count) ({ \
+        type __d_temporary; \
+        (type*)zhard_realloc_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
+    })
 void zhard_free(void* ptr);
 __SIZE_TYPE__ zhard_getallocsize(void* ptr);
 

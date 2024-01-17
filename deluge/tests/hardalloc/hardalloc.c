@@ -4,7 +4,7 @@
 
 int main(int argc, char** argv)
 {
-    char* str = zhard_alloc(666);
+    char* str = zhard_alloc(char, 666);
     printf("hard size = %zu\n", zhard_getallocsize(str));
     printf("soft size = %zu\n", zgetallocsize(str));
     strcpy(str, "hello, world!!!");

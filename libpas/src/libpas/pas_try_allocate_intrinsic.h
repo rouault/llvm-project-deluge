@@ -273,11 +273,11 @@ pas_try_allocate_intrinsic_impl_inline_only(
     pas_thread_local_cache* cache;
 
     cache = pas_thread_local_cache_try_get();
-	if (PAS_UNLIKELY(!cache))
-		return pas_allocation_result_create_failure();
-
-	return pas_try_allocate_intrinsic_impl_inline_only_with_cache(
-		size, alignment, intrinsic_support, config, try_allocate_common_fast_inline_only, designation_mode, cache);
+    if (PAS_UNLIKELY(!cache))
+        return pas_allocation_result_create_failure();
+    
+    return pas_try_allocate_intrinsic_impl_inline_only_with_cache(
+        size, alignment, intrinsic_support, config, try_allocate_common_fast_inline_only, designation_mode, cache);
 }
 
 #define PAS_CREATE_TRY_ALLOCATE_INTRINSIC(name, heap_config, runtime_config, allocator_counts, result_filter, heap, heap_support, designation_mode) \

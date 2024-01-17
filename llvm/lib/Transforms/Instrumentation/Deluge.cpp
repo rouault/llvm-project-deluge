@@ -167,8 +167,9 @@ struct DelugeTypeData {
   Constant* TypeRep { nullptr };
 };
 
-enum ConstantPoolEntryKind {
-  Heap
+enum class ConstantPoolEntryKind {
+  Heap,
+  HardHeap
 };
 
 struct ConstantPoolEntry {
@@ -184,6 +185,7 @@ struct ConstantPoolEntry {
       return false;
     switch (Kind) {
     case ConstantPoolEntryKind::Heap:
+    case ConstantPoolEntryKind::HardHeap:
       return u.Heap.DTD == Other.u.Heap.DTD;
     }
     llvm_unreachable("bad kind");
@@ -194,6 +196,7 @@ struct ConstantPoolEntry {
     size_t Result = static_cast<size_t>(Kind) * 666;
     switch (Kind) {
     case ConstantPoolEntryKind::Heap:
+    case ConstantPoolEntryKind::HardHeap:
       return Result + reinterpret_cast<size_t>(u.Heap.DTD);
     }
     llvm_unreachable("bad kind");
@@ -244,6 +247,10 @@ class Deluge {
   Value* ZallocFlexImpl;
   Value* ZalignedAllocImpl;
   Value* ZreallocImpl;
+  Value* ZhardAllocImpl;
+  Value* ZhardAllocFlexImpl;
+  Value* ZhardAlignedAllocImpl;
+  Value* ZhardReallocImpl;
 
   // Low-level functions used by codegen.
   FunctionCallee ValidateType;
@@ -265,6 +272,18 @@ class Deluge {
   FunctionCallee TryReallocateIntWithAlignment;
   FunctionCallee TryReallocate;
   FunctionCallee Deallocate;
+  FunctionCallee GetHardHeap;
+  FunctionCallee TryHardAllocateInt;
+  FunctionCallee TryHardAllocateIntWithAlignment;
+  FunctionCallee TryHardAllocateOne;
+  FunctionCallee TryHardAllocateMany;
+  FunctionCallee TryHardAllocateManyWithAlignment;
+  FunctionCallee TryHardAllocateIntFlex;
+  FunctionCallee TryHardAllocateIntFlexWithAlignment;
+  FunctionCallee TryHardAllocateFlex;
+  FunctionCallee TryHardReallocateInt;
+  FunctionCallee TryHardReallocateIntWithAlignment;
+  FunctionCallee TryHardReallocate;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
   FunctionCallee CheckAccessFunctionCall;
@@ -1079,9 +1098,10 @@ class Deluge {
     Dummy->replaceAllUsesWith(GetNewValue());
   }
 
-  Value* getHeap(DelugeTypeData* DTD, Instruction* InsertBefore) {
+  Value* getHeap(DelugeTypeData* DTD, Instruction* InsertBefore, ConstantPoolEntryKind Kind) {
+    assert(Kind == ConstantPoolEntryKind::Heap || Kind == ConstantPoolEntryKind::HardHeap);
     ConstantPoolEntry GTE;
-    GTE.Kind = ConstantPoolEntryKind::Heap;
+    GTE.Kind = Kind;
     GTE.u.Heap.DTD = DTD;
     auto iter = ConstantPoolEntryIndex.find(GTE);
     size_t Index;
@@ -1345,7 +1365,13 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledOperand() == ZallocImpl) {
+      bool isHard =
+        CI->getCalledOperand() == ZhardAllocImpl ||
+        CI->getCalledOperand() == ZhardAllocFlexImpl ||
+        CI->getCalledOperand() == ZhardAlignedAllocImpl ||
+        CI->getCalledOperand() == ZhardReallocImpl;
+
+      if (CI->getCalledOperand() == ZallocImpl || CI->getCalledOperand() == ZhardAllocImpl) {
         if (verbose)
           errs() << "Lowering alloc\n";
         lowerConstantOperands(CI, LowRawNull);
@@ -1362,25 +1388,30 @@ class Deluge {
           size_t Size = DL.getTypeStoreSize(LowT);
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              TryAllocateIntWithAlignment,
+              isHard ? TryHardAllocateIntWithAlignment : TryAllocateIntWithAlignment,
               { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
                 ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              TryAllocateInt,
+              isHard ? TryHardAllocateInt : TryAllocateInt,
               { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size) },
               "deluge_alloc_int", CI);
           }
         } else {
-          Value* Heap = getHeap(DTD, CI);
+          Value* Heap = getHeap(
+            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
-            if (C->isOneValue())
-              Alloc = CallInst::Create(TryAllocateOne, { Heap }, "deluge_alloc_one", CI);
+            if (C->isOneValue()) {
+              Alloc = CallInst::Create(
+                isHard ? TryHardAllocateOne : TryAllocateOne,
+                { Heap }, "deluge_alloc_one", CI);
+            }
           }
           if (!Alloc) {
             Alloc = CallInst::Create(
-              TryAllocateMany, { Heap, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
+              isHard ? TryHardAllocateMany : TryAllocateMany,
+              { Heap, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
           }
         }
         
@@ -1393,7 +1424,7 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledOperand() == ZalignedAllocImpl) {
+      if (CI->getCalledOperand() == ZalignedAllocImpl || CI->getCalledOperand() == ZhardAlignedAllocImpl) {
         if (verbose)
           errs() << "Lowering alloc\n";
         lowerConstantOperands(CI, LowRawNull);
@@ -1418,13 +1449,15 @@ class Deluge {
             Compare, TypeAlignment, PassedAlignment, "deluge_aligned_alloc_select", CI);
           AlignmentValue->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(
-            TryAllocateIntWithAlignment,
+            isHard ? TryHardAllocateIntWithAlignment : TryAllocateIntWithAlignment,
             { Count, ConstantInt::get(IntPtrTy, Size), AlignmentValue },
             "deluge_alloc_int", CI);
         } else {
-          Value* Heap = getHeap(DTD, CI);
+          Value* Heap = getHeap(
+            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            TryAllocateManyWithAlignment, { Heap, Count, PassedAlignment }, "deluge_alloc_many", CI);
+            isHard ? TryHardAllocateManyWithAlignment : TryAllocateManyWithAlignment,
+            { Heap, Count, PassedAlignment }, "deluge_alloc_many", CI);
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
@@ -1436,7 +1469,7 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledOperand() == ZreallocImpl) {
+      if (CI->getCalledOperand() == ZreallocImpl || CI->getCalledOperand() == ZhardReallocImpl) {
         if (verbose)
           errs() << "Lowering realloc\n";
         lowerConstantOperands(CI, LowRawNull);
@@ -1454,20 +1487,22 @@ class Deluge {
           size_t Size = DL.getTypeStoreSize(LowT);
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              TryReallocateIntWithAlignment,
+              isHard ? TryHardReallocateIntWithAlignment : TryReallocateIntWithAlignment,
               { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
                 ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_realloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              TryReallocateInt,
+              isHard ? TryHardReallocateInt : TryReallocateInt,
               { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size) },
               "deluge_realloc_int", CI);
           }
         } else {
-          Value* Heap = getHeap(DTD, CI);
+          Value* Heap = getHeap(
+            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            TryReallocate, { OrigPtr, Heap, CI->getArgOperand(2) }, "deluge_realloc", CI);
+            isHard ? TryHardReallocate : TryReallocate,
+            { OrigPtr, Heap, CI->getArgOperand(2) }, "deluge_realloc", CI);
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
@@ -1479,7 +1514,7 @@ class Deluge {
         return true;
       }
 
-      if (CI->getCalledOperand() == ZallocFlexImpl) {
+      if (CI->getCalledOperand() == ZallocFlexImpl || CI->getCalledOperand() == ZhardAllocFlexImpl) {
         if (verbose)
           errs() << "Lowering alloc_flex\n";
         lowerConstantOperands(CI, LowRawNull);
@@ -1524,20 +1559,21 @@ class Deluge {
           size_t Alignment = FlexType.Main.Alignment;
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              TryAllocateIntFlexWithAlignment,
+              isHard ? TryHardAllocateIntFlexWithAlignment : TryAllocateIntFlexWithAlignment,
               { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize),
                 Count, ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              TryAllocateIntFlex,
+              isHard ? TryHardAllocateIntFlex : TryAllocateIntFlex,
               { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
               "deluge_alloc_int", CI);
           }
         } else {
-          Value* Heap = getHeap(DTD, CI);
+          Value* Heap = getHeap(
+            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            TryAllocateFlex,
+            isHard ? TryHardAllocateFlex : TryAllocateFlex,
             { Heap, ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
             "deluge_alloc_many", CI);
         }
@@ -1603,7 +1639,7 @@ class Deluge {
               "deluge_alloca_int", AI);
           }
         } else {
-          Value* Heap = getHeap(DTD, AI);
+          Value* Heap = getHeap(DTD, AI, ConstantPoolEntryKind::Heap);
           if (Constant* C = dyn_cast<Constant>(AI->getArraySize())) {
             if (C->isOneValue())
               Alloc = CallInst::Create(AllocateOne, { Heap }, "deluge_alloca_one", AI);
@@ -1765,6 +1801,11 @@ class Deluge {
       assert(CI->getCalledOperand() != ZallocImpl);
       assert(CI->getCalledOperand() != ZallocFlexImpl);
       assert(CI->getCalledOperand() != ZreallocImpl);
+      assert(CI->getCalledOperand() != ZalignedAllocImpl);
+      assert(CI->getCalledOperand() != ZhardAllocImpl);
+      assert(CI->getCalledOperand() != ZhardAllocFlexImpl);
+      assert(CI->getCalledOperand() != ZhardReallocImpl);
+      assert(CI->getCalledOperand() != ZhardAlignedAllocImpl);
       
       CallInst::Create(
         CheckAccessFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
@@ -1809,7 +1850,7 @@ class Deluge {
         } else {
           ArgDTD = dataForType(ArgType);
           ArgBufferRawPtr = CallInst::Create(
-            AllocateOne, { getHeap(ArgDTD, CI) }, "deluge_allocate_args", CI);
+            AllocateOne, { getHeap(ArgDTD, CI, ConstantPoolEntryKind::Heap) }, "deluge_allocate_args", CI);
         }
 
         ArgBufferRawPtr->setDebugLoc(CI->getDebugLoc());
@@ -2097,6 +2138,14 @@ public:
       "zaligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
     ZreallocImpl = M.getOrInsertFunction(
       "zrealloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZhardAllocImpl = M.getOrInsertFunction(
+      "zhard_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZhardAllocFlexImpl = M.getOrInsertFunction(
+      "zhard_alloc_flex_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZhardAlignedAllocImpl = M.getOrInsertFunction(
+      "zhard_aligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
+    ZhardReallocImpl = M.getOrInsertFunction(
+      "zhard_realloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
 
     assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
     assert(cast<Function>(ZrestrictImpl)->isDeclaration());
@@ -2104,6 +2153,10 @@ public:
     assert(cast<Function>(ZallocFlexImpl)->isDeclaration());
     assert(cast<Function>(ZalignedAllocImpl)->isDeclaration());
     assert(cast<Function>(ZreallocImpl)->isDeclaration());
+    assert(cast<Function>(ZhardAllocImpl)->isDeclaration());
+    assert(cast<Function>(ZhardAllocFlexImpl)->isDeclaration());
+    assert(cast<Function>(ZhardAlignedAllocImpl)->isDeclaration());
+    assert(cast<Function>(ZhardReallocImpl)->isDeclaration());
     
     if (verbose) {
       errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
@@ -2112,6 +2165,10 @@ public:
       errs() << "zalloc_flex_impl = " << ZallocFlexImpl << "\n";
       errs() << "zaligned_lloc_impl = " << ZalignedAllocImpl << "\n";
       errs() << "zrealloc_impl = " << ZreallocImpl << "\n";
+      errs() << "zhard_alloc_impl = " << ZhardAllocImpl << "\n";
+      errs() << "zhard_alloc_flex_impl = " << ZhardAllocFlexImpl << "\n";
+      errs() << "zhard_aligned_lloc_impl = " << ZhardAlignedAllocImpl << "\n";
+      errs() << "zhard_realloc_impl = " << ZhardReallocImpl << "\n";
     }
 
     // Capture the set of things that need conversion, before we start adding functions and globals.
@@ -2175,7 +2232,7 @@ public:
     TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
     TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     TryAllocateIntFlex = M.getOrInsertFunction("deluge_try_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     TryAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
@@ -2185,6 +2242,18 @@ public:
     TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     TryReallocate = M.getOrInsertFunction("deluge_try_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
+    GetHardHeap = M.getOrInsertFunction("deluge_get_hard_heap", LowRawPtrTy, LowRawPtrTy);
+    TryHardAllocateInt = M.getOrInsertFunction("deluge_try_hard_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryHardAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryHardAllocateOne = M.getOrInsertFunction("deluge_try_hard_allocate_one", LowRawPtrTy, LowRawPtrTy);
+    TryHardAllocateMany = M.getOrInsertFunction("deluge_try_hard_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    TryHardAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryHardAllocateIntFlex = M.getOrInsertFunction("deluge_try_hard_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryHardAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryHardAllocateFlex = M.getOrInsertFunction("deluge_try_hard_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryHardReallocateInt = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    TryHardReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    TryHardReallocate = M.getOrInsertFunction("deluge_try_hard_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     CheckAccessInt = M.getOrInsertFunction("deluge_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     CheckAccessPtr = M.getOrInsertFunction("deluge_check_access_ptr_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     CheckAccessFunctionCall = M.getOrInsertFunction("deluge_check_function_call_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
@@ -2410,7 +2479,11 @@ public:
           F == ZallocImpl ||
           F == ZallocFlexImpl ||
           F == ZalignedAllocImpl ||
-          F == ZreallocImpl)
+          F == ZreallocImpl ||
+          F == ZhardAllocImpl ||
+          F == ZhardAllocFlexImpl ||
+          F == ZhardAlignedAllocImpl ||
+          F == ZhardReallocImpl)
         continue;
       
       if (verbose)
@@ -2556,7 +2629,8 @@ public:
           FullFrameType.Main = TypedFrameType;
           DelugeTypeData* DTD = dataForType(FullFrameType);
           Instruction* AllocateTypedFrame = CallInst::Create(
-            AllocateOne, { getHeap(DTD, InsertionPoint) }, "deluge_allocate_typed_frame", InsertionPoint);
+            AllocateOne, { getHeap(DTD, InsertionPoint, ConstantPoolEntryKind::Heap) },
+            "deluge_allocate_typed_frame", InsertionPoint);
           FutureTypedFrame->replaceAllUsesWith(AllocateTypedFrame);
           CallInst::Create(Deallocate, { AllocateTypedFrame }, "", Return);
         } else
@@ -2648,6 +2722,12 @@ public:
       switch (CPE.Kind) {
       case ConstantPoolEntryKind::Heap: {
         Instruction* Heap = CallInst::Create(GetHeap, { CPE.u.Heap.DTD->TypeRep }, "deluge_get_heap", BB);
+        new StoreInst(Heap, EntryPtr, BB);
+        break;
+      }
+      case ConstantPoolEntryKind::HardHeap: {
+        Instruction* Heap = CallInst::Create(
+          GetHardHeap, { CPE.u.Heap.DTD->TypeRep }, "deluge_get_heap", BB);
         new StoreInst(Heap, EntryPtr, BB);
         break;
       } }
