@@ -622,6 +622,8 @@ void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE);
+void deluded_f_zthread_boot_main_thread(DELUDED_SIGNATURE);
+void deluded_f_zthread_self(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

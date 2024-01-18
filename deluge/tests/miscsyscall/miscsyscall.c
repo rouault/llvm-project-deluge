@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 int main(int argc, char** argv)
 {
@@ -46,6 +47,10 @@ int main(int argc, char** argv)
     ZASSERT(st.st_uid);
     ZASSERT(st.st_gid);
     ZASSERT(st.st_size == 86);
+
+    ZASSERT(zthread_self());
+    ZASSERT(zthread_self() == zthread_self());
+    ZASSERT((void*)pthread_self() == zthread_self());
     
     zprintf("No worries.\n");
     return 0;

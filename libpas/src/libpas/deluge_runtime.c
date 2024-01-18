@@ -3382,6 +3382,79 @@ void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE)
     *(bool*)rets.ptr = true;
 }
 
+typedef struct {
+    pas_lock lock;
+    pthread_t thread;
+} zthread;
+
+static void zthread_construct(zthread* thread)
+{
+    pas_lock_construct(&thread->lock);
+    thread->thread = NULL;
+}
+
+DEFINE_RUNTIME_CONFIG(zthread_runtime_config, zthread, zthread_construct);
+
+static deluge_type zthread_type = {
+    .size = sizeof(zthread),
+    .alignment = alignof(zthread),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &zthread_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref zthread_heap = {
+    .type = (const pas_heap_type*)&zthread_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static bool zthread_booted = false;
+static pthread_key_t zthread_key;
+
+void deluded_f_zthread_boot_main_thread(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_boot_main_thread",
+        .line = 0,
+        .column = 0
+    };
+    DELUDED_DELETE_ARGS();
+    DELUGE_CHECK(
+        !zthread_booted,
+        &origin,
+        "cannot boot main thread twice.");
+    zthread* result = (zthread*)deluge_allocate_one(&zthread_heap);
+    PAS_ASSERT(!result->thread);
+    result->thread = pthread_self();
+    PAS_ASSERT(!pthread_key_create(&zthread_key, NULL));
+    PAS_ASSERT(!pthread_setspecific(zthread_key, result));
+    zthread_booted = true;
+}
+
+void deluded_f_zthread_self(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_self",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    DELUGE_CHECK(
+        zthread_booted,
+        &origin,
+        "zthread not booted.");
+    zthread* thread = pthread_getspecific(zthread_key);
+    PAS_ASSERT(thread);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(thread, &zthread_type);
+}
+
 #endif /* PAS_ENABLE_DELUGE */
 
 #endif /* LIBPAS_ENABLED */

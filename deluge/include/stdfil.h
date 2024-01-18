@@ -331,7 +331,7 @@ void zfence(void);
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 
 /* These APIs are memory-safe, so you won't escape the deluge by using them. But it's not clear to me to
-   what extent I give a shit about maintaining compatible semantics for these calls. They're mean as a
+   what extent I give a shit about maintaining compatible semantics for these calls. They're meant as a
    replacement for musl's syscall layer, and they're very much tailored to my hacks to musl. */
 
 void zrun_deferred_global_ctors(void);
@@ -373,6 +373,8 @@ void zthread_mutex_delete(void* mutex);
 _Bool zthread_mutex_lock(void* mutex);
 _Bool zthread_mutex_trylock(void* mutex);
 _Bool zthread_mutex_unlock(void* mutex);
+void zthread_boot_main_thread(void); /* Can only be called once, before any other threads are created. */
+void* zthread_self(void);
 
 #endif /* DELUGE_STDFIL_H */
 
