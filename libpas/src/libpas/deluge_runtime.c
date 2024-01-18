@@ -220,16 +220,22 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
 {
     switch (type) {
     case DELUGE_WORD_TYPE_OFF_LIMITS:
-        pas_stream_printf(stream, "//");
+        pas_stream_printf(stream, "/");
         return;
     case DELUGE_WORD_TYPE_INT:
-        pas_stream_printf(stream, "In");
+        pas_stream_printf(stream, "i");
         return;
     case DELUGE_WORD_TYPE_PTR_PART1:
+        pas_stream_printf(stream, "P");
+        return;
     case DELUGE_WORD_TYPE_PTR_PART2:
+        pas_stream_printf(stream, "L");
+        return;
     case DELUGE_WORD_TYPE_PTR_PART3:
+        pas_stream_printf(stream, "U");
+        return;
     case DELUGE_WORD_TYPE_PTR_PART4:
-        pas_stream_printf(stream, "P%u", type - DELUGE_WORD_TYPE_PTR_PART1 + 1);
+        pas_stream_printf(stream, "T");
         return;
     default:
         pas_stream_printf(stream, "?%u", type);
