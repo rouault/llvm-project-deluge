@@ -187,6 +187,8 @@ typedef long ssize_t;
 #define CNK_PTR     8
 #define CNK_NUM     9
 #define CNK_PRCNT   10
+#define CNK_DELPTR  11
+#define CNK_DELTYP  12
 
 #define char_to_int(p) ((p)- '0')
 #ifndef MAX
@@ -502,6 +504,14 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 				cnk->type = CNK_PTR;
 				cnk->flags |= DP_F_UNSIGNED;
 				break;
+			case 'P':
+				cnk->type = CNK_DELPTR;
+				cnk->flags |= DP_F_UNSIGNED;
+				break;
+			case 'T':
+				cnk->type = CNK_DELTYP;
+				cnk->flags |= DP_F_UNSIGNED;
+				break;
 			case 'n':
 				cnk->type = CNK_NUM;
 				break;
@@ -616,6 +626,8 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 			break;
 
 		case CNK_PTR:
+                case CNK_DELPTR:
+                case CNK_DELTYP:
 			cnk->strvalue = __builtin_va_arg (args, void *);
 			for (i = 1; i < clist[pnum].num; i++) {
 				clist[pnum].chunks[i]->strvalue = cnk->strvalue;
@@ -704,6 +716,24 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 		case CNK_PTR:
                     fmtint (buffer, &currlen, maxlen, (long)(__SIZE_TYPE__)(cnk->strvalue), 16, min, max, cnk->flags);
                     break;
+
+                case CNK_DELPTR: {
+                    char* text = zptr_to_new_string(cnk->strvalue);
+                    if (max == -1)
+                        max = zstrlen(text);
+                    fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
+                    zfree(text);
+                    break;
+                }
+
+                case CNK_DELTYP: {
+                    char* text = ztype_to_new_string((ztype*)cnk->strvalue);
+                    if (max == -1)
+                        max = zstrlen(text);
+                    fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
+                    zfree(text);
+                    break;
+                }
 
 		case CNK_NUM:
 			if (cnk->cflags == DP_C_CHAR)

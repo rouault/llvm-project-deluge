@@ -305,7 +305,12 @@ PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
 
 PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
 PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
-char* deluge_type_to_new_string(const deluge_type* type);
+
+char* deluge_type_to_new_string(const deluge_type* type); /* WARNING: this is different from
+                                                             ztype_to_new_string. This uses the
+                                                             utility heap - WHICH MUST NEVER LEAK TO
+                                                             DELUDED CODE - whereas the other one
+                                                             uses the int heap. */
 
 PAS_API const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range,
                                              const deluge_origin* origin);
@@ -406,6 +411,9 @@ void deluded_f_zgettype(DELUDED_SIGNATURE);
 void deluded_f_zslicetype(DELUDED_SIGNATURE);
 void deluded_f_zgettypeslice(DELUDED_SIGNATURE);
 void deluded_f_zalloc_with_type(DELUDED_SIGNATURE);
+
+void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE);
+void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE);
 
 void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
                                   uintptr_t bytes, const deluge_origin* origin);

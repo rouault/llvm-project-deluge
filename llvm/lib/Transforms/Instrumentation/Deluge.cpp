@@ -1340,7 +1340,7 @@ class Deluge {
           forgePtrWithLowType(
             LowPtr, LowPtr,
             GetElementPtrInst::Create(
-              LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper_unsafe_forge", CI),
+              LowT, LowPtr, { CI->getArgOperand(2) }, "deluge_upper_unsafe_forge", CI),
             LowT, CI));
         CI->eraseFromParent();
         return true;

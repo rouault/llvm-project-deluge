@@ -92,6 +92,15 @@ static void* allocate_utility_for_allocation_config(
     return deluge_allocate_utility(size);
 }
 
+static void* allocate_int_for_allocation_config(
+    size_t size, const char* name, pas_allocation_kind allocation_kind, void* arg)
+{
+    PAS_UNUSED_PARAM(name);
+    PAS_ASSERT(allocation_kind == pas_object_allocation);
+    PAS_ASSERT(!arg);
+    return deluge_allocate_int(size, 1);
+}
+
 static void deallocate_for_allocation_config(
     void* ptr, size_t size, pas_allocation_kind allocation_kind, void* arg)
 {
@@ -104,6 +113,13 @@ static void deallocate_for_allocation_config(
 static void initialize_utility_allocation_config(pas_allocation_config* allocation_config)
 {
     allocation_config->allocate = allocate_utility_for_allocation_config;
+    allocation_config->deallocate = deallocate_for_allocation_config;
+    allocation_config->arg = NULL;
+}
+
+static void initialize_int_allocation_config(pas_allocation_config* allocation_config)
+{
+    allocation_config->allocate = allocate_int_for_allocation_config;
     allocation_config->deallocate = deallocate_for_allocation_config;
     allocation_config->arg = NULL;
 }
@@ -305,14 +321,19 @@ void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream
     deluge_type_dump((const deluge_type*)type, stream);
 }
 
+static char* type_to_new_string_impl(const deluge_type* type, pas_allocation_config* allocation_config)
+{
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, allocation_config);
+    deluge_type_dump(type, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
 char* deluge_type_to_new_string(const deluge_type* type)
 {
     pas_allocation_config allocation_config;
-    pas_string_stream stream;
     initialize_utility_allocation_config(&allocation_config);
-    pas_string_stream_construct(&stream, &allocation_config);
-    deluge_type_dump(type, &stream.base);
-    return pas_string_stream_take_string(&stream);
+    return type_to_new_string_impl(type, &allocation_config);
 }
 
 static void check_int_slice_range(const deluge_type* type, pas_range range,
@@ -1410,6 +1431,52 @@ void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
     void* result = deluge_try_allocate_with_type(type, size);
     if (result)
         *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + size, type);
+}
+
+void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "ztype_to_new_string",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr type_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
+    const deluge_type* type = (const deluge_type*)type_ptr.ptr;
+    pas_allocation_config allocation_config;
+    initialize_int_allocation_config(&allocation_config);
+    char* result = type_to_new_string_impl(type, &allocation_config);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(
+        result, result, result + strlen(result) + 1, &deluge_int_type);
+}
+
+void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zptr_to_new_string",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    pas_allocation_config allocation_config;
+    pas_string_stream stream;
+    initialize_int_allocation_config(&allocation_config);
+    pas_string_stream_construct(&stream, &allocation_config);
+    pas_string_stream_printf(&stream, "%p,%p,%p,", ptr.ptr, ptr.lower, ptr.upper);
+    deluge_type_dump(ptr.type, &stream.base);
+    char* result = pas_string_stream_take_string(&stream);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(
+        result, result, result + strlen(result) + 1, &deluge_int_type);
 }
 
 static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,

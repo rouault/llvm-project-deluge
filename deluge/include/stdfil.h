@@ -29,7 +29,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    This is the only escape hatch.
    
    ptr can be anything castable to const void*. type is a type expression. count must be __SIZE_TYPE__ ish. */
-#define zunsage_forge(ptr, type, count) ({ \
+#define zunsafe_forge(ptr, type, count) ({ \
         type __d_temporary; \
         (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (__SIZE_TYPE__)(count)); \
     })
@@ -134,14 +134,45 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
 
 /* Free the object starting at the given pointer.
    
-   If you pass a pointer that is already freed, was never allocated, then this might trap either now
-   or during any future call to zfree or zalloc.
+   If you pass NULL, this silently returns.
    
-   If you pass a pointer to the middle of an allocated object, then this might either free the whole
-   object, or trap now, or trap at any future call to zfree or zalloc.
+   If you pass a pointer where lower is NULL, this thwarts your program's stupidity by panicking.
+   
+   If you pass a pointer that is offset from lower (i.e. ptr != lower), this panicks your dumb program.
+   
+   If you pass a pointer that has an opaque type (like the type type, the function type, or deluge
+   runtime types like the ones used to implement zthread APIs), this kills the shit out of your
+   program.
+   
+   If you pass a pointer that is already freed or was never allocated, then this might trap either now
+   or during any future call to zfree or zalloc. Note that the state where a trap is coming but hasn't
+   happened is not a weird state for the allocator; it's just buffering up the part where it will free
+   the object, and when that happens, the allocator will deterministically and well-defindedly either
+   identify an object it had allocated that it will now free, or it will kill the shit out of your
+   program.
+   
+   If you pass a pointer to the middle of an allocated object (which is still possible by zrestricting
+   and then zfreeing), then this might either free the whole object, or trap now, or trap at any future
+   call to zfree or zalloc. Basically, for interior pointers the allocator might first round them down
+   to some minalign as a byproduct of the algorithm's bitvector implementation. So if this works:
+   
+       zfree(ptr);
+   
+   Then this will also work and be equivalent in practice for right now, assuming that at ptr+1 there's
+   an int byte:
+   
+       zfree(zrestrict((char*)ptr + 1, char, 1));
+   
+   It works and is safe because the allocator happens to not mind whatever's in the low 4 bits. The
+   zrestrict call is necessary to get around the ptr=lower check.
    
    If you free an object and then use it again, then that might be fine. But, free memory may be
-   decommitted at any time (so many start to trap or suddenly become all-zero). */
+   decommitted at any time (so many start to trap or suddenly become all-zero). Memory that becomes
+   zero invalidates ptrs even when they straddle pages.
+
+   This has to be a synonym for free(), and it's up to libc to make this be the case by implementing
+   free() as a call to zfree(). If the libc author feels like doing extra checking (like if they
+   don't want it to be OK to free NULL), then whatever. */
 void zfree(void* ptr);
 
 /* If the allocator owns this pointer, returns the number of bytes allocated. This can be more than
@@ -165,7 +196,8 @@ __SIZE_TYPE__ zgetallocsize(void* ptr);
    around them. Automatic decommit still works. If the heap becomes empty, all of the pages will
    be zeroed, unlocked, decommitted, and protected (PROT_NONE).
 
-   And, of course, the hard heap is totally isoheaped, hence an API that looks like normal zalloc. */
+   And, of course, the hard heap is totally isoheaped, hence an API that looks like normal zalloc
+   and has all of the guarantees as zalloc in addition to the mlocking B.S. */
 #define zhard_alloc(type, count) ({ \
         type __d_temporary; \
         (type*)zhard_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
@@ -219,6 +251,14 @@ ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
    multiple of the type's size. */
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
+/* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
+   Returns that string. You have to zfree the string when you're done with it. */
+char* ztype_to_new_string(ztype* type);
+
+/* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the ptr to that string.
+   Returns that string. You have to zfree the string when you're done with it. */
+char* zptr_to_new_string(const void* ptr);
+
 /* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
    for sure, and it will never print out of bounds even if there is no null terminator). */
@@ -237,7 +277,17 @@ int zisdigit(int chr);
    up working exactly like snprintf where the size is upper-ptr. Hence, in Deluge, it's preferable
    to call zsprintf instead of zsnprintf.
 
-   It's up to libc to decide if sprintf (without the z) behaves like zsprintf, or traps on OOB. */
+   In libc, sprintf (without the z) behaves kinda like zsprintf, but traps on OOB.
+
+   The main difference from the libc sprintf is that it uses a different implementation under the hood.
+   This is based on the samba snprintf, origindally by Patrick Powell, but it uses the zstrlen/zisdigit/etc
+   functions rather than the libc ones, and it has some additional features:
+
+       - '%P', which prints the full deluge_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
+       - '%T', which prints the deluge_type or traps if you give it anything but a ztype.
+
+   It's not obvious that this code will do the right thing for floating point formats. But this code is
+   deluded, so if it goes wrong, at least it'll stop your program from causing any more damage. */
 int zvsprintf(char* buf, const char* format, __builtin_va_list args);
 int zsprintf(char* buf, const char* format, ...);
 
@@ -249,9 +299,16 @@ int zsnprintf(char* buf, __SIZE_TYPE__ size, const char* format, ...);
 char* zvasprintf(const char* format, __builtin_va_list args);
 char* zasprintf(const char* format, ...);
 
-/* This is just like printf, but does only per-call buffering. In particular, this relies on
+/* This is mostly just like printf, but does only per-call buffering. In particular, this relies on
    zvasprintf under the hood and then prints the entire string in one write(2) call (unless write
-   demands that we call it again). */
+   demands that we call it again).
+
+   Note that the main reason why you might want to use this for debugging over printf is that it supports:
+
+       - '%P', which prints the full deluge_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
+       - '%T', which prints the deluge_type or traps if you give it anything but a ztype.
+
+   But if you want to debug floating point, you should maybe go with printf. */
 void zvprintf(const char* format, __builtin_va_list args);
 void zprintf(const char* format, ...);
 
