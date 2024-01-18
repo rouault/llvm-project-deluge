@@ -346,6 +346,7 @@ unsigned zsys_getgid(void);
 unsigned zsys_getegid(void);
 int zsys_open(const char* path, int flags, ...);
 int zsys_getpid(void);
+int zsys_clock_gettime(int clock_id, unsigned long long* timespec_ptr);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

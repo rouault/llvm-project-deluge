@@ -1,10 +1,12 @@
 #include <stdfil.h>
 #include <unistd.h>
+#include <time.h>
 
 int main(int argc, char** argv)
 {
     unsigned zid;
     unsigned id;
+    int res;
     
     zid = zsys_getuid();
     id = getuid();
@@ -25,6 +27,11 @@ int main(int argc, char** argv)
     id = getpid();
     ZASSERT((int)zid > 0);
     ZASSERT(zid == id);
+
+    struct timespec ts;
+    res = clock_gettime(CLOCK_REALTIME, &ts);
+    ZASSERT(!res);
+    ZASSERT(ts.tv_sec);
     
     zprintf("No worries.\n");
     return 0;

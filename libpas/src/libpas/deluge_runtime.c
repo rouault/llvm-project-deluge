@@ -2706,6 +2706,62 @@ void deluded_f_zsys_getpid(DELUDED_SIGNATURE)
     *(int*)rets.ptr = getpid();
 }
 
+static bool from_musl_clock_id(int musl_clock_id, clockid_t* result)
+{
+    switch (musl_clock_id) {
+    case 0:
+        *result = CLOCK_REALTIME;
+        return true;
+    case 1:
+        *result = CLOCK_MONOTONIC;
+        return true;
+    case 2:
+        *result = CLOCK_PROCESS_CPUTIME_ID;
+        return true;
+    case 3:
+        *result = CLOCK_THREAD_CPUTIME_ID;
+        return true;
+    case 4:
+        *result = CLOCK_MONOTONIC_RAW;
+        return true;
+    default:
+        *result = 0;
+        return false;
+    }
+}
+
+void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_clock_gettime",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int musl_clock_id = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr timespec_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(timespec_ptr, sizeof(uint64_t) * 2, &origin);
+    clockid_t clock_id;
+    if (!from_musl_clock_id(musl_clock_id, &clock_id)) {
+        *(int*)rets.ptr = -1;
+        set_errno(EINVAL);
+        return;
+    }
+    struct timespec ts;
+    int result = clock_gettime(clock_id, &ts);
+    if (result < 0) {
+        *(int*)rets.ptr = -1;
+        set_errno(errno);
+        return;
+    }
+    ((uint64_t*)timespec_ptr.ptr)[0] = ts.tv_sec;
+    ((uint64_t*)timespec_ptr.ptr)[1] = ts.tv_nsec;
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \
