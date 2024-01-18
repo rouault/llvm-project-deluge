@@ -26,6 +26,7 @@
 #include <sys/ioctl.h>
 #include <sys/uio.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -2760,6 +2761,86 @@ void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
     }
     ((uint64_t*)timespec_ptr.ptr)[0] = ts.tv_sec;
     ((uint64_t*)timespec_ptr.ptr)[1] = ts.tv_nsec;
+}
+
+struct musl_stat {
+    uint64_t st_dev;
+    uint64_t st_ino;
+    unsigned st_mode;
+    uint64_t st_nlink;
+    unsigned st_uid;
+    unsigned st_gid;
+    uint64_t st_rdev;
+    int64_t st_size;
+    long st_blksize;
+    int64_t st_blocks;
+    uint64_t st_atim[2];
+    uint64_t st_mtim[2];
+    uint64_t st_ctim[2];
+};
+
+static bool from_musl_fstatat_flag(int musl_flag, int* result)
+{
+    *result = 0;
+    if (check_and_clear(&musl_flag, 0x100))
+        *result |= AT_SYMLINK_NOFOLLOW;
+    if (check_and_clear(&musl_flag, 0x200))
+        *result |= AT_REMOVEDIR | AT_EACCESS;
+    if (check_and_clear(&musl_flag, 0x400))
+        *result |= AT_SYMLINK_FOLLOW;
+    return !musl_flag;
+}
+
+void deluded_f_zsys_fstatat(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_fstatat",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr path_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr musl_stat_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    int musl_flag = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    const char* path = deluge_check_and_get_str(path_ptr, &origin);
+    deluge_check_access_int(musl_stat_ptr, sizeof(struct musl_stat), &origin);
+    int flag;
+    if (!from_musl_fstatat_flag(musl_flag, &flag)) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    if (fd == -100)
+        fd = AT_FDCWD;
+    struct stat st;
+    int result = fstatat(fd, path, &st, flag);
+    if (result < 0) {
+        set_errno(errno);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    struct musl_stat* musl_stat = (struct musl_stat*)musl_stat_ptr.ptr;
+    musl_stat->st_dev = st.st_dev;
+    musl_stat->st_ino = st.st_ino;
+    musl_stat->st_mode = st.st_mode;
+    musl_stat->st_nlink = st.st_nlink;
+    musl_stat->st_uid = st.st_uid;
+    musl_stat->st_gid = st.st_gid;
+    musl_stat->st_rdev = st.st_rdev;
+    musl_stat->st_size = st.st_size;
+    musl_stat->st_blksize = st.st_blksize;
+    musl_stat->st_blocks = st.st_blocks;
+    musl_stat->st_atim[0] = st.st_atimespec.tv_sec;
+    musl_stat->st_atim[1] = st.st_atimespec.tv_nsec;
+    musl_stat->st_mtim[0] = st.st_mtimespec.tv_sec;
+    musl_stat->st_mtim[1] = st.st_mtimespec.tv_nsec;
+    musl_stat->st_ctim[0] = st.st_ctimespec.tv_sec;
+    musl_stat->st_ctim[1] = st.st_ctimespec.tv_nsec;
 }
 
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \

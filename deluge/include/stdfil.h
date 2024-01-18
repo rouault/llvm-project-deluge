@@ -328,6 +328,12 @@ void zerrorf(const char* str, ...);
 
 void zfence(void);
 
+/* ------------------ All APIs below here are intended for libc consumption ------------------------- */
+
+/* These APIs are memory-safe, so you won't escape the deluge by using them. But it's not clear to me to
+   what extent I give a shit about maintaining compatible semantics for these calls. They're mean as a
+   replacement for musl's syscall layer, and they're very much tailored to my hacks to musl. */
+
 void zrun_deferred_global_ctors(void);
 
 void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
@@ -347,6 +353,7 @@ unsigned zsys_getegid(void);
 int zsys_open(const char* path, int flags, ...);
 int zsys_getpid(void);
 int zsys_clock_gettime(int clock_id, unsigned long long* timespec_ptr);
+int zsys_fstatat(int fd, const char* path, void* buf, int flag);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

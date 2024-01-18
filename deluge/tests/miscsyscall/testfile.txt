@@ -1,0 +1,1 @@
+The NSA agrees: time to move away from C/C++ to memory-safe languages, including Rust

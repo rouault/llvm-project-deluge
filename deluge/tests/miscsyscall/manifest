@@ -1,4 +1,8 @@
 return:
    success
 output-returns:
-   No worries.
+   - size = 120
+   - offset of nlink = 24
+   - sizeof nlink = 8
+   - sizeof(nlink_t) = 8
+   - No worries.
