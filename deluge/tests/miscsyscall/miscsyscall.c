@@ -59,6 +59,17 @@ int main(int argc, char** argv)
 
     ZASSERT(open("this/is/totally/not/going/to/exist", 666, 42) < 0);
     printf("the error was: %s\n", strerror(errno));
+
+    int fd = open("deluge/tests/miscsyscall/testfile.txt", O_RDONLY);
+    ZASSERT(fd > 2);
+    struct stat st2;
+    res = fstat(fd, &st2);
+    ZASSERT(!res);
+    ZASSERT(st2.st_mode == (0644 | S_IFREG));
+    ZASSERT(st2.st_nlink == 1);
+    ZASSERT(st2.st_uid == st.st_uid);
+    ZASSERT(st2.st_gid == st.st_gid);
+    ZASSERT(st2.st_size == 86);
     
     zprintf("No worries.\n");
     return 0;
