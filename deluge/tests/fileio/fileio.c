@@ -66,6 +66,16 @@ int main(int argc, char** argv)
     ZASSERT(!flock.l_start);
     ZASSERT(!flock.l_len);
     ZASSERT(!flock.l_pid);
+
+    res = fcntl(fd, F_GETFD);
+    ZASSERT(!res);
+
+    res = fcntl(fd, F_SETFD, FD_CLOEXEC);
+    ZASSERT(!res);
+
+    res = fcntl(fd, F_GETFD);
+    ZASSERT(res == FD_CLOEXEC);
+
     ZASSERT(!close(fd));
     
     return 0;
