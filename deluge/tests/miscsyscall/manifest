@@ -5,4 +5,5 @@ output-returns:
    - offset of nlink = 24
    - sizeof nlink = 8
    - sizeof(nlink_t) = 8
+   - "the error was: Invalid argument"
    - No worries.

@@ -1,8 +1,13 @@
+#include <unistd.h>
+#include <stdio.h>
 #include <stdfil.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <string.h>
+#include <errno.h>
 
 int main(int argc, char** argv)
 {
@@ -42,7 +47,7 @@ int main(int argc, char** argv)
     zprintf("sizeof(nlink_t) = %zu\n", sizeof(nlink_t));
     res = stat("deluge/tests/miscsyscall/testfile.txt", &st);
     ZASSERT(!res);
-    ZASSERT(st.st_mode == 0644 | S_IFREG);
+    ZASSERT(st.st_mode == (0644 | S_IFREG));
     ZASSERT(st.st_nlink == 1);
     ZASSERT(st.st_uid);
     ZASSERT(st.st_gid);
@@ -51,6 +56,9 @@ int main(int argc, char** argv)
     ZASSERT(zthread_self());
     ZASSERT(zthread_self() == zthread_self());
     ZASSERT((void*)pthread_self() == zthread_self());
+
+    ZASSERT(open("this/is/totally/not/going/to/exist", 666, 42) < 0);
+    printf("the error was: %s\n", strerror(errno));
     
     zprintf("No worries.\n");
     return 0;
