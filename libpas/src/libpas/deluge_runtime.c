@@ -2872,6 +2872,125 @@ void deluded_f_zsys_fstat(DELUDED_SIGNATURE)
     handle_fstat_result(rets, musl_stat_ptr, &st, result);
 }
 
+struct musl_flock {
+    short l_type;
+    short l_whence;
+    int64_t l_start;
+    int64_t l_len;
+    int l_pid;
+};
+
+
+void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_fcntl",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    int musl_cmd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    int cmd = 0;
+    bool have_cmd = true;
+    bool have_arg_int = false;
+    bool have_arg_flock = false;
+    switch (musl_cmd) {
+    case 0:
+        cmd = F_DUPFD;
+        have_arg_int = true;
+        break;
+    case 1:
+        cmd = F_GETFD;
+        break;
+    case 2:
+        cmd = F_SETFD;
+        have_arg_int = true;
+        break;
+    case 3:
+        cmd = F_GETFL;
+        break;
+    case 4:
+        cmd = F_SETFL;
+        have_arg_int = true;
+        break;
+    case 8:
+        cmd = F_SETOWN;
+        have_arg_int = true;
+        break;
+    case 9:
+        cmd = F_GETOWN;
+        break;
+    case 5:
+        cmd = F_GETLK;
+        have_arg_flock = true;
+        break;
+    case 6:
+        cmd = F_SETLK;
+        have_arg_flock = true;
+        break;
+    case 7:
+        cmd = F_SETLKW;
+        have_arg_flock = true;
+        break;
+    case 1030:
+        cmd = F_DUPFD_CLOEXEC;
+        have_arg_int = true;
+        break;
+    default:
+        have_cmd = false;
+        break;
+    }
+    int arg_int = 0;
+    struct flock arg_flock;
+    deluge_ptr musl_flock_ptr;
+    struct musl_flock* musl_flock;
+    pas_zero_memory(&arg_flock, sizeof(arg_flock));
+    if (have_arg_int)
+        arg_int = deluge_ptr_get_next_int(&args, &origin);
+    if (have_arg_flock) {
+        musl_flock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+        deluge_check_access_int(musl_flock_ptr, sizeof(struct musl_flock), &origin);
+        musl_flock = (struct musl_flock*)musl_flock_ptr.ptr;
+        arg_flock.l_type = musl_flock->l_type;
+        arg_flock.l_whence = musl_flock->l_whence;
+        arg_flock.l_start = musl_flock->l_start;
+        arg_flock.l_len = musl_flock->l_len;
+        arg_flock.l_pid = musl_flock->l_pid;
+    }
+    DELUDED_DELETE_ARGS();
+    if (!have_cmd) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    int result;
+    if (have_arg_int) {
+        PAS_ASSERT(!have_arg_flock);
+        result = fcntl(fd, cmd, arg_int);
+    } else if (have_arg_flock) {
+        struct flock saved_flock = arg_flock;
+        result = fcntl(fd, cmd, &arg_flock);
+#define SET_IF_DIFFERENT(field) do { \
+        if (arg_flock.field != saved_flock.field) \
+            musl_flock->field = arg_flock.field; \
+    } while (false)
+        SET_IF_DIFFERENT(l_type);
+        SET_IF_DIFFERENT(l_whence);
+        SET_IF_DIFFERENT(l_start);
+        SET_IF_DIFFERENT(l_len);
+        SET_IF_DIFFERENT(l_pid);
+#undef SET_IF_DIFFERENT
+    } else
+        result = fcntl(fd, cmd);
+    if (result == -1)
+        set_errno(errno);
+    *(int*)rets.ptr = result;
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \

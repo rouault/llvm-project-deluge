@@ -606,6 +606,7 @@ void deluded_f_zsys_getpid(DELUDED_SIGNATURE);
 void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE);
 void deluded_f_zsys_fstatat(DELUDED_SIGNATURE);
 void deluded_f_zsys_fstat(DELUDED_SIGNATURE);
+void deluded_f_zsys_fcntl(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
