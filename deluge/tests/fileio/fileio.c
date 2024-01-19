@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <string.h>
+#include <errno.h>
 
 int main(int argc, char** argv)
 {
@@ -13,7 +15,7 @@ int main(int argc, char** argv)
     int result = zsys_read(fd, buf, sizeof(buf));
     ZASSERT(result == 14);
     zprintf("read the zsys way: %s", buf);
-    zsys_close(fd);
+    ZASSERT(!zsys_close(fd));
 
     fd = open("deluge/tests/fileio/test.txt", O_RDONLY);
     ZASSERT(fd > 2);
@@ -21,7 +23,7 @@ int main(int argc, char** argv)
     result = read(fd, buf, sizeof(buf));
     ZASSERT(result == 14);
     zprintf("read with read way: %s", buf);
-    close(fd);
+    ZASSERT(!close(fd));
 
     FILE* fin = fopen("deluge/tests/fileio/test.txt", "r");
     ZASSERT(fin);
@@ -30,6 +32,41 @@ int main(int argc, char** argv)
     ZASSERT(result == 14);
     printf("read the fread way: %s", buf);
     fclose(fin);
+
+    fd = open("deluge/tests/fileio/test.txt", O_RDONLY);
+    int fd2 = fcntl(fd, F_DUPFD, 100);
+    ZASSERT(fd2 >= 100);
+    __builtin_memset(buf, 0, sizeof(buf));
+    result = read(fd2, buf, sizeof(buf));
+    ZASSERT(result == 14);
+    zprintf("read with fcntl DUPFD read way: %s", buf);
+    __builtin_memset(buf, 0, sizeof(buf));
+    result = read(fd, buf, sizeof(buf));
+    ZASSERT(!result);
+    ZASSERT(!close(fd));
+
+    struct flock flock;
+    memset(&flock, 0, sizeof(flock));
+    flock.l_type = F_RDLCK;
+    int res = fcntl(fd2, F_GETLK, &flock);
+    ZASSERT(!res);
+    ZASSERT(flock.l_type == F_UNLCK);
+    ZASSERT(!flock.l_whence);
+    ZASSERT(!flock.l_start);
+    ZASSERT(!flock.l_len);
+    ZASSERT(!flock.l_pid);
+    ZASSERT(!close(fd2));
+    
+    fd = open("deluge/tests/fileio/test.txt", O_RDONLY);
+    flock.l_type = F_WRLCK;
+    res = fcntl(fd, F_GETLK, &flock);
+    ZASSERT(!res);
+    ZASSERT(flock.l_type == F_UNLCK);
+    ZASSERT(!flock.l_whence);
+    ZASSERT(!flock.l_start);
+    ZASSERT(!flock.l_len);
+    ZASSERT(!flock.l_pid);
+    ZASSERT(!close(fd));
     
     return 0;
 }

@@ -2663,6 +2663,40 @@ static int from_musl_open_flags(int musl_flags)
     return result;
 }
 
+static int to_musl_open_flags(int flags)
+{
+    int result = 0;
+
+    if (check_and_clear(&flags, O_WRONLY))
+        result |= 01;
+    if (check_and_clear(&flags, O_RDWR))
+        result |= 02;
+    if (check_and_clear(&flags, O_CREAT))
+        result |= 0100;
+    if (check_and_clear(&flags, O_EXCL))
+        result |= 0200;
+    if (check_and_clear(&flags, O_NOCTTY))
+        result |= 0400;
+    if (check_and_clear(&flags, O_TRUNC))
+        result |= 01000;
+    if (check_and_clear(&flags, O_APPEND))
+        result |= 02000;
+    if (check_and_clear(&flags, O_NONBLOCK))
+        result |= 04000;
+    if (check_and_clear(&flags, O_DIRECTORY))
+        result |= 0200000;
+    if (check_and_clear(&flags, O_NOFOLLOW))
+        result |= 0400000;
+    if (check_and_clear(&flags, O_CLOEXEC))
+        result |= 02000000;
+    if (check_and_clear(&flags, O_ASYNC))
+        result |= 020000;
+
+    if (flags)
+        return -1;
+    return result;
+}
+
 void deluded_f_zsys_open(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -2880,7 +2914,6 @@ struct musl_flock {
     int l_pid;
 };
 
-
 void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -2955,7 +2988,21 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
         musl_flock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
         deluge_check_access_int(musl_flock_ptr, sizeof(struct musl_flock), &origin);
         musl_flock = (struct musl_flock*)musl_flock_ptr.ptr;
-        arg_flock.l_type = musl_flock->l_type;
+        switch (musl_flock->l_type) {
+        case 0:
+            arg_flock.l_type = F_RDLCK;
+            break;
+        case 1:
+            arg_flock.l_type = F_WRLCK;
+            break;
+        case 2:
+            arg_flock.l_type = F_UNLCK;
+            break;
+        default:
+            set_errno(EINVAL);
+            *(int*)rets.ptr = -1;
+            return;
+        }
         arg_flock.l_whence = musl_flock->l_whence;
         arg_flock.l_start = musl_flock->l_start;
         arg_flock.l_len = musl_flock->l_len;
@@ -2967,6 +3014,26 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
         *(int*)rets.ptr = -1;
         return;
     }
+    switch (cmd) {
+    case F_SETFD:
+        switch (arg_int) {
+        case 0:
+            break;
+        case 1:
+            arg_int = FD_CLOEXEC;
+            break;
+        default:
+            set_errno(EINVAL);
+            *(int*)rets.ptr = -1;
+            return;
+        }
+        break;
+    case F_SETFL:
+        arg_int = from_musl_open_flags(arg_int);
+        break;
+    default:
+        break;
+    }
     int result;
     if (have_arg_int) {
         PAS_ASSERT(!have_arg_flock);
@@ -2974,11 +3041,27 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
     } else if (have_arg_flock) {
         struct flock saved_flock = arg_flock;
         result = fcntl(fd, cmd, &arg_flock);
+        if (arg_flock.l_type != saved_flock.l_type) {
+            switch (arg_flock.l_type) {
+            case F_RDLCK:
+                musl_flock->l_type = 0;
+                break;
+            case F_WRLCK:
+                musl_flock->l_type = 1;
+                break;
+            case F_UNLCK:
+                musl_flock->l_type = 2;
+                break;
+            default:
+                /* WTF? */
+                musl_flock->l_type = arg_flock.l_type;
+                break;
+            }
+        }
 #define SET_IF_DIFFERENT(field) do { \
         if (arg_flock.field != saved_flock.field) \
             musl_flock->field = arg_flock.field; \
     } while (false)
-        SET_IF_DIFFERENT(l_type);
         SET_IF_DIFFERENT(l_whence);
         SET_IF_DIFFERENT(l_start);
         SET_IF_DIFFERENT(l_len);
@@ -2988,6 +3071,25 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
         result = fcntl(fd, cmd);
     if (result == -1)
         set_errno(errno);
+    switch (cmd) {
+    case F_GETFD:
+        switch (result) {
+        case 0:
+            break;
+        case FD_CLOEXEC:
+            result = 1;
+            break;
+        default:
+            /* WTF? */
+            break;
+        }
+        break;
+    case F_GETFL:
+        result = to_musl_open_flags(result);
+        break;
+    default:
+        break;
+    }
     *(int*)rets.ptr = result;
 }
 
