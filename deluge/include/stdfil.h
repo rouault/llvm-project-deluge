@@ -362,6 +362,7 @@ int zsys_clock_gettime(int clock_id, unsigned long long* timespec_ptr);
 int zsys_fstatat(int fd, const char* path, void* buf, int flag);
 int zsys_fstat(int fd, void* buf);
 int zsys_fcntl(int fd, int cmd, ...);
+void* zsys_getpwuid(unsigned uid);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

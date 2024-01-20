@@ -27,6 +27,7 @@
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -45,12 +46,7 @@ const deluge_type deluge_ptr_type = {
     .u = {
         .trailing_array = NULL,
     },
-    .word_types = {
-        DELUGE_WORD_TYPE_PTR_PART1,
-        DELUGE_WORD_TYPE_PTR_PART2,
-        DELUGE_WORD_TYPE_PTR_PART3,
-        DELUGE_WORD_TYPE_PTR_PART4
-    }
+    .word_types = { DELUGE_WORD_TYPES_PTR }
 };
 
 const deluge_type deluge_function_type = {
@@ -886,17 +882,14 @@ void deluge_deallocate(void* ptr)
     pas_deallocate(ptr, DELUGE_HEAP_CONFIG);
 }
 
-void deluded_f_zfree(DELUDED_SIGNATURE)
+void deluge_deallocate_safe(deluge_ptr ptr)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zfree",
+        .function = "deluge_deallocate_safe",
         .line = 0,
         .column = 0
     };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    DELUDED_DELETE_ARGS();
 
     /* These checks aren't necessary to protect the allocator, which will already rule out
        pointers that don't belong to it. But, they are necessary to prevent the following:
@@ -930,6 +923,20 @@ void deluded_f_zfree(DELUDED_SIGNATURE)
         ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
     
     deluge_deallocate(ptr.ptr);
+}
+
+void deluded_f_zfree(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zfree",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_deallocate_safe(ptr);
 }
 
 void deluded_f_zgetallocsize(DELUDED_SIGNATURE)
@@ -1767,6 +1774,16 @@ const char* deluge_check_and_get_str(deluge_ptr str, const deluge_origin* origin
     PAS_ASSERT(length + 1 <= available);
     check_int(str.ptr, str.lower, str.upper, str.type, length + 1, origin);
     return (char*)str.ptr;
+}
+
+deluge_ptr deluge_strdup(const char* str)
+{
+    if (!str)
+        return deluge_ptr_forge_invalid(NULL);
+    size_t size = strlen(str) + 1;
+    char* result = (char*)deluge_allocate_int(size, 1);
+    memcpy(result, str, size);
+    return deluge_ptr_forge(result, result, result + size, &deluge_int_type);
 }
 
 void* deluge_va_arg_impl(
@@ -3107,6 +3124,107 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
     *(int*)rets.ptr = result;
 }
 
+struct musl_passwd {
+    deluge_ptr pw_name;
+    deluge_ptr pw_passwd;
+    unsigned pw_uid;
+    unsigned pw_gid;
+    deluge_ptr pw_gecos;
+    deluge_ptr pw_dir;
+    deluge_ptr pw_shell;
+};
+
+static const deluge_type musl_passwd_type = {
+    .size = sizeof(struct musl_passwd),
+    .alignment = alignof(struct musl_passwd),
+    .num_words = sizeof(struct musl_passwd) / 8,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        DELUGE_WORD_TYPES_PTR, /* pw_name */
+        DELUGE_WORD_TYPES_PTR, /* pw_passwd */
+        DELUGE_WORD_TYPE_INT, /* pw_uid, pw_gid */
+        DELUGE_WORD_TYPES_PTR, /* pw_gecos */
+        DELUGE_WORD_TYPES_PTR, /* pw_dir */
+        DELUGE_WORD_TYPES_PTR /* pw_shell */
+    }
+};
+
+static pas_heap_ref musl_passwd_heap = {
+    .type = (const pas_heap_type*)&musl_passwd_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
+{
+    deluge_deallocate_safe(musl_passwd->pw_name);
+    deluge_deallocate_safe(musl_passwd->pw_passwd);
+    deluge_deallocate_safe(musl_passwd->pw_gecos);
+    deluge_deallocate_safe(musl_passwd->pw_dir);
+    deluge_deallocate_safe(musl_passwd->pw_shell);
+}
+
+static void musl_passwd_threadlocal_destructor(void* ptr)
+{
+    struct musl_passwd* musl_passwd = (struct musl_passwd*)ptr;
+    musl_passwd_free_guts(musl_passwd);
+    deluge_deallocate(musl_passwd);
+}
+
+static pas_system_once musl_passwd_threadlocal_once = PAS_SYSTEM_ONCE_INIT;
+static pthread_key_t musl_passwd_threadlocal_key;
+
+static void musl_passwd_threadlocal_init(void)
+{
+    pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
+}
+
+static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
+{
+    pas_system_once_run(&musl_passwd_threadlocal_once, musl_passwd_threadlocal_init);
+
+    struct musl_passwd* result = (struct musl_passwd*)pthread_getspecific(musl_passwd_threadlocal_key);
+    if (result) {
+        result = deluge_allocate_one(&musl_passwd_heap);
+        pthread_setspecific(musl_passwd_threadlocal_key, result);
+    } else
+        musl_passwd_free_guts(result);
+    pas_zero_memory(result, sizeof(struct musl_passwd));
+
+    result->pw_name = deluge_strdup(passwd->pw_name);
+    result->pw_passwd = deluge_strdup(passwd->pw_passwd);
+    result->pw_uid = passwd->pw_uid;
+    result->pw_gid = passwd->pw_gid;
+    result->pw_gecos = deluge_strdup(passwd->pw_gecos);
+    result->pw_dir = deluge_strdup(passwd->pw_dir);
+    result->pw_shell = deluge_strdup(passwd->pw_shell);
+    return result;
+}
+
+void deluded_f_zsys_getpwuid(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getpwuid",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    unsigned uid = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    struct passwd* passwd = getpwuid(uid);
+    if (!passwd) {
+        set_errno(errno);
+        return;
+    }
+    struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \
@@ -3145,7 +3263,7 @@ static void thread_specific_construct(thread_specific* specific)
 
 DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific, thread_specific_construct);
 
-static deluge_type thread_specific_type = {
+static const deluge_type thread_specific_type = {
     .size = sizeof(thread_specific),
     .alignment = alignof(thread_specific),
     .num_words = 0,
@@ -3330,7 +3448,7 @@ static void rwlock_construct(pthread_rwlock_t* rwlock)
 
 DEFINE_RUNTIME_CONFIG(rwlock_runtime_config, pthread_rwlock_t, rwlock_construct);
 
-static deluge_type rwlock_type = {
+static const deluge_type rwlock_type = {
     .size = sizeof(pthread_rwlock_t),
     .alignment = alignof(pthread_rwlock_t),
     .num_words = 0,
@@ -3517,7 +3635,7 @@ static void mutex_construct(pthread_mutex_t* mutex)
 
 DEFINE_RUNTIME_CONFIG(mutex_runtime_config, pthread_mutex_t, mutex_construct);
 
-static deluge_type mutex_type = {
+static const deluge_type mutex_type = {
     .size = sizeof(pthread_mutex_t),
     .alignment = alignof(pthread_mutex_t),
     .num_words = 0,
@@ -3659,7 +3777,7 @@ static void zthread_construct(zthread* thread)
 
 DEFINE_RUNTIME_CONFIG(zthread_runtime_config, zthread, zthread_construct);
 
-static deluge_type zthread_type = {
+static const deluge_type zthread_type = {
     .size = sizeof(zthread),
     .alignment = alignof(zthread),
     .num_words = 0,

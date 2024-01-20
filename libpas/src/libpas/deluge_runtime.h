@@ -69,6 +69,13 @@ typedef uint8_t deluge_word_type;
 #define DELUGE_WORD_TYPE_PTR_PART4         ((uint8_t)5)     /* 64-bit word that contains the fourth
                                                                part of a wide ptr (the type). */
 
+/* Helper for emitting the ptr word types */
+#define DELUGE_WORD_TYPES_PTR \
+    DELUGE_WORD_TYPE_PTR_PART1, \
+    DELUGE_WORD_TYPE_PTR_PART2, \
+    DELUGE_WORD_TYPE_PTR_PART3, \
+    DELUGE_WORD_TYPE_PTR_PART4
+
 struct deluge_ptr {
     void* ptr;
     void* lower;
@@ -376,6 +383,7 @@ void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t co
 void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 
 void deluge_deallocate(void* ptr);
+void deluge_deallocate_safe(deluge_ptr ptr);
 void deluded_f_zfree(DELUDED_SIGNATURE);
 void deluded_f_zgetallocsize(DELUDED_SIGNATURE);
 
@@ -492,6 +500,7 @@ static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const del
    It's safe to call legacy C string functions on strings returned from this, since if they lacked
    an in-bounds terminator, then this would have trapped. */
 const char* deluge_check_and_get_str(deluge_ptr ptr, const deluge_origin* origin);
+deluge_ptr deluge_strdup(const char* str);
 
 /* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge
    code will have to use this kind of API to parse the flights. */
@@ -521,6 +530,14 @@ static inline int deluge_ptr_get_next_int(deluge_ptr* ptr, const deluge_origin* 
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
     deluge_check_access_int(slot_ptr, sizeof(int), origin);
     return *(int*)slot_ptr.ptr;
+}
+
+static inline unsigned deluge_ptr_get_next_unsigned(deluge_ptr* ptr, const deluge_origin* origin)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(unsigned), alignof(unsigned));
+    deluge_check_access_int(slot_ptr, sizeof(unsigned), origin);
+    return *(unsigned*)slot_ptr.ptr;
 }
 
 static inline long deluge_ptr_get_next_long(deluge_ptr* ptr, const deluge_origin* origin)
@@ -609,6 +626,7 @@ void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE);
 void deluded_f_zsys_fstatat(DELUDED_SIGNATURE);
 void deluded_f_zsys_fstat(DELUDED_SIGNATURE);
 void deluded_f_zsys_fcntl(DELUDED_SIGNATURE);
+void deluded_f_zsys_getpwuid(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
