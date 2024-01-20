@@ -3186,11 +3186,12 @@ static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
     pas_system_once_run(&musl_passwd_threadlocal_once, musl_passwd_threadlocal_init);
 
     struct musl_passwd* result = (struct musl_passwd*)pthread_getspecific(musl_passwd_threadlocal_key);
-    if (result) {
+    if (result)
+        musl_passwd_free_guts(result);
+    else {
         result = deluge_allocate_one(&musl_passwd_heap);
         pthread_setspecific(musl_passwd_threadlocal_key, result);
-    } else
-        musl_passwd_free_guts(result);
+    }
     pas_zero_memory(result, sizeof(struct musl_passwd));
 
     result->pw_name = deluge_strdup(passwd->pw_name);

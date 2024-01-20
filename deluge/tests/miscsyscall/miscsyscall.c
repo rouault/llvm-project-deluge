@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
+#include <pwd.h>
 
 int main(int argc, char** argv)
 {
@@ -70,6 +71,33 @@ int main(int argc, char** argv)
     ZASSERT(st2.st_uid == st.st_uid);
     ZASSERT(st2.st_gid == st.st_gid);
     ZASSERT(st2.st_size == 86);
+
+    struct passwd* passwd = getpwuid(getuid());
+    ZASSERT(passwd);
+    ZASSERT(strlen(passwd->pw_name));
+    ZASSERT(strlen(passwd->pw_passwd));
+    ZASSERT(passwd->pw_uid == getuid());
+    ZASSERT(passwd->pw_gid == getgid());
+    ZASSERT(strlen(passwd->pw_gecos));
+    ZASSERT(strlen(passwd->pw_dir));
+    ZASSERT(strlen(passwd->pw_shell));
+
+    char* name = strdup(passwd->pw_name);
+    char* passwdd = strdup(passwd->pw_passwd);
+    char* gecos = strdup(passwd->pw_gecos);
+    char* dir = strdup(passwd->pw_dir);
+    char* shell = strdup(passwd->pw_shell);
+    
+    struct passwd* passwd2 = getpwuid(getuid());
+    ZASSERT(passwd2);
+    ZASSERT(passwd2 == passwd);
+    ZASSERT(!strcmp(passwd->pw_name, name));
+    ZASSERT(!strcmp(passwd->pw_passwd, passwdd));
+    ZASSERT(passwd->pw_uid == getuid());
+    ZASSERT(passwd->pw_gid == getgid());
+    ZASSERT(!strcmp(passwd->pw_gecos, gecos));
+    ZASSERT(!strcmp(passwd->pw_dir, dir));
+    ZASSERT(!strcmp(passwd->pw_shell, shell));
     
     zprintf("No worries.\n");
     return 0;
