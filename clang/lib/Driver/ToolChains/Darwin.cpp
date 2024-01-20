@@ -723,7 +723,7 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   bool ForceLinkBuiltins = Args.hasArg(options::OPT_fapple_link_rtlib);
   if ((true)) {
     SmallString<128> P(getToolChain().getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "deluge", "build");
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-ldeluge");
     
@@ -2405,20 +2405,19 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
 
   if ((true)) {
     SmallString<128> P(D.InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "deluge", "include");
+    llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
     addSystemInclude(DriverArgs, CC1Args, P);
     
     // Add the Clang builtin headers that are allowlisted for Deluge
     if (!(NoStdInc && !ForceBuiltinInc) && !NoBuiltinInc) {
       SmallString<128> P(D.InstalledDir);
-      llvm::sys::path::append(P, "..", "..", "deluge", "builtins");
+      llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
       addSystemInclude(DriverArgs, CC1Args, P);
     }
 
     if (!NoStdInc && !NoStdlibInc) {
       SmallString<128> P(D.InstalledDir);
-      llvm::sys::path::append(P, "..", "..", "musl", "prefix");
-      llvm::sys::path::append(P, "include");
+      llvm::sys::path::append(P, "..", "..", "pizfix", "include");
       addSystemInclude(DriverArgs, CC1Args, P);
     }
     return;
