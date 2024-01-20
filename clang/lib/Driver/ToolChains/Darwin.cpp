@@ -221,6 +221,7 @@ static bool shouldLinkerNotDedup(bool IsLinkerOnlyAction, const ArgList &Args) {
 
 void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
                                  ArgStringList &CmdArgs,
+                                 const InputInfo &Output,
                                  const InputInfoList &Inputs,
                                  VersionTuple Version, bool LinkerIsLLD) const {
   const Driver &D = getToolChain().getDriver();
@@ -337,8 +338,16 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
 
     AddMachOArch(Args, CmdArgs);
 
-    Args.AddAllArgsTranslated(CmdArgs, options::OPT_install__name,
-                              "-dylib_install_name");
+    if (Args.hasArg(options::OPT_install__name)) {
+      Args.AddAllArgsTranslated(CmdArgs, options::OPT_install__name,
+                                "-dylib_install_name");
+    } else {
+      CmdArgs.push_back("-dylib_install_name");
+      SmallString<128> P(D.InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+      llvm::sys::path::append(P, llvm::sys::path::filename(Output.getFilename()));
+      CmdArgs.push_back(Args.MakeArgString(P));
+    }
   }
 
   Args.AddLastArg(CmdArgs, options::OPT_all__load);
@@ -601,7 +610,7 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   // I'm not sure why this particular decomposition exists in gcc, but
   // we follow suite for ease of comparison.
-  AddLinkArgs(C, Args, CmdArgs, Inputs, Version, LinkerIsLLD);
+  AddLinkArgs(C, Args, CmdArgs, Output, Inputs, Version, LinkerIsLLD);
 
   if (willEmitRemarks(Args) &&
       checkRemarksOptions(getToolChain().getDriver(), Args,
@@ -725,6 +734,8 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     SmallString<128> P(getToolChain().getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
     CmdArgs.push_back("-ldeluge");
     
     // libdeluge depends on libSystem, so lets make sure it's there.

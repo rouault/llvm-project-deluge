@@ -586,6 +586,8 @@ void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 void deluded_f_zfence(DELUDED_SIGNATURE);
 
+void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE);
+
 /* Amusingly, the order of these functions tell the story of me porting musl to deluge. */
 void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE);
 void deluded_f_zsys_ioctl(DELUDED_SIGNATURE);

@@ -328,6 +328,12 @@ void zerrorf(const char* str, ...);
 
 void zfence(void);
 
+/* Returns true if running in the build of the runtime that has extra (super expensive) testing
+   checks.
+
+   This is here so that the test suite can assert that it runs with testing asserts enabled. */
+_Bool zis_runtime_testing_enabled(void);
+
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 
 /* These APIs are memory-safe, so you won't escape the deluge by using them. But it's not clear to me to

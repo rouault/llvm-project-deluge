@@ -2088,6 +2088,20 @@ void deluded_f_zfence(DELUDED_SIGNATURE)
     pas_fence();
 }
 
+void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zis_runtime_testing_enabled",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr rets = DELUDED_RETS;
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    *(bool*)rets.ptr = !!PAS_ENABLE_TESTING;
+}
+
 static void (*deluded_errno_handler)(DELUDED_SIGNATURE);
 
 void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE)

@@ -14,6 +14,8 @@ mkdir -p runtime-build
 
 (cd musl && CC=../build/bin/clang ./configure --target=aarch64 --prefix=../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
+deluge/run-tests
+
 (cd zlib-1.3 && CC="xcrun ../build/bin/clang" CFLAGS="-O3 -g" ./configure --prefix=../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
 (cd openssl-3.2.0 && CC="xcrun ../build/bin/clang -g -O" ./Configure zlib no-asm --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)

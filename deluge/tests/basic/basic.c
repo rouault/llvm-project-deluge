@@ -8,6 +8,7 @@ int main(void)
         zprint("YAY\n");
     else
         zerror("bad value");
+
     return 0;
 }
 
