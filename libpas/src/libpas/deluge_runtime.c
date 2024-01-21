@@ -3437,6 +3437,34 @@ void deluded_f_zsys_isatty(DELUDED_SIGNATURE)
     *(int*)rets.ptr = result;
 }
 
+void deluded_f_zsys_pipe(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_pipe",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr fds_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(fds_ptr, sizeof(int) * 2, &origin);
+    int fds[2];
+    int result = pipe(fds);
+    if (result < 0) {
+        /* Make sure not to modify what fds_ptr points to on error, even if the system modified
+           our fds, since that would be nonconforming behavior. Probably doesn't matter since of
+           course we would never run on a nonconforming system. */
+        set_errno(errno);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    ((int*)fds_ptr.ptr)[0] = fds[0];
+    ((int*)fds_ptr.ptr)[1] = fds[1];
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \

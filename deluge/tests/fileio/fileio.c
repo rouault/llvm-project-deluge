@@ -78,6 +78,12 @@ int main(int argc, char** argv)
 
     ZASSERT(!isatty(fd));
     ZASSERT(!close(fd));
+
+    int fds[2];
+    ZASSERT(!pipe(fds));
+    ZASSERT(write(fds[1], "hello", strlen("hello") + 1) == strlen("hello") + 1);
+    ZASSERT(read(fds[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
+    ZASSERT(!strcmp(buf, "hello"));
     
     return 0;
 }
