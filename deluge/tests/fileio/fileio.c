@@ -76,6 +76,7 @@ int main(int argc, char** argv)
     res = fcntl(fd, F_GETFD);
     ZASSERT(res == FD_CLOEXEC);
 
+    ZASSERT(!isatty(fd));
     ZASSERT(!close(fd));
     
     return 0;

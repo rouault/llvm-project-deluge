@@ -3417,6 +3417,26 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
     }
 }
 
+void deluded_f_zsys_isatty(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_isatty",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int fd = deluge_ptr_get_next_int(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    errno = 0;
+    int result = isatty(fd);
+    if (!result && errno)
+        set_errno(errno);
+    *(int*)rets.ptr = result;
+}
+
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
     static void name ## _initialize_fresh_memory(void* begin, void* end) \
     { \
