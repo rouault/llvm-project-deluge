@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <pwd.h>
 #include <signal.h>
+#include <sys/select.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -2808,6 +2809,11 @@ static bool from_musl_clock_id(int musl_clock_id, clockid_t* result)
     }
 }
 
+struct musl_timespec {
+    uint64_t tv_sec;
+    uint64_t tv_nsec;
+};
+
 void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -2822,7 +2828,7 @@ void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
     deluge_ptr timespec_ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    deluge_check_access_int(timespec_ptr, sizeof(uint64_t) * 2, &origin);
+    deluge_check_access_int(timespec_ptr, sizeof(struct musl_timespec), &origin);
     clockid_t clock_id;
     if (!from_musl_clock_id(musl_clock_id, &clock_id)) {
         *(int*)rets.ptr = -1;
@@ -2836,8 +2842,9 @@ void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
         set_errno(errno);
         return;
     }
-    ((uint64_t*)timespec_ptr.ptr)[0] = ts.tv_sec;
-    ((uint64_t*)timespec_ptr.ptr)[1] = ts.tv_nsec;
+    struct musl_timespec* musl_timespec = (struct musl_timespec*)timespec_ptr.ptr;
+    musl_timespec->tv_sec = ts.tv_sec;
+    musl_timespec->tv_nsec = ts.tv_nsec;
 }
 
 struct musl_stat {
@@ -3463,6 +3470,61 @@ void deluded_f_zsys_pipe(DELUDED_SIGNATURE)
     }
     ((int*)fds_ptr.ptr)[0] = fds[0];
     ((int*)fds_ptr.ptr)[1] = fds[1];
+}
+
+struct musl_timeval {
+    uint64_t tv_sec;
+    uint64_t tv_usec;
+};
+
+void deluded_f_zsys_select(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_select",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int nfds = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr readfds_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr writefds_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr exceptfds_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr timeout_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    PAS_ASSERT(FD_SETSIZE == 1024);
+    DELUGE_CHECK(
+        nfds <= 1024,
+        &origin,
+        "attempt to select with nfds = %d (should be 1024 or less).",
+        nfds);
+    if (readfds_ptr.ptr)
+        deluge_check_access_int(readfds_ptr, sizeof(fd_set), &origin);
+    if (writefds_ptr.ptr)
+        deluge_check_access_int(writefds_ptr, sizeof(fd_set), &origin);
+    if (exceptfds_ptr.ptr)
+        deluge_check_access_int(exceptfds_ptr, sizeof(fd_set), &origin);
+    if (timeout_ptr.ptr)
+        deluge_check_access_int(timeout_ptr, sizeof(struct musl_timeval), &origin);
+    fd_set* readfds = (fd_set*)readfds_ptr.ptr;
+    fd_set* writefds = (fd_set*)writefds_ptr.ptr;
+    fd_set* exceptfds = (fd_set*)exceptfds_ptr.ptr;
+    struct musl_timeval* musl_timeout = (struct musl_timeval*)timeout_ptr.ptr;
+    struct timeval timeout;
+    if (musl_timeout) {
+        timeout.tv_sec = musl_timeout->tv_sec;
+        timeout.tv_usec = musl_timeout->tv_usec;
+    }
+    int result = select(nfds, readfds, writefds, exceptfds, musl_timeout ? &timeout : NULL);
+    if (result < 0)
+        set_errno(errno);
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    *(int*)rets.ptr = result;
+    if (musl_timeout) {
+        musl_timeout->tv_sec = timeout.tv_sec;
+        musl_timeout->tv_usec = timeout.tv_usec;
+    }
 }
 
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \

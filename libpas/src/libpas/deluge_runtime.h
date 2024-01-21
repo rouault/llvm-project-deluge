@@ -630,6 +630,7 @@ void deluded_f_zsys_getpwuid(DELUDED_SIGNATURE);
 void deluded_f_zsys_sigaction(DELUDED_SIGNATURE);
 void deluded_f_zsys_isatty(DELUDED_SIGNATURE);
 void deluded_f_zsys_pipe(DELUDED_SIGNATURE);
+void deluded_f_zsys_select(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);

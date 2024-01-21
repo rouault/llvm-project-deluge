@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <pwd.h>
 #include <signal.h>
+#include <sys/time.h>
 
 int main(int argc, char** argv)
 {
@@ -41,6 +42,13 @@ int main(int argc, char** argv)
     res = clock_gettime(CLOCK_REALTIME, &ts);
     ZASSERT(!res);
     ZASSERT(ts.tv_sec);
+    ZASSERT(ts.tv_nsec < 1000000000llu);
+
+    struct timeval tv;
+    res = gettimeofday(&tv, NULL);
+    ZASSERT(!res);
+    ZASSERT(tv.tv_sec);
+    ZASSERT(tv.tv_usec < 1000000llu);
 
     struct stat st;
     zprintf("size = %zu\n", sizeof(st));

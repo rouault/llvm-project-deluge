@@ -24,11 +24,13 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
    
-   It's super awesome to never use this.
+   It's super awesome to never use this. So, far the only uses of this are in the test suite, just
+   to make sure it works at all.
    
-   This is the only escape hatch.
+   This is the only escape hatch (other than writing legacy C code and linking it to your Deluge code).
    
-   ptr can be anything castable to const void*. type is a type expression. count must be __SIZE_TYPE__ ish. */
+   ptr can be anything castable to const void*. type is a type expression. count must be __SIZE_TYPE__
+   ish. */
 #define zunsafe_forge(ptr, type, count) ({ \
         type __d_temporary; \
         (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (__SIZE_TYPE__)(count)); \
@@ -124,7 +126,7 @@ _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *r
    Misuse of zrealloc/zalloc/zfree may cause logic errors where zalloc/realloc will return the same
    pointer as it had previously returned.
    
-   It's not possible to misues zrealloc to cause type confusion under the Deluge P^I type system.
+   It's not possible to misuse zrealloc to cause type confusion under the Deluge P^I type system.
    
    ptr is a pointer of the given type, type is a type expression, count must be __SIZE_TYPE__ ish. */
 #define zrealloc(ptr, type, count) ({ \
@@ -226,7 +228,28 @@ __SIZE_TYPE__ zgetallocsize(void* ptr);
 void zhard_free(void* ptr);
 __SIZE_TYPE__ zhard_getallocsize(void* ptr);
 
-/* Accessors for the bounds and type. */
+/* Accessors for the bounds and type.
+ 
+   The lower and upper bounds have the same capability as the incoming ptr. So, if you know that a
+   ptr points into the middle of struct foo and you want to get to the base of struct foo, you can
+   totally do:
+
+       struct foo* foo = (struct foo*)zgetlower(ptr);
+
+   Or if you know that ptr points to an array of struct foos, and you want to get a pointer to the
+   last one:
+ 
+       struct foo* foo = (struct foo*)zgetupper(ptr) - 1;
+       
+   In both cases, the pointer is usable provided that the bounds are big enough for struct foo and
+   that the type is compatible with struct foo.
+   
+   On the other hand, zgettype returns a very special kind of pointer. Anytime stdfil API says it
+   returns a ztype*, you'll get a pointer that knows that it points at the type type. It's not
+   possible to access such a pointer, but it is possible to pass it to APIs that take ztype*. APIs
+   that take ztype* validate the integrity of the type pointer. If you add anything to a ztype*,
+   then the capability will reject your pointer, so any uses will fail. So, it's not possible to
+   turn one ztype* into another via arithmetic. */
 void* zgetlower(void* ptr);
 void* zgetupper(void* ptr);
 ztype* zgettype(void* ptr);
@@ -248,15 +271,35 @@ ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
 ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
 
 /* Allocate a bytes-size array of the given type, which is given dynamically. The size must be a
-   multiple of the type's size. */
+   multiple of the type's size.
+
+   Here's an example use case. You can allocate some memory that can be used for memcpy'ing some bytes
+   out of an object and back again:
+
+       void* ptr2 = zalloc_with_type(zgettypeslice(ptr, bytes), bytes);
+
+   Or, to clone a whole object, you can do shenanigans like this:
+   
+       void* ptr2 = zalloc_with_type(zgettype(ptr), (char*)zgetupper(ptr) - (char*)zgetlower(ptr));
+       memcpy(ptr2, zgetlower(ptr), (char*)zgetupper(ptr) - (char*)zgetlower(ptr));
+       ptr2 = (char*)ptr2 + ((char*)ptr - (char*)zgetlower(ptr));
+   
+   This is a memory-safe escape hatch for situations where you don't know the type of the data that
+   you're dealing with, that data may have pointers, and you just want to be able to carry that data
+   around. Other than allowing you to specify a type dynamically (which implies picking the right
+   isoheap dynamically), it's exactly the same as zalloc. */
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
-   Returns that string. You have to zfree the string when you're done with it. */
+   Returns that string. You have to zfree the string when you're done with it.
+
+   This is exposed as %T in the zprintf family of functions. */
 char* ztype_to_new_string(ztype* type);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the ptr to that string.
-   Returns that string. You have to zfree the string when you're done with it. */
+   Returns that string. You have to zfree the string when you're done with it.
+
+   This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);
 
 /* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
@@ -366,6 +409,7 @@ void* zsys_getpwuid(unsigned uid);
 int zsys_sigaction(int signum, const void* act, void* oact);
 int zsys_isatty(int fd);
 int zsys_pipe(int fds[2]);
+int zsys_select(int nfds, void* reafds, void* writefds, void* errorfds, void* timeout);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
