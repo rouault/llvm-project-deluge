@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include <signal.h>
 
 const deluge_type deluge_int_type = {
     .size = 1,
@@ -2546,6 +2547,32 @@ static int from_musl_signum(int signum)
     }
 }
 
+static void check_signal(int signum, const deluge_origin* origin)
+{
+    DELUGE_CHECK(signum != SIGILL, origin, "cannot override SIGILL.");
+    DELUGE_CHECK(signum != SIGTRAP, origin, "cannot override SIGTRAP.");
+    DELUGE_CHECK(signum != SIGBUS, origin, "cannot override SIGBUS.");
+    DELUGE_CHECK(signum != SIGSEGV, origin, "cannot override SIGSEGV.");
+}
+
+static void* from_musl_signal_handler(void* handler, const deluge_origin* origin)
+{
+    DELUGE_CHECK(
+        handler == NULL || handler == (void*)(uintptr_t)1,
+        origin,
+        "signal handler dan only be SIG_DFL or SIG_IGN.");
+    return handler == NULL ? SIG_DFL : SIG_IGN;
+}
+
+static deluge_ptr to_musl_signal_handler(void* handler)
+{
+    if (handler == SIG_DFL)
+        return deluge_ptr_forge_invalid(NULL);
+    if (handler == SIG_IGN)
+        return deluge_ptr_forge_invalid((void*)(uintptr_t)1);
+    return deluge_ptr_forge_invalid(handler);
+}
+
 void deluded_f_zsys_signal(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -2566,29 +2593,14 @@ void deluded_f_zsys_signal(DELUDED_SIGNATURE)
         *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
         return;
     }
-    DELUGE_CHECK(signum != SIGILL, &origin, "cannot override SIGILL.");
-    DELUGE_CHECK(signum != SIGTRAP, &origin, "cannot override SIGTRAP.");
-    DELUGE_CHECK(signum != SIGBUS, &origin, "cannot override SIGBUS.");
-    DELUGE_CHECK(signum != SIGSEGV, &origin, "cannot override SIGSEGV.");
-    DELUGE_CHECK(
-        sighandler.ptr == NULL || sighandler.ptr == (void*)(uintptr_t)1,
-        &origin,
-        "signal handler dan only be SIG_DFL or SIG_IGN.");
-    void* result = signal(signum, sighandler.ptr == NULL ? SIG_DFL : SIG_IGN);
+    check_signal(signum, &origin);
+    void* result = signal(signum, from_musl_signal_handler(sighandler.ptr, &origin));
     if (result == SIG_ERR) {
         *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
         set_errno(errno);
         return;
     }
-    if (result == SIG_DFL) {
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid(NULL);
-        return;
-    }
-    if (result == SIG_IGN) {
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(uintptr_t)1);
-        return;
-    }
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid(result);
+    *(deluge_ptr*)rets.ptr = to_musl_signal_handler(result);
 }
 
 void deluded_f_zsys_getuid(DELUDED_SIGNATURE)
@@ -3224,6 +3236,176 @@ void deluded_f_zsys_getpwuid(DELUDED_SIGNATURE)
     }
     struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
+}
+
+struct musl_sigset {
+    unsigned long bits[128 / sizeof(long)];
+};
+
+struct musl_sigaction {
+    deluge_ptr sa_handler_ish;
+    struct musl_sigset sa_mask;
+    int sa_flags;
+    deluge_ptr sa_restorer; /* ignored */
+};
+
+static const deluge_type musl_sigaction_type = {
+    .size = sizeof(struct musl_sigaction),
+    .alignment = alignof(struct musl_sigaction),
+    .num_words = sizeof(struct musl_sigaction) / 8,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        DELUGE_WORD_TYPES_PTR, /* sa_handler_ish */
+        DELUGE_WORD_TYPE_INT, /* sa_mask */
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT, /* sa_flags */
+        DELUGE_WORD_TYPES_PTR /* sa_restorer */
+    }
+};
+
+static bool from_musl_sigset(struct musl_sigset* musl_sigset,
+                             sigset_t* sigset)
+{
+    static const unsigned num_active_words = 2;
+    static const unsigned num_active_bits = 2 * 64;
+
+    sigemptyset(sigset);
+    
+    unsigned musl_signum;
+    for (musl_signum = num_active_bits; musl_signum--;) {
+        bool bit_value = !!(musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)]
+                            & PAS_BITVECTOR_BIT_MASK64(musl_signum));
+        if (!bit_value)
+            continue;
+        int signum = from_musl_signum(musl_signum);
+        if (signum < 0)
+            return false;
+        sigaddset(sigset, signum);
+    }
+    return true;
+}
+
+static bool from_musl_sa_flags(int musl_flags, int* flags)
+{
+    *flags = 0;
+    if (check_and_clear(&musl_flags, 1))
+        *flags |= SA_NOCLDSTOP;
+    if (check_and_clear(&musl_flags, 2))
+        *flags |= SA_NOCLDWAIT;
+    if (check_and_clear(&musl_flags, 4))
+        *flags |= SA_SIGINFO;
+    if (check_and_clear(&musl_flags, 0x08000000))
+        *flags |= SA_ONSTACK;
+    if (check_and_clear(&musl_flags, 0x10000000))
+        *flags |= SA_RESTART;
+    if (check_and_clear(&musl_flags, 0x40000000))
+        *flags |= SA_NODEFER;
+    if (check_and_clear(&musl_flags, 0x80000000))
+        *flags |= SA_RESETHAND;
+    return !musl_flags;
+}
+
+static void to_musl_sigset(sigset_t* sigset, struct musl_sigset* musl_sigset)
+{
+    static const unsigned num_active_words = 2;
+    static const unsigned num_active_bits = 2 * 64;
+
+    pas_zero_memory(musl_sigset, sizeof(struct musl_sigset));
+    
+    unsigned musl_signum;
+    for (musl_signum = num_active_bits; musl_signum--;) {
+        int signum = from_musl_signum(musl_signum);
+        if (signum < 0)
+            continue;
+        if (sigismember(sigset, signum)) {
+            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)] |=
+                PAS_BITVECTOR_BIT_MASK64(musl_signum);
+        }
+    }
+}
+
+static int to_musl_sa_flags(int sa_flags)
+{
+    int result = 0;
+    if (check_and_clear(&sa_flags, SA_NOCLDSTOP))
+        result |= 1;
+    if (check_and_clear(&sa_flags, SA_NOCLDWAIT))
+        result |= 2;
+    if (check_and_clear(&sa_flags, SA_SIGINFO))
+        result |= 4;
+    if (check_and_clear(&sa_flags, SA_ONSTACK))
+        result |= 0x08000000;
+    if (check_and_clear(&sa_flags, SA_RESTART))
+        result |= 0x10000000;
+    if (check_and_clear(&sa_flags, SA_NODEFER))
+        result |= 0x40000000;
+    if (check_and_clear(&sa_flags, SA_RESETHAND))
+        result |= 0x80000000;
+    PAS_ASSERT(!sa_flags);
+    return result;
+}
+
+void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_sigactio",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int musl_signum = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr act_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr oact_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    int signum = from_musl_signum(musl_signum);
+    if (signum < 0) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    check_signal(signum, &origin);
+    deluge_restrict(act_ptr, 1, &musl_sigaction_type, &origin);
+    deluge_restrict(oact_ptr, 1, &musl_sigaction_type, &origin);
+    struct musl_sigaction* musl_act = (struct musl_sigaction*)act_ptr.ptr;
+    struct musl_sigaction* musl_oact = (struct musl_sigaction*)oact_ptr.ptr;
+    struct sigaction act;
+    struct sigaction oact;
+    act.sa_handler = from_musl_signal_handler(musl_act->sa_handler_ish.ptr, &origin);
+    if (!from_musl_sigset(&musl_act->sa_mask, &act.sa_mask) ||
+        !from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
+        set_errno(EINVAL);
+        *(int*)rets.ptr = -1;
+        return;
+    }
+    pas_zero_memory(&oact, sizeof(struct sigaction));
+    int result = sigaction(signum, &act, &oact);
+    if (result < 0) {
+        set_errno(errno);
+        *(int*)rets.ptr = 1;
+        return;
+    }
+    musl_oact->sa_handler_ish = to_musl_signal_handler(oact.sa_handler);
+    to_musl_sigset(&oact.sa_mask, &musl_oact->sa_mask);
+    musl_oact->sa_flags = to_musl_sa_flags(oact.sa_flags);
 }
 
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
