@@ -321,6 +321,9 @@ char* deluge_type_to_new_string(const deluge_type* type); /* WARNING: this is di
 
 PAS_API const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range,
                                              const deluge_origin* origin);
+PAS_API const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
+                                           const deluge_type* b, size_t b_size,
+                                           const deluge_origin* origin);
 
 /* This is basically va_arg, but it doesn't check that the type matches. That's fine if the consumer
    of the pointer is code compiled by Deluge, since that will check on every access. That's not fine if
@@ -418,6 +421,7 @@ void deluded_f_zgettype(DELUDED_SIGNATURE);
 
 void deluded_f_zslicetype(DELUDED_SIGNATURE);
 void deluded_f_zgettypeslice(DELUDED_SIGNATURE);
+void deluded_f_zcattype(DELUDED_SIGNATURE);
 void deluded_f_zalloc_with_type(DELUDED_SIGNATURE);
 
 void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE);

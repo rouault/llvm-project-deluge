@@ -6,6 +6,7 @@
 
 #if PAS_ENABLE_DELUGE
 
+#include "deluge_cat_table.h"
 #include "deluge_hard_heap_config.h"
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
@@ -74,6 +75,7 @@ const deluge_type deluge_type_type = {
 deluge_type_table deluge_heap_table = PAS_HASHTABLE_INITIALIZER;
 deluge_type_table deluge_hard_heap_table = PAS_HASHTABLE_INITIALIZER;
 deluge_deep_slice_table deluge_global_slice_table = PAS_HASHTABLE_INITIALIZER;
+deluge_deep_cat_table deluge_global_cat_table = PAS_HASHTABLE_INITIALIZER;
 pas_lock_free_read_ptr_ptr_hashtable deluge_fast_heap_table =
     PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 pas_lock_free_read_ptr_ptr_hashtable deluge_fast_hard_heap_table =
@@ -341,6 +343,49 @@ char* deluge_type_to_new_string(const deluge_type* type)
     return type_to_new_string_impl(type, &allocation_config);
 }
 
+typedef struct {
+    deluge_slice_table slice_table;
+    deluge_cat_table cat_table;
+} type_tables;
+
+static pas_system_once type_tables_key_once = PAS_SYSTEM_ONCE_INIT;
+static pthread_key_t type_tables_key;
+
+static void type_tables_destroy(void* value)
+{
+    type_tables* tables;
+    pas_allocation_config allocation_config;
+
+    tables = (type_tables*)value;
+
+    if (!tables)
+        return;
+
+    initialize_utility_allocation_config(&allocation_config);
+    deluge_slice_table_destruct(&tables->slice_table, &allocation_config);
+    deluge_cat_table_destruct(&tables->cat_table, &allocation_config);
+    deluge_deallocate(tables);
+}
+
+static void type_tables_init(void)
+{
+    pthread_key_create(&type_tables_key, type_tables_destroy);
+}
+
+static type_tables* get_type_tables(void)
+{
+    type_tables* result;
+    pas_system_once_run(&type_tables_key_once, type_tables_init);
+    result = pthread_getspecific(type_tables_key);
+    if (!result) {
+        result = deluge_allocate_utility(sizeof(type_tables));
+        deluge_slice_table_construct(&result->slice_table);
+        deluge_cat_table_construct(&result->cat_table);
+        pthread_setspecific(type_tables_key, result);
+    }
+    return result;
+}
+
 static void check_int_slice_range(const deluge_type* type, pas_range range,
                                   const deluge_origin* origin)
 {
@@ -364,31 +409,6 @@ static void check_int_slice_range(const deluge_type* type, pas_range range,
     }
 }
 
-/* FIXME: We could skip the overhead of doing the once thing if we just had a deluge runtime
-   initialization. */
-static pas_system_once slice_table_key_once = PAS_SYSTEM_ONCE_INIT;
-static pthread_key_t slice_table_key;
-
-void slice_table_destroy(void* value)
-{
-    deluge_slice_table* table;
-    pas_allocation_config allocation_config;
-
-    table = (deluge_slice_table*)value;
-
-    if (!table)
-        return;
-
-    initialize_utility_allocation_config(&allocation_config);
-    deluge_slice_table_destruct(table, &allocation_config);
-    deluge_deallocate(table);
-}
-
-void slice_table_init(void)
-{
-    pthread_key_create(&slice_table_key, slice_table_destroy);
-}
-
 const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, const deluge_origin* origin)
 {
     deluge_slice_table* table;
@@ -397,6 +417,7 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
     pas_allocation_config allocation_config;
     deluge_slice_table_entry new_entry;
     uintptr_t offset_in_type;
+    deluge_slice_table_entry* entry;
     
     if (type == &deluge_int_type)
         return &deluge_int_type;
@@ -428,19 +449,12 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
 
     PAS_TESTING_ASSERT(!(pas_range_size(range) % 8));
 
-    pas_system_once_run(&slice_table_key_once, slice_table_init);
-    table = pthread_getspecific(slice_table_key);
+    table = &get_type_tables()->slice_table;
     key.base_type = type;
     key.range = range;
-    if (table) {
-        deluge_slice_table_entry* entry;
-        entry = deluge_slice_table_find(table, key);
-        if (entry)
-            return entry->result_type;
-    } else {
-        table = deluge_allocate_utility(sizeof(deluge_slice_table));
-        pthread_setspecific(slice_table_key, table);
-    }
+    entry = deluge_slice_table_find(table, key);
+    if (entry)
+        return entry->result_type;
 
     initialize_utility_allocation_config(&allocation_config);
     
@@ -450,8 +464,17 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
         deluge_type* result_type;
         size_t index;
 
-        result_type = (deluge_type*)deluge_allocate_utility(
-            PAS_OFFSETOF(deluge_type, word_types) + sizeof(deluge_word_type) * pas_range_size(range) / 8);
+        size_t total_size;
+        DELUGE_CHECK(
+            !pas_mul_uintptr_overflow(sizeof(deluge_word_type), pas_range_size(range) / 8, &total_size),
+            origin,
+            "range too big (integer overflow).");
+        DELUGE_CHECK(
+            !pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(deluge_type, word_types), &total_size),
+            origin,
+            "range too big (integer overflow).");
+
+        result_type = (deluge_type*)deluge_allocate_utility(total_size);
         result_type->size = pas_range_size(range);
         result_type->alignment = type->alignment;
         while (!pas_is_aligned(range.begin, result_type->alignment) ||
@@ -471,6 +494,110 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
     new_entry.key = key;
     new_entry.result_type = add_result.entry->result_type;
     deluge_slice_table_add_new(table, new_entry, NULL, &allocation_config);
+
+    return new_entry.result_type;
+}
+
+const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
+                                   const deluge_type* b, size_t b_size,
+                                   const deluge_origin* origin)
+{
+    deluge_cat_table* table;
+    deluge_cat_table_key key;
+    deluge_deep_cat_table_add_result add_result;
+    pas_allocation_config allocation_config;
+    deluge_cat_table_entry new_entry;
+    deluge_cat_table_entry* entry;
+
+    if (a == &deluge_int_type && b == &deluge_int_type)
+        return &deluge_int_type;
+
+    DELUGE_CHECK(
+        a->num_words,
+        origin,
+        "cannot cat opaque types like %s.",
+        deluge_type_to_new_string(a));
+    DELUGE_CHECK(
+        b->num_words,
+        origin,
+        "cannot cat opaque types like %s.",
+        deluge_type_to_new_string(b));
+    DELUGE_CHECK(
+        pas_is_aligned(a_size, a->alignment),
+        origin,
+        "size %zu is not aligned to type %s.",
+        a_size, deluge_type_to_new_string(a));
+    DELUGE_CHECK(
+        pas_is_aligned(a_size, b->alignment),
+        origin,
+        "size %zu is not aligned to type %s.",
+        a_size, deluge_type_to_new_string(b));
+    DELUGE_CHECK(
+        pas_is_aligned(b_size, a->alignment),
+        origin,
+        "size %zu is not aligned to type %s.",
+        b_size, deluge_type_to_new_string(a));
+    DELUGE_CHECK(
+        pas_is_aligned(b_size, b->alignment),
+        origin,
+        "size %zu is not aligned to type %s.",
+        b_size, deluge_type_to_new_string(b));
+
+    PAS_ASSERT(!(a_size % 8));
+    PAS_ASSERT(!(b_size % 8));
+
+    table = &get_type_tables()->cat_table;
+    key.a = a;
+    key.a_size = a_size;
+    key.b = b;
+    key.b_size = b_size;
+    entry = deluge_cat_table_find(table, key);
+    if (entry)
+        return entry->result_type;
+
+    initialize_utility_allocation_config(&allocation_config);
+
+    deluge_type_lock_lock();
+    add_result = deluge_deep_cat_table_add(&deluge_global_cat_table, key, NULL, &allocation_config);
+    if (add_result.is_new_entry) {
+        deluge_type* result_type;
+        size_t index;
+        size_t new_type_size;
+        size_t total_size;
+
+        DELUGE_CHECK(
+            !pas_add_uintptr_overflow(a_size, b_size, &new_type_size),
+            origin,
+            "sizes too big (integer overflow).");
+        DELUGE_CHECK(
+            !pas_mul_uintptr_overflow(sizeof(deluge_word_type), new_type_size / 8, &total_size),
+            origin,
+            "sizes too big (integer overflow).");
+        DELUGE_CHECK(
+            !pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(deluge_type, word_types), &total_size),
+            origin,
+            "sizes too big (integer overflow).");
+
+        result_type = (deluge_type*)deluge_allocate_utility(total_size);
+
+        result_type->size = a_size + b_size;
+        result_type->alignment = pas_max_uintptr(a->alignment, b->alignment);
+        PAS_ASSERT(pas_is_aligned(result_type->size, result_type->alignment));
+        result_type->num_words = result_type->size / 8;
+        for (index = a_size / 8; index--;)
+            result_type->word_types[index] = deluge_type_get_word_type(a, index);
+        for (index = b_size / 8; index--;)
+            result_type->word_types[index + a_size / 8] = deluge_type_get_word_type(b, index);
+
+        add_result.entry->key = key;
+        add_result.entry->result_type = result_type;
+    }
+
+    deluge_type_lock_unlock();
+
+    new_entry.key = key;
+    new_entry.result_type = add_result.entry->result_type;
+    deluge_cat_table_add_new(table, new_entry, NULL, &allocation_config);
 
     return new_entry.result_type;
 }
@@ -1425,6 +1552,29 @@ void deluded_f_zgettypeslice(DELUDED_SIGNATURE)
     uintptr_t offset = (char*)ptr.ptr - (char*)ptr.lower;
     const deluge_type* result = deluge_type_slice(
         (const deluge_type*)ptr.type, pas_range_create(offset, offset + bytes), &origin);
+    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
+}
+
+void deluded_f_zcattype(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zcattype",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr a_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t a_size = deluge_ptr_get_next_size_t(&args, &origin);
+    deluge_ptr b_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t b_size = deluge_ptr_get_next_size_t(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_access_opaque(a_ptr, &deluge_type_type, &origin);
+    deluge_check_access_opaque(b_ptr, &deluge_type_type, &origin);
+    const deluge_type* result = deluge_type_cat(
+        (const deluge_type*)a_ptr.ptr, a_size, (const deluge_type*)b_ptr.ptr, b_size, &origin);
     *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
 }
 

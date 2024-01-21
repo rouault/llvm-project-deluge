@@ -1,8 +1,69 @@
 #ifndef DELUGE_STDFIL_H
 #define DELUGE_STDFIL_H
 
-/* Opaque representation of the Deluge type. It's not possible to access the contents of a Deluge
-   type except through whatever APIs we provide. */
+/* ztype: Opaque representation of the Deluge type. It's not possible to access the contents of a
+   Deluge type except through whatever APIs we provide. Deluge types are tricky, since they are
+   orthogonal to bounds. Every pointer has a bounds separate from the type, and the type's job is
+   to provide additional information. The only requirement is that a pointer's total range is a
+   multiple of whatever type it uses, or that it makes the math of flexes work out (where there is
+   an array of some type and a header).
+
+   Deluge types can tell you the layout of memory if you also give them a slice, or span - a tuple
+   of begin and end, in bytes.
+
+   Deluge types by themselves know a size for the purpose of informing the internal algorithm. It
+   should not be taken to mean the actual size of something. In particular, say you have a struct
+   like:
+
+       struct dejavu {
+           T a;
+           U b;
+           T c;
+           U d
+       };
+   
+   Observe that this type is the same as if we had an array of exactly two entries of this struct:
+   
+       struct pair {
+           T a;
+           U b;
+       };
+   
+   It's valid for a deluge pointer to struct dejavu to describe itself in either of the following
+   ways:
+   
+       1. We could say that the pointer points to one dejavu.
+       2. We could say that the pointer points to two pairs.
+   
+   The statements are equivalent under the Deluge type system, so the runtime and compiler are free
+   to pick whichever representation is most convenient. The type checks will work out the same
+   either way, because every type check (and every compiler-generated type introspection and all
+   type introspection in the runtime itself) always starts with a type and a slice, and the slice
+   has offsets in bytes.
+   
+   Things get even weirder when you consider that ztypes can represent flexes - objects with trailing
+   arrays. Flexes secretly also know the type of the array and where it starts. Hence, a flex can only
+   tell you memory layout if you only give it a slice since otherwise we don't know how many elements
+   the array has.
+   
+   This is quite different from C types. The APIs found here sometimes deal with C types and
+   sometimes with ztypes. APIs that take a C type do not need a slice, since the C type is both a
+   layout and a size. But anytime we have an API that takes a ztype - so anytime we want to deal with
+   types at runtime - then to emulate the behavior of a C type, we need at least a ztype and a size.
+   This denotes a slice starting at zero and ending at size. Those APIs may require that the size is
+   a multiple of the type's size and that the type not be a flex (like zalloc_with_type). Or, they
+   may allow the size to be any anything so long as 8 byte alignment is maintained for anything with
+   pointers. For example, slicing dejavu with [0, sizeof(dejavu) * 1.5) would create a type that is
+   equivalent to three pairs (i.e. it might even return the pair type). Basically, going "out of
+   bounds" of the type works as if we were asking for the layout of an array of that type, or the
+   layout of a flex with the appropriate array length to fit the slice.
+
+   This fact about ztypes can be traced to the fact that *every* pointer access in Deluge must
+   perform a bounds check based on that pointer's lower and upper, and the lower/upper pair can't be
+   faked or tricked. So, the ztype's job is to give you information that is orthogonal to the bounds.
+   Therefore, ztypes are not in the business of bounds checking and always assume that your slice
+   makes sense. The business of bounds checking typically happens before the ztype even gets
+   consulted. */
 struct ztype;
 typedef struct ztype ztype;
 
@@ -277,9 +338,10 @@ ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
         ztypeof_impl(&__d_temporary); \
     })
 
-/* Concatenates the two types to create a new type. As with zslicetype, if the type looks like an array
-   of some simpler type, then the simpler type might get returned. */
-ztype* zcattype(ztype* a, ztype* b);
+/* Concatenates the two type slices to create a new type. As with zslicetype, if the type looks like
+   an array of some simpler type, then the simpler type might get returned. That's also why you must
+   pass a size. */
+ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
 
 /* Allocate a bytes-size array of the given type, which is given dynamically. The size must be a
    multiple of the type's size.
