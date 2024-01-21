@@ -251,6 +251,7 @@ class Deluge {
   Value* ZhardAllocFlexImpl;
   Value* ZhardAlignedAllocImpl;
   Value* ZhardReallocImpl;
+  Value* ZtypeofImpl;
 
   // Low-level functions used by codegen.
   FunctionCallee ValidateType;
@@ -322,6 +323,7 @@ class Deluge {
   std::unordered_map<DelugeType, std::unique_ptr<DelugeTypeData>> TypeDatas;
   DelugeTypeData Int;
   DelugeTypeData FunctionDTD;
+  DelugeTypeData TypeDTD;
   DelugeTypeData Invalid;
 
   std::unordered_map<GlobalValue*, Function*> GlobalToGetter;
@@ -1588,6 +1590,23 @@ class Deluge {
         CI->eraseFromParent();
         return true;
       }
+
+      if (CI->getCalledOperand() == ZtypeofImpl) {
+        if (verbose)
+          errs() << "Lowering ztypeof\n";
+        lowerConstantOperands(CI, LowRawNull);
+        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
+        Type* LowT = lowerType(HighT);
+        Value* TypeRep = dataForLowType(LowT)->TypeRep;
+        CI->replaceAllUsesWith(
+          forgePtr(
+            TypeRep, TypeRep,
+            GetElementPtrInst::Create(
+              Int8Ty, TypeRep, { ConstantInt::get(IntPtrTy, 1) }, "deluge_upper_ztypeof", CI),
+            TypeDTD.TypeRep, CI));
+        CI->eraseFromParent();
+        return true;
+      }
     }
     
     return false;
@@ -1806,6 +1825,7 @@ class Deluge {
       assert(CI->getCalledOperand() != ZhardAllocFlexImpl);
       assert(CI->getCalledOperand() != ZhardReallocImpl);
       assert(CI->getCalledOperand() != ZhardAlignedAllocImpl);
+      assert(CI->getCalledOperand() != ZtypeofImpl);
       
       CallInst::Create(
         CheckAccessFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
@@ -2146,6 +2166,7 @@ public:
       "zhard_aligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
     ZhardReallocImpl = M.getOrInsertFunction(
       "zhard_realloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
+    ZtypeofImpl = M.getOrInsertFunction("ztypeof_impl", LowRawPtrTy, LowRawPtrTy).getCallee();
 
     assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
     assert(cast<Function>(ZrestrictImpl)->isDeclaration());
@@ -2157,6 +2178,7 @@ public:
     assert(cast<Function>(ZhardAllocFlexImpl)->isDeclaration());
     assert(cast<Function>(ZhardAlignedAllocImpl)->isDeclaration());
     assert(cast<Function>(ZhardReallocImpl)->isDeclaration());
+    assert(cast<Function>(ZtypeofImpl)->isDeclaration());
     
     if (verbose) {
       errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
@@ -2169,6 +2191,7 @@ public:
       errs() << "zhard_alloc_flex_impl = " << ZhardAllocFlexImpl << "\n";
       errs() << "zhard_aligned_lloc_impl = " << ZhardAlignedAllocImpl << "\n";
       errs() << "zhard_realloc_impl = " << ZhardReallocImpl << "\n";
+      errs() << "ztypeof_impl = " << ZtypeofImpl << "\n";
     }
 
     // Capture the set of things that need conversion, before we start adding functions and globals.
@@ -2210,6 +2233,9 @@ public:
     FunctionDTD.Type = DelugeType(0, 0);
     FunctionDTD.TypeRep = new GlobalVariable(
       M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_function_type");
+    TypeDTD.Type = DelugeType(0, 0);
+    TypeDTD.TypeRep = new GlobalVariable(
+      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "deluge_type_type");
     Invalid.Type = DelugeType(0, 0);
     Invalid.TypeRep = LowRawNull;
     
@@ -2483,7 +2509,8 @@ public:
           F == ZhardAllocImpl ||
           F == ZhardAllocFlexImpl ||
           F == ZhardAlignedAllocImpl ||
-          F == ZhardReallocImpl)
+          F == ZhardReallocImpl ||
+          F == ZtypeofImpl)
         continue;
       
       if (verbose)

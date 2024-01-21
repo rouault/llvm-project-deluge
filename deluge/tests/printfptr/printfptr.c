@@ -30,6 +30,7 @@ int main()
             zunsafe_forge(0x666, double, 12345),
             zunsafe_forge(0x42, struct another, 0666),
             zgettype(&another));
+    zprintf("This type is %T and stuff.\n", ztypeof(struct whatever));
     return 0;
 }
 

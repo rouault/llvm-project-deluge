@@ -21,6 +21,7 @@ void* zhard_alloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
 void* zhard_aligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void* zhard_realloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
+ztype* ztypeof_impl(void* type_like);
 
 /* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
    
@@ -269,6 +270,16 @@ ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
    Note that you could implement this using zgetlower, zgetupper, zgettype, and zslicetype, but it
    would be gross. That's what happens behind the scenes, more or less. */
 ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
+
+/* Gets the ztype of the given C type. */
+#define ztypeof(type) ({ \
+        type __d_temporary; \
+        ztypeof_impl(&__d_temporary); \
+    })
+
+/* Concatenates the two types to create a new type. As with zslicetype, if the type looks like an array
+   of some simpler type, then the simpler type might get returned. */
+ztype* zcattype(ztype* a, ztype* b);
 
 /* Allocate a bytes-size array of the given type, which is given dynamically. The size must be a
    multiple of the type's size.
