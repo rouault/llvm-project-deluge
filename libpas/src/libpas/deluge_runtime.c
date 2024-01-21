@@ -3279,26 +3279,25 @@ static const deluge_type musl_sigaction_type = {
     }
 };
 
-static bool from_musl_sigset(struct musl_sigset* musl_sigset,
+static void from_musl_sigset(struct musl_sigset* musl_sigset,
                              sigset_t* sigset)
 {
     static const unsigned num_active_words = 2;
     static const unsigned num_active_bits = 2 * 64;
 
-    sigemptyset(sigset);
+    sigfillset(sigset);
     
     unsigned musl_signum;
     for (musl_signum = num_active_bits; musl_signum--;) {
         bool bit_value = !!(musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)]
                             & PAS_BITVECTOR_BIT_MASK64(musl_signum));
-        if (!bit_value)
+        if (bit_value)
             continue;
         int signum = from_musl_signum(musl_signum);
         if (signum < 0)
-            return false;
-        sigaddset(sigset, signum);
+            continue;
+        sigdelset(sigset, signum);
     }
-    return true;
 }
 
 static bool from_musl_sa_flags(int musl_flags, int* flags)
@@ -3326,16 +3325,16 @@ static void to_musl_sigset(sigset_t* sigset, struct musl_sigset* musl_sigset)
     static const unsigned num_active_words = 2;
     static const unsigned num_active_bits = 2 * 64;
 
-    pas_zero_memory(musl_sigset, sizeof(struct musl_sigset));
+    memset(musl_sigset, 255, sizeof(struct musl_sigset));
     
     unsigned musl_signum;
     for (musl_signum = num_active_bits; musl_signum--;) {
         int signum = from_musl_signum(musl_signum);
         if (signum < 0)
             continue;
-        if (sigismember(sigset, signum)) {
-            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)] |=
-                PAS_BITVECTOR_BIT_MASK64(musl_signum);
+        if (!sigismember(sigset, signum)) {
+            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)] &=
+                ~PAS_BITVECTOR_BIT_MASK64(musl_signum);
         }
     }
 }
@@ -3365,7 +3364,7 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
         .filename = __FILE__,
-        .function = "zsys_sigactio",
+        .function = "zsys_sigaction",
         .line = 0,
         .column = 0
     };
@@ -3378,6 +3377,7 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
     deluge_check_access_int(rets, sizeof(int), &origin);
     int signum = from_musl_signum(musl_signum);
     if (signum < 0) {
+        pas_log("bad signum\n");
         set_errno(EINVAL);
         *(int*)rets.ptr = -1;
         return;
@@ -3390,8 +3390,9 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
     struct sigaction act;
     struct sigaction oact;
     act.sa_handler = from_musl_signal_handler(musl_act->sa_handler_ish.ptr, &origin);
-    if (!from_musl_sigset(&musl_act->sa_mask, &act.sa_mask) ||
-        !from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
+    from_musl_sigset(&musl_act->sa_mask, &act.sa_mask);
+    if (!from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
+        pas_log("failed to convert flags\n");
         set_errno(EINVAL);
         *(int*)rets.ptr = -1;
         return;
@@ -3399,6 +3400,7 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
     pas_zero_memory(&oact, sizeof(struct sigaction));
     int result = sigaction(signum, &act, &oact);
     if (result < 0) {
+        pas_log("sigaction failed\n");
         set_errno(errno);
         *(int*)rets.ptr = 1;
         return;

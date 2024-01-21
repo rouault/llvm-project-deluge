@@ -9,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <pwd.h>
+#include <signal.h>
 
 int main(int argc, char** argv)
 {
@@ -98,6 +99,19 @@ int main(int argc, char** argv)
     ZASSERT(!strcmp(passwd->pw_gecos, gecos));
     ZASSERT(!strcmp(passwd->pw_dir, dir));
     ZASSERT(!strcmp(passwd->pw_shell, shell));
+
+    ZASSERT(signal(SIGPIPE, SIG_IGN) == SIG_DFL);
+
+    struct sigaction act;
+    struct sigaction oact;
+    act.sa_handler = SIG_DFL;
+    sigfillset(&act.sa_mask);
+    act.sa_flags = SA_NODEFER;
+    ZASSERT(sigaction(SIGPIPE, &act, &oact) == 0);
+    ZASSERT(oact.sa_handler == SIG_IGN);
+    ZASSERT(oact.sa_flags == SA_RESTART);
+    ZASSERT(!sigismember(&oact.sa_mask, SIGPIPE));
+    ZASSERT(!sigismember(&oact.sa_mask, SIGTERM));
     
     zprintf("No worries.\n");
     return 0;
