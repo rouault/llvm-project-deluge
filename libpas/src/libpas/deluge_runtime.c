@@ -3383,31 +3383,38 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
         return;
     }
     check_signal(signum, &origin);
-    deluge_restrict(act_ptr, 1, &musl_sigaction_type, &origin);
-    deluge_restrict(oact_ptr, 1, &musl_sigaction_type, &origin);
+    if (act_ptr.ptr)
+        deluge_restrict(act_ptr, 1, &musl_sigaction_type, &origin);
+    if (oact_ptr.ptr)
+        deluge_restrict(oact_ptr, 1, &musl_sigaction_type, &origin);
     struct musl_sigaction* musl_act = (struct musl_sigaction*)act_ptr.ptr;
     struct musl_sigaction* musl_oact = (struct musl_sigaction*)oact_ptr.ptr;
     struct sigaction act;
     struct sigaction oact;
-    act.sa_handler = from_musl_signal_handler(musl_act->sa_handler_ish.ptr, &origin);
-    from_musl_sigset(&musl_act->sa_mask, &act.sa_mask);
-    if (!from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
-        pas_log("failed to convert flags\n");
-        set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
-        return;
+    if (musl_act) {
+        act.sa_handler = from_musl_signal_handler(musl_act->sa_handler_ish.ptr, &origin);
+        from_musl_sigset(&musl_act->sa_mask, &act.sa_mask);
+        if (!from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
+            pas_log("failed to convert flags\n");
+            set_errno(EINVAL);
+            *(int*)rets.ptr = -1;
+            return;
+        }
     }
-    pas_zero_memory(&oact, sizeof(struct sigaction));
-    int result = sigaction(signum, &act, &oact);
+    if (musl_oact)
+        pas_zero_memory(&oact, sizeof(struct sigaction));
+    int result = sigaction(signum, musl_act ? &act : NULL, musl_oact ? &oact : NULL);
     if (result < 0) {
         pas_log("sigaction failed\n");
         set_errno(errno);
         *(int*)rets.ptr = 1;
         return;
     }
-    musl_oact->sa_handler_ish = to_musl_signal_handler(oact.sa_handler);
-    to_musl_sigset(&oact.sa_mask, &musl_oact->sa_mask);
-    musl_oact->sa_flags = to_musl_sa_flags(oact.sa_flags);
+    if (musl_oact) {
+        musl_oact->sa_handler_ish = to_musl_signal_handler(oact.sa_handler);
+        to_musl_sigset(&oact.sa_mask, &musl_oact->sa_mask);
+        musl_oact->sa_flags = to_musl_sa_flags(oact.sa_flags);
+    }
 }
 
 #define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \

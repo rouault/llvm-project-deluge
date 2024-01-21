@@ -112,6 +112,15 @@ int main(int argc, char** argv)
     ZASSERT(oact.sa_flags == SA_RESTART);
     ZASSERT(!sigismember(&oact.sa_mask, SIGPIPE));
     ZASSERT(!sigismember(&oact.sa_mask, SIGTERM));
+
+    ZASSERT(sigaction(SIGPIPE, NULL, &oact) == 0);
+    ZASSERT(oact.sa_handler == SIG_DFL);
+    ZASSERT(oact.sa_flags == SA_NODEFER);
+    ZASSERT(sigismember(&oact.sa_mask, SIGPIPE));
+    ZASSERT(sigismember(&oact.sa_mask, SIGTERM));
+
+    act.sa_handler = SIG_IGN;
+    ZASSERT(sigaction(SIGPIPE, &act, NULL) == 0);
     
     zprintf("No worries.\n");
     return 0;
