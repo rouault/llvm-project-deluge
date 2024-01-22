@@ -394,6 +394,9 @@ static void check_int_slice_range(const deluge_type* type, pas_range range,
     uintptr_t last_word_type_index;
     uintptr_t word_type_index;
 
+    if (type == &deluge_int_type)
+        return;
+
     offset = range.begin;
     first_word_type_index = offset / 8;
     last_word_type_index = (offset + pas_range_size(range) - 1) / 8;
@@ -523,29 +526,21 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
         "cannot cat opaque types like %s.",
         deluge_type_to_new_string(b));
     DELUGE_CHECK(
-        pas_is_aligned(a_size, a->alignment),
-        origin,
-        "size %zu is not aligned to type %s.",
-        a_size, deluge_type_to_new_string(a));
-    DELUGE_CHECK(
         pas_is_aligned(a_size, b->alignment),
         origin,
-        "size %zu is not aligned to type %s.",
+        "a_size %zu is not aligned to b type %s; refusing to add alignment padding for you.",
         a_size, deluge_type_to_new_string(b));
-    DELUGE_CHECK(
-        pas_is_aligned(b_size, a->alignment),
-        origin,
-        "size %zu is not aligned to type %s.",
-        b_size, deluge_type_to_new_string(a));
-    DELUGE_CHECK(
-        pas_is_aligned(b_size, b->alignment),
-        origin,
-        "size %zu is not aligned to type %s.",
-        b_size, deluge_type_to_new_string(b));
 
-    /* This ought to be true for now if the previous conditions hold. */
-    PAS_ASSERT(!(a_size % 8));
-    PAS_ASSERT(!(b_size % 8));
+    if ((a_size % 8)) {
+        check_int_slice_range(a, pas_range_create(0, a_size), origin);
+        check_int_slice_range(b, pas_range_create(0, b_size), origin);
+        return &deluge_int_type;
+    }
+
+    if ((b_size % 8)) {
+        check_int_slice_range(b, pas_range_create(0, b_size), origin);
+        b_size = pas_round_up_to_power_of_2(b_size, 8);
+    }
 
     table = &get_type_tables()->cat_table;
     key.a = a;
@@ -565,6 +560,8 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
         size_t index;
         size_t new_type_size;
         size_t total_size;
+        size_t alignment;
+        size_t aligned_size;
 
         DELUGE_CHECK(
             !pas_add_uintptr_overflow(a_size, b_size, &new_type_size),
@@ -578,17 +575,25 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
             !pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(deluge_type, word_types), &total_size),
             origin,
             "sizes too big (integer overflow).");
+        alignment = pas_max_uintptr(a->alignment, b->alignment);
+        aligned_size = pas_round_up_to_power_of_2(new_type_size, alignment);
+        DELUGE_CHECK(
+            aligned_size >= new_type_size,
+            origin,
+            "sizes too big (hella strange alignment-related integer overflow).");
 
-        result_type = (deluge_type*)deluge_allocate_utility(total_size);
+        result_type = (deluge_type*)deluge_allocate_utility(aligned_size);
 
-        result_type->size = a_size + b_size;
-        result_type->alignment = pas_max_uintptr(a->alignment, b->alignment);
+        result_type->size = aligned_size;
+        result_type->alignment = alignment;
         PAS_ASSERT(pas_is_aligned(result_type->size, result_type->alignment));
-        result_type->num_words = result_type->size / 8;
+        result_type->num_words = aligned_size / 8;
         for (index = a_size / 8; index--;)
             result_type->word_types[index] = deluge_type_get_word_type(a, index);
         for (index = b_size / 8; index--;)
             result_type->word_types[index + a_size / 8] = deluge_type_get_word_type(b, index);
+        for (index = (aligned_size - new_type_size) / 8; index--;)
+            result_type->word_types[index + new_type_size / 8] = DELUGE_WORD_TYPE_OFF_LIMITS;
 
         add_result.entry->key = key;
         add_result.entry->result_type = result_type;
@@ -1595,6 +1600,11 @@ void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
     deluge_check_access_ptr(rets, &origin);
     deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
     const deluge_type* type = (const deluge_type*)type_ptr.ptr;
+    if (type != &deluge_int_type) {
+        /* This is never wrong, since type sizes are a multiple of 8. It just gives folks some forgiveness
+           when using this API, which makes it a bit more practical to use it with zcattype. */
+        size = pas_round_up_to_power_of_2(size, 8);
+    }
     void* result = deluge_try_allocate_with_type(type, size);
     if (result)
         *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + size, type);

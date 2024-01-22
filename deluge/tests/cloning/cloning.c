@@ -1,5 +1,6 @@
 #include <stdfil.h>
 #include "utils.h"
+#include <string.h>
 
 struct foo {
     int x;
@@ -59,6 +60,17 @@ int main(int argc, char** argv)
     ZASSERT(zgettype(foo_baz) == zcattype(ztypeof(struct foo), sizeof(struct foo),
                                           ztypeof(struct baz), sizeof(struct baz)));
 
+    struct baz* baz_whatever = opaque(
+        zalloc_with_type(zcattype(ztypeof(struct baz), sizeof(struct baz),
+                                  ztypeof(char), 13),
+                         sizeof(struct baz) + 13));
+    baz_whatever->a = "tak";
+    baz_whatever->b = f;
+    baz_whatever->c = 5;
+    baz_whatever->d = 6.1;
+    char* whatever = (char*)(baz_whatever + 1);
+    strcpy(whatever, "hello, world");
+    
     zprintf("Spoko\n");
     return 0;
 }
