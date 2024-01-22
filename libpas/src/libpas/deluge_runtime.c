@@ -543,6 +543,7 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
         "size %zu is not aligned to type %s.",
         b_size, deluge_type_to_new_string(b));
 
+    /* This ought to be true for now if the previous conditions hold. */
     PAS_ASSERT(!(a_size % 8));
     PAS_ASSERT(!(b_size % 8));
 
