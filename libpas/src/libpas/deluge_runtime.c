@@ -2758,7 +2758,8 @@ bool deluge_global_initialization_context_add(
         pas_log("capability = %s\n", deluge_ptr_to_new_string(deluge_ptr_create(0, ptr_capability)));
 
     if (!pas_ptr_hash_set_set(&context->seen, deluded_gptr, NULL, &allocation_config)) {
-        pas_log("was already seen\n");
+        if (verbose)
+            pas_log("was already seen\n");
         return false;
     }
 
