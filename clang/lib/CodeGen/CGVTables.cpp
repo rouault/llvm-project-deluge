@@ -921,7 +921,7 @@ llvm::GlobalVariable *CodeGenVTables::GenerateConstructionVTable(
   if (Linkage == llvm::GlobalVariable::AvailableExternallyLinkage)
     Linkage = llvm::GlobalVariable::InternalLinkage;
 
-  llvm::Align Align = CGM.getDataLayout().getABITypeAlign(VTType);
+  llvm::Align Align = CGM.getDataLayout().getABITypeAlignBeforeDeluge(VTType);
 
   // Create the variable that will hold the construction vtable.
   llvm::GlobalVariable *VTable =

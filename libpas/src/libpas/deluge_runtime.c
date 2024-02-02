@@ -10,6 +10,7 @@
 #include "deluge_hard_heap_config.h"
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
+#include "deluge_heap_table.h"
 #include "deluge_slice_table.h"
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
@@ -32,7 +33,15 @@
 #include <signal.h>
 #include <sys/select.h>
 
+const deluge_type_template deluge_int_type_template = {
+    .size = 1,
+    .alignment = 1,
+    .trailing_array = NULL,
+    .word_types = { DELUGE_WORD_TYPE_INT }
+};
+
 const deluge_type deluge_int_type = {
+    .index = DELUGE_INT_TYPE_INDEX,
     .size = 1,
     .alignment = 1,
     .num_words = 1,
@@ -42,10 +51,11 @@ const deluge_type deluge_int_type = {
     .word_types = { DELUGE_WORD_TYPE_INT }
 };
 
-const deluge_type deluge_ptr_type = {
+const deluge_type deluge_one_ptr_type = {
+    .index = DELUGE_ONE_PTR_TYPE_INDEX,
     .size = sizeof(deluge_ptr),
     .alignment = alignof(deluge_ptr),
-    .num_words = 4,
+    .num_words = sizeof(deluge_ptr) / DELUGE_WORD_SIZE,
     .u = {
         .trailing_array = NULL,
     },
@@ -53,6 +63,7 @@ const deluge_type deluge_ptr_type = {
 };
 
 const deluge_type deluge_function_type = {
+    .index = DELUGE_FUNCTION_TYPE_INDEX,
     .size = 0,
     .alignment = 0,
     .num_words = 0,
@@ -63,6 +74,7 @@ const deluge_type deluge_function_type = {
 };
 
 const deluge_type deluge_type_type = {
+    .index = DELUGE_TYPE_TYPE_INDEX,
     .size = 0,
     .alignment = 0,
     .num_words = 0,
@@ -72,16 +84,24 @@ const deluge_type deluge_type_type = {
     .word_types = { }
 };
 
-deluge_type_table deluge_heap_table = PAS_HASHTABLE_INITIALIZER;
-deluge_type_table deluge_hard_heap_table = PAS_HASHTABLE_INITIALIZER;
+const deluge_type** deluge_type_array = NULL;
+unsigned deluge_type_array_size = 0;
+unsigned deluge_type_array_capacity = 0;
+
+deluge_type_table deluge_type_table_instance = PAS_HASHTABLE_INITIALIZER;
+deluge_heap_table deluge_normal_heap_table = PAS_HASHTABLE_INITIALIZER;
+deluge_heap_table deluge_hard_heap_table = PAS_HASHTABLE_INITIALIZER;
 deluge_deep_slice_table deluge_global_slice_table = PAS_HASHTABLE_INITIALIZER;
 deluge_deep_cat_table deluge_global_cat_table = PAS_HASHTABLE_INITIALIZER;
+pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table =
+    PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 pas_lock_free_read_ptr_ptr_hashtable deluge_fast_heap_table =
     PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 pas_lock_free_read_ptr_ptr_hashtable deluge_fast_hard_heap_table =
     PAS_LOCK_FREE_READ_PTR_PTR_HASHTABLE_INITIALIZER;
 
 PAS_DEFINE_LOCK(deluge_type);
+PAS_DEFINE_LOCK(deluge_type_ops);
 PAS_DEFINE_LOCK(deluge_global_initialization);
 
 static void* allocate_utility_for_allocation_config(
@@ -125,6 +145,477 @@ static void initialize_int_allocation_config(pas_allocation_config* allocation_c
     allocation_config->arg = NULL;
 }
 
+typedef struct {
+    deluge_slice_table slice_table;
+    deluge_cat_table cat_table;
+} type_tables;
+
+static pthread_key_t type_tables_key;
+
+static void type_tables_destroy(void* value)
+{
+    type_tables* tables;
+    pas_allocation_config allocation_config;
+
+    tables = (type_tables*)value;
+
+    if (!tables)
+        return;
+
+    initialize_utility_allocation_config(&allocation_config);
+    deluge_slice_table_destruct(&tables->slice_table, &allocation_config);
+    deluge_cat_table_destruct(&tables->cat_table, &allocation_config);
+    deluge_deallocate(tables);
+}
+
+struct musl_passwd {
+    deluge_ptr pw_name;
+    deluge_ptr pw_passwd;
+    unsigned pw_uid;
+    unsigned pw_gid;
+    deluge_ptr pw_gecos;
+    deluge_ptr pw_dir;
+    deluge_ptr pw_shell;
+};
+
+static const deluge_type musl_passwd_type = {
+    .index = DELUGE_MUSL_PASSWD_TYPE_INDEX,
+    .size = sizeof(struct musl_passwd),
+    .alignment = alignof(struct musl_passwd),
+    .num_words = sizeof(struct musl_passwd) / DELUGE_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        DELUGE_WORD_TYPES_PTR, /* pw_name */
+        DELUGE_WORD_TYPES_PTR, /* pw_passwd */
+        DELUGE_WORD_TYPE_INT, /* pw_uid, pw_gid */
+        DELUGE_WORD_TYPES_PTR, /* pw_gecos */
+        DELUGE_WORD_TYPES_PTR, /* pw_dir */
+        DELUGE_WORD_TYPES_PTR /* pw_shell */
+    }
+};
+
+static pas_heap_ref musl_passwd_heap = {
+    .type = (const pas_heap_type*)&musl_passwd_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
+{
+    deluge_deallocate_safe(deluge_ptr_load(&musl_passwd->pw_name));
+    deluge_deallocate_safe(deluge_ptr_load(&musl_passwd->pw_passwd));
+    deluge_deallocate_safe(deluge_ptr_load(&musl_passwd->pw_gecos));
+    deluge_deallocate_safe(deluge_ptr_load(&musl_passwd->pw_dir));
+    deluge_deallocate_safe(deluge_ptr_load(&musl_passwd->pw_shell));
+}
+
+static void musl_passwd_threadlocal_destructor(void* ptr)
+{
+    struct musl_passwd* musl_passwd = (struct musl_passwd*)ptr;
+    musl_passwd_free_guts(musl_passwd);
+    deluge_deallocate(musl_passwd);
+}
+
+static pthread_key_t musl_passwd_threadlocal_key;
+
+struct musl_sigset {
+    unsigned long bits[128 / sizeof(long)];
+};
+
+struct musl_sigaction {
+    deluge_ptr sa_handler_ish;
+    struct musl_sigset sa_mask;
+    int sa_flags;
+    deluge_ptr sa_restorer; /* ignored */
+};
+
+static const deluge_type musl_sigaction_type = {
+    .index = DELUGE_MUSL_SIGACTION_TYPE_INDEX,
+    .size = sizeof(struct musl_sigaction),
+    .alignment = alignof(struct musl_sigaction),
+    .num_words = sizeof(struct musl_sigaction) / DELUGE_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        DELUGE_WORD_TYPES_PTR, /* sa_handler_ish */
+        DELUGE_WORD_TYPE_INT, /* sa_mask */
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPE_INT, /* sa_flags */
+        DELUGE_WORD_TYPES_PTR /* sa_restorer */
+    }
+};
+
+#define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
+    static void name ## _initialize_fresh_memory(void* begin, void* end) \
+    { \
+        PAS_TESTING_ASSERT(((char*)end - (char*)begin) >= (ptrdiff_t)sizeof(type)); \
+        fresh_memory_constructor(begin); \
+    } \
+    \
+    static pas_basic_heap_runtime_config name = { \
+        .base = { \
+            .sharing_mode = pas_do_not_share_pages, \
+            .statically_allocated = false, \
+            .is_part_of_heap = true, \
+            .is_flex = false, \
+            .directory_size_bound_for_partial_views = 0, \
+            .directory_size_bound_for_baseline_allocators = PAS_TYPED_BOUND_FOR_BASELINE_ALLOCATORS, \
+            .directory_size_bound_for_no_view_cache = PAS_TYPED_BOUND_FOR_NO_VIEW_CACHE, \
+            .max_segregated_object_size = PAS_TYPED_MAX_SEGREGATED_OBJECT_SIZE, \
+            .max_bitfit_object_size = 0, \
+            .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
+            .initialize_fresh_memory = name ## _initialize_fresh_memory \
+        }, \
+        .page_caches = &deluge_page_caches \
+    }
+
+typedef struct {
+    pas_lock lock;
+    void (*destructor)(DELUDED_SIGNATURE);
+    pthread_key_t key;
+    uint64_t version;
+} thread_specific;
+
+static void thread_specific_construct(thread_specific* specific)
+{
+    pas_lock_construct(&specific->lock);
+}
+
+DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific, thread_specific_construct);
+
+static const deluge_type thread_specific_type = {
+    .index = DELUGE_THREAD_SPECIFIC_TYPE_INDEX,
+    .size = sizeof(thread_specific),
+    .alignment = alignof(thread_specific),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &thread_specific_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref thread_specific_heap = {
+    .type = (const pas_heap_type*)&thread_specific_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static void rwlock_construct(pthread_rwlock_t* rwlock)
+{
+    int result = pthread_rwlock_init(rwlock, NULL);
+    PAS_ASSERT(!result);
+}
+
+DEFINE_RUNTIME_CONFIG(rwlock_runtime_config, pthread_rwlock_t, rwlock_construct);
+
+static const deluge_type rwlock_type = {
+    .index = DELUGE_RWLOCK_TYPE_INDEX,
+    .size = sizeof(pthread_rwlock_t),
+    .alignment = alignof(pthread_rwlock_t),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &rwlock_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref rwlock_heap = {
+    .type = (const pas_heap_type*)&rwlock_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static void mutex_construct(pthread_mutex_t* mutex)
+{
+    int result = pthread_mutex_init(mutex, NULL);
+    PAS_ASSERT(!result);
+}
+
+DEFINE_RUNTIME_CONFIG(mutex_runtime_config, pthread_mutex_t, mutex_construct);
+
+static const deluge_type mutex_type = {
+    .index = DELUGE_MUTEX_TYPE_INDEX,
+    .size = sizeof(pthread_mutex_t),
+    .alignment = alignof(pthread_mutex_t),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &mutex_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref mutex_heap = {
+    .type = (const pas_heap_type*)&mutex_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+typedef struct {
+    pas_lock lock;
+    pthread_t thread;
+} zthread;
+
+static void zthread_construct(zthread* thread)
+{
+    pas_lock_construct(&thread->lock);
+    thread->thread = NULL;
+}
+
+DEFINE_RUNTIME_CONFIG(zthread_runtime_config, zthread, zthread_construct);
+
+static const deluge_type zthread_type = {
+    .index = DELUGE_THREAD_TYPE_INDEX,
+    .size = sizeof(zthread),
+    .alignment = alignof(zthread),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &zthread_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref zthread_heap = {
+    .type = (const pas_heap_type*)&zthread_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
+static pthread_key_t zthread_key;
+
+static void initialize_impl(void)
+{
+    deluge_type_array = (const deluge_type**)deluge_allocate_utility(
+        sizeof(const deluge_type*) * DELUGE_TYPE_ARRAY_INITIAL_CAPACITY);
+    deluge_type_array_size = DELUGE_TYPE_ARRAY_INITIAL_SIZE;
+    deluge_type_array_capacity = DELUGE_TYPE_ARRAY_INITIAL_CAPACITY;
+
+    deluge_type_array[DELUGE_INVALID_TYPE_INDEX] = 0;
+    deluge_type_array[DELUGE_INT_TYPE_INDEX] = &deluge_int_type;
+    deluge_type_array[DELUGE_ONE_PTR_TYPE_INDEX] = &deluge_one_ptr_type;
+    deluge_type_array[DELUGE_FUNCTION_TYPE_INDEX] = &deluge_function_type;
+    deluge_type_array[DELUGE_TYPE_TYPE_INDEX] = &deluge_type_type;
+    deluge_type_array[DELUGE_MUSL_PASSWD_TYPE_INDEX] = &musl_passwd_type;
+    deluge_type_array[DELUGE_MUSL_SIGACTION_TYPE_INDEX] = &musl_sigaction_type;
+    deluge_type_array[DELUGE_THREAD_SPECIFIC_TYPE_INDEX] = &thread_specific_type;
+    deluge_type_array[DELUGE_RWLOCK_TYPE_INDEX] = &rwlock_type;
+    deluge_type_array[DELUGE_MUTEX_TYPE_INDEX] = &mutex_type;
+    deluge_type_array[DELUGE_THREAD_TYPE_INDEX] = &zthread_type;
+    
+    pthread_key_create(&type_tables_key, type_tables_destroy);
+    pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
+    
+    zthread* result = (zthread*)deluge_allocate_one(&zthread_heap);
+    PAS_ASSERT(!result->thread);
+    result->thread = pthread_self();
+    PAS_ASSERT(!pthread_key_create(&zthread_key, NULL));
+    PAS_ASSERT(!pthread_setspecific(zthread_key, result));
+}
+
+static pas_system_once global_once = PAS_SYSTEM_ONCE_INIT;
+
+void deluge_initialize(void)
+{
+    pas_system_once_run(&global_once, initialize_impl);
+}
+
+static void type_template_dump_impl(const deluge_type_template* type, pas_stream* stream)
+{
+    static const bool dump_ptr = false;
+
+    size_t index;
+
+    if (dump_ptr)
+        pas_stream_printf(stream, "@%p", type);
+
+    if (!type) {
+        pas_stream_printf(stream, "{null}");
+        return;
+    }
+
+    if (type == &deluge_int_type_template) {
+        pas_stream_printf(stream, "{int}");
+        return;
+    }
+
+    pas_stream_printf(stream, "{%zu,%zu,", type->size, type->alignment);
+    for (index = 0; index < deluge_type_template_num_words(type); ++index)
+        deluge_word_type_dump(type->word_types[index], stream);
+    if (type->trailing_array) {
+        pas_stream_printf(stream, ",trail");
+        type_template_dump_impl(type->trailing_array, stream);
+    }
+    pas_stream_printf(stream, "}");
+}
+
+void deluge_type_template_dump(const deluge_type_template* type, pas_stream* stream)
+{
+    static const bool dump_only_ptr = false;
+    
+    if (dump_only_ptr) {
+        pas_stream_printf(stream, "%p", type);
+        return;
+    }
+
+    pas_stream_printf(stream, "type_template");
+    type_template_dump_impl(type, stream);
+}
+
+static const deluge_type* get_type_impl(const deluge_type_template* type_template,
+                                        pas_lock_hold_mode type_lock_hold_mode);
+
+static const deluge_type* get_type_slow_impl(const deluge_type_template* type_template)
+{
+    static const bool verbose = false;
+    
+    pas_allocation_config allocation_config;
+    deluge_type_table_add_result add_result;
+
+    PAS_ASSERT(type_template->size);
+    PAS_ASSERT(type_template->alignment);
+    
+    initialize_utility_allocation_config(&allocation_config);
+
+    add_result = deluge_type_table_add(
+        &deluge_type_table_instance, type_template, NULL, &allocation_config);
+    if (add_result.is_new_entry) {
+        deluge_type* result_type;
+        size_t index;
+        size_t total_size;
+
+        PAS_ASSERT(!pas_mul_uintptr_overflow(
+                       sizeof(deluge_word_type), deluge_type_template_num_words(type_template),
+                       &total_size));
+        PAS_ASSERT(!pas_add_uintptr_overflow(
+                       total_size, PAS_OFFSETOF(deluge_type, word_types),
+                       &total_size));
+
+        if (deluge_type_array_size >= deluge_type_array_capacity) {
+            const deluge_type** new_type_array;
+            unsigned new_capacity;
+            
+            PAS_ASSERT(deluge_type_array_size == deluge_type_array_capacity);
+            PAS_ASSERT(deluge_type_array_size <= DELUGE_TYPE_ARRAY_MAX_SIZE);
+            if (deluge_type_array_size == DELUGE_TYPE_ARRAY_MAX_SIZE)
+                pas_panic("too many deluge types.\n");
+
+            if (deluge_type_array_capacity >= DELUGE_TYPE_ARRAY_MAX_SIZE / 2)
+                new_capacity = DELUGE_TYPE_ARRAY_MAX_SIZE;
+            else
+                new_capacity = deluge_type_array_capacity * 2;
+            new_type_array = (const deluge_type**)deluge_allocate_utility(
+                sizeof(deluge_type*) * new_capacity);
+
+            memcpy(new_type_array, deluge_type_array, deluge_type_array_size * sizeof(deluge_type*));
+
+            pas_store_store_fence();
+            
+            deluge_type_array = new_type_array;
+            deluge_type_array_capacity = new_capacity;
+
+            /* Intentionally leak the old array so that there's no race. */
+        }
+
+        result_type = deluge_allocate_utility(total_size);
+        result_type->index = deluge_type_array_size++;
+        result_type->size = type_template->size;
+        result_type->alignment = type_template->alignment;
+        result_type->num_words = deluge_type_template_num_words(type_template);
+        result_type->u.trailing_array = NULL;
+        memcpy(result_type->word_types, type_template->word_types,
+               deluge_type_template_num_words(type_template) * sizeof(deluge_word_type));
+        
+        add_result.entry->type_template = type_template;
+        add_result.entry->type = result_type;
+
+        if (type_template->trailing_array) {
+            /* Fill in the trailing_array after we've put the hashtable in an OK state (this entry is
+               filled in with something). */
+            result_type->u.trailing_array = get_type_impl(type_template->trailing_array, pas_lock_is_held);
+        }
+
+        deluge_validate_type(add_result.entry->type, NULL);
+
+        pas_store_store_fence();
+
+        deluge_type_array[result_type->index] = result_type;
+
+        if (verbose)
+            pas_log("Created new type %p with index %u\n", result_type, result_type->index);
+    }
+
+    return add_result.entry->type;
+}
+
+static unsigned fast_type_template_hash(const void* type, void* arg)
+{
+    PAS_ASSERT(!arg);
+    return pas_hash_ptr(type);
+}
+
+static const deluge_type* get_type_impl(const deluge_type_template* type_template,
+                                        pas_lock_hold_mode type_lock_hold_mode)
+{
+    static const bool verbose = false;
+    const deluge_type* result;
+    if (verbose) {
+        pas_log("Getting type for ");
+        deluge_type_template_dump(type_template, &pas_log_stream.base);
+        pas_log("\n");
+    }
+    PAS_ASSERT(type_template);
+    if (type_template == &deluge_int_type_template)
+        return &deluge_int_type;
+    result = (const deluge_type*)pas_lock_free_read_ptr_ptr_hashtable_find(
+        &deluge_fast_type_table, fast_type_template_hash, NULL, type_template);
+    if (result)
+        return result;
+    deluge_type_lock_lock_conditionally(type_lock_hold_mode);
+    result = get_type_slow_impl(type_template);
+    deluge_type_lock_unlock_conditionally(type_lock_hold_mode);
+    pas_heap_lock_lock();
+    pas_lock_free_read_ptr_ptr_hashtable_set(
+        &deluge_fast_type_table, fast_type_template_hash, NULL, type_template, result,
+        pas_lock_free_read_ptr_ptr_hashtable_set_maybe_existing);
+    pas_heap_lock_unlock();
+    return result;
+}
+
+const deluge_type* deluge_get_type(const deluge_type_template* type_template)
+{
+    return get_type_impl(type_template, pas_lock_is_not_held);
+}
+
+void deluge_ptr_dump(deluge_ptr ptr, pas_stream* stream)
+{
+    pas_stream_printf(
+        stream, "%p,%p,%p,", deluge_ptr_ptr(ptr), deluge_ptr_lower(ptr), deluge_ptr_upper(ptr));
+    deluge_type_dump(deluge_ptr_type(ptr), stream);
+}
+
+static char* ptr_to_new_string_impl(deluge_ptr ptr, pas_allocation_config* allocation_config)
+{
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, allocation_config);
+    deluge_ptr_dump(ptr, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
+char* deluge_ptr_to_new_string(deluge_ptr ptr)
+{
+    pas_allocation_config allocation_config;
+    initialize_utility_allocation_config(&allocation_config);
+    return ptr_to_new_string_impl(ptr, &allocation_config);
+}
+
 void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
 {
     if (deluge_type_is_equal(type, &deluge_int_type))
@@ -144,20 +635,21 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
         if (type->num_words) {
             size_t index;
             if (type->u.trailing_array == &deluge_int_type) {
-                /* You could have an int trailing array starting at an offset that is not a multiple of 8.
+                /* You could have an int trailing array starting at an offset that is not a multiple of 16.
                    That's fine so long as the word in which it starts is itself an int. The math inside of
                    deluge_type_get_word_type() ends up being wrong in a benign way in that case; for any
                    byte in the trailing array it might return the int word from the tail end of the base
                    type or the int word from the trailing type, and it's arbitrary which you get, and it
                    doesn't matter. These assertions are all about making sure you get int either way,
                    which is right. */
-                DELUGE_ASSERT((type->size + 7) / 8 == type->num_words, origin);
+                DELUGE_ASSERT(pas_round_up_to_power_of_2(type->size, DELUGE_WORD_SIZE) / DELUGE_WORD_SIZE
+                              == type->num_words, origin);
                 DELUGE_ASSERT(
-                    type->size == type->num_words * 8 ||
+                    type->size == type->num_words * DELUGE_WORD_SIZE ||
                     type->word_types[type->num_words - 1] == DELUGE_WORD_TYPE_INT,
                     origin);
             } else
-                DELUGE_ASSERT(type->size == type->num_words * 8, origin);
+                DELUGE_ASSERT(type->size == type->num_words * DELUGE_WORD_SIZE, origin);
             if (type->u.trailing_array) {
                 DELUGE_ASSERT(type->u.trailing_array->num_words, origin);
                 DELUGE_ASSERT(!type->u.trailing_array->u.trailing_array, origin);
@@ -168,49 +660,43 @@ void deluge_validate_type(const deluge_type* type, const deluge_origin* origin)
             for (index = type->num_words; index--;) {
                 DELUGE_ASSERT(
                     (type->word_types[index] >= DELUGE_WORD_TYPE_OFF_LIMITS) &&
-                    (type->word_types[index] <= DELUGE_WORD_TYPE_PTR_PART4),
+                    (type->word_types[index] <= DELUGE_WORD_TYPE_PTR_CAPABILITY),
                     origin);
             }
         }
     }
 }
 
-bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b)
+bool deluge_type_template_is_equal(const deluge_type_template* a, const deluge_type_template* b)
 {
     size_t index;
     if (a == b)
         return true;
-    if (a->num_words != b->num_words)
-        return false;
-    if (!a->num_words)
-        return false;
     if (a->size != b->size)
         return false;
     if (a->alignment != b->alignment)
         return false;
-    if (a->u.trailing_array) {
-        if (!b->u.trailing_array)
+    if (a->trailing_array) {
+        if (!b->trailing_array)
             return false;
-        return deluge_type_is_equal(a->u.trailing_array, b->u.trailing_array);
-    } else if (b->u.trailing_array)
+        return deluge_type_template_is_equal(a->trailing_array, b->trailing_array);
+    } else if (b->trailing_array)
         return false;
-    for (index = a->num_words; index--;) {
+    for (index = deluge_type_template_num_words(a); index--;) {
         if (a->word_types[index] != b->word_types[index])
             return false;
     }
     return true;
 }
 
-unsigned deluge_type_hash(const deluge_type* type)
+unsigned deluge_type_template_hash(const deluge_type_template* type)
 {
     unsigned result;
     size_t index;
-    if (!type->num_words)
-        return pas_hash_ptr(type);
     result = type->size + 3 * type->alignment;
-    if (type->u.trailing_array)
-        result += 7 * deluge_type_hash(type->u.trailing_array);
-    for (index = type->num_words; index--;) {
+    if (type->trailing_array)
+        result += 7 * deluge_type_template_hash(type->trailing_array);
+    for (index = deluge_type_template_num_words(type); index--;) {
         result *= 11;
         result += type->word_types[index];
     }
@@ -226,17 +712,11 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     case DELUGE_WORD_TYPE_INT:
         pas_stream_printf(stream, "i");
         return;
-    case DELUGE_WORD_TYPE_PTR_PART1:
-        pas_stream_printf(stream, "P");
+    case DELUGE_WORD_TYPE_PTR_SIDECAR:
+        pas_stream_printf(stream, "S");
         return;
-    case DELUGE_WORD_TYPE_PTR_PART2:
-        pas_stream_printf(stream, "L");
-        return;
-    case DELUGE_WORD_TYPE_PTR_PART3:
-        pas_stream_printf(stream, "U");
-        return;
-    case DELUGE_WORD_TYPE_PTR_PART4:
-        pas_stream_printf(stream, "T");
+    case DELUGE_WORD_TYPE_PTR_CAPABILITY:
+        pas_stream_printf(stream, "C");
         return;
     default:
         pas_stream_printf(stream, "?%u", type);
@@ -254,7 +734,7 @@ static void type_dump_impl(const deluge_type* type, pas_stream* stream)
         pas_stream_printf(stream, "@%p", type);
 
     if (!type) {
-        pas_stream_printf(stream, "{null}");
+        pas_stream_printf(stream, "{invalid}");
         return;
     }
 
@@ -274,7 +754,7 @@ static void type_dump_impl(const deluge_type* type, pas_stream* stream)
     }
 
     if (!type->num_words) {
-        pas_stream_printf(stream, "{unique:%p", type);
+        pas_stream_printf(stream, "{unique:%u,%p", type->index, type);
         if (type->size)
             pas_stream_printf(stream, ",%zu,%zu", type->size, type->alignment);
         if (type->u.runtime_config)
@@ -343,39 +823,9 @@ char* deluge_type_to_new_string(const deluge_type* type)
     return type_to_new_string_impl(type, &allocation_config);
 }
 
-typedef struct {
-    deluge_slice_table slice_table;
-    deluge_cat_table cat_table;
-} type_tables;
-
-static pas_system_once type_tables_key_once = PAS_SYSTEM_ONCE_INIT;
-static pthread_key_t type_tables_key;
-
-static void type_tables_destroy(void* value)
-{
-    type_tables* tables;
-    pas_allocation_config allocation_config;
-
-    tables = (type_tables*)value;
-
-    if (!tables)
-        return;
-
-    initialize_utility_allocation_config(&allocation_config);
-    deluge_slice_table_destruct(&tables->slice_table, &allocation_config);
-    deluge_cat_table_destruct(&tables->cat_table, &allocation_config);
-    deluge_deallocate(tables);
-}
-
-static void type_tables_init(void)
-{
-    pthread_key_create(&type_tables_key, type_tables_destroy);
-}
-
 static type_tables* get_type_tables(void)
 {
     type_tables* result;
-    pas_system_once_run(&type_tables_key_once, type_tables_init);
     result = pthread_getspecific(type_tables_key);
     if (!result) {
         result = deluge_allocate_utility(sizeof(type_tables));
@@ -398,8 +848,8 @@ static void check_int_slice_range(const deluge_type* type, pas_range range,
         return;
 
     offset = range.begin;
-    first_word_type_index = offset / 8;
-    last_word_type_index = (offset + pas_range_size(range) - 1) / 8;
+    first_word_type_index = offset / DELUGE_WORD_SIZE;
+    last_word_type_index = (offset + pas_range_size(range) - 1) / DELUGE_WORD_SIZE;
 
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;
@@ -445,12 +895,12 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
     if (!range.begin && range.end == type->size && !type->u.trailing_array)
         return type;
     
-    if ((range.begin % 8) || (range.end % 8)) {
+    if ((range.begin % DELUGE_WORD_SIZE) || (range.end % DELUGE_WORD_SIZE)) {
         check_int_slice_range(type, range, origin);
         return &deluge_int_type;
     }
 
-    PAS_TESTING_ASSERT(!(pas_range_size(range) % 8));
+    PAS_TESTING_ASSERT(!(pas_range_size(range) % DELUGE_WORD_SIZE));
 
     table = &get_type_tables()->slice_table;
     key.base_type = type;
@@ -461,38 +911,41 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
 
     initialize_utility_allocation_config(&allocation_config);
     
-    deluge_type_lock_lock();
+    deluge_type_ops_lock_lock();
     add_result = deluge_deep_slice_table_add(&deluge_global_slice_table, key, NULL, &allocation_config);
     if (add_result.is_new_entry) {
-        deluge_type* result_type;
+        deluge_type_template* type_template;
         size_t index;
 
         size_t total_size;
         DELUGE_CHECK(
-            !pas_mul_uintptr_overflow(sizeof(deluge_word_type), pas_range_size(range) / 8, &total_size),
+            !pas_mul_uintptr_overflow(
+                sizeof(deluge_word_type), pas_range_size(range) / DELUGE_WORD_SIZE, &total_size),
             origin,
             "range too big (integer overflow).");
         DELUGE_CHECK(
-            !pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(deluge_type, word_types), &total_size),
+            !pas_add_uintptr_overflow(
+                total_size, PAS_OFFSETOF(deluge_type_template, word_types), &total_size),
             origin,
             "range too big (integer overflow).");
 
-        result_type = (deluge_type*)deluge_allocate_utility(total_size);
-        result_type->size = pas_range_size(range);
-        result_type->alignment = type->alignment;
-        while (!pas_is_aligned(range.begin, result_type->alignment) ||
-               !pas_is_aligned(range.end, result_type->alignment) ||
-               !pas_is_aligned(pas_range_size(range), result_type->alignment))
-            result_type->alignment /= 2;
-        PAS_ASSERT(result_type->alignment >= 8);
-        result_type->num_words = pas_range_size(range) / 8;
-        for (index = pas_range_size(range) / 8; index--;)
-            result_type->word_types[index] = deluge_type_get_word_type(type, index + range.begin / 8);
+        type_template = (deluge_type_template*)deluge_allocate_utility(total_size);
+        type_template->size = pas_range_size(range);
+        type_template->alignment = type->alignment;
+        while (!pas_is_aligned(range.begin, type_template->alignment) ||
+               !pas_is_aligned(range.end, type_template->alignment) ||
+               !pas_is_aligned(pas_range_size(range), type_template->alignment))
+            type_template->alignment /= 2;
+        PAS_ASSERT(type_template->alignment >= DELUGE_WORD_SIZE);
+        for (index = pas_range_size(range) / DELUGE_WORD_SIZE; index--;) {
+            type_template->word_types[index] =
+                deluge_type_get_word_type(type, index + range.begin / DELUGE_WORD_SIZE);
+        }
         
         add_result.entry->key = key;
-        add_result.entry->result_type = result_type;
+        add_result.entry->result_type = deluge_get_type(type_template);
     }
-    deluge_type_lock_unlock();
+    deluge_type_ops_lock_unlock();
 
     new_entry.key = key;
     new_entry.result_type = add_result.entry->result_type;
@@ -531,13 +984,13 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
         "a_size %zu is not aligned to b type %s; refusing to add alignment padding for you.",
         a_size, deluge_type_to_new_string(b));
 
-    if ((a_size % 8)) {
+    if ((a_size % DELUGE_WORD_SIZE)) {
         check_int_slice_range(a, pas_range_create(0, a_size), origin);
         check_int_slice_range(b, pas_range_create(0, b_size), origin);
         return &deluge_int_type;
     }
 
-    if ((b_size % 8)) {
+    if ((b_size % DELUGE_WORD_SIZE)) {
         check_int_slice_range(b, pas_range_create(0, b_size), origin);
         b_size = pas_round_up_to_power_of_2(b_size, 8);
     }
@@ -553,10 +1006,10 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
 
     initialize_utility_allocation_config(&allocation_config);
 
-    deluge_type_lock_lock();
+    deluge_type_ops_lock_lock();
     add_result = deluge_deep_cat_table_add(&deluge_global_cat_table, key, NULL, &allocation_config);
     if (add_result.is_new_entry) {
-        deluge_type* result_type;
+        deluge_type_template* result_type;
         size_t index;
         size_t new_type_size;
         size_t total_size;
@@ -568,11 +1021,13 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
             origin,
             "sizes too big (integer overflow).");
         DELUGE_CHECK(
-            !pas_mul_uintptr_overflow(sizeof(deluge_word_type), new_type_size / 8, &total_size),
+            !pas_mul_uintptr_overflow(
+                sizeof(deluge_word_type), new_type_size / DELUGE_WORD_SIZE, &total_size),
             origin,
             "sizes too big (integer overflow).");
         DELUGE_CHECK(
-            !pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(deluge_type, word_types), &total_size),
+            !pas_add_uintptr_overflow(
+                total_size, PAS_OFFSETOF(deluge_type_template, word_types), &total_size),
             origin,
             "sizes too big (integer overflow).");
         alignment = pas_max_uintptr(a->alignment, b->alignment);
@@ -582,24 +1037,25 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
             origin,
             "sizes too big (hella strange alignment-related integer overflow).");
 
-        result_type = (deluge_type*)deluge_allocate_utility(aligned_size);
+        result_type = (deluge_type_template*)deluge_allocate_utility(total_size);
 
         result_type->size = aligned_size;
         result_type->alignment = alignment;
         PAS_ASSERT(pas_is_aligned(result_type->size, result_type->alignment));
-        result_type->num_words = aligned_size / 8;
-        for (index = a_size / 8; index--;)
+        for (index = a_size / DELUGE_WORD_SIZE; index--;)
             result_type->word_types[index] = deluge_type_get_word_type(a, index);
-        for (index = b_size / 8; index--;)
-            result_type->word_types[index + a_size / 8] = deluge_type_get_word_type(b, index);
-        for (index = (aligned_size - new_type_size) / 8; index--;)
-            result_type->word_types[index + new_type_size / 8] = DELUGE_WORD_TYPE_OFF_LIMITS;
+        for (index = b_size / DELUGE_WORD_SIZE; index--;) {
+            result_type->word_types[index + a_size / DELUGE_WORD_SIZE] =
+                deluge_type_get_word_type(b, index);
+        }
+        for (index = (aligned_size - new_type_size) / DELUGE_WORD_SIZE; index--;)
+            result_type->word_types[index + new_type_size / DELUGE_WORD_SIZE] = DELUGE_WORD_TYPE_OFF_LIMITS;
 
         add_result.entry->key = key;
-        add_result.entry->result_type = result_type;
+        add_result.entry->result_type = deluge_get_type(result_type);
     }
 
-    deluge_type_lock_unlock();
+    deluge_type_ops_lock_unlock();
 
     new_entry.key = key;
     new_entry.result_type = add_result.entry->result_type;
@@ -608,10 +1064,10 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
     return new_entry.result_type;
 }
 
-static pas_heap_ref* get_heap_slow_impl(deluge_type_table* table, const deluge_type* type)
+static pas_heap_ref* get_heap_slow_impl(deluge_heap_table* table, const deluge_type* type)
 {
     pas_allocation_config allocation_config;
-    deluge_type_table_add_result add_result;
+    deluge_heap_table_add_result add_result;
 
     PAS_ASSERT(type != &deluge_int_type);
     PAS_ASSERT(type->size);
@@ -620,7 +1076,7 @@ static pas_heap_ref* get_heap_slow_impl(deluge_type_table* table, const deluge_t
     
     initialize_utility_allocation_config(&allocation_config);
 
-    add_result = deluge_type_table_add(table, type, NULL, &allocation_config);
+    add_result = deluge_heap_table_add(table, type, NULL, &allocation_config);
     if (add_result.is_new_entry) {
         add_result.entry->type = type;
         add_result.entry->heap = (pas_heap_ref*)deluge_allocate_utility(sizeof(pas_heap_ref));
@@ -639,7 +1095,7 @@ static unsigned fast_type_hash(const void* type, void* arg)
 }
 
 static pas_heap_ref* get_heap_impl(pas_lock_free_read_ptr_ptr_hashtable* fast_table,
-                                   deluge_type_table* slow_table,
+                                   deluge_heap_table* slow_table,
                                    const deluge_type* type)
 {
     static const bool verbose = false;
@@ -649,6 +1105,9 @@ static pas_heap_ref* get_heap_impl(pas_lock_free_read_ptr_ptr_hashtable* fast_ta
         deluge_type_dump(type, &pas_log_stream.base);
         pas_log("\n");
     }
+    /* FIXME: This only needs the lock-free table now. And we should make the lock-free table capable
+       of using allocators that don't need the heap_lock. */
+    PAS_ASSERT(type);
     result = (pas_heap_ref*)pas_lock_free_read_ptr_ptr_hashtable_find(
         fast_table, fast_type_hash, NULL, type);
     if (result)
@@ -666,7 +1125,7 @@ static pas_heap_ref* get_heap_impl(pas_lock_free_read_ptr_ptr_hashtable* fast_ta
 
 pas_heap_ref* deluge_get_heap(const deluge_type* type)
 {
-    return get_heap_impl(&deluge_fast_heap_table, &deluge_heap_table, type);
+    return get_heap_impl(&deluge_fast_heap_table, &deluge_normal_heap_table, type);
 }
 
 static void set_errno(int errno_value);
@@ -1038,26 +1497,26 @@ void deluge_deallocate_safe(deluge_ptr ptr)
        - Attempts to free someone else's object by doing pointer arithmetic or dreaming up
          a pointer with an inttoptr cast. */
     DELUGE_CHECK(
-        ptr.ptr == ptr.lower,
+        deluge_ptr_ptr(ptr) == deluge_ptr_lower(ptr),
         &origin,
-        "attempt to free a pointer with ptr != lower (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to free a pointer with ptr != lower (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     
-    if (!ptr.ptr)
+    if (!deluge_ptr_ptr(ptr))
         return;
     
     DELUGE_CHECK(
-        ptr.type,
+        deluge_ptr_type(ptr),
         &origin,
-        "attempt to free nonnull pointer with invalid type (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to free nonnull pointer with invalid type (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     DELUGE_CHECK(
-        ptr.type->num_words,
+        deluge_ptr_type(ptr)->num_words,
         &origin,
-        "attempt to free nonnull pointer to opaque type (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to free nonnull pointer to opaque type (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     
-    deluge_deallocate(ptr.ptr);
+    deluge_deallocate(deluge_ptr_ptr(ptr));
 }
 
 void deluded_f_zfree(DELUDED_SIGNATURE)
@@ -1087,7 +1546,7 @@ void deluded_f_zgetallocsize(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(size_t), &origin);
-    *(size_t*)rets.ptr = pas_get_allocation_size(ptr.ptr, DELUGE_HEAP_CONFIG);
+    *(size_t*)deluge_ptr_ptr(rets) = pas_get_allocation_size(deluge_ptr_ptr(ptr), DELUGE_HEAP_CONFIG);
 }
 
 void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE)
@@ -1106,13 +1565,13 @@ void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE)
     bool return_value;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(result, sizeof(size_t), &origin);
-    if (__builtin_mul_overflow(left, right, (size_t*)result.ptr)) {
+    if (__builtin_mul_overflow(left, right, (size_t*)deluge_ptr_ptr(result))) {
         return_value = false;
         set_errno(ENOMEM);
     } else
         return_value = true;
     deluge_check_access_int(rets, sizeof(bool), &origin);
-    *(bool*)rets.ptr = return_value;
+    *(bool*)deluge_ptr_ptr(rets) = return_value;
 }
 
 pas_heap_ref* deluge_get_hard_heap(const deluge_type* type)
@@ -1310,6 +1769,65 @@ void deluge_hard_deallocate(void* ptr)
     pas_deallocate(ptr, DELUGE_HARD_HEAP_CONFIG);
 }
 
+static deluge_ptr new_ptr(void* ptr, size_t size, const deluge_type* type)
+{
+    if (!ptr)
+        return deluge_ptr_forge_invalid(NULL);
+    return deluge_ptr_forge(ptr, ptr, (char*)ptr + size, type);
+}
+
+pas_uint128 deluge_new_capability(void* ptr, size_t size, const deluge_type* type)
+{
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("Creating capability with ptr = %p, size = %zu, type = %s\n", ptr, size,
+                deluge_type_to_new_string(type));
+    }
+    return new_ptr(ptr, size, type).capability;
+}
+
+pas_uint128 deluge_new_sidecar(void* ptr, size_t size, const deluge_type* type)
+{
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("Creating sidecar with ptr = %p, size = %zu, type = %s\n", ptr, size,
+                deluge_type_to_new_string(type));
+    }
+    return new_ptr(ptr, size, type).sidecar;
+}
+
+void deluge_check_forge(
+    void* ptr, size_t size, size_t count, const deluge_type* type, const deluge_origin* origin)
+{
+    size_t total_size;
+    DELUGE_CHECK(
+        !pas_mul_uintptr_overflow(size, count, &total_size),
+        origin,
+        "bad zunsafe_forge: size * count overflows (size = %zu, count = %zu).",
+        size, count);
+    DELUGE_CHECK(
+        pas_is_aligned((uintptr_t)ptr, type->alignment),
+        origin,
+        "bad zunsafe_forge: pointer is not aligned to the type's alignment (ptr = %p, type = %s).",
+        ptr, deluge_type_to_new_string(type));
+    DELUGE_CHECK(
+        !((uintptr_t)ptr & ~PAS_ADDRESS_MASK),
+        origin,
+        "bad zunsafe_forge: pointer does not fit in capability (ptr = %p).",
+        ptr);
+    DELUGE_CHECK(
+        !(((uintptr_t)ptr + total_size) & ~PAS_ADDRESS_MASK),
+        origin,
+        "bad zunsafe_forge: upper bound does not fit in capability "
+        "(ptr = %p, total size = %zu, upper = %p).",
+        ptr, total_size, (char*)ptr + total_size);
+
+    /* These things should just be true if the compiler did its job. */
+    PAS_TESTING_ASSERT(type->num_words);
+    PAS_TESTING_ASSERT(!type->u.trailing_array);
+    PAS_TESTING_ASSERT(!(total_size % type->size));
+}
+
 void deluded_f_zhard_free(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -1323,26 +1841,26 @@ void deluded_f_zhard_free(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
 
     DELUGE_CHECK(
-        ptr.ptr == ptr.lower,
+        deluge_ptr_ptr(ptr) == deluge_ptr_lower(ptr),
         &origin,
-        "attempt to hard free a pointer with ptr != lower (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to hard free a pointer with ptr != lower (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
 
-    if (!ptr.ptr)
+    if (!deluge_ptr_ptr(ptr))
         return;
 
     DELUGE_CHECK(
-        ptr.type,
+        deluge_ptr_type(ptr),
         &origin,
-        "attempt to hard free nonnull pointer with invalid type (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to hard free nonnull pointer with invalid type (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     DELUGE_CHECK(
-        ptr.type->num_words,
+        deluge_ptr_type(ptr)->num_words,
         &origin,
-        "attempt to hard free nonnull pointer to opaque type (ptr = %p,%p,%p,%s).",
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        "attempt to hard free nonnull pointer to opaque type (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     
-    deluge_hard_deallocate(ptr.ptr);
+    deluge_hard_deallocate(deluge_ptr_ptr(ptr));
 }
 
 void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE)
@@ -1358,7 +1876,7 @@ void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(size_t), &origin);
-    *(size_t*)rets.ptr = pas_get_allocation_size(ptr.ptr, DELUGE_HARD_HEAP_CONFIG);
+    *(size_t*)deluge_ptr_ptr(rets) = pas_get_allocation_size(deluge_ptr_ptr(ptr), DELUGE_HARD_HEAP_CONFIG);
 }
 
 void deluded_f_zgetlower(DELUDED_SIGNATURE)
@@ -1374,7 +1892,9 @@ void deluded_f_zgetlower(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.lower, ptr.lower, ptr.upper, ptr.type);
+    /* It's totally fine to store deluge_ptrs into the rets without any atomic stuff, because the
+       rets buffer is guaranteed to only be read by the caller and then immediately discarded. */
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_with_ptr(ptr, deluge_ptr_lower(ptr));
 }
 
 void deluded_f_zgetupper(DELUDED_SIGNATURE)
@@ -1390,7 +1910,7 @@ void deluded_f_zgetupper(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(ptr.upper, ptr.lower, ptr.upper, ptr.type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_with_ptr(ptr, deluge_ptr_upper(ptr));
 }
 
 void deluded_f_zgettype(DELUDED_SIGNATURE)
@@ -1406,7 +1926,8 @@ void deluded_f_zgettype(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)ptr.type, &deluge_type_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) =
+        deluge_ptr_forge_byte((void*)deluge_ptr_type(ptr), &deluge_type_type);
 }
 
 void deluded_f_zslicetype(DELUDED_SIGNATURE)
@@ -1426,33 +1947,60 @@ void deluded_f_zslicetype(DELUDED_SIGNATURE)
     deluge_check_access_ptr(rets, &origin);
     deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
     const deluge_type* result = deluge_type_slice(
-        (const deluge_type*)type_ptr.ptr, pas_range_create(begin, end), &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
+        (const deluge_type*)deluge_ptr_ptr(type_ptr), pas_range_create(begin, end), &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
 }
 
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
                               const deluge_origin* origin)
 {
     static const bool verbose = false;
 
+    deluge_ptr ptr;
+    deluge_ptr borked_ptr;
+    const deluge_type* expected_borked_type;
+    
+    /* Have to create this manually because deluge_ptr_create calls validate! */
+    ptr.sidecar = sidecar;
+    ptr.capability = capability;
+    borked_ptr.sidecar = 0;
+    borked_ptr.capability = capability;
+
+    DELUGE_ASSERT(deluge_ptr_capability_type_index(ptr) < deluge_type_array_size, origin);
+    DELUGE_ASSERT(deluge_ptr_sidecar_type_index(ptr) < deluge_type_array_size, origin);
+
     if (verbose) {
-        pas_log("validating ptr: %p,%p,%p,", ptr, lower, upper);
-        if (type)
-            deluge_type_dump(type, &pas_log_stream.base);
-        else
-            pas_log("%p", NULL);
+        pas_log("validating ptr: ");
+        deluge_ptr_dump(ptr, &pas_log_stream.base);
         pas_log("\n");
     }
+
+    void* ptr_ptr = deluge_ptr_ptr(ptr);
+    void* lower = deluge_ptr_lower(ptr);
+    void* borked_lower = deluge_ptr_lower(borked_ptr);
+    void* upper = deluge_ptr_upper(ptr);
+    void* borked_upper = deluge_ptr_upper(borked_ptr);
+    const deluge_type* type = deluge_ptr_type(ptr);
+
+    if (!lower)
+        DELUGE_ASSERT(!borked_lower, origin);
+    DELUGE_ASSERT(borked_lower >= lower, origin);
+    DELUGE_ASSERT(borked_upper <= upper, origin);
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_flex_base)
+        DELUGE_ASSERT(borked_lower == lower, origin);
+    else
+        DELUGE_ASSERT(borked_upper == upper, origin);
     
-    if (!lower || !upper || !type) {
-        /* It's possible for part of the ptr to fall off into a page that gets decommitted.
-           In that case part of it will become null, and we'll treat the ptr as valid but
-           inaccessible. For example, lower=0 always fails check_access_common. */
+    if (!type) {
+        DELUGE_ASSERT(!lower, origin);
+        DELUGE_ASSERT(!upper, origin);
         return;
     }
 
-    DELUGE_ASSERT(upper > lower, origin);
+    DELUGE_ASSERT(lower, origin);
+    DELUGE_ASSERT(upper >= lower, origin);
     DELUGE_ASSERT(upper <= (void*)PAS_MAX_ADDRESS, origin);
+    expected_borked_type = type;
     if (type->size) {
         const deluge_type* trailing_type;
         DELUGE_ASSERT(pas_is_aligned((uintptr_t)lower, type->alignment), origin);
@@ -1460,84 +2008,80 @@ void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_
             trailing_type = type->u.trailing_array;
             if (trailing_type) {
                 DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, trailing_type->alignment), origin);
-                DELUGE_ASSERT((size_t)(upper - lower) >= type->size, origin);
-                DELUGE_ASSERT(!((upper - lower - type->size) % trailing_type->size), origin);
+                if (lower != upper) {
+                    DELUGE_ASSERT((size_t)((char*)upper - (char*)lower) >= type->size, origin);
+                    DELUGE_ASSERT(
+                        !(((char*)upper - (char*)lower - type->size) % trailing_type->size), origin);
+                }
+                if (ptr_ptr < lower || (size_t)((char*)ptr_ptr - (char*)lower) >= type->size)
+                    expected_borked_type = trailing_type;
             } else {
                 DELUGE_ASSERT(pas_is_aligned((uintptr_t)upper, type->alignment), origin);
-                DELUGE_ASSERT(!((upper - lower) % type->size), origin);
+                DELUGE_ASSERT(!(((char*)upper - (char*)lower) % type->size), origin);
             }
         }
     }
-    if (!type->num_words)
+    DELUGE_ASSERT(deluge_ptr_type(borked_ptr) == expected_borked_type, origin);
+    if (!type->num_words && lower != upper) {
         DELUGE_ASSERT((char*)upper == (char*)lower + 1, origin);
+        DELUGE_ASSERT((char*)upper == (char*)borked_lower + 1, origin);
+    }
 
     deluge_validate_type(type, origin);
 }
 
-static void check_access_common_maybe_opaque(void* ptr, void* lower, void* upper, const deluge_type* type,
-                                             uintptr_t bytes, const deluge_origin* origin)
+void* deluge_ptr_ptr_impl(pas_uint128 sidecar, pas_uint128 capability)
 {
-    if (PAS_ENABLE_TESTING)
-        deluge_validate_ptr_impl(ptr, lower, upper, type, origin);
-
-    /* This check is necessary in case a wide pointer spans page boundary and the
-       first of the two pages gets decommitted in a way that causes it to become
-       zero.
-       
-       We could avoid this, probably a bunch of ways. Here are two ways:
-       
-       - Make wide pointers 32-byte aligned instead of 8-byte aligned. Hardware gonna
-       like that better wanyway, if there's ever shit like atomic 32-byte loads and
-       stores.
-       
-       - Require that decommit is Windows-style in that decommitted pages are not
-       accessible.
-       
-       It seems like the alignment solution is strictly simpler.
-       
-       But also, it's just one little check. It almost certainly doesn't matter. */
-    DELUGE_CHECK(
-        lower,
-        origin,
-        "cannot access pointer with null lower (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
-
-    DELUGE_CHECK(
-        ptr >= lower,
-        origin,
-        "cannot access pointer with ptr < lower (ptr = %p,%p,%p,%s).", 
-        ptr, lower, upper, deluge_type_to_new_string(type));
-
-    DELUGE_CHECK(
-        ptr < upper,
-        origin,
-        "cannot access pointer with ptr >= upper (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
-
-    DELUGE_CHECK(
-        bytes <= (uintptr_t)((char*)upper - (char*)ptr),
-        origin,
-        "cannot access %zu bytes when upper - ptr = %zu (ptr = %p,%p,%p,%s).",
-        bytes, (size_t)((char*)upper - (char*)ptr),
-        ptr, lower, upper, deluge_type_to_new_string(type));
-        
-    DELUGE_CHECK(
-        type,
-        origin,
-        "cannot access ptr with null type (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
+    return deluge_ptr_ptr(deluge_ptr_create(sidecar, capability));
 }
 
-static void check_access_common(void* ptr, void* lower, void* upper, const deluge_type* type,
-                                uintptr_t bytes, const deluge_origin* origin)
+static void check_access_common_maybe_opaque(deluge_ptr ptr, uintptr_t bytes, const deluge_origin* origin)
 {
-    check_access_common_maybe_opaque(ptr, lower, upper, type, bytes, origin);
+    if (PAS_ENABLE_TESTING)
+        deluge_validate_ptr(ptr, origin);
+
+    /* This check is not strictly necessary, but I like the error message. */
+    DELUGE_CHECK(
+        deluge_ptr_lower(ptr),
+        origin,
+        "cannot access pointer with null lower (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
     
     DELUGE_CHECK(
-        type->num_words,
+        deluge_ptr_ptr(ptr) >= deluge_ptr_lower(ptr),
         origin,
-        "cannot access %zu bytes, span has opaque type (ptr = %p,%p,%p,%s).\n",
-        bytes, ptr, lower, upper, deluge_type_to_new_string(type));
+        "cannot access pointer with ptr < lower (ptr = %s).", 
+        deluge_ptr_to_new_string(ptr));
+
+    DELUGE_CHECK(
+        deluge_ptr_ptr(ptr) < deluge_ptr_upper(ptr),
+        origin,
+        "cannot access pointer with ptr >= upper (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
+
+    DELUGE_CHECK(
+        bytes <= (uintptr_t)((char*)deluge_ptr_upper(ptr) - (char*)deluge_ptr_ptr(ptr)),
+        origin,
+        "cannot access %zu bytes when upper - ptr = %zu (ptr = %s).",
+        bytes, (size_t)((char*)deluge_ptr_upper(ptr) - (char*)deluge_ptr_ptr(ptr)),
+        deluge_ptr_to_new_string(ptr));
+        
+    DELUGE_CHECK(
+        deluge_ptr_type(ptr),
+        origin,
+        "cannot access ptr with invalid type (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
+}
+
+static void check_access_common(deluge_ptr ptr, uintptr_t bytes, const deluge_origin* origin)
+{
+    check_access_common_maybe_opaque(ptr, bytes, origin);
+    
+    DELUGE_CHECK(
+        deluge_ptr_type(ptr)->num_words,
+        origin,
+        "cannot access %zu bytes, span has opaque type (ptr = %s).",
+        bytes, deluge_ptr_to_new_string(ptr));
 }
 
 void deluded_f_zgettypeslice(DELUDED_SIGNATURE)
@@ -1554,11 +2098,11 @@ void deluded_f_zgettypeslice(DELUDED_SIGNATURE)
     size_t bytes = deluge_ptr_get_next_size_t(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    check_access_common(ptr.ptr, ptr.lower, ptr.upper, ptr.type, bytes, &origin);
-    uintptr_t offset = (char*)ptr.ptr - (char*)ptr.lower;
+    check_access_common(ptr, bytes, &origin);
+    uintptr_t offset = deluge_ptr_offset(ptr);
     const deluge_type* result = deluge_type_slice(
-        (const deluge_type*)ptr.type, pas_range_create(offset, offset + bytes), &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
+        (const deluge_type*)deluge_ptr_type(ptr), pas_range_create(offset, offset + bytes), &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
 }
 
 void deluded_f_zcattype(DELUDED_SIGNATURE)
@@ -1580,8 +2124,9 @@ void deluded_f_zcattype(DELUDED_SIGNATURE)
     deluge_check_access_opaque(a_ptr, &deluge_type_type, &origin);
     deluge_check_access_opaque(b_ptr, &deluge_type_type, &origin);
     const deluge_type* result = deluge_type_cat(
-        (const deluge_type*)a_ptr.ptr, a_size, (const deluge_type*)b_ptr.ptr, b_size, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
+        (const deluge_type*)deluge_ptr_ptr(a_ptr), a_size,
+        (const deluge_type*)deluge_ptr_ptr(b_ptr), b_size, &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte((void*)result, &deluge_type_type);
 }
 
 void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
@@ -1599,15 +2144,17 @@ void deluded_f_zalloc_with_type(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
     deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
-    const deluge_type* type = (const deluge_type*)type_ptr.ptr;
+    const deluge_type* type = (const deluge_type*)deluge_ptr_ptr(type_ptr);
     if (type != &deluge_int_type) {
-        /* This is never wrong, since type sizes are a multiple of 8. It just gives folks some forgiveness
+        /* This is never wrong, since type sizes are a multiple of 16. It just gives folks some forgiveness
            when using this API, which makes it a bit more practical to use it with zcattype. */
-        size = pas_round_up_to_power_of_2(size, 8);
+        size = pas_round_up_to_power_of_2(size, DELUGE_WORD_SIZE);
     }
     void* result = deluge_try_allocate_with_type(type, size);
-    if (result)
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge(result, result, (char*)result + size, type);
+    if (result) {
+        *(deluge_ptr*)deluge_ptr_ptr(rets) =
+            deluge_ptr_forge(result, result, (char*)result + size, type);
+    }
 }
 
 void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE)
@@ -1624,12 +2171,12 @@ void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
     deluge_check_access_opaque(type_ptr, &deluge_type_type, &origin);
-    const deluge_type* type = (const deluge_type*)type_ptr.ptr;
+    const deluge_type* type = (const deluge_type*)deluge_ptr_ptr(type_ptr);
     pas_allocation_config allocation_config;
     initialize_int_allocation_config(&allocation_config);
     char* result = type_to_new_string_impl(type, &allocation_config);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(
-        result, result, result + strlen(result) + 1, &deluge_int_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = 
+        deluge_ptr_forge(result, result, result + strlen(result) + 1, &deluge_int_type);
 }
 
 void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE)
@@ -1649,27 +2196,27 @@ void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE)
     pas_string_stream stream;
     initialize_int_allocation_config(&allocation_config);
     pas_string_stream_construct(&stream, &allocation_config);
-    pas_string_stream_printf(&stream, "%p,%p,%p,", ptr.ptr, ptr.lower, ptr.upper);
-    deluge_type_dump(ptr.type, &stream.base);
+    deluge_ptr_dump(ptr, &stream.base);
     char* result = pas_string_stream_take_string(&stream);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(
-        result, result, result + strlen(result) + 1, &deluge_int_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = 
+        deluge_ptr_forge(result, result, result + strlen(result) + 1, &deluge_int_type);
 }
 
-static void check_int(void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
-                      const deluge_origin* origin)
+static void check_int(deluge_ptr ptr, uintptr_t bytes, const deluge_origin* origin)
 {
     uintptr_t offset;
     uintptr_t first_word_type_index;
     uintptr_t last_word_type_index;
     uintptr_t word_type_index;
+    const deluge_type* type;
 
+    type = deluge_ptr_type(ptr);
     if (type == &deluge_int_type)
         return;
 
-    offset = (char*)ptr - (char*)lower;
-    first_word_type_index = offset / 8;
-    last_word_type_index = (offset + bytes - 1) / 8;
+    offset = deluge_ptr_offset(ptr);
+    first_word_type_index = offset / DELUGE_WORD_SIZE;
+    last_word_type_index = (offset + bytes - 1) / DELUGE_WORD_SIZE;
 
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;
@@ -1677,15 +2224,25 @@ static void check_int(void* ptr, void* lower, void* upper, const deluge_type* ty
         DELUGE_CHECK(
             deluge_type_get_word_type(type, word_type_index) == DELUGE_WORD_TYPE_INT,
             origin,
-            "cannot access %zu bytes as int, span contains non-ints (ptr = %p,%p,%p,%s).",
-            bytes, ptr, lower, upper, deluge_type_to_new_string(type));
+            "cannot access %zu bytes as int, span contains non-ints (ptr = %s).",
+            bytes, deluge_ptr_to_new_string(ptr));
     }
 }
 
-void deluge_check_access_int_impl(
-    void* ptr, void* lower, void* upper, const deluge_type* type, uintptr_t bytes,
-    const deluge_origin* origin)
+pas_uint128 deluge_update_sidecar(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr)
 {
+    return deluge_ptr_with_ptr(deluge_ptr_create(sidecar, capability), new_ptr).sidecar;
+}
+
+pas_uint128 deluge_update_capability(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr)
+{
+    return deluge_ptr_with_ptr(deluge_ptr_create(sidecar, capability), new_ptr).capability;
+}
+
+void deluge_check_access_int_impl(pas_uint128 sidecar, pas_uint128 capability, uintptr_t bytes,
+                                  const deluge_origin* origin)
+{
+    deluge_ptr ptr;
     /* NOTE: the compiler will never generate a zero-byte check, but the runtime may do it. There
        are times when we are passed a primitive vector and a length and we run this check. If the
        length is zero, we want to permit any pointer (even a null or non-int ptr), since we're
@@ -1695,128 +2252,213 @@ void deluge_check_access_int_impl(
        runtime calls into this function, and allow the compiler to emit code that bypasses it. */
     if (!bytes)
         return;
-    check_access_common(ptr, lower, upper, type, bytes, origin);
-    check_int(ptr, lower, upper, type, bytes, origin);
+    ptr = deluge_ptr_create(sidecar, capability);
+    check_access_common(ptr, bytes, origin);
+    check_int(ptr, bytes, origin);
 }
 
-void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_access_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
                                   const deluge_origin* origin)
 {
+    deluge_ptr ptr;
     uintptr_t offset;
     uintptr_t word_type_index;
+    const deluge_type* type;
 
-    check_access_common(ptr, lower, upper, type, 32, origin);
+    ptr = deluge_ptr_create(sidecar, capability);
 
-    offset = (char*)ptr - (char*)lower;
+    check_access_common(ptr, sizeof(deluge_ptr), origin);
+
+    offset = deluge_ptr_offset(ptr);
     DELUGE_CHECK(
-        pas_is_aligned(offset, 8),
+        pas_is_aligned(offset, DELUGE_WORD_SIZE),
         origin,
-        "cannot access memory as ptr without 8-byte alignment; in this case ptr %% 8 = %zu (ptr = %p,%p,%p,%s).",
-        (size_t)(offset % 8), ptr, lower, upper, deluge_type_to_new_string(type));
-    word_type_index = offset / 8;
-    if (type->u.trailing_array) {
-        uintptr_t num_words = type->num_words;
-        if (word_type_index < num_words)
-            DELUGE_ASSERT(word_type_index + 3 < num_words, origin);
-        else {
-            word_type_index -= num_words;
-            type = type->u.trailing_array;
-        }
-    }
+        "cannot access memory as ptr without 16-byte alignment; in this case ptr %% 16 = %zu (ptr = %s).",
+        (size_t)(offset % DELUGE_WORD_SIZE), deluge_ptr_to_new_string(ptr));
+    word_type_index = offset / DELUGE_WORD_SIZE;
+    type = deluge_ptr_type(ptr);
     DELUGE_CHECK(
-        deluge_type_get_word_type(type, word_type_index + 0) == DELUGE_WORD_TYPE_PTR_PART1,
+        deluge_type_get_word_type(type, word_type_index + 0) == DELUGE_WORD_TYPE_PTR_SIDECAR,
         origin,
-        "memory type error accessing ptr part1 (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
+        "memory type error accessing ptr sidecar (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
+    /* It's interesting that this next check is almost certainly unnecessary, since no type will ever
+       have a sidecar followed by anything other than a capability. */
     DELUGE_CHECK(
-        deluge_type_get_word_type(type, word_type_index + 1) == DELUGE_WORD_TYPE_PTR_PART2,
+        deluge_type_get_word_type(type, word_type_index + 1) == DELUGE_WORD_TYPE_PTR_CAPABILITY,
         origin,
-        "memory type error accessing ptr part2 (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
-    DELUGE_CHECK(
-        deluge_type_get_word_type(type, word_type_index + 2) == DELUGE_WORD_TYPE_PTR_PART3,
-        origin,
-        "memory type error accessing ptr part3 (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
-    DELUGE_CHECK(
-        deluge_type_get_word_type(type, word_type_index + 3) == DELUGE_WORD_TYPE_PTR_PART4,
-        origin,
-        "memory type error accessing ptr part4 (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
+        "memory type error accessing ptr capability (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
 }
 
-void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_function_call_impl(pas_uint128 sidecar, pas_uint128 capability,
                                      const deluge_origin* origin)
 {
-    check_access_common_maybe_opaque(ptr, lower, upper, type, 1, origin);
+    deluge_ptr ptr;
+    ptr = deluge_ptr_create(sidecar, capability);
+    check_access_common_maybe_opaque(ptr, 1, origin);
     DELUGE_CHECK(
-        type == &deluge_function_type,
+        deluge_ptr_type(ptr) == &deluge_function_type,
         origin,
-        "attempt to call pointer that is not a function (ptr = %p,%p,%p,%s).",
-        ptr, lower, upper, deluge_type_to_new_string(type));
+        "attempt to call pointer that is not a function (ptr = %s).",
+        deluge_ptr_to_new_string(ptr));
 }
 
 void deluge_check_access_opaque(
     deluge_ptr ptr, const deluge_type* expected_type, const deluge_origin* origin)
 {
     PAS_TESTING_ASSERT(!expected_type->num_words);
-    check_access_common_maybe_opaque(ptr.ptr, ptr.lower, ptr.upper, ptr.type, 1, origin);
+    check_access_common_maybe_opaque(ptr, 1, origin);
     DELUGE_CHECK(
-        ptr.type == expected_type,
+        deluge_ptr_type(ptr) == expected_type,
         origin,
-        "expected ptr to %s during internal opaque access (ptr = %p,%p,%p,%s).",
+        "expected ptr to %s during internal opaque access (ptr = %s).",
         deluge_type_to_new_string(expected_type),
-        ptr.ptr, ptr.lower, ptr.upper, deluge_type_to_new_string(ptr.type));
+        deluge_ptr_to_new_string(ptr));
 }
 
-void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
+{
+    static const bool verbose = false;
+    size_t words;
+    pas_uint128* ptr;
+    if (verbose)
+        pas_log("bytes = %zu\n", bytes);
+    ptr = (pas_uint128*)raw_ptr;
+    PAS_ASSERT(pas_is_aligned(bytes, DELUGE_WORD_SIZE));
+    words = bytes / DELUGE_WORD_SIZE;
+    while (words--)
+        __c11_atomic_store((_Atomic pas_uint128*)ptr++, 0, __ATOMIC_RELAXED);
+}
+
+static void ptr_safe_memcpy_up(void* raw_dst, void* raw_src, size_t words)
+{
+    pas_uint128* dst;
+    pas_uint128* src;
+    dst = (pas_uint128*)raw_dst;
+    src = (pas_uint128*)raw_src;
+    while (words--) {
+        __c11_atomic_store(
+            (_Atomic pas_uint128*)dst++,
+            __c11_atomic_load((_Atomic pas_uint128*)src++, __ATOMIC_RELAXED),
+            __ATOMIC_RELAXED);
+    }
+}
+
+static void ptr_safe_memcpy_down(void* raw_dst, void* raw_src, size_t words)
+{
+    pas_uint128* dst;
+    pas_uint128* src;
+    dst = (pas_uint128*)raw_dst;
+    src = (pas_uint128*)raw_src;
+    while (words--) {
+        __c11_atomic_store(
+            (_Atomic pas_uint128*)dst + words,
+            __c11_atomic_load((_Atomic pas_uint128*)src + words, __ATOMIC_RELAXED),
+            __ATOMIC_RELAXED);
+    }
+}
+
+void deluge_low_level_ptr_safe_memcpy(void* dst, void* src, size_t bytes)
+{
+    PAS_ASSERT(pas_is_aligned(bytes, DELUGE_WORD_SIZE));
+    ptr_safe_memcpy_up(dst, src, bytes / DELUGE_WORD_SIZE);
+}
+
+void deluge_low_level_ptr_safe_memmove(void* dst, void* src, size_t bytes)
+{
+    PAS_ASSERT(pas_is_aligned(bytes, DELUGE_WORD_SIZE));
+    if (dst < src)
+        ptr_safe_memcpy_up(dst, src, bytes / DELUGE_WORD_SIZE);
+    else
+        ptr_safe_memcpy_down(dst, src, bytes / DELUGE_WORD_SIZE);
+}
+
+void deluge_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
                         unsigned value, size_t count, const deluge_origin* origin)
 {
+    static const bool verbose = false;
+    deluge_ptr ptr;
+    char* raw_ptr;
+    
     if (!count)
         return;
-    
-    check_access_common(ptr, lower, upper, type, count, origin);
+
+    ptr = deluge_ptr_create(sidecar, capability);
+    raw_ptr = deluge_ptr_ptr(ptr);
+
+    if (verbose)
+        pas_log("count = %zu\n", count);
+    check_access_common(ptr, count, origin);
     
     if (!value) {
+        const deluge_type* type;
+        type = deluge_ptr_type(ptr);
         if (type != &deluge_int_type) {
             uintptr_t offset;
             deluge_word_type word_type;
             
-            offset = (char*)ptr - (char*)lower;
-            word_type = deluge_type_get_word_type(type, offset / 8);
-            if (offset % 8) {
+            offset = deluge_ptr_offset(ptr);
+            word_type = deluge_type_get_word_type(type, offset / DELUGE_WORD_SIZE);
+            if (offset % DELUGE_WORD_SIZE) {
                 DELUGE_ASSERT(
-                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    word_type != DELUGE_WORD_TYPE_PTR_SIDECAR
+                    && word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
                     origin);
             } else {
                 DELUGE_ASSERT(
-                    word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
                     origin);
             }
-            word_type = deluge_type_get_word_type(type, (offset + count - 1) / 8);
-            if ((offset + count) % 8) {
+            word_type = deluge_type_get_word_type(type, (offset + count - 1) / DELUGE_WORD_SIZE);
+            if ((offset + count) % DELUGE_WORD_SIZE) {
                 DELUGE_ASSERT(
-                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+                    word_type != DELUGE_WORD_TYPE_PTR_SIDECAR
+                    && word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
                     origin);
             } else {
                 DELUGE_ASSERT(
-                    word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3,
+                    word_type != DELUGE_WORD_TYPE_PTR_SIDECAR,
                     origin);
             }
         }
-        
-        memset(ptr, 0, count);
+
+        if ((uintptr_t)raw_ptr % DELUGE_WORD_SIZE) {
+            size_t sliver_size;
+            char* new_raw_ptr;
+            new_raw_ptr = (char*)pas_round_up_to_power_of_2((uintptr_t)raw_ptr, DELUGE_WORD_SIZE);
+            sliver_size = new_raw_ptr - raw_ptr;
+            if (sliver_size > count) {
+                memset(raw_ptr, 0, count);
+                return;
+            }
+            memset(raw_ptr, 0, sliver_size);
+            count -= sliver_size;
+            raw_ptr = new_raw_ptr;
+        }
+        deluge_low_level_ptr_safe_bzero(raw_ptr, pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE));
+        raw_ptr += pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        count -= pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        memset(raw_ptr, 0, count);
         return;
     }
 
-    check_int(ptr, lower, upper, type, count, origin);
-    memset(ptr, value, count);
+    check_int(ptr, count, origin);
+    memset(raw_ptr, value, count);
 }
 
-static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                               void* src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                               size_t count, const deluge_origin* origin)
+enum type_overlap_result {
+    int_type_overlap,
+    possible_ptr_type_overlap
+};
+
+typedef enum type_overlap_result type_overlap_result;
+
+static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
+                                              size_t count, const deluge_origin* origin)
 {
+    const deluge_type* dst_type;
+    const deluge_type* src_type;
     uintptr_t dst_offset;
     uintptr_t src_offset;
     deluge_word_type word_type;
@@ -1825,26 +2467,29 @@ static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, 
     uintptr_t first_dst_word_type_index;
     uintptr_t first_src_word_type_index;
 
-    if (dst_type == &deluge_int_type && src_type == &deluge_int_type)
-        return;
+    dst_type = deluge_ptr_type(dst);
+    src_type = deluge_ptr_type(src);
 
-    dst_offset = (char*)dst_ptr - (char*)dst_lower;
-    src_offset = (char*)src_ptr - (char*)src_lower;
-    if ((dst_offset % 8) != (src_offset % 8)) {
+    if (dst_type == &deluge_int_type && src_type == &deluge_int_type)
+        return int_type_overlap;
+
+    dst_offset = deluge_ptr_offset(dst);
+    src_offset = deluge_ptr_offset(src);
+    if ((dst_offset % DELUGE_WORD_SIZE) != (src_offset % DELUGE_WORD_SIZE)) {
         /* No chance we could copy pointers if the offsets are skewed within a word.
            
            It would be harder to write a generalized checking algorithm for this case (the
            non-offset-skew version lower in this function can't handle it) and we don't need
            to, since that path could only succeed if there were only integers on both sides of
            the copy. */
-        check_int(dst_ptr, dst_lower, dst_upper, dst_type, count, origin);
-        check_int(src_ptr, src_lower, src_upper, src_type, count, origin);
-        return;
+        check_int(dst, count, origin);
+        check_int(src, count, origin);
+        return int_type_overlap;
     }
 
-    num_word_types = (dst_offset + count - 1) / 8 - dst_offset / 8 + 1;
-    first_dst_word_type_index = dst_offset / 8;
-    first_src_word_type_index = src_offset / 8;
+    num_word_types = (dst_offset + count - 1) / DELUGE_WORD_SIZE - dst_offset / DELUGE_WORD_SIZE + 1;
+    first_dst_word_type_index = dst_offset / DELUGE_WORD_SIZE;
+    first_src_word_type_index = src_offset / DELUGE_WORD_SIZE;
 
     for (word_type_index_offset = num_word_types; word_type_index_offset--;) {
         DELUGE_ASSERT(
@@ -1856,87 +2501,194 @@ static void check_type_overlap(void* dst_ptr, void* dst_lower, void* dst_upper, 
 
     /* We cannot copy parts of pointers. */
     word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index);
-    if (dst_offset % 8) {
+    if (dst_offset % DELUGE_WORD_SIZE) {
         DELUGE_ASSERT(
-            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            word_type != DELUGE_WORD_TYPE_PTR_SIDECAR
+            && word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
             origin);
     } else {
         DELUGE_ASSERT(
-            word_type < DELUGE_WORD_TYPE_PTR_PART2 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
             origin);
     }
     word_type = deluge_type_get_word_type(dst_type, first_dst_word_type_index + num_word_types - 1);
-    if ((dst_offset + count) % 8) {
+    if ((dst_offset + count) % DELUGE_WORD_SIZE) {
         DELUGE_ASSERT(
-            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART4,
+            word_type != DELUGE_WORD_TYPE_PTR_SIDECAR
+            && word_type != DELUGE_WORD_TYPE_PTR_CAPABILITY,
             origin);
     } else {
         DELUGE_ASSERT(
-            word_type < DELUGE_WORD_TYPE_PTR_PART1 || word_type > DELUGE_WORD_TYPE_PTR_PART3,
+            word_type != DELUGE_WORD_TYPE_PTR_SIDECAR,
             origin);
     }
+
+    /* We could do better here if we really wanted to. */
+    return possible_ptr_type_overlap;
 }
 
-static void check_copy(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                       void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
-                       size_t count, const deluge_origin* origin)
+static type_overlap_result check_copy(deluge_ptr dst, deluge_ptr src,
+                                      size_t count, const deluge_origin* origin)
 {
-    check_access_common(dst_ptr, dst_lower, dst_upper, dst_type, count, origin);
-    check_access_common(src_ptr, src_lower, src_upper, src_type, count, origin);
-    check_type_overlap(dst_ptr, dst_lower, dst_upper, dst_type,
-                       src_ptr, src_lower, src_upper, src_type,
-                       count, origin);
+    check_access_common(dst, count, origin);
+    check_access_common(src, count, origin);
+    return check_type_overlap(dst, src, count, origin);
 }
 
-void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                        void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
+/* NOTE: There's an argument to be made that memcpy in Deluge should always memmove, because:
+   
+   - The overhead of Deluge is likely to make the small perf difference between memcpy and memmove
+     irrelevant.
+
+   - If you're copying a range that includes any pointers then it's unlikely that there is any
+     difference in performance between memcpy and memmove at all. */
+void deluge_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
+                        pas_uint128 src_sidecar, pas_uint128 src_capability,
                         size_t count, const deluge_origin* origin)
 {
+    deluge_ptr dst;
+    deluge_ptr src;
+    char* raw_dst_ptr;
+    char* raw_src_ptr;
+    
     if (!count)
         return;
+
+    dst = deluge_ptr_create(dst_sidecar, dst_capability);
+    src = deluge_ptr_create(src_sidecar, src_capability);
+
+    raw_dst_ptr = deluge_ptr_ptr(dst);
+    raw_src_ptr = deluge_ptr_ptr(src);
     
-    check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
-               src_ptr, src_lower, src_upper, src_type,
-               count, origin);
-    
-    memcpy(dst_ptr, src_ptr, count);
+    switch (check_copy(dst, src, count, origin)) {
+    case int_type_overlap:
+        memcpy(raw_dst_ptr, raw_src_ptr, count);
+        return;
+    case possible_ptr_type_overlap: {
+        PAS_TESTING_ASSERT(
+            ((uintptr_t)raw_dst_ptr % DELUGE_WORD_SIZE) == ((uintptr_t)raw_src_ptr % DELUGE_WORD_SIZE));
+        if ((uintptr_t)raw_dst_ptr % DELUGE_WORD_SIZE) {
+            size_t sliver_size;
+            char* new_raw_dst_ptr;
+            char* new_raw_src_ptr;
+            new_raw_dst_ptr = (char*)pas_round_up_to_power_of_2((uintptr_t)raw_dst_ptr, DELUGE_WORD_SIZE);
+            new_raw_src_ptr = (char*)pas_round_up_to_power_of_2((uintptr_t)raw_src_ptr, DELUGE_WORD_SIZE);
+            sliver_size = new_raw_dst_ptr - raw_dst_ptr;
+            if (sliver_size > count) {
+                memcpy(raw_dst_ptr, raw_src_ptr, count);
+                return;
+            }
+            memcpy(raw_dst_ptr, raw_src_ptr, sliver_size);
+            count -= sliver_size;
+            raw_dst_ptr = new_raw_dst_ptr;
+            raw_src_ptr = new_raw_src_ptr;
+        }
+        deluge_low_level_ptr_safe_memcpy(
+            raw_dst_ptr, raw_src_ptr, pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE));
+        raw_dst_ptr += pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        raw_src_ptr += pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        count -= pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        memcpy(raw_dst_ptr, raw_src_ptr, count);
+        return;
+    } }
+    PAS_ASSERT(!"Should not be reached");
 }
 
-void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
+void deluge_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
+                         pas_uint128 src_sidecar, pas_uint128 src_capability,
                          size_t count, const deluge_origin* origin)
 {
+    deluge_ptr dst;
+    deluge_ptr src;
+    char* raw_dst_ptr;
+    char* raw_src_ptr;
+    
     if (!count)
         return;
     
-    check_copy(dst_ptr, dst_lower, dst_upper, dst_type,
-               src_ptr, src_lower, src_upper, src_type,
-               count, origin);
+    dst = deluge_ptr_create(dst_sidecar, dst_capability);
+    src = deluge_ptr_create(src_sidecar, src_capability);
+
+    raw_dst_ptr = deluge_ptr_ptr(dst);
+    raw_src_ptr = deluge_ptr_ptr(src);
     
-    memmove(dst_ptr, src_ptr, count);
+    switch (check_copy(dst, src, count, origin)) {
+    case int_type_overlap:
+        memmove(raw_dst_ptr, raw_src_ptr, count);
+        return;
+    case possible_ptr_type_overlap: {
+        void* low_dst;
+        void* low_src;
+        size_t low_count;
+        void* mid_dst;
+        void* mid_src;
+        size_t mid_count;
+        void* high_dst;
+        void* high_src;
+        size_t high_count;
+        size_t sliver_size;
+        char* new_raw_dst_ptr;
+        char* new_raw_src_ptr;
+        PAS_TESTING_ASSERT(
+            ((uintptr_t)raw_dst_ptr % DELUGE_WORD_SIZE) == ((uintptr_t)raw_src_ptr % DELUGE_WORD_SIZE));
+        new_raw_dst_ptr = (char*)pas_round_up_to_power_of_2((uintptr_t)raw_dst_ptr, DELUGE_WORD_SIZE);
+        new_raw_src_ptr = (char*)pas_round_up_to_power_of_2((uintptr_t)raw_src_ptr, DELUGE_WORD_SIZE);
+        sliver_size = new_raw_dst_ptr - raw_dst_ptr;
+        if (sliver_size > count) {
+            memmove(raw_dst_ptr, raw_src_ptr, count);
+            return;
+        }
+        low_dst = raw_dst_ptr;
+        low_src = raw_src_ptr;
+        low_count = sliver_size;
+        count -= sliver_size;
+        raw_dst_ptr = new_raw_dst_ptr;
+        raw_src_ptr = new_raw_src_ptr;
+        mid_dst = raw_dst_ptr;
+        mid_src = raw_src_ptr;
+        mid_count = pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        raw_dst_ptr += pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        raw_src_ptr += pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        count -= pas_round_down_to_power_of_2(count, DELUGE_WORD_SIZE);
+        high_dst = raw_dst_ptr;
+        high_src = raw_src_ptr;
+        high_count = count;
+        if (low_dst < low_src) {
+            memmove(low_dst, low_src, low_count);
+            deluge_low_level_ptr_safe_memmove(mid_dst, mid_src, mid_count);
+            memmove(high_dst, high_src, high_count);
+        } else {
+            memmove(high_dst, high_src, high_count);
+            deluge_low_level_ptr_safe_memmove(mid_dst, mid_src, mid_count);
+            memmove(low_dst, low_src, low_count);
+        }
+        return;
+    } }
+    PAS_ASSERT(!"Should not be reached");
 }
 
-void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
                            void* new_upper, const deluge_type* new_type, const deluge_origin* origin)
 {
-    check_access_common(ptr, lower, upper, type, (char*)new_upper - (char*)ptr, origin);
+    deluge_ptr ptr;
+    ptr = deluge_ptr_create(sidecar, capability);
+    check_access_common(ptr, (char*)new_upper - (char*)deluge_ptr_ptr(ptr), origin);
     DELUGE_CHECK(new_type, origin, "cannot restrict to NULL type");
-    check_type_overlap(ptr, ptr, new_upper, new_type,
-                       ptr, lower, upper, type,
-                       (char*)new_upper - (char*)ptr, origin);
+    check_type_overlap(deluge_ptr_forge(deluge_ptr_ptr(ptr), deluge_ptr_ptr(ptr), new_upper, new_type),
+                       ptr, (char*)new_upper - (char*)deluge_ptr_ptr(ptr), origin);
 }
 
 const char* deluge_check_and_get_str(deluge_ptr str, const deluge_origin* origin)
 {
     size_t available;
     size_t length;
-    check_access_common(str.ptr, str.lower, str.upper, str.type, 1, origin);
-    available = (char*)str.upper - (char*)str.ptr;
-    length = strnlen((char*)str.ptr, available);
+    check_access_common(str, 1, origin);
+    available = deluge_ptr_available(str);
+    length = strnlen((char*)deluge_ptr_ptr(str), available);
     PAS_ASSERT(length < available);
     PAS_ASSERT(length + 1 <= available);
-    check_int(str.ptr, str.lower, str.upper, str.type, length + 1, origin);
-    return (char*)str.ptr;
+    check_int(str, length + 1, origin);
+    return (char*)deluge_ptr_ptr(str);
 }
 
 deluge_ptr deluge_strdup(const char* str)
@@ -1950,36 +2702,113 @@ deluge_ptr deluge_strdup(const char* str)
 }
 
 void* deluge_va_arg_impl(
-    void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
+    pas_uint128 va_list_sidecar, pas_uint128 va_list_capability,
     size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin)
 {
     deluge_ptr va_list;
     deluge_ptr* va_list_impl;
     void* result;
-    va_list = deluge_ptr_forge(va_list_ptr, va_list_lower, va_list_upper, va_list_type);
+    va_list = deluge_ptr_create(va_list_sidecar, va_list_capability);
     deluge_check_access_ptr(va_list, origin);
-    va_list_impl = (deluge_ptr*)va_list.ptr;
-    return deluge_ptr_get_next(va_list_impl, count, alignment, type, origin).ptr;
+    va_list_impl = (deluge_ptr*)deluge_ptr_ptr(va_list);
+    return deluge_ptr_ptr(deluge_ptr_get_next(va_list_impl, count, alignment, type, origin));
 }
 
-deluge_global_initialization_context* deluge_global_initialization_context_lock_and_find(
-    deluge_global_initialization_context* context, void* global_getter)
+deluge_global_initialization_context* deluge_global_initialization_context_create(
+    deluge_global_initialization_context* parent)
 {
-    if (!context) {
-        deluge_global_initialization_lock_lock();
-        return NULL;
+    static const bool verbose = false;
+    
+    static const size_t initial_capacity = 1;
+    
+    deluge_global_initialization_context* result;
+
+    if (verbose)
+        pas_log("creating context with parent = %p\n", parent);
+    
+    if (parent) {
+        parent->ref_count++;
+        return parent;
     }
-    for (; context; context = context->outer) {
-        if (context->global_getter == global_getter)
-            return context;
-    }
-    return NULL;
+
+    result = (deluge_global_initialization_context*)
+        deluge_allocate_utility(sizeof(deluge_global_initialization_context));
+    result->ref_count = 1;
+    pas_ptr_hash_set_construct(&result->seen);
+    result->entries = (deluge_initialization_entry*)
+        deluge_allocate_utility(sizeof(deluge_initialization_entry) * initial_capacity);
+    result->num_entries = 0;
+    result->entries_capacity = initial_capacity;
+
+    return result;
 }
 
-void deluge_global_initialization_context_unlock(deluge_global_initialization_context* context)
+bool deluge_global_initialization_context_add(
+    deluge_global_initialization_context* context, pas_uint128* deluded_gptr, pas_uint128 ptr_capability)
 {
-    if (!context)
-        deluge_global_initialization_lock_unlock();
+    static const bool verbose = false;
+    
+    pas_allocation_config allocation_config;
+
+    PAS_ASSERT(!*deluded_gptr);
+
+    initialize_utility_allocation_config(&allocation_config);
+
+    if (verbose)
+        pas_log("capability = %s\n", deluge_ptr_to_new_string(deluge_ptr_create(0, ptr_capability)));
+
+    if (!pas_ptr_hash_set_set(&context->seen, deluded_gptr, NULL, &allocation_config)) {
+        pas_log("was already seen\n");
+        return false;
+    }
+
+    if (context->num_entries >= context->entries_capacity) {
+        size_t new_capacity;
+        deluge_initialization_entry* new_entries;
+        
+        PAS_ASSERT(context->num_entries = context->entries_capacity);
+
+        new_capacity = context->entries_capacity * 2;
+        PAS_ASSERT(new_capacity > context->entries_capacity);
+        new_entries = (deluge_initialization_entry*)
+            deluge_allocate_utility(sizeof(deluge_initialization_entry) * new_capacity);
+
+        memcpy(new_entries, context->entries, sizeof(deluge_initialization_entry) * context->num_entries);
+
+        deluge_deallocate(context->entries);
+
+        context->entries = new_entries;
+        context->entries_capacity = new_capacity;
+        PAS_ASSERT(context->num_entries < context->entries_capacity);
+    }
+
+    context->entries[context->num_entries].deluded_gptr = deluded_gptr;
+    context->entries[context->num_entries].ptr_capability = ptr_capability;
+    context->num_entries++;
+    return true;
+}
+
+void deluge_global_initialization_context_destroy(deluge_global_initialization_context* context)
+{
+    size_t index;
+    pas_allocation_config allocation_config;
+    
+    if (--context->ref_count)
+        return;
+
+    pas_store_store_fence();
+
+    for (index = context->num_entries; index--;) {
+        PAS_ASSERT(!*context->entries[index].deluded_gptr);
+        __c11_atomic_store((_Atomic pas_uint128*)context->entries[index].deluded_gptr,
+                           context->entries[index].ptr_capability, __ATOMIC_RELAXED);
+    }
+
+    initialize_utility_allocation_config(&allocation_config);
+
+    deluge_deallocate(context->entries);
+    pas_ptr_hash_set_destruct(&context->seen, &allocation_config);
+    deluge_deallocate(context);
 }
 
 void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca)
@@ -1993,6 +2822,8 @@ void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca)
         new_array = (void**)deluge_allocate_utility(new_capacity * sizeof(void*));
 
         memcpy(new_array, stack->array, stack->size * sizeof(void*));
+
+        deluge_deallocate(stack->array);
 
         stack->array = new_array;
         stack->capacity = new_capacity;
@@ -2037,6 +2868,36 @@ void deluge_alloca_stack_destroy(deluge_alloca_stack* stack)
     deluge_deallocate(stack->array);
 }
 
+void deluge_execute_constant_relocations(
+    void* constant, deluge_constant_relocation* relocations, size_t num_relocations,
+    deluge_global_initialization_context* context)
+{
+    size_t index;
+    PAS_ASSERT(context);
+    /* Nothing here needs to be atomic, since the constant doesn't become visible to the universe
+       until the initialization context is destroyed. */
+    for (index = num_relocations; index--;) {
+        deluge_constant_relocation* relocation;
+        deluge_ptr* ptr_ptr;
+        relocation = relocations + index;
+        PAS_ASSERT(pas_is_aligned(relocation->offset, DELUGE_WORD_SIZE));
+        ptr_ptr = (deluge_ptr*)((char*)constant + relocation->offset);
+        PAS_ASSERT(!ptr_ptr->sidecar);
+        PAS_ASSERT(!ptr_ptr->capability);
+        PAS_ASSERT(pas_is_aligned((uintptr_t)ptr_ptr, DELUGE_WORD_SIZE));
+        switch (relocation->kind) {
+        case deluge_function_constant:
+            *ptr_ptr = deluge_ptr_forge_byte(relocation->target, &deluge_function_type);
+            continue;
+        case deluge_global_constant:
+            *ptr_ptr = deluge_ptr_create(
+                0, ((pas_uint128 (*)(deluge_global_initialization_context*))relocation->target)(context));
+            continue;
+        }
+        PAS_ASSERT(!"Bad relocation kind");
+    }
+}
+
 static bool did_run_deferred_global_ctors = false;
 static void (**deferred_global_ctors)(DELUDED_SIGNATURE) = NULL; 
 static size_t num_deferred_global_ctors = 0;
@@ -2062,6 +2923,8 @@ void deluge_defer_or_run_global_ctor(void (*global_ctor)(DELUDED_SIGNATURE))
 
         memcpy(new_deferred_global_ctors, deferred_global_ctors,
                num_deferred_global_ctors * sizeof(void (*)(DELUDED_SIGNATURE)));
+
+        deluge_deallocate(deferred_global_ctors);
 
         deferred_global_ctors = new_deferred_global_ctors;
         deferred_global_ctors_capacity = new_deferred_global_ctors_capacity;
@@ -2190,8 +3053,7 @@ void deluded_f_zprint_ptr(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     initialize_utility_allocation_config(&allocation_config);
     pas_string_stream_construct(&stream, &allocation_config);
-    pas_string_stream_printf(&stream, "%p,%p,%p,", ptr.ptr, ptr.lower, ptr.upper);
-    deluge_type_dump(ptr.type, &stream.base);
+    deluge_ptr_dump(ptr, &stream.base);
     print_str(pas_string_stream_get_string(&stream));
     pas_string_stream_destruct(&stream);
 }
@@ -2223,7 +3085,7 @@ void deluded_f_zstrlen(DELUDED_SIGNATURE)
     const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = strlen(str);
+    *(int*)deluge_ptr_ptr(rets) = strlen(str);
 }
 
 void deluded_f_zstrchr(DELUDED_SIGNATURE)
@@ -2241,8 +3103,7 @@ void deluded_f_zstrchr(DELUDED_SIGNATURE)
     int chr = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr =
-        deluge_ptr_forge(strchr(str, chr), str_ptr.lower, str_ptr.upper, str_ptr.type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_with_ptr(str_ptr, strchr(str, chr));
 }
 
 void deluded_f_zisdigit(DELUDED_SIGNATURE)
@@ -2258,7 +3119,7 @@ void deluded_f_zisdigit(DELUDED_SIGNATURE)
     int chr = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = isdigit(chr);
+    *(int*)deluge_ptr_ptr(rets) = isdigit(chr);
 }
 
 void deluded_f_zfence(DELUDED_SIGNATURE)
@@ -2266,6 +3127,119 @@ void deluded_f_zfence(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     DELUDED_DELETE_ARGS();
     pas_fence();
+}
+
+void deluded_f_zunfenced_weak_cas_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zunfenced_weak_cas_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr expected = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    *(bool*)deluge_ptr_ptr(rets) = deluge_ptr_unfenced_weak_cas(deluge_ptr_ptr(ptr), expected, new_value);
+}
+
+void deluded_f_zweak_cas_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zweak_cas_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr expected = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    *(bool*)deluge_ptr_ptr(rets) = deluge_ptr_weak_cas(deluge_ptr_ptr(ptr), expected, new_value);
+}
+
+void deluded_f_zunfenced_strong_cas_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zunfenced_strong_cas_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr expected = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) =
+        deluge_ptr_unfenced_strong_cas(deluge_ptr_ptr(ptr), expected, new_value);
+}
+
+void deluded_f_zstrong_cas_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zstrong_cas_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr expected = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_strong_cas(deluge_ptr_ptr(ptr), expected, new_value);
+}
+
+void deluded_f_zunfenced_xchg_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zunfenced_xchg_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_unfenced_xchg(deluge_ptr_ptr(ptr), new_value);
+}
+
+void deluded_f_zxchg_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zxchg_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr new_value = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(ptr, &origin);
+    deluge_check_access_ptr(rets, &origin);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_xchg(deluge_ptr_ptr(ptr), new_value);
 }
 
 void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE)
@@ -2279,7 +3253,7 @@ void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(bool), &origin);
-    *(bool*)rets.ptr = !!PAS_ENABLE_TESTING;
+    *(bool*)deluge_ptr_ptr(rets) = !!PAS_ENABLE_TESTING;
 }
 
 static void (*deluded_errno_handler)(DELUDED_SIGNATURE);
@@ -2300,7 +3274,7 @@ void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE)
         &origin,
         "errno handler already registered.");
     deluge_check_function_call(errno_handler, &origin);
-    deluded_errno_handler = (void(*)(DELUDED_SIGNATURE))errno_handler.ptr;
+    deluded_errno_handler = (void(*)(DELUDED_SIGNATURE))deluge_ptr_ptr(errno_handler);
 }
 
 static void set_musl_errno(int errno_value)
@@ -2449,7 +3423,7 @@ static int zsys_ioctl_impl(int fd, unsigned long request, deluge_ptr args)
         struct winsize winsize;
         musl_winsize_ptr = deluge_ptr_get_next_ptr(&args, &origin);
         deluge_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
-        musl_winsize = (struct musl_winsize*)musl_winsize_ptr.ptr;
+        musl_winsize = (struct musl_winsize*)deluge_ptr_ptr(musl_winsize_ptr);
         if (ioctl(fd, TIOCGWINSZ, &winsize) < 0) {
             set_errno(errno);
             return -1;
@@ -2481,7 +3455,7 @@ void deluded_f_zsys_ioctl(DELUDED_SIGNATURE)
     int result = zsys_ioctl_impl(fd, request, args);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = result;
+    *(int*)deluge_ptr_ptr(rets) = result;
 }
 
 struct musl_iovec { deluge_ptr iov_base; size_t iov_len; };
@@ -2517,10 +3491,10 @@ static struct iovec* prepare_iovec(deluge_ptr musl_iov, int iovcnt)
         deluge_check_access_int(
             deluge_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_len)),
             sizeof(size_t), &origin);
-        musl_iov_base = ((struct musl_iovec*)musl_iov_entry.ptr)->iov_base;
-        iov_len = ((struct musl_iovec*)musl_iov_entry.ptr)->iov_len;
+        musl_iov_base = ((struct musl_iovec*)deluge_ptr_ptr(musl_iov_entry))->iov_base;
+        iov_len = ((struct musl_iovec*)deluge_ptr_ptr(musl_iov_entry))->iov_len;
         deluge_check_access_int(musl_iov_base, iov_len, &origin);
-        iov[index].iov_base = musl_iov_base.ptr;
+        iov[index].iov_base = deluge_ptr_ptr(musl_iov_base);
         iov[index].iov_len = iov_len;
     }
     return iov;
@@ -2547,7 +3521,7 @@ void deluded_f_zsys_writev(DELUDED_SIGNATURE)
         set_errno(errno);
     deluge_deallocate(iov);
     deluge_check_access_int(rets, sizeof(ssize_t), &origin);
-    *(ssize_t*)rets.ptr = result;
+    *(ssize_t*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_read(DELUDED_SIGNATURE)
@@ -2565,11 +3539,11 @@ void deluded_f_zsys_read(DELUDED_SIGNATURE)
     ssize_t size = deluge_ptr_get_next_size_t(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(buf, size, &origin);
-    int result = read(fd, buf.ptr, size);
+    int result = read(fd, deluge_ptr_ptr(buf), size);
     if (result < 0)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(ssize_t), &origin);
-    *(ssize_t*)rets.ptr = result;
+    *(ssize_t*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_readv(DELUDED_SIGNATURE)
@@ -2593,7 +3567,7 @@ void deluded_f_zsys_readv(DELUDED_SIGNATURE)
         set_errno(errno);
     deluge_deallocate(iov);
     deluge_check_access_int(rets, sizeof(ssize_t), &origin);
-    *(ssize_t*)rets.ptr = result;
+    *(ssize_t*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_write(DELUDED_SIGNATURE)
@@ -2611,11 +3585,11 @@ void deluded_f_zsys_write(DELUDED_SIGNATURE)
     ssize_t size = deluge_ptr_get_next_size_t(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(buf, size, &origin);
-    int result = write(fd, buf.ptr, size);
+    int result = write(fd, deluge_ptr_ptr(buf), size);
     if (result < 0)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(ssize_t), &origin);
-    *(ssize_t*)rets.ptr = result;
+    *(ssize_t*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_close(DELUDED_SIGNATURE)
@@ -2634,7 +3608,7 @@ void deluded_f_zsys_close(DELUDED_SIGNATURE)
     if (result < 0)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = result;
+    *(int*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_lseek(DELUDED_SIGNATURE)
@@ -2655,7 +3629,7 @@ void deluded_f_zsys_lseek(DELUDED_SIGNATURE)
     if (result < 0)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(long), &origin);
-    *(long*)rets.ptr = result;
+    *(long*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_exit(DELUDED_SIGNATURE)
@@ -2752,17 +3726,17 @@ void deluded_f_zsys_signal(DELUDED_SIGNATURE)
     int signum = from_musl_signum(musl_signum);
     if (signum < 0) {
         set_errno(EINVAL);
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
+        *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
         return;
     }
     check_signal(signum, &origin);
-    void* result = signal(signum, from_musl_signal_handler(sighandler.ptr, &origin));
+    void* result = signal(signum, from_musl_signal_handler(deluge_ptr_ptr(sighandler), &origin));
     if (result == SIG_ERR) {
-        *(deluge_ptr*)rets.ptr = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
+        *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_invalid((void*)(intptr_t)-1);
         set_errno(errno);
         return;
     }
-    *(deluge_ptr*)rets.ptr = to_musl_signal_handler(result);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = to_musl_signal_handler(result);
 }
 
 void deluded_f_zsys_getuid(DELUDED_SIGNATURE)
@@ -2777,7 +3751,7 @@ void deluded_f_zsys_getuid(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)rets.ptr = getuid();
+    *(unsigned*)deluge_ptr_ptr(rets) = getuid();
 }
 
 void deluded_f_zsys_geteuid(DELUDED_SIGNATURE)
@@ -2792,7 +3766,7 @@ void deluded_f_zsys_geteuid(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)rets.ptr = geteuid();
+    *(unsigned*)deluge_ptr_ptr(rets) = geteuid();
 }
 
 void deluded_f_zsys_getgid(DELUDED_SIGNATURE)
@@ -2807,7 +3781,7 @@ void deluded_f_zsys_getgid(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)rets.ptr = getgid();
+    *(unsigned*)deluge_ptr_ptr(rets) = getgid();
 }
 
 void deluded_f_zsys_getegid(DELUDED_SIGNATURE)
@@ -2822,7 +3796,7 @@ void deluded_f_zsys_getegid(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)rets.ptr = getegid();
+    *(unsigned*)deluge_ptr_ptr(rets) = getegid();
 }
 
 static bool check_and_clear(int* flags, int expected)
@@ -2922,13 +3896,13 @@ void deluded_f_zsys_open(DELUDED_SIGNATURE)
     deluge_check_access_int(rets, sizeof(int), &origin);
     if (flags < 0) {
         set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
     int result = open(deluge_check_and_get_str(path_ptr, &origin), flags, mode);
     if (result < 0)
         set_errno(errno);
-    *(int*)rets.ptr = result;
+    *(int*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_getpid(DELUDED_SIGNATURE)
@@ -2943,7 +3917,7 @@ void deluded_f_zsys_getpid(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = getpid();
+    *(int*)deluge_ptr_ptr(rets) = getpid();
 }
 
 static bool from_musl_clock_id(int musl_clock_id, clockid_t* result)
@@ -2992,18 +3966,18 @@ void deluded_f_zsys_clock_gettime(DELUDED_SIGNATURE)
     deluge_check_access_int(timespec_ptr, sizeof(struct musl_timespec), &origin);
     clockid_t clock_id;
     if (!from_musl_clock_id(musl_clock_id, &clock_id)) {
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         set_errno(EINVAL);
         return;
     }
     struct timespec ts;
     int result = clock_gettime(clock_id, &ts);
     if (result < 0) {
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         set_errno(errno);
         return;
     }
-    struct musl_timespec* musl_timespec = (struct musl_timespec*)timespec_ptr.ptr;
+    struct musl_timespec* musl_timespec = (struct musl_timespec*)deluge_ptr_ptr(timespec_ptr);
     musl_timespec->tv_sec = ts.tv_sec;
     musl_timespec->tv_nsec = ts.tv_nsec;
 }
@@ -3048,10 +4022,10 @@ static void handle_fstat_result(deluge_ptr rets, deluge_ptr musl_stat_ptr, struc
     deluge_check_access_int(musl_stat_ptr, sizeof(struct musl_stat), &origin);
     if (result < 0) {
         set_errno(errno);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
-    struct musl_stat* musl_stat = (struct musl_stat*)musl_stat_ptr.ptr;
+    struct musl_stat* musl_stat = (struct musl_stat*)deluge_ptr_ptr(musl_stat_ptr);
     musl_stat->st_dev = st->st_dev;
     musl_stat->st_ino = st->st_ino;
     musl_stat->st_mode = st->st_mode;
@@ -3089,7 +4063,7 @@ void deluded_f_zsys_fstatat(DELUDED_SIGNATURE)
     int flag;
     if (!from_musl_fstatat_flag(musl_flag, &flag)) {
         set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
     if (fd == -100)
@@ -3198,7 +4172,7 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
     if (have_arg_flock) {
         musl_flock_ptr = deluge_ptr_get_next_ptr(&args, &origin);
         deluge_check_access_int(musl_flock_ptr, sizeof(struct musl_flock), &origin);
-        musl_flock = (struct musl_flock*)musl_flock_ptr.ptr;
+        musl_flock = (struct musl_flock*)deluge_ptr_ptr(musl_flock_ptr);
         switch (musl_flock->l_type) {
         case 0:
             arg_flock.l_type = F_RDLCK;
@@ -3211,7 +4185,7 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
             break;
         default:
             set_errno(EINVAL);
-            *(int*)rets.ptr = -1;
+            *(int*)deluge_ptr_ptr(rets) = -1;
             return;
         }
         arg_flock.l_whence = musl_flock->l_whence;
@@ -3222,7 +4196,7 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     if (!have_cmd) {
         set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
     switch (cmd) {
@@ -3235,7 +4209,7 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
             break;
         default:
             set_errno(EINVAL);
-            *(int*)rets.ptr = -1;
+            *(int*)deluge_ptr_ptr(rets) = -1;
             return;
         }
         break;
@@ -3301,70 +4275,11 @@ void deluded_f_zsys_fcntl(DELUDED_SIGNATURE)
     default:
         break;
     }
-    *(int*)rets.ptr = result;
-}
-
-struct musl_passwd {
-    deluge_ptr pw_name;
-    deluge_ptr pw_passwd;
-    unsigned pw_uid;
-    unsigned pw_gid;
-    deluge_ptr pw_gecos;
-    deluge_ptr pw_dir;
-    deluge_ptr pw_shell;
-};
-
-static const deluge_type musl_passwd_type = {
-    .size = sizeof(struct musl_passwd),
-    .alignment = alignof(struct musl_passwd),
-    .num_words = sizeof(struct musl_passwd) / 8,
-    .u = {
-        .trailing_array = NULL
-    },
-    .word_types = {
-        DELUGE_WORD_TYPES_PTR, /* pw_name */
-        DELUGE_WORD_TYPES_PTR, /* pw_passwd */
-        DELUGE_WORD_TYPE_INT, /* pw_uid, pw_gid */
-        DELUGE_WORD_TYPES_PTR, /* pw_gecos */
-        DELUGE_WORD_TYPES_PTR, /* pw_dir */
-        DELUGE_WORD_TYPES_PTR /* pw_shell */
-    }
-};
-
-static pas_heap_ref musl_passwd_heap = {
-    .type = (const pas_heap_type*)&musl_passwd_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
-
-static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
-{
-    deluge_deallocate_safe(musl_passwd->pw_name);
-    deluge_deallocate_safe(musl_passwd->pw_passwd);
-    deluge_deallocate_safe(musl_passwd->pw_gecos);
-    deluge_deallocate_safe(musl_passwd->pw_dir);
-    deluge_deallocate_safe(musl_passwd->pw_shell);
-}
-
-static void musl_passwd_threadlocal_destructor(void* ptr)
-{
-    struct musl_passwd* musl_passwd = (struct musl_passwd*)ptr;
-    musl_passwd_free_guts(musl_passwd);
-    deluge_deallocate(musl_passwd);
-}
-
-static pas_system_once musl_passwd_threadlocal_once = PAS_SYSTEM_ONCE_INIT;
-static pthread_key_t musl_passwd_threadlocal_key;
-
-static void musl_passwd_threadlocal_init(void)
-{
-    pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
+    *(int*)deluge_ptr_ptr(rets) = result;
 }
 
 static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
 {
-    pas_system_once_run(&musl_passwd_threadlocal_once, musl_passwd_threadlocal_init);
-
     struct musl_passwd* result = (struct musl_passwd*)pthread_getspecific(musl_passwd_threadlocal_key);
     if (result)
         musl_passwd_free_guts(result);
@@ -3372,15 +4287,15 @@ static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
         result = deluge_allocate_one(&musl_passwd_heap);
         pthread_setspecific(musl_passwd_threadlocal_key, result);
     }
-    pas_zero_memory(result, sizeof(struct musl_passwd));
+    deluge_low_level_ptr_safe_bzero(result, sizeof(struct musl_passwd));
 
-    result->pw_name = deluge_strdup(passwd->pw_name);
-    result->pw_passwd = deluge_strdup(passwd->pw_passwd);
+    deluge_ptr_store(&result->pw_name, deluge_strdup(passwd->pw_name));
+    deluge_ptr_store(&result->pw_passwd, deluge_strdup(passwd->pw_passwd));
     result->pw_uid = passwd->pw_uid;
     result->pw_gid = passwd->pw_gid;
-    result->pw_gecos = deluge_strdup(passwd->pw_gecos);
-    result->pw_dir = deluge_strdup(passwd->pw_dir);
-    result->pw_shell = deluge_strdup(passwd->pw_shell);
+    deluge_ptr_store(&result->pw_gecos, deluge_strdup(passwd->pw_gecos));
+    deluge_ptr_store(&result->pw_dir, deluge_strdup(passwd->pw_dir));
+    deluge_ptr_store(&result->pw_shell, deluge_strdup(passwd->pw_shell));
     return result;
 }
 
@@ -3403,49 +4318,9 @@ void deluded_f_zsys_getpwuid(DELUDED_SIGNATURE)
         return;
     }
     struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) =
+        deluge_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
 }
-
-struct musl_sigset {
-    unsigned long bits[128 / sizeof(long)];
-};
-
-struct musl_sigaction {
-    deluge_ptr sa_handler_ish;
-    struct musl_sigset sa_mask;
-    int sa_flags;
-    deluge_ptr sa_restorer; /* ignored */
-};
-
-static const deluge_type musl_sigaction_type = {
-    .size = sizeof(struct musl_sigaction),
-    .alignment = alignof(struct musl_sigaction),
-    .num_words = sizeof(struct musl_sigaction) / 8,
-    .u = {
-        .trailing_array = NULL
-    },
-    .word_types = {
-        DELUGE_WORD_TYPES_PTR, /* sa_handler_ish */
-        DELUGE_WORD_TYPE_INT, /* sa_mask */
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT,
-        DELUGE_WORD_TYPE_INT, /* sa_flags */
-        DELUGE_WORD_TYPES_PTR /* sa_restorer */
-    }
-};
 
 static void from_musl_sigset(struct musl_sigset* musl_sigset,
                              sigset_t* sigset)
@@ -3547,25 +4422,25 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
     if (signum < 0) {
         pas_log("bad signum\n");
         set_errno(EINVAL);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
     check_signal(signum, &origin);
-    if (act_ptr.ptr)
+    if (deluge_ptr_ptr(act_ptr))
         deluge_restrict(act_ptr, 1, &musl_sigaction_type, &origin);
-    if (oact_ptr.ptr)
+    if (deluge_ptr_ptr(oact_ptr))
         deluge_restrict(oact_ptr, 1, &musl_sigaction_type, &origin);
-    struct musl_sigaction* musl_act = (struct musl_sigaction*)act_ptr.ptr;
-    struct musl_sigaction* musl_oact = (struct musl_sigaction*)oact_ptr.ptr;
+    struct musl_sigaction* musl_act = (struct musl_sigaction*)deluge_ptr_ptr(act_ptr);
+    struct musl_sigaction* musl_oact = (struct musl_sigaction*)deluge_ptr_ptr(oact_ptr);
     struct sigaction act;
     struct sigaction oact;
     if (musl_act) {
-        act.sa_handler = from_musl_signal_handler(musl_act->sa_handler_ish.ptr, &origin);
+        act.sa_handler = from_musl_signal_handler(
+            deluge_ptr_ptr(deluge_ptr_load(&musl_act->sa_handler_ish)), &origin);
         from_musl_sigset(&musl_act->sa_mask, &act.sa_mask);
         if (!from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
-            pas_log("failed to convert flags\n");
             set_errno(EINVAL);
-            *(int*)rets.ptr = -1;
+            *(int*)deluge_ptr_ptr(rets) = -1;
             return;
         }
     }
@@ -3573,13 +4448,12 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE)
         pas_zero_memory(&oact, sizeof(struct sigaction));
     int result = sigaction(signum, musl_act ? &act : NULL, musl_oact ? &oact : NULL);
     if (result < 0) {
-        pas_log("sigaction failed\n");
         set_errno(errno);
-        *(int*)rets.ptr = 1;
+        *(int*)deluge_ptr_ptr(rets) = 1;
         return;
     }
     if (musl_oact) {
-        musl_oact->sa_handler_ish = to_musl_signal_handler(oact.sa_handler);
+        deluge_ptr_store(&musl_oact->sa_handler_ish, to_musl_signal_handler(oact.sa_handler));
         to_musl_sigset(&oact.sa_mask, &musl_oact->sa_mask);
         musl_oact->sa_flags = to_musl_sa_flags(oact.sa_flags);
     }
@@ -3602,7 +4476,7 @@ void deluded_f_zsys_isatty(DELUDED_SIGNATURE)
     int result = isatty(fd);
     if (!result && errno)
         set_errno(errno);
-    *(int*)rets.ptr = result;
+    *(int*)deluge_ptr_ptr(rets) = result;
 }
 
 void deluded_f_zsys_pipe(DELUDED_SIGNATURE)
@@ -3626,11 +4500,11 @@ void deluded_f_zsys_pipe(DELUDED_SIGNATURE)
            our fds, since that would be nonconforming behavior. Probably doesn't matter since of
            course we would never run on a nonconforming system. */
         set_errno(errno);
-        *(int*)rets.ptr = -1;
+        *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
-    ((int*)fds_ptr.ptr)[0] = fds[0];
-    ((int*)fds_ptr.ptr)[1] = fds[1];
+    ((int*)deluge_ptr_ptr(fds_ptr))[0] = fds[0];
+    ((int*)deluge_ptr_ptr(fds_ptr))[1] = fds[1];
 }
 
 struct musl_timeval {
@@ -3660,18 +4534,18 @@ void deluded_f_zsys_select(DELUDED_SIGNATURE)
         &origin,
         "attempt to select with nfds = %d (should be 1024 or less).",
         nfds);
-    if (readfds_ptr.ptr)
+    if (deluge_ptr_ptr(readfds_ptr))
         deluge_check_access_int(readfds_ptr, sizeof(fd_set), &origin);
-    if (writefds_ptr.ptr)
+    if (deluge_ptr_ptr(writefds_ptr))
         deluge_check_access_int(writefds_ptr, sizeof(fd_set), &origin);
-    if (exceptfds_ptr.ptr)
+    if (deluge_ptr_ptr(exceptfds_ptr))
         deluge_check_access_int(exceptfds_ptr, sizeof(fd_set), &origin);
-    if (timeout_ptr.ptr)
+    if (deluge_ptr_ptr(timeout_ptr))
         deluge_check_access_int(timeout_ptr, sizeof(struct musl_timeval), &origin);
-    fd_set* readfds = (fd_set*)readfds_ptr.ptr;
-    fd_set* writefds = (fd_set*)writefds_ptr.ptr;
-    fd_set* exceptfds = (fd_set*)exceptfds_ptr.ptr;
-    struct musl_timeval* musl_timeout = (struct musl_timeval*)timeout_ptr.ptr;
+    fd_set* readfds = (fd_set*)deluge_ptr_ptr(readfds_ptr);
+    fd_set* writefds = (fd_set*)deluge_ptr_ptr(writefds_ptr);
+    fd_set* exceptfds = (fd_set*)deluge_ptr_ptr(exceptfds_ptr);
+    struct musl_timeval* musl_timeout = (struct musl_timeval*)deluge_ptr_ptr(timeout_ptr);
     struct timeval timeout;
     if (musl_timeout) {
         timeout.tv_sec = musl_timeout->tv_sec;
@@ -3681,66 +4555,12 @@ void deluded_f_zsys_select(DELUDED_SIGNATURE)
     if (result < 0)
         set_errno(errno);
     deluge_check_access_int(rets, sizeof(int), &origin);
-    *(int*)rets.ptr = result;
+    *(int*)deluge_ptr_ptr(rets) = result;
     if (musl_timeout) {
         musl_timeout->tv_sec = timeout.tv_sec;
         musl_timeout->tv_usec = timeout.tv_usec;
     }
 }
-
-#define DEFINE_RUNTIME_CONFIG(name, type, fresh_memory_constructor)     \
-    static void name ## _initialize_fresh_memory(void* begin, void* end) \
-    { \
-        PAS_TESTING_ASSERT(((char*)end - (char*)begin) >= (ptrdiff_t)sizeof(type)); \
-        fresh_memory_constructor(begin); \
-    } \
-    \
-    static pas_basic_heap_runtime_config name = { \
-        .base = { \
-            .sharing_mode = pas_do_not_share_pages, \
-            .statically_allocated = false, \
-            .is_part_of_heap = true, \
-            .is_flex = false, \
-            .directory_size_bound_for_partial_views = 0, \
-            .directory_size_bound_for_baseline_allocators = PAS_TYPED_BOUND_FOR_BASELINE_ALLOCATORS, \
-            .directory_size_bound_for_no_view_cache = PAS_TYPED_BOUND_FOR_NO_VIEW_CACHE, \
-            .max_segregated_object_size = PAS_TYPED_MAX_SEGREGATED_OBJECT_SIZE, \
-            .max_bitfit_object_size = 0, \
-            .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity, \
-            .initialize_fresh_memory = name ## _initialize_fresh_memory \
-        }, \
-        .page_caches = &deluge_page_caches \
-    }
-
-typedef struct {
-    pas_lock lock;
-    void (*destructor)(DELUDED_SIGNATURE);
-    pthread_key_t key;
-    uint64_t version;
-} thread_specific;
-
-static void thread_specific_construct(thread_specific* specific)
-{
-    pas_lock_construct(&specific->lock);
-}
-
-DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific, thread_specific_construct);
-
-static const deluge_type thread_specific_type = {
-    .size = sizeof(thread_specific),
-    .alignment = alignof(thread_specific),
-    .num_words = 0,
-    .u = {
-        .runtime_config = &thread_specific_runtime_config
-    },
-    .word_types = { }
-};
-
-static pas_heap_ref thread_specific_heap = {
-    .type = (const pas_heap_type*)&thread_specific_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
 
 typedef struct {
     thread_specific* parent;
@@ -3762,9 +4582,10 @@ static void my_destructor(void* untyped_value)
         deluge_ptr* args;
         uintptr_t return_buffer[2];
         
-        args = deluge_allocate_one(deluge_get_heap(&deluge_ptr_type));
-        *args = value->value;
-        destructor(args, args + 1, &deluge_ptr_type, return_buffer, return_buffer + 2, &deluge_int_type);
+        args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
+        deluge_ptr_store(args, deluge_ptr_load(&value->value));
+        destructor(args, args + 1, &deluge_one_ptr_type,
+                   return_buffer, return_buffer + 2, &deluge_int_type);
     }
     
     deluge_deallocate(value);
@@ -3783,7 +4604,7 @@ void deluded_f_zthread_key_create(DELUDED_SIGNATURE)
     deluge_ptr destructor_ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
 
-    if (destructor_ptr.ptr)
+    if (deluge_ptr_ptr(destructor_ptr))
         deluge_check_function_call(destructor_ptr, &origin);
 
     thread_specific* result = deluge_try_allocate_one(&thread_specific_heap);
@@ -3811,10 +4632,10 @@ void deluded_f_zthread_key_create(DELUDED_SIGNATURE)
         pas_lock_unlock(&result->lock);
     }
 
-    result->destructor = (void(*)(DELUDED_SIGNATURE))destructor_ptr.ptr;
+    result->destructor = (void(*)(DELUDED_SIGNATURE))deluge_ptr_ptr(destructor_ptr);
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &thread_specific_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(result, &thread_specific_type);
 }
 
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
@@ -3830,7 +4651,7 @@ void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
 
-    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
     specific->version++; /* This can be racy, since:
                             
                             - Users aren't supposed to use it in a racy way, so any memory safe
@@ -3857,7 +4678,7 @@ void deluded_f_zthread_setspecific(DELUDED_SIGNATURE)
 
     deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
 
-    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
     thread_specific_value* specific_value = pthread_getspecific(specific->key);
     if (!specific_value) {
         int my_errno;
@@ -3871,9 +4692,9 @@ void deluded_f_zthread_setspecific(DELUDED_SIGNATURE)
         }
     }
 
-    specific_value->value = value;
+    deluge_ptr_store(&specific_value->value, value);
     deluge_check_access_int(rets, sizeof(bool), &origin);
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
@@ -3891,7 +4712,7 @@ void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
 
     deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
 
-    thread_specific* specific = (thread_specific*)thread_specific_ptr.ptr;
+    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
     thread_specific_value* value = pthread_getspecific(specific->key);
     if (!value)
         return;
@@ -3900,32 +4721,8 @@ void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
         return;
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = value->value;
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_load(&value->value);
 }
-
-static void rwlock_construct(pthread_rwlock_t* rwlock)
-{
-    int result = pthread_rwlock_init(rwlock, NULL);
-    PAS_ASSERT(!result);
-}
-
-DEFINE_RUNTIME_CONFIG(rwlock_runtime_config, pthread_rwlock_t, rwlock_construct);
-
-static const deluge_type rwlock_type = {
-    .size = sizeof(pthread_rwlock_t),
-    .alignment = alignof(pthread_rwlock_t),
-    .num_words = 0,
-    .u = {
-        .runtime_config = &rwlock_runtime_config
-    },
-    .word_types = { }
-};
-
-static pas_heap_ref rwlock_heap = {
-    .type = (const pas_heap_type*)&rwlock_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
 
 void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE)
 {
@@ -3944,7 +4741,7 @@ void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE)
         return;
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &rwlock_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(result, &rwlock_type);
 }
 
 void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE)
@@ -3961,7 +4758,7 @@ void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE)
 
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     deluge_deallocate(rwlock);
 }
 
@@ -3981,13 +4778,13 @@ void deluded_f_zthread_rwlock_rdlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     int my_errno = pthread_rwlock_rdlock(rwlock);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE)
@@ -4006,13 +4803,13 @@ void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     int my_errno = pthread_rwlock_tryrdlock(rwlock);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE)
@@ -4031,13 +4828,13 @@ void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     int my_errno = pthread_rwlock_wrlock(rwlock);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE)
@@ -4056,13 +4853,13 @@ void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     int my_errno = pthread_rwlock_trywrlock(rwlock);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE)
@@ -4081,38 +4878,14 @@ void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(rwlock_ptr, &rwlock_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)rwlock_ptr.ptr;
+    pthread_rwlock_t* rwlock = (pthread_rwlock_t*)deluge_ptr_ptr(rwlock_ptr);
     int my_errno = pthread_rwlock_unlock(rwlock);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
-
-static void mutex_construct(pthread_mutex_t* mutex)
-{
-    int result = pthread_mutex_init(mutex, NULL);
-    PAS_ASSERT(!result);
-}
-
-DEFINE_RUNTIME_CONFIG(mutex_runtime_config, pthread_mutex_t, mutex_construct);
-
-static const deluge_type mutex_type = {
-    .size = sizeof(pthread_mutex_t),
-    .alignment = alignof(pthread_mutex_t),
-    .num_words = 0,
-    .u = {
-        .runtime_config = &mutex_runtime_config
-    },
-    .word_types = { }
-};
-
-static pas_heap_ref mutex_heap = {
-    .type = (const pas_heap_type*)&mutex_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
 
 void deluded_f_zthread_mutex_create(DELUDED_SIGNATURE)
 {
@@ -4131,7 +4904,7 @@ void deluded_f_zthread_mutex_create(DELUDED_SIGNATURE)
         return;
 
     deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(result, &mutex_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(result, &mutex_type);
 }
 
 void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE)
@@ -4148,7 +4921,7 @@ void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE)
 
     deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
 
-    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    pthread_mutex_t* mutex = (pthread_mutex_t*)deluge_ptr_ptr(mutex_ptr);
     deluge_deallocate(mutex);
 }
 
@@ -4168,13 +4941,13 @@ void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    pthread_mutex_t* mutex = (pthread_mutex_t*)deluge_ptr_ptr(mutex_ptr);
     int my_errno = pthread_mutex_lock(mutex);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE)
@@ -4193,13 +4966,13 @@ void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    pthread_mutex_t* mutex = (pthread_mutex_t*)deluge_ptr_ptr(mutex_ptr);
     int my_errno = pthread_mutex_trylock(mutex);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE)
@@ -4218,66 +4991,13 @@ void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE)
     deluge_check_access_opaque(mutex_ptr, &mutex_type, &origin);
     deluge_check_access_int(rets, sizeof(bool), &origin);
 
-    pthread_mutex_t* mutex = (pthread_mutex_t*)mutex_ptr.ptr;
+    pthread_mutex_t* mutex = (pthread_mutex_t*)deluge_ptr_ptr(mutex_ptr);
     int my_errno = pthread_mutex_unlock(mutex);
     if (my_errno) {
         set_errno(my_errno);
         return;
     }
-    *(bool*)rets.ptr = true;
-}
-
-typedef struct {
-    pas_lock lock;
-    pthread_t thread;
-} zthread;
-
-static void zthread_construct(zthread* thread)
-{
-    pas_lock_construct(&thread->lock);
-    thread->thread = NULL;
-}
-
-DEFINE_RUNTIME_CONFIG(zthread_runtime_config, zthread, zthread_construct);
-
-static const deluge_type zthread_type = {
-    .size = sizeof(zthread),
-    .alignment = alignof(zthread),
-    .num_words = 0,
-    .u = {
-        .runtime_config = &zthread_runtime_config
-    },
-    .word_types = { }
-};
-
-static pas_heap_ref zthread_heap = {
-    .type = (const pas_heap_type*)&zthread_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
-
-static bool zthread_booted = false;
-static pthread_key_t zthread_key;
-
-void deluded_f_zthread_boot_main_thread(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zthread_boot_main_thread",
-        .line = 0,
-        .column = 0
-    };
-    DELUDED_DELETE_ARGS();
-    DELUGE_CHECK(
-        !zthread_booted,
-        &origin,
-        "cannot boot main thread twice.");
-    zthread* result = (zthread*)deluge_allocate_one(&zthread_heap);
-    PAS_ASSERT(!result->thread);
-    result->thread = pthread_self();
-    PAS_ASSERT(!pthread_key_create(&zthread_key, NULL));
-    PAS_ASSERT(!pthread_setspecific(zthread_key, result));
-    zthread_booted = true;
+    *(bool*)deluge_ptr_ptr(rets) = true;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
@@ -4291,13 +5011,9 @@ void deluded_f_zthread_self(DELUDED_SIGNATURE)
     deluge_ptr rets = DELUDED_RETS;
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
-    DELUGE_CHECK(
-        zthread_booted,
-        &origin,
-        "zthread not booted.");
     zthread* thread = pthread_getspecific(zthread_key);
     PAS_ASSERT(thread);
-    *(deluge_ptr*)rets.ptr = deluge_ptr_forge_byte(thread, &zthread_type);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(thread, &zthread_type);
 }
 
 #endif /* PAS_ENABLE_DELUGE */

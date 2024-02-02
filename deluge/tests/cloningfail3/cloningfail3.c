@@ -41,9 +41,9 @@ int main(int argc, char** argv)
     ztype* ft2 = zgettypeslice(f + 5, sizeof(struct foo));
     ZASSERT(ft2 == ft);
 
-    ztype* ft3 = zgettypeslice((char*)f + 16, sizeof(struct foo) - 16);
-    void* thingy = zalloc_with_type(ft3, sizeof(struct foo) - 16);
-    __builtin_memcpy(thingy, (char*)(f + 30) + 16, sizeof(struct foo) - 16);
+    ztype* ft3 = zgettypeslice((char*)f + 8, sizeof(struct foo) - 8);
+    void* thingy = zalloc_with_type(ft3, sizeof(struct foo) - 8);
+    __builtin_memcpy(thingy, (char*)(f + 30) + 8, sizeof(struct foo) - 8);
 
     struct foo_baz* foo_baz = opaque(
         zalloc_with_type(zcattype(ztypeof(struct foo), sizeof(struct foo),

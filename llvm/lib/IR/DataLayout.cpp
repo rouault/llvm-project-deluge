@@ -57,7 +57,7 @@ StructLayout::StructLayout(StructType *ST, const DataLayout &DL, DelugeMode DM)
     if (i == 0 && Ty->isScalableTy())
       StructSize = TypeSize::Scalable(0);
 
-    const Align TyAlign = ST->isPacked() ? Align(1) : DL.getABITypeAlign(Ty);
+    const Align TyAlign = ST->isPacked() ? Align(1) : DL.getABITypeAlign(Ty, DM);
 
     // Add padding if necessary to align the data element properly.
     // Currently the only structure with scalable size will be the homogeneous
@@ -787,19 +787,23 @@ unsigned DataLayout::getIndexTypeSizeInBits(Type *Ty) const {
   Get the ABI (\a abi_or_pref == true) or preferred alignment (\a abi_or_pref
   == false) for the requested type \a Ty.
  */
-Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref) const {
+Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref, DelugeMode DM) const {
   assert(Ty->isSized() && "Cannot getTypeInfo() on a type that is unsized!");
   switch (Ty->getTypeID()) {
   // Early escape for the non-numeric types.
   case Type::LabelTyID:
+    if (DM == BeforeDeluge)
+      return Align(128);
     return abi_or_pref ? getPointerABIAlignment(0) : getPointerPrefAlignment(0);
   case Type::PointerTyID: {
     unsigned AS = cast<PointerType>(Ty)->getAddressSpace();
+    if (AS == 0 && DM == BeforeDeluge)
+      return Align(128);
     return abi_or_pref ? getPointerABIAlignment(AS)
                        : getPointerPrefAlignment(AS);
     }
   case Type::ArrayTyID:
-    return getAlignment(cast<ArrayType>(Ty)->getElementType(), abi_or_pref);
+    return getAlignment(cast<ArrayType>(Ty)->getElementType(), abi_or_pref, DM);
 
   case Type::StructTyID: {
     // Packed structure types always have an ABI alignment of one.
@@ -807,7 +811,7 @@ Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref) const {
       return Align(1);
 
     // Get the layout annotation... which is lazily created on demand.
-    const StructLayout *Layout = getStructLayout(cast<StructType>(Ty));
+    const StructLayout *Layout = getStructLayout(cast<StructType>(Ty), DM);
     const Align Align =
         abi_or_pref ? StructAlignment.ABIAlign : StructAlignment.PrefAlign;
     return std::max(Align, Layout->getAlignment());
@@ -856,24 +860,24 @@ Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref) const {
     return Align(64);
   case Type::TargetExtTyID: {
     Type *LayoutTy = cast<TargetExtType>(Ty)->getLayoutType();
-    return getAlignment(LayoutTy, abi_or_pref);
+    return getAlignment(LayoutTy, abi_or_pref, DM);
   }
   default:
     llvm_unreachable("Bad type for getAlignment!!!");
   }
 }
 
-Align DataLayout::getABITypeAlign(Type *Ty) const {
-  return getAlignment(Ty, true);
+Align DataLayout::getABITypeAlign(Type *Ty, DelugeMode DM) const {
+  return getAlignment(Ty, true, DM);
 }
 
 /// TODO: Remove this function once the transition to Align is over.
-uint64_t DataLayout::getPrefTypeAlignment(Type *Ty) const {
-  return getPrefTypeAlign(Ty).value();
+uint64_t DataLayout::getPrefTypeAlignment(Type *Ty, DelugeMode DM) const {
+  return getPrefTypeAlign(Ty, DM).value();
 }
 
-Align DataLayout::getPrefTypeAlign(Type *Ty) const {
-  return getAlignment(Ty, false);
+Align DataLayout::getPrefTypeAlign(Type *Ty, DelugeMode DM) const {
+  return getAlignment(Ty, false, DM);
 }
 
 IntegerType *DataLayout::getIntPtrType(LLVMContext &C,

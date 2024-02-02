@@ -28,7 +28,7 @@ int main()
     zprintf("This type is %T or whatever.\n", zgettype(&whatever));
     zprintf("This ptr is %P and stuff and %P while this type is %T or whatever.\n",
             zunsafe_forge(0x666, double, 12345),
-            zunsafe_forge(0x420, struct another, 0666),
+            zunsafe_forge(0x42, struct another, 0666),
             zgettype(&another));
     zprintf("This type is %T and stuff.\n", ztypeof(struct whatever));
     return 0;

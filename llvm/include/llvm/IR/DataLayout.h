@@ -185,7 +185,7 @@ private:
   Align getIntegerAlignment(uint32_t BitWidth, bool abi_or_pref) const;
 
   /// Internal helper method that returns requested alignment for type.
-  Align getAlignment(Type *Ty, bool abi_or_pref) const;
+  Align getAlignment(Type *Ty, bool abi_or_pref, DelugeMode DM) const;
 
   /// Attempts to parse a target data specification string and reports an error
   /// if the string is malformed.
@@ -366,7 +366,7 @@ public:
   }
 
   /// Layout pointer alignment
-  Align getPointerABIAlignment(unsigned AS) const;
+  Align getPointerABIAlignment(unsigned AS) const; // used from CGOpenMPRuntime.cpp
 
   /// Return target's alignment for stack-based pointers
   /// FIXME: The defaults need to be removed once all of
@@ -526,13 +526,14 @@ public:
   TypeSize getTypeAllocSizeInBitsBeforeDeluge(Type *Ty) const { return getTypeAllocSizeInBits(Ty, BeforeDeluge); }
 
   /// Returns the minimum ABI-required alignment for the specified type.
-  Align getABITypeAlign(Type *Ty) const;
+  Align getABITypeAlign(Type *Ty, DelugeMode DM = AfterDeluge) const; // Used from all over
+  Align getABITypeAlignBeforeDeluge(Type *Ty) const { return getABITypeAlign(Ty, BeforeDeluge); }
 
   /// Helper function to return `Alignment` if it's set or the result of
   /// `getABITypeAlign(Ty)`, in any case the result is a valid alignment.
   inline Align getValueOrABITypeAlignment(MaybeAlign Alignment,
-                                          Type *Ty) const {
-    return Alignment ? *Alignment : getABITypeAlign(Ty);
+                                          Type *Ty, DelugeMode DM = AfterDeluge) const {
+    return Alignment ? *Alignment : getABITypeAlign(Ty, DM);
   }
 
   /// Returns the minimum ABI-required alignment for an integer type of
@@ -547,13 +548,14 @@ public:
   /// This is always at least as good as the ABI alignment.
   /// FIXME: Deprecate this function once migration to Align is over.
   LLVM_DEPRECATED("use getPrefTypeAlign instead", "getPrefTypeAlign")
-  uint64_t getPrefTypeAlignment(Type *Ty) const;
+  uint64_t getPrefTypeAlignment(Type *Ty, DelugeMode DM = AfterDeluge) const;
 
   /// Returns the preferred stack/global alignment for the specified
   /// type.
   ///
   /// This is always at least as good as the ABI alignment.
-  Align getPrefTypeAlign(Type *Ty) const;
+  Align getPrefTypeAlign(Type *Ty, DelugeMode DM = AfterDeluge) const;
+  Align getPrefTypeAlignBeforeDeluge(Type *Ty) const { return getPrefTypeAlign(Ty, BeforeDeluge); }
 
   /// Returns an integer type with size at least as big as that of a
   /// pointer in the given address space.

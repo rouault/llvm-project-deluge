@@ -110,6 +110,11 @@ class VarTemplateDecl;
 class VTableContextBase;
 struct BlockVarCopyInit;
 
+enum class ConstexprOrNot : bool {
+  Not,
+  Constexpr
+};
+
 namespace Builtin {
 
 class Context;
@@ -153,12 +158,14 @@ struct TypeInfo {
   uint64_t Width = 0;
   uint64_t ConstexprWidth = 0;
   unsigned Align = 0;
+  unsigned ConstexprAlign = 0;
   AlignRequirementKind AlignRequirement;
 
   TypeInfo() : AlignRequirement(AlignRequirementKind::None) {}
-  TypeInfo(uint64_t Width, uint64_t ConstexprWidth, unsigned Align,
+  TypeInfo(uint64_t Width, uint64_t ConstexprWidth, unsigned Align, unsigned ConstexprAlign,
            AlignRequirementKind AlignRequirement)
-    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), AlignRequirement(AlignRequirement) {}
+    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), ConstexprAlign(ConstexprAlign)
+    , AlignRequirement(AlignRequirement) {}
   bool isAlignRequired() {
     return AlignRequirement != AlignRequirementKind::None;
   }
@@ -168,12 +175,14 @@ struct TypeInfoChars {
   CharUnits Width;
   CharUnits ConstexprWidth;
   CharUnits Align;
+  CharUnits ConstexprAlign;
   AlignRequirementKind AlignRequirement;
 
   TypeInfoChars() : AlignRequirement(AlignRequirementKind::None) {}
-  TypeInfoChars(CharUnits Width, CharUnits ConstexprWidth, CharUnits Align,
+  TypeInfoChars(CharUnits Width, CharUnits ConstexprWidth, CharUnits Align, CharUnits ConstexprAlign,
                 AlignRequirementKind AlignRequirement)
-    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), AlignRequirement(AlignRequirement) {}
+    : Width(Width), ConstexprWidth(ConstexprWidth), Align(Align), ConstexprAlign(ConstexprAlign)
+    , AlignRequirement(AlignRequirement) {}
   bool isAlignRequired() {
     return AlignRequirement != AlignRequirementKind::None;
   }
@@ -2299,7 +2308,7 @@ public:
   uint64_t getTypeSize(const Type *T) const { return getTypeInfo(T).Width; }
 
   uint64_t getConstexprTypeSize(QualType T) const { return getTypeInfo(T).ConstexprWidth; }
-  uint64_t getConstepxrTypeSize(const Type *T) const { return getTypeInfo(T).ConstexprWidth; }
+  uint64_t getConstexprTypeSize(const Type *T) const { return getTypeInfo(T).ConstexprWidth; }
 
   /// Return the size of the character type, in bits.
   uint64_t getCharWidth() const {
@@ -2333,6 +2342,8 @@ public:
   /// bits.
   unsigned getTypeAlign(QualType T) const { return getTypeInfo(T).Align; }
   unsigned getTypeAlign(const Type *T) const { return getTypeInfo(T).Align; }
+  unsigned getConstexprTypeAlign(QualType T) const { return getTypeInfo(T).ConstexprAlign; }
+  unsigned getConstexprTypeAlign(const Type *T) const { return getTypeInfo(T).ConstexprAlign; }
 
   /// Return the ABI-specified natural alignment of a (complete) type \p T,
   /// before alignment adjustments, in bits.
@@ -2356,11 +2367,13 @@ public:
   /// characters.
   CharUnits getTypeAlignInChars(QualType T) const;
   CharUnits getTypeAlignInChars(const Type *T) const;
+  CharUnits getConstexprTypeAlignInChars(QualType T) const;
+  CharUnits getConstexprTypeAlignInChars(const Type *T) const;
 
   /// Return the PreferredAlignment of a (complete) type \p T, in
   /// characters.
-  CharUnits getPreferredTypeAlignInChars(QualType T) const {
-    return toCharUnitsFromBits(getPreferredTypeAlign(T));
+  CharUnits getPreferredTypeAlignInChars(QualType T, ConstexprOrNot CON) const {
+    return toCharUnitsFromBits(getPreferredTypeAlign(T, CON));
   }
 
   /// getTypeUnadjustedAlignInChars - Return the ABI-specified alignment of a type,
@@ -2391,10 +2404,10 @@ public:
   /// beneficial for performance or backwards compatibility preserving to
   /// overalign a data type. (Note: despite the name, the preferred alignment
   /// is ABI-impacting, and not an optimization.)
-  unsigned getPreferredTypeAlign(QualType T) const {
-    return getPreferredTypeAlign(T.getTypePtr());
+  unsigned getPreferredTypeAlign(QualType T, ConstexprOrNot CON) const {
+    return getPreferredTypeAlign(T.getTypePtr(), CON);
   }
-  unsigned getPreferredTypeAlign(const Type *T) const;
+  unsigned getPreferredTypeAlign(const Type *T, ConstexprOrNot CON) const;
 
   /// Return the default alignment for __attribute__((aligned)) on
   /// this target, to be used if no alignment value is specified.

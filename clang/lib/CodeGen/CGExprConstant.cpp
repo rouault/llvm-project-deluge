@@ -47,7 +47,7 @@ struct ConstantAggregateBuilderUtils {
 
   CharUnits getAlignment(const llvm::Constant *C) const {
     return CharUnits::fromQuantity(
-        CGM.getDataLayout().getABITypeAlign(C->getType()));
+        CGM.getDataLayout().getABITypeAlignBeforeDeluge(C->getType()));
   }
 
   CharUnits getSize(llvm::Type *Ty) const {

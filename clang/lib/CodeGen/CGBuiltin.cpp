@@ -5069,7 +5069,7 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
         auto *V =
             Builder.CreateZExtOrTrunc(EmitScalarExpr(E->getArg(I)), SizeTy);
         Builder.CreateAlignedStore(
-            V, GEP, CGM.getDataLayout().getPrefTypeAlign(SizeTy));
+            V, GEP, CGM.getDataLayout().getPrefTypeAlignBeforeDeluge(SizeTy));
       }
       return std::tie(ElemPtr, TmpSize, TmpPtr);
     };

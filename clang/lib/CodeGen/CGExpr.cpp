@@ -115,7 +115,7 @@ llvm::AllocaInst *CodeGenFunction::CreateTempAlloca(llvm::Type *Ty,
 Address CodeGenFunction::CreateDefaultAlignTempAlloca(llvm::Type *Ty,
                                                       const Twine &Name) {
   CharUnits Align =
-      CharUnits::fromQuantity(CGM.getDataLayout().getPrefTypeAlign(Ty));
+      CharUnits::fromQuantity(CGM.getDataLayout().getPrefTypeAlignBeforeDeluge(Ty));
   return CreateTempAlloca(Ty, Align, Name);
 }
 

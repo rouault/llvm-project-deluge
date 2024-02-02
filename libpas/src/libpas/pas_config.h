@@ -96,6 +96,7 @@
 
 #define PAS_ADDRESS_BITS                 48
 #define PAS_MAX_ADDRESS                  (((uintptr_t)1 << PAS_ADDRESS_BITS) - 1)
+#define PAS_ADDRESS_MASK                 PAS_MAX_ADDRESS
 
 #if PAS_ARM || PAS_PLATFORM(PLAYSTATION)
 #define PAS_MAX_GRANULES                 256

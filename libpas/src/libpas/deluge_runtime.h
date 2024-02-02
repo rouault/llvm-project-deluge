@@ -10,6 +10,7 @@
 #include "pas_heap_ref.h"
 #include "pas_lock.h"
 #include "pas_lock_free_read_ptr_ptr_hashtable.h"
+#include "pas_ptr_hash_set.h"
 #include "pas_range.h"
 
 PAS_BEGIN_EXTERN_C;
@@ -36,61 +37,103 @@ PAS_BEGIN_EXTERN_C;
      going there, for now. */
 
 struct deluge_alloca_stack;
+struct deluge_constant_relocation;
 struct deluge_global_initialization_context;
+struct deluge_initialization_entry;
 struct deluge_origin;
 struct deluge_ptr;
 struct deluge_type;
+struct deluge_type_template;
 struct pas_basic_heap_runtime_config;
 struct pas_stream;
 typedef struct deluge_alloca_stack deluge_alloca_stack;
+typedef struct deluge_constant_relocation deluge_constant_relocation;
 typedef struct deluge_global_initialization_context deluge_global_initialization_context;
+typedef struct deluge_initialization_entry deluge_initialization_entry;
 typedef struct deluge_origin deluge_origin;
 typedef struct deluge_ptr deluge_ptr;
 typedef struct deluge_type deluge_type;
+typedef struct deluge_type_template deluge_type_template;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
 
 typedef uint8_t deluge_word_type;
 
-/* Note that any statement like "64-bit word" below needs to be understood with the caveat that ptr
-   access also checks bounds. So, a pointer might say it has type "64-bit int" but bounds that say
-   "1 byte", in which case you get the intersection: "1 byte int". */
-#define DELUGE_WORD_TYPE_OFF_LIMITS        ((uint8_t)0)     /* 64-bit that cannot be accessed. */
-#define DELUGE_WORD_TYPE_INT               ((uint8_t)1)     /* 64-bit word that contains ints.
+/* Note that any statement like "128-bit word" below needs to be understood with the caveat that ptr
+   access also checks bounds. So, a pointer might say it has type "128-bit int" but bounds that say
+   "1 byte", in which case you get the intersection: "8-bit int". */
+#define DELUGE_WORD_TYPE_OFF_LIMITS        ((uint8_t)0)     /* 128-bit that cannot be accessed. */
+#define DELUGE_WORD_TYPE_INT               ((uint8_t)1)     /* 128-bit word that contains ints.
                                                                Primitive ptrs may have bounds that
-                                                               are less than 8 bytes and may not have
-                                                               8 byte alignment. */
-#define DELUGE_WORD_TYPE_PTR_PART1         ((uint8_t)2)     /* 64-bit word that contains the first part
-                                                               of a wide ptr (the ptr). */
-#define DELUGE_WORD_TYPE_PTR_PART2         ((uint8_t)3)     /* 64-bit word that contains the second
-                                                               part of a wide ptr (the lower). */
-#define DELUGE_WORD_TYPE_PTR_PART3         ((uint8_t)4)     /* 64-bit word that contains the third part
-                                                               of a wide ptr (the upper). */
-#define DELUGE_WORD_TYPE_PTR_PART4         ((uint8_t)5)     /* 64-bit word that contains the fourth
-                                                               part of a wide ptr (the type). */
+                                                               are less than 16 bytes and may not have
+                                                               16 byte alignment. */
+#define DELUGE_WORD_TYPE_PTR_SIDECAR       ((uint8_t)2)     /* 128-bit word that contains the sidecar
+                                                               of a wide ptr. */
+#define DELUGE_WORD_TYPE_PTR_CAPABILITY    ((uint8_t)3)     /* 128-bit word that contains the capability
+                                                               of a wide ptr. */
+
+#define DELUGE_WORD_SIZE sizeof(pas_uint128)
 
 /* Helper for emitting the ptr word types */
 #define DELUGE_WORD_TYPES_PTR \
-    DELUGE_WORD_TYPE_PTR_PART1, \
-    DELUGE_WORD_TYPE_PTR_PART2, \
-    DELUGE_WORD_TYPE_PTR_PART3, \
-    DELUGE_WORD_TYPE_PTR_PART4
+    DELUGE_WORD_TYPE_PTR_SIDECAR, \
+    DELUGE_WORD_TYPE_PTR_CAPABILITY
 
-struct deluge_ptr {
-    void* ptr;
-    void* lower;
-    void* upper;
-    const deluge_type* type;
+/* The deluge pointer, represented using its heap format. Let's call this the rest format. Pointers must
+   have this format when they are in any memory location of pointer type (i.e. the pair of SIDECAR and
+   CAPABILITY word types).
+   
+   It would be smart to someday optimize both the compiler and the runtime for the deluge pointer's flight
+   format: ptr, lower, upper, and type. That would be an awesome optimization, but I haven't done it yet,
+   because I am not yet interested in Deluge's performance so long as I don't have a lot of running code.
+   
+   Instead, we pass around deluge_ptrs, but to do anything with them, we have to call getters to get the
+   ptr/lower/upper/type. That's the current idiom even though it is surely inefficient and confusing for
+   debugging, since we don't clear invalid sidecars - we just lazily ignore them in the lower getter. */
+struct PAS_ALIGNED(DELUGE_WORD_SIZE) deluge_ptr {
+    pas_uint128 sidecar;
+    pas_uint128 capability;
 };
+
+enum deluge_capability_kind {
+    /* The ptr is below lower, so if the sidecar is invalid, then just create a boxed int. */
+    deluge_capability_below_lower,
+
+    /* The ptr is exactly at lower, so ignore the sidecar. This avoids capability widening across
+       allocation boundaries. */
+    deluge_capability_at_lower,
+
+    /* The ptr is inside an array allocation. If it's in the flex array allocation, the type will
+       be the trailing array type. */
+    deluge_capability_in_array,
+
+    /* The ptr is inside the base of a flex. The capability's upper refers to the upper bounds of
+       the flex base. This has a special sidecar (the flex_upper sidecar). */
+    deluge_capability_flex_base
+};
+
+typedef enum deluge_capability_kind deluge_capability_kind;
+
+enum deluge_sidecar_kind {
+    /* Normal sidecar, which tells the lower bounds. */
+    deluge_sidecar_lower,
+
+    /* Sidecar used for flex_base capabilities, which tells the true upper bounds of the flex
+       allocation. */
+    deluge_sidecar_flex_upper
+};
+
+typedef enum deluge_sidecar_kind deluge_sidecar_kind;
 
 /* Zero-word types are unique; they are only equal by pointer equality. They may or may not have
    a size. If they have a size, they must have an alignment, and they may be allocated. Zero-word
    types have a pas_heap_runtime_config* instead of a trailing_array.
    
    Non-zero-word types are equal if they are structurally the same. They must have a size that
-   matches num_words, as in: (size + 7) / 8 == num_words. They must have an alignment. And, they
+   matches num_words, as in: (size + 15) / 16 == num_words. They must have an alignment. And, they
    have a trailing_array instead of a runtime_config. */
 struct deluge_type {
+    unsigned index;
     size_t size;
     size_t alignment;
     size_t num_words;
@@ -101,6 +144,18 @@ struct deluge_type {
     deluge_word_type word_types[];
 };
 
+/* Used to describe a non-opaque type to the runtime. For this to be useful, you need to pass it to
+   deluge_get_type().
+
+   There is no need for the layout of this to match deluge_type. It cannot completely match it,
+   since type has extra fields that this doesn't need to have. */
+struct deluge_type_template {
+    size_t size;
+    size_t alignment;
+    const deluge_type_template* trailing_array;
+    deluge_word_type word_types[];
+};
+
 struct deluge_origin {
     const char* function;
     const char* filename;
@@ -108,10 +163,33 @@ struct deluge_origin {
     unsigned column;
 };
 
+struct deluge_initialization_entry {
+    pas_uint128* deluded_gptr;
+    pas_uint128 ptr_capability;
+};
+
 struct deluge_global_initialization_context {
-    void* global_getter; /* This is a function pointer, but we cannot give it a signature in C. */
-    deluge_ptr ptr;
-    deluge_global_initialization_context* outer;
+    size_t ref_count;
+    pas_ptr_hash_set seen;
+    deluge_initialization_entry* entries;
+    size_t num_entries;
+    size_t entries_capacity;
+};
+
+enum deluge_constant_kind {
+    /* The target is the actual function. */
+    deluge_function_constant,
+
+    /* The target is a getter that returns a pointer to the global. */
+    deluge_global_constant
+};
+
+typedef enum deluge_constant_kind deluge_constant_kind;
+
+struct deluge_constant_relocation {
+    size_t offset;
+    deluge_constant_kind kind;
+    void* target;
 };
 
 struct deluge_alloca_stack {
@@ -126,15 +204,42 @@ struct deluge_alloca_stack {
         .capacity = 0 \
     }
 
+/* This exist only so that compiler-generated templates that need the int type for trailing arrays can
+   refer to it. */
+extern const deluge_type_template deluge_int_type_template;
+
 extern const deluge_type deluge_int_type;
-extern const deluge_type deluge_ptr_type;
+extern const deluge_type deluge_one_ptr_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
+extern const deluge_type** deluge_type_array;
+extern unsigned deluge_type_array_size;
+extern unsigned deluge_type_array_capacity;
+
+#define DELUGE_INVALID_TYPE_INDEX              0u
+#define DELUGE_INT_TYPE_INDEX                  1u
+#define DELUGE_ONE_PTR_TYPE_INDEX              2u
+#define DELUGE_FUNCTION_TYPE_INDEX             3u
+#define DELUGE_TYPE_TYPE_INDEX                 4u
+#define DELUGE_MUSL_PASSWD_TYPE_INDEX          5u
+#define DELUGE_MUSL_SIGACTION_TYPE_INDEX       6u
+#define DELUGE_THREAD_SPECIFIC_TYPE_INDEX      7u
+#define DELUGE_RWLOCK_TYPE_INDEX               8u
+#define DELUGE_MUTEX_TYPE_INDEX                9u
+#define DELUGE_THREAD_TYPE_INDEX               10u
+#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         11u
+#define DELUGE_TYPE_ARRAY_INITIAL_CAPACITY     100u
+#define DELUGE_TYPE_MAX_INDEX                  0x3fffffffu
+#define DELUGE_TYPE_INDEX_MASK                 0x3fffffffu
+#define DELUGE_TYPE_ARRAY_MAX_SIZE             0x40000000u
+
+extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_type_table;
 extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_heap_table;
 extern pas_lock_free_read_ptr_ptr_hashtable deluge_fast_hard_heap_table;
 
 PAS_DECLARE_LOCK(deluge_type);
+PAS_DECLARE_LOCK(deluge_type_ops);
 PAS_DECLARE_LOCK(deluge_global_initialization);
 
 void deluge_panic(const deluge_origin* origin, const char* format, ...);
@@ -187,6 +292,29 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...);
         PAS_UNUSED_PARAM(deluded_ret_type); \
     } while (false)
 
+/* Must be called from CRT before any Deluge happens. If we ever allow Deluge dylibs to be loaded 
+   into non-Deluge code, then we'll have to call it from compiler-generated initializers, too. It's
+   fine to call this more than once. */
+PAS_API void deluge_initialize(void);
+
+static inline const deluge_type* deluge_type_lookup(unsigned index)
+{
+    PAS_TESTING_ASSERT(index < deluge_type_array_size);
+    return deluge_type_array[index];
+}
+
+static inline size_t deluge_type_template_num_words(const deluge_type_template* type)
+{
+    return pas_round_up_to_power_of_2(type->size, DELUGE_WORD_SIZE) / DELUGE_WORD_SIZE;
+}
+
+PAS_API void deluge_type_template_dump(const deluge_type_template* type, pas_stream* stream);
+
+/* Hash-conses the type template to give you a type instance. If that exact type_template ptr has been
+   used for deluge_get_type before, then this is lock-free. Otherwise, it's still O(1) but may need
+   some locks. You're expected to never free the type_template. */
+PAS_API const deluge_type* deluge_get_type(const deluge_type_template* type_template);
+
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
    even for user-forged pointers using unsafe API, so the only way to break these asserts is if there
@@ -201,12 +329,12 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...);
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
    safety! */
-void deluge_validate_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
                               const deluge_origin* origin);
 
 static inline void deluge_validate_ptr(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_validate_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
+    deluge_validate_ptr_impl(ptr.sidecar, ptr.capability, origin);
 }
 
 static inline void deluge_testing_validate_ptr(deluge_ptr ptr)
@@ -215,26 +343,276 @@ static inline void deluge_testing_validate_ptr(deluge_ptr ptr)
         deluge_validate_ptr(ptr, NULL);
 }
 
-static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type)
+static inline unsigned deluge_ptr_capability_type_index(deluge_ptr ptr)
+{
+    return (unsigned)(ptr.capability >> (pas_uint128)96) & DELUGE_TYPE_INDEX_MASK;
+}
+
+static inline bool deluge_ptr_is_boxed_int(deluge_ptr ptr)
+{
+    return !deluge_ptr_capability_type_index(ptr);
+}
+
+static inline void* deluge_ptr_ptr(deluge_ptr ptr)
+{
+    if (deluge_ptr_is_boxed_int(ptr))
+        return (void*)(uintptr_t)ptr.capability;
+    return (void*)((uintptr_t)ptr.capability & PAS_ADDRESS_MASK);
+}
+
+void* deluge_ptr_ptr_impl(pas_uint128 sidecar, pas_uint128 capability);
+
+static inline void* deluge_ptr_capability_upper(deluge_ptr ptr)
+{
+    if (deluge_ptr_is_boxed_int(ptr))
+        return NULL;
+    return (void*)((uintptr_t)(ptr.capability >> (pas_uint128)48) & PAS_ADDRESS_MASK);
+}
+
+/* Not meant to be called directly; this is here so that we can implement deluge_ptr_type. */
+static inline const deluge_type* deluge_ptr_capability_type(deluge_ptr ptr)
+{
+    return deluge_type_lookup(deluge_ptr_capability_type_index(ptr));
+}
+
+static inline deluge_capability_kind deluge_ptr_capability_kind(deluge_ptr ptr)
+{
+    return (deluge_capability_kind)(ptr.capability >> (pas_uint128)126);
+}
+
+/* Sidecar methods aren't meant to be called directly; they're here so that we can implement
+   deluge_ptr_lower. */
+static inline void* deluge_ptr_sidecar_ptr(deluge_ptr ptr)
+{
+    return (void*)((uintptr_t)ptr.sidecar & PAS_ADDRESS_MASK);
+}
+
+static inline void* deluge_ptr_sidecar_lower_or_upper(deluge_ptr ptr)
+{
+    return (void*)((uintptr_t)(ptr.sidecar >> (pas_uint128)48) & PAS_ADDRESS_MASK);
+}
+
+static inline unsigned deluge_ptr_sidecar_type_index(deluge_ptr ptr)
+{
+    return (unsigned)(ptr.sidecar >> (pas_uint128)96) & DELUGE_TYPE_INDEX_MASK;
+}
+
+static inline bool deluge_ptr_sidecar_is_blank(deluge_ptr ptr)
+{
+    return !deluge_ptr_sidecar_type_index(ptr);
+}
+
+static inline deluge_sidecar_kind deluge_ptr_sidecar_kind(deluge_ptr ptr)
+{
+    return (deluge_sidecar_kind)(ptr.sidecar >> (pas_uint128)126);
+}
+
+static inline void* deluge_ptr_sidecar_lower(deluge_ptr ptr)
+{
+    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_lower);
+    return deluge_ptr_sidecar_lower_or_upper(ptr);
+}
+
+static inline void* deluge_ptr_sidecar_upper(deluge_ptr ptr)
+{
+    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_flex_upper);
+    return deluge_ptr_sidecar_lower_or_upper(ptr);
+}
+
+static inline const deluge_type* deluge_ptr_sidecar_type(deluge_ptr ptr)
+{
+    return deluge_type_lookup(deluge_ptr_sidecar_type_index(ptr));
+}
+
+static inline bool deluge_ptr_sidecar_is_relevant(deluge_ptr ptr)
+{
+    const deluge_type* capability_type;
+    const deluge_type* sidecar_type;
+    if (deluge_ptr_is_boxed_int(ptr))
+        return false;
+    if (deluge_ptr_sidecar_ptr(ptr) != deluge_ptr_ptr(ptr))
+        return false;
+    switch (deluge_ptr_capability_kind(ptr)) {
+    case deluge_capability_at_lower:
+        return false;
+    case deluge_capability_below_lower:
+    case deluge_capability_in_array:
+        if (deluge_ptr_sidecar_kind(ptr) != deluge_sidecar_lower)
+            return false;
+        break;
+    case deluge_capability_flex_base:
+        if (deluge_ptr_sidecar_kind(ptr) != deluge_sidecar_flex_upper)
+            return false;
+        break;
+    }
+    capability_type = deluge_ptr_capability_type(ptr);
+    sidecar_type = deluge_ptr_sidecar_type(ptr);
+    if (sidecar_type == capability_type)
+        return true;
+    PAS_TESTING_ASSERT(deluge_ptr_capability_kind(ptr) != deluge_capability_flex_base);
+    PAS_TESTING_ASSERT(!deluge_ptr_sidecar_is_blank(ptr));
+    if (!sidecar_type->num_words)
+        return false;
+    return sidecar_type->u.trailing_array == capability_type;
+}
+
+static inline const deluge_type* deluge_ptr_type(deluge_ptr ptr)
+{
+    if (deluge_ptr_sidecar_is_relevant(ptr))
+        return deluge_ptr_sidecar_type(ptr);
+    return deluge_ptr_capability_type(ptr);
+}
+
+static inline void* deluge_ptr_upper(deluge_ptr ptr)
+{
+    if (deluge_ptr_is_boxed_int(ptr))
+        return NULL;
+
+    if (deluge_ptr_capability_kind(ptr) != deluge_capability_flex_base)
+        return deluge_ptr_capability_upper(ptr);
+
+    if (!deluge_ptr_sidecar_is_relevant(ptr))
+        return deluge_ptr_capability_upper(ptr);
+
+    return deluge_ptr_sidecar_upper(ptr);
+}
+
+static inline void* deluge_ptr_lower(deluge_ptr ptr)
+{
+    static const bool verbose = false;
+    
+    uintptr_t distance_to_upper;
+    uintptr_t distance_to_upper_of_element;
+
+    if (deluge_ptr_is_boxed_int(ptr))
+        return NULL;
+
+    PAS_TESTING_ASSERT(deluge_ptr_capability_type(ptr));
+
+    if (verbose)
+        pas_log("capability kind = %u\n", (unsigned)deluge_ptr_capability_kind(ptr));
+
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_at_lower)
+        return deluge_ptr_ptr(ptr);
+
+    if (deluge_ptr_sidecar_is_relevant(ptr)
+        && deluge_ptr_capability_kind(ptr) != deluge_capability_flex_base) {
+        PAS_TESTING_ASSERT(deluge_ptr_sidecar_lower(ptr) <= deluge_ptr_upper(ptr));
+        return deluge_ptr_sidecar_lower(ptr);
+    }
+
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_below_lower
+        || deluge_ptr_ptr(ptr) >= deluge_ptr_upper(ptr))
+        return deluge_ptr_upper(ptr);
+
+    distance_to_upper = (char*)deluge_ptr_capability_upper(ptr) - (char*)deluge_ptr_ptr(ptr);
+    PAS_TESTING_ASSERT(deluge_ptr_capability_kind(ptr) == deluge_capability_in_array
+                       || deluge_ptr_capability_kind(ptr) == deluge_capability_flex_base);
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_flex_base) {
+        PAS_TESTING_ASSERT(distance_to_upper);
+        PAS_TESTING_ASSERT(distance_to_upper < deluge_ptr_capability_type(ptr)->size);
+    }
+    distance_to_upper_of_element = distance_to_upper % deluge_ptr_type(ptr)->size;
+    return (char*)deluge_ptr_ptr(ptr)
+        + distance_to_upper_of_element - deluge_ptr_capability_type(ptr)->size;
+}
+
+static inline uintptr_t deluge_ptr_offset(deluge_ptr ptr)
+{
+    return (char*)deluge_ptr_ptr(ptr) - (char*)deluge_ptr_lower(ptr);
+}
+
+static inline uintptr_t deluge_ptr_available(deluge_ptr ptr)
+{
+    return (char*)deluge_ptr_upper(ptr) - (char*)deluge_ptr_ptr(ptr);
+}
+
+static inline deluge_ptr deluge_ptr_create(pas_uint128 sidecar, pas_uint128 capability)
 {
     deluge_ptr result;
-    result.ptr = ptr;
-    result.lower = lower;
-    result.upper = upper;
-    result.type = type;
+    result.sidecar = sidecar;
+    result.capability = capability;
     deluge_testing_validate_ptr(result);
     return result;
 }
 
-static inline deluge_ptr deluge_ptr_forge_byte(void* ptr, const deluge_type* type)
+static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type)
 {
+    static const bool verbose = false;
     deluge_ptr result;
-    result.ptr = ptr;
-    result.lower = ptr;
-    result.upper = (char*)ptr + 1;
-    result.type = type;
+    if (!type || ((uintptr_t)ptr & ~PAS_ADDRESS_MASK)) {
+        if (!type) {
+            PAS_TESTING_ASSERT(!lower);
+            PAS_TESTING_ASSERT(!upper);
+        }
+        result.capability = (pas_uint128)(uintptr_t)ptr;
+        result.sidecar = 0;
+    } else {
+        const deluge_type* capability_type;
+        void* sidecar_lower_or_upper;
+        void* capability_upper;
+        deluge_capability_kind capability_kind;
+        deluge_sidecar_kind sidecar_kind;
+        PAS_TESTING_ASSERT(lower);
+        PAS_TESTING_ASSERT(upper);
+        if (verbose)
+            pas_log("type = %p, index = %u\n", type, type->index);
+        PAS_TESTING_ASSERT(deluge_type_lookup(type->index) == type);
+        if (ptr < lower)
+            capability_kind = deluge_capability_below_lower;
+        else if (ptr == lower)
+            capability_kind = deluge_capability_at_lower;
+        else
+            capability_kind = deluge_capability_in_array;
+        sidecar_kind = deluge_sidecar_lower;
+        capability_type = type;
+        sidecar_lower_or_upper = lower;
+        capability_upper = upper;
+        if (type->num_words && type->u.trailing_array && ptr != lower) {
+            if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
+                capability_type = type->u.trailing_array;
+            else {
+                PAS_TESTING_ASSERT(ptr > lower && (char*)ptr - (char*)lower < (ptrdiff_t)type->size);
+                capability_kind = deluge_capability_flex_base;
+                sidecar_kind = deluge_sidecar_flex_upper;
+                sidecar_lower_or_upper = upper;
+                capability_upper = (char*)lower + type->size;
+            }
+        }
+        PAS_TESTING_ASSERT(deluge_type_lookup(capability_type->index) == capability_type);
+        result.capability =
+            (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
+            ((pas_uint128)((uintptr_t)capability_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
+            ((pas_uint128)capability_type->index << (pas_uint128)96) |
+            ((pas_uint128)capability_kind << (pas_uint128)126);
+        result.sidecar =
+            (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
+            ((pas_uint128)((uintptr_t)sidecar_lower_or_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
+            ((pas_uint128)type->index << (pas_uint128)96) |
+            ((pas_uint128)sidecar_kind << (pas_uint128)126);
+    }
+    PAS_TESTING_ASSERT(deluge_ptr_ptr(result) == ptr);
+    if (((uintptr_t)ptr & ~PAS_ADDRESS_MASK)) {
+        PAS_TESTING_ASSERT(!deluge_ptr_lower(result));
+        PAS_TESTING_ASSERT(!deluge_ptr_upper(result));
+        PAS_TESTING_ASSERT(!deluge_ptr_type (result));
+    } else {
+        PAS_TESTING_ASSERT(deluge_ptr_lower(result) == lower);
+        PAS_TESTING_ASSERT(deluge_ptr_upper(result) == upper);
+        PAS_TESTING_ASSERT(deluge_ptr_type(result) == type);
+    }
     deluge_testing_validate_ptr(result);
     return result;
+}
+
+static inline deluge_ptr deluge_ptr_forge_with_size(void* ptr, size_t size, const deluge_type* type)
+{
+    return deluge_ptr_forge(ptr, ptr, (char*)ptr + size, type);
+}
+
+static inline deluge_ptr deluge_ptr_forge_byte(void* ptr, const deluge_type* type)
+{
+    return deluge_ptr_forge_with_size(ptr, 1, type);
 }
 
 static inline deluge_ptr deluge_ptr_forge_invalid(void* ptr)
@@ -244,13 +622,98 @@ static inline deluge_ptr deluge_ptr_forge_invalid(void* ptr)
 
 static inline deluge_ptr deluge_ptr_with_ptr(deluge_ptr ptr, void* new_ptr)
 {
-    return deluge_ptr_forge(new_ptr, ptr.lower, ptr.upper, ptr.type);
+    return deluge_ptr_forge(
+        new_ptr, deluge_ptr_lower(ptr), deluge_ptr_upper(ptr), deluge_ptr_type(ptr));
 }
 
 static inline deluge_ptr deluge_ptr_with_offset(deluge_ptr ptr, uintptr_t offset)
 {
-    return deluge_ptr_with_ptr(ptr, (char*)ptr.ptr + offset);
+    return deluge_ptr_with_ptr(ptr, (char*)deluge_ptr_ptr(ptr) + offset);
 }
+
+static inline deluge_ptr deluge_ptr_load(deluge_ptr* ptr)
+{
+    deluge_ptr result;
+    result.sidecar = __c11_atomic_load((_Atomic pas_uint128*)&ptr->sidecar, __ATOMIC_RELAXED);
+    result.capability = __c11_atomic_load((_Atomic pas_uint128*)&ptr->capability, __ATOMIC_RELAXED);
+    return result;
+}
+
+static inline void deluge_ptr_store(deluge_ptr* ptr, deluge_ptr value)
+{
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, value.sidecar, __ATOMIC_RELAXED);
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->capability, value.capability, __ATOMIC_RELAXED);
+}
+
+static inline bool deluge_ptr_unfenced_weak_cas(
+    deluge_ptr* ptr, deluge_ptr expected, deluge_ptr new_value)
+{
+    /* This is optional; it's legal to do it or not do it, from the standpoint of Deluge soundness.
+       If whoever reads the ptr sees a sidecar that doesn't match the capability, then it'll be
+       rejected anyway. Nuking the sidecar turns a rarely-occurring bad case into a deterministic
+       bad case, so code has to always deal with it. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    return __c11_atomic_compare_exchange_weak(
+        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+static inline deluge_ptr deluge_ptr_unfenced_strong_cas(
+    deluge_ptr* ptr, deluge_ptr expected, deluge_ptr new_value)
+{
+    /* See above. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    __c11_atomic_compare_exchange_strong(
+        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    return deluge_ptr_create(0, expected.capability);
+}
+
+static inline bool deluge_ptr_weak_cas(deluge_ptr* ptr, deluge_ptr expected, deluge_ptr new_value)
+{
+    /* See above. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    return __c11_atomic_compare_exchange_weak(
+        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static inline deluge_ptr deluge_ptr_strong_cas(deluge_ptr* ptr, deluge_ptr expected, deluge_ptr new_value)
+{
+    /* See above. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    __c11_atomic_compare_exchange_strong(
+        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return deluge_ptr_create(0, expected.capability);
+}
+
+static inline deluge_ptr deluge_ptr_unfenced_xchg(deluge_ptr* ptr, deluge_ptr new_value)
+{
+    /* See above. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    return deluge_ptr_create(
+        0,
+        __c11_atomic_exchange(
+            (_Atomic pas_uint128*)&ptr->capability, new_value.capability, __ATOMIC_RELAXED));
+}
+
+static inline deluge_ptr deluge_ptr_xchg(deluge_ptr* ptr, deluge_ptr new_value)
+{
+    /* See above. */
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    return deluge_ptr_create(
+        0,
+        __c11_atomic_exchange(
+            (_Atomic pas_uint128*)&ptr->capability, new_value.capability, __ATOMIC_SEQ_CST));
+}
+
+PAS_API void deluge_ptr_dump(deluge_ptr ptr, pas_stream* stream);
+PAS_API char* deluge_ptr_to_new_string(deluge_ptr ptr); /* WARNING: this is different from
+                                                           zptr_to_new_string. This uses the
+                                                           utility heap - WHICH MUST NEVER LEAK TO
+                                                           DELUDED CODE - whereas the other one
+                                                           uses the int heap. */
 
 static inline const deluge_type* deluge_type_get_trailing_array(const deluge_type* type)
 {
@@ -278,8 +741,19 @@ static inline deluge_word_type deluge_type_get_word_type(const deluge_type* type
    the user to create types (unless they write unsafe code). */
 void deluge_validate_type(const deluge_type* type, const deluge_origin* origin);
 
-bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b);
-unsigned deluge_type_hash(const deluge_type* type);
+static inline bool deluge_type_is_equal(const deluge_type* a, const deluge_type* b)
+{
+    return a == b;
+}
+
+static inline unsigned deluge_type_hash(const deluge_type* type)
+{
+    return pas_hash_ptr(type);
+}
+
+PAS_API bool deluge_type_template_is_equal(const deluge_type_template* a,
+                                           const deluge_type_template* b);
+PAS_API unsigned deluge_type_template_hash(const deluge_type_template* type);
 
 static inline size_t deluge_type_representation_size(const deluge_type* type)
 {
@@ -331,16 +805,17 @@ PAS_API const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
 static inline deluge_ptr deluge_ptr_get_next_bytes(
     deluge_ptr* ptr, size_t size, size_t alignment)
 {
+    deluge_ptr ptr_value;
     uintptr_t ptr_as_int;
     deluge_ptr result;
 
-    ptr_as_int = (uintptr_t)ptr->ptr;
+    ptr_value = deluge_ptr_load(ptr);
+    ptr_as_int = (uintptr_t)deluge_ptr_ptr(ptr_value);
     ptr_as_int = pas_round_up_to_power_of_2(ptr_as_int, alignment);
 
-    result = *ptr;
-    result.ptr = (void*)ptr_as_int;
+    result = deluge_ptr_with_ptr(ptr_value, (void*)ptr_as_int);
 
-    ptr->ptr = (char*)ptr_as_int + size;
+    deluge_ptr_store(ptr, deluge_ptr_with_ptr(ptr_value, (char*)ptr_as_int + size));
 
     return result;
 }
@@ -412,6 +887,39 @@ void* deluge_try_hard_reallocate_int_with_alignment(void* ptr, size_t size, size
 void* deluge_try_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 void deluge_hard_deallocate(void* ptr);
 
+/* This is super gross but it's fine for now. When the compiler allocates, it emits three calls.
+   First it calls the allocator. Then it calls new_capability. Then it calls new_sidecar.
+   
+   That's dumb!
+   
+   Why do I do it for now?
+   
+   - I also want to call all of these allocation functions from C code in the runtime, and most of
+     the time, that code just wants a void*. So if I wanted allocation functions that returned
+     a wide pointer, or even just the pointer's capability, then I'd have to have duplicate
+     entrypoints. I don't feel like writing that code right now, but I'll almost certainly do it
+     eventually.
+   
+   - It's super annoying to have code that returns a deluge_ptr called from compiler-generated code,
+     since at the point I'm at in LLVM, the returns for structs may (or may not!) have been lowered
+     to some kind of pointer-passing convention. I can make LLVM return a struct like deluge_ptr in
+     registers, but this is C code, and so these functions will have C's calling convention, which is
+     different from LLVM's when it comes to struct return! There are many ways around this,
+     especially since I control the compiler (I am not above having a separate hacked clang just for
+     compiling libdeluge, or rewriting all of this in assembly, or in LLVM IR), but I don't feel
+     like doing that right now.
+   
+   Therfore, I have functions to build the capability and sidecar separately. Gross but at least it
+   gets me there.
+
+   Also, it's not actually necessary to know the size to construct the sidecar, but whatever, doing
+   it this way makes it more obviously correct. */
+pas_uint128 deluge_new_capability(void* ptr, size_t size, const deluge_type* type);
+pas_uint128 deluge_new_sidecar(void* ptr, size_t size, const deluge_type* type);
+
+void deluge_check_forge(
+    void* ptr, size_t size, size_t count, const deluge_type* type, const deluge_origin* origin);
+
 void deluded_f_zhard_free(DELUDED_SIGNATURE);
 void deluded_f_zhard_getallocsize(DELUDED_SIGNATURE);
 
@@ -427,75 +935,85 @@ void deluded_f_zalloc_with_type(DELUDED_SIGNATURE);
 void deluded_f_ztype_to_new_string(DELUDED_SIGNATURE);
 void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE);
 
-void deluge_check_access_int_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+/* The compiler uses these for now because it makes LLVM codegen ridiculously easy to get right,
+   but it's totally the wrong way to do it from a perf standpoint. */
+pas_uint128 deluge_update_sidecar(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
+pas_uint128 deluge_update_capability(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
+
+void deluge_check_access_int_impl(pas_uint128 sidecar, pas_uint128 capability,
                                   uintptr_t bytes, const deluge_origin* origin);
-void deluge_check_access_ptr_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_access_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
                                   const deluge_origin* origin);
 
 static inline void deluge_check_access_int(deluge_ptr ptr, uintptr_t bytes, const deluge_origin* origin)
 {
-    deluge_check_access_int_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, bytes, origin);
+    deluge_check_access_int_impl(ptr.sidecar, ptr.capability, bytes, origin);
 }
 static inline void deluge_check_access_ptr(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_check_access_ptr_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
+    deluge_check_access_ptr_impl(ptr.sidecar, ptr.capability, origin);
 }
 
-void deluge_check_function_call_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_function_call_impl(pas_uint128 sidecar, pas_uint128 capability,
                                      const deluge_origin* origin);
 
 static inline void deluge_check_function_call(deluge_ptr ptr, const deluge_origin* origin)
 {
-    deluge_check_function_call_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, origin);
+    deluge_check_function_call_impl(ptr.sidecar, ptr.capability, origin);
 }
 
 void deluge_check_access_opaque(
     deluge_ptr ptr, const deluge_type* expected_type, const deluge_origin* origin);
 
-void deluge_memset_impl(void* ptr, void* lower, void* upper, const deluge_type* type,
+/* You can call these if you know that you're copying pointers (or possible pointers) and you've
+   already proved that it's safe and the pointer/size are aligned.
+   
+   These also happen to be used as the implementation of deluge_memset_impl/deluge_memcpy_impl/
+   deluge_memmove_impl in those cases where pointer copying is detected. Those also do all the
+   checks needed to ensure memory safety. So, usually, you want those, not these.
+
+   The number of bytes must be a multiple of 16. */
+void deluge_low_level_ptr_safe_bzero(void* ptr, size_t bytes);
+void deluge_low_level_ptr_safe_memcpy(void* dst, void* src, size_t bytes);
+void deluge_low_level_ptr_safe_memmove(void* dst, void* src, size_t bytes);
+
+void deluge_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
                         unsigned value, size_t count, const deluge_origin* origin);
-void deluge_memcpy_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                        void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
+void deluge_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
+                        pas_uint128 src_sidecar, pas_uint128 src_capability,
                         size_t count, const deluge_origin* origin);
-void deluge_memmove_impl(void* dst_ptr, void* dst_lower, void* dst_upper, const deluge_type* dst_type,
-                         void *src_ptr, void* src_lower, void* src_upper, const deluge_type* src_type,
+void deluge_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
+                         pas_uint128 src_sidecar, pas_uint128 src_capability,
                          size_t count, const deluge_origin* origin);
 
 static inline void deluge_memset(deluge_ptr ptr, unsigned value, size_t count, const deluge_origin* origin)
 {
-    deluge_memset_impl(ptr.ptr, ptr.lower, ptr.upper, ptr.type, value, count, origin);
+    deluge_memset_impl(ptr.sidecar, ptr.capability, value, count, origin);
 }
 
 static inline void deluge_memcpy(deluge_ptr dst, deluge_ptr src, size_t count, const deluge_origin* origin)
 {
-    deluge_memcpy_impl(dst.ptr, dst.lower, dst.upper, dst.type,
-                       src.ptr, src.lower, src.upper, src.type,
-                       count, origin);
+    deluge_memcpy_impl(dst.sidecar, dst.capability, src.sidecar, src.capability, count, origin);
 }
 
 static inline void deluge_memmove(deluge_ptr dst, deluge_ptr src, size_t count, const deluge_origin* origin)
 {
-    deluge_memmove_impl(dst.ptr, dst.lower, dst.upper, dst.type,
-                        src.ptr, src.lower, src.upper, src.type,
-                        count, origin);
+    deluge_memmove_impl(dst.sidecar, dst.capability, src.sidecar, src.capability, count, origin);
 }
 
 /* Correct uses of this should always pass new_upper = ptr + K * new_type->size. This function does
    not have to check that you did that. This property is ensured by the compiler and the fact that
    the user-visible API (zrestrict) takes a count. */
-void deluge_check_restrict(void* ptr, void* lower, void* upper, const deluge_type* type,
+void deluge_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
                            void* new_upper, const deluge_type* new_type, const deluge_origin* origin);
 
 static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const deluge_type* new_type,
                                          const deluge_origin* origin)
 {
     void* new_upper;
-    new_upper = (char*)ptr.ptr + count * new_type->size;
-    deluge_check_restrict(ptr.ptr, ptr.lower, ptr.upper, ptr.type, new_upper, new_type, origin);
-    ptr.lower = ptr.ptr;
-    ptr.upper = new_upper;
-    ptr.type = new_type;
-    return ptr;
+    new_upper = (char*)deluge_ptr_ptr(ptr) + count * new_type->size;
+    deluge_check_restrict(ptr.sidecar, ptr.capability, new_upper, new_type, origin);
+    return deluge_ptr_forge(deluge_ptr_ptr(ptr), deluge_ptr_ptr(ptr), new_upper, new_type);
 }
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
@@ -523,9 +1041,9 @@ static inline deluge_ptr deluge_ptr_get_next(
 static inline deluge_ptr deluge_ptr_get_next_ptr(deluge_ptr* ptr, const deluge_origin* origin)
 {
     deluge_ptr slot_ptr;
-    slot_ptr = deluge_ptr_get_next_bytes(ptr, 32, 8);
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(deluge_ptr), alignof(deluge_ptr));
     deluge_check_access_ptr(slot_ptr, origin);
-    return *(deluge_ptr*)slot_ptr.ptr;
+    return deluge_ptr_load((deluge_ptr*)deluge_ptr_ptr(slot_ptr));
 }
 
 static inline int deluge_ptr_get_next_int(deluge_ptr* ptr, const deluge_origin* origin)
@@ -533,7 +1051,7 @@ static inline int deluge_ptr_get_next_int(deluge_ptr* ptr, const deluge_origin* 
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
     deluge_check_access_int(slot_ptr, sizeof(int), origin);
-    return *(int*)slot_ptr.ptr;
+    return *(int*)deluge_ptr_ptr(slot_ptr);
 }
 
 static inline unsigned deluge_ptr_get_next_unsigned(deluge_ptr* ptr, const deluge_origin* origin)
@@ -541,7 +1059,7 @@ static inline unsigned deluge_ptr_get_next_unsigned(deluge_ptr* ptr, const delug
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(unsigned), alignof(unsigned));
     deluge_check_access_int(slot_ptr, sizeof(unsigned), origin);
-    return *(unsigned*)slot_ptr.ptr;
+    return *(unsigned*)deluge_ptr_ptr(slot_ptr);
 }
 
 static inline long deluge_ptr_get_next_long(deluge_ptr* ptr, const deluge_origin* origin)
@@ -549,7 +1067,7 @@ static inline long deluge_ptr_get_next_long(deluge_ptr* ptr, const deluge_origin
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(long), alignof(long));
     deluge_check_access_int(slot_ptr, sizeof(long), origin);
-    return *(long*)slot_ptr.ptr;
+    return *(long*)deluge_ptr_ptr(slot_ptr);
 }
 
 static inline unsigned long deluge_ptr_get_next_unsigned_long(deluge_ptr* ptr,
@@ -558,7 +1076,7 @@ static inline unsigned long deluge_ptr_get_next_unsigned_long(deluge_ptr* ptr,
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(unsigned long), alignof(unsigned long));
     deluge_check_access_int(slot_ptr, sizeof(unsigned long), origin);
-    return *(unsigned long*)slot_ptr.ptr;
+    return *(unsigned long*)deluge_ptr_ptr(slot_ptr);
 }
 
 static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr, const deluge_origin* origin)
@@ -566,27 +1084,43 @@ static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr, const deluge_or
     deluge_ptr slot_ptr;
     slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
     deluge_check_access_int(slot_ptr, sizeof(size_t), origin);
-    return *(size_t*)slot_ptr.ptr;
+    return *(size_t*)deluge_ptr_ptr(slot_ptr);
 }
 
 /* Given a va_list ptr (so a ptr to a ptr), this:
    
    - checks that it is indeed a ptr to a ptr
    - uses that ptr to va_arg according to the deluge_ptr_get_next_bytes protocol
-   - checks that the resulting ptr can be restructed to count*type
-   - of all that goes well, returns a ptr you can load/store from safely according to that type */
+   - checks that the resulting ptr can be restricted to count*type
+   - if all that goes well, returns a ptr you can load/store from safely according to that type */
 void* deluge_va_arg_impl(
-    void* va_list_ptr, void* va_list_lower, void* va_list_upper, const deluge_type* va_list_type,
+    pas_uint128 va_list_sidecar, pas_uint128 va_list_capability,
     size_t count, size_t alignment, const deluge_type* type, const deluge_origin* origin);
 
-deluge_global_initialization_context* deluge_global_initialization_context_lock_and_find(
-    deluge_global_initialization_context* context, void* global_getter);
-void deluge_global_initialization_context_unlock(deluge_global_initialization_context* context);
+/* If parent is not NULL, increases its ref count and returns it. Otherwise, creates a new context. */
+deluge_global_initialization_context* deluge_global_initialization_context_create(
+    deluge_global_initialization_context* parent);
+/* Attempts to add the given global to be initialized.
+   
+   If it's already in the set then this returns false.
+   
+   If it's not in the set, then it's added to the set and true is returned. */
+bool deluge_global_initialization_context_add(
+    deluge_global_initialization_context* context, pas_uint128* deluded_gptr, pas_uint128 ptr_capability);
+/* Derefs the context. If the refcount reaches zero, it gets destroyed.
+ 
+   Destroying the set means storing all known ptr_capabilities into their corresponding deluded_gptrs
+   atomically. */
+void deluge_global_initialization_context_destroy(deluge_global_initialization_context* context);
 
 void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca);
 static inline size_t deluge_alloca_stack_save(deluge_alloca_stack* stack) { return stack->size; }
 void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size);
 void deluge_alloca_stack_destroy(deluge_alloca_stack* stack);
+
+void deluge_execute_constant_relocations(
+    void* constant, deluge_constant_relocation* relocations, size_t num_relocations,
+    deluge_global_initialization_context* context);
 
 void deluge_defer_or_run_global_ctor(void (*global_ctor)(DELUDED_SIGNATURE));
 void deluge_run_deferred_global_ctors(void); /* Important safety property: libc must call this before
@@ -606,6 +1140,12 @@ void deluded_f_zstrchr(DELUDED_SIGNATURE);
 void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 void deluded_f_zfence(DELUDED_SIGNATURE);
+void deluded_f_zunfenced_weak_cas_ptr(DELUDED_SIGNATURE);
+void deluded_f_zweak_cas_ptr(DELUDED_SIGNATURE);
+void deluded_f_zunfenced_strong_cas_ptr(DELUDED_SIGNATURE);
+void deluded_f_zstrong_cas_ptr(DELUDED_SIGNATURE);
+void deluded_f_zunfenced_xchg_ptr(DELUDED_SIGNATURE);
+void deluded_f_zxchg_ptr(DELUDED_SIGNATURE);
 
 void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE);
 
@@ -652,7 +1192,6 @@ void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_boot_main_thread(DELUDED_SIGNATURE);
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;

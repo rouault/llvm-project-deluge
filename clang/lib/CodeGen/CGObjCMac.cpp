@@ -6959,7 +6959,7 @@ llvm::Constant *CGObjCNonFragileABIMac::EmitIvarList(
       CGM.getTypes().ConvertTypeForMem(IVD->getType());
     unsigned Size = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(FieldTy);
     unsigned Align = CGM.getContext().getPreferredTypeAlign(
-      IVD->getType().getTypePtr()) >> 3;
+        IVD->getType().getTypePtr(), ConstexprOrNot::Not) >> 3;
     Align = llvm::Log2_32(Align);
     ivar.addInt(ObjCTypes.IntTy, Align);
     // NOTE. Size of a bitfield does not match gcc's, because of the

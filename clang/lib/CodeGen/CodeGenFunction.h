@@ -4914,7 +4914,7 @@ DominatingLLVMValue::save(CodeGenFunction &CGF, llvm::Value *value) {
 
   // Otherwise, we need an alloca.
   auto align = CharUnits::fromQuantity(
-      CGF.CGM.getDataLayout().getPrefTypeAlign(value->getType()));
+      CGF.CGM.getDataLayout().getPrefTypeAlignBeforeDeluge(value->getType()));
   Address alloca =
       CGF.CreateTempAlloca(value->getType(), align, "cond-cleanup.save");
   CGF.Builder.CreateStore(value, alloca);

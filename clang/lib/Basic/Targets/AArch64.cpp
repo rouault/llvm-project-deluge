@@ -153,7 +153,9 @@ AArch64TargetInfo::AArch64TargetInfo(const llvm::Triple &Triple,
     LongWidth = LongAlign = PointerWidth = PointerAlign = 32;
 
   ConstexprPointerWidth = PointerWidth;
+  ConstexprPointerAlign = PointerAlign;
   PointerWidth *= 4; // YOLO
+  PointerAlign *= 2; // LOLO
 
   MaxVectorAlign = 128;
   MaxAtomicInlineWidth = 128;

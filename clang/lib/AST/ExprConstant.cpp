@@ -9095,7 +9095,7 @@ static CharUnits GetAlignOfType(EvalInfo &Info, QualType T,
   // as well.
   if (ExprKind == UETT_PreferredAlignOf || AlignOfReturnsPreferred)
     return Info.Ctx.toCharUnitsFromBits(
-      Info.Ctx.getPreferredTypeAlign(T.getTypePtr()));
+        Info.Ctx.getPreferredTypeAlign(T.getTypePtr(), ConstexprOrNot::Not));
   // alignof and _Alignof are defined to return the ABI alignment.
   else if (ExprKind == UETT_AlignOf)
     return Info.Ctx.getTypeAlignInChars(T.getTypePtr());

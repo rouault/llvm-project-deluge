@@ -24,6 +24,8 @@ int main(void)
     PRINT(OFFSETOF(struct foo, x));
     PRINT(OFFSETOF(struct foo, string));
     PRINT(OFFSETOF(struct foo, y));
+    PRINT(_Alignof(void*));
+    PRINT(_Alignof(struct foo));
     return 0;
 }
 

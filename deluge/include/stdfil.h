@@ -444,6 +444,100 @@ void zerrorf(const char* str, ...);
 
 void zfence(void);
 
+/* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Deluge
+   offers these functions instead.
+
+   But pointers are 32 bytes, you say! How can they be atomic, you say! What the fuck is going on!
+
+   Deluge pointers comprise a sidecar, which is optional, and a capability, which is the source of
+   truth. A missing sidecar causes the pointer's lower bound to snap up to the pointer itself.
+   Anytime that a pointer has a sidecar that doesn't match the capability (points at the wrong
+   place or has the wrong type), then the sidecar is ignored, as if it wasn't there.
+   
+   Every possible outcome is memory-safe under Deluge Bounded P^I rules. But, some races on
+   pointers will trap in Deluge even though they would have worked in Legacy C.
+   
+   Atomic ops on pointers always just clear the sidecar.
+   
+   Pointer stores and loads will store and load the sidecar, but races may cause the sidecar to be
+   mismatched and treated as missing.
+   
+   Both sidecar and capability are always accessed using 128-bit atomics.
+   
+   The result:
+   
+   - Non-racing pointer loads and stores always get a valid sidecar, so pointers loaded sans races
+     always know their full lower bound, so you can subtract stuff from them and dereference them
+     so long as you stay within those bounds.
+   
+   - Racing pointer loads and stores are likely to lose their sidecar. Pointers loaded under races
+     still always know their upper bound and where they point. They also know the type of the
+     memory between where they point and their upper bound. But, the lower bound of a pointer
+     loaded under race will sometimes be higher than the pointer that was originally stored. So,
+     subtracting from pointers loaded under races, and then dereferencing those downward-traveling
+     pointers sometimes works and sometimes doesn't.
+   
+   - Pointers used for atomics are guaranteed to lose their sidecar, so their lower bound will
+     always snap up to where they point. Those pointers still know their full value and upper
+     bound.
+   
+   Pointers that lose their sidecar are still usable for most of what C programmers use pointers
+   for. Most of the time, you load a pointer so that you can add to it (for example to perform an
+   array or field access - both of which are additions under the hood). That always works, even
+   under races and atomics.
+   
+   You will notice the missing sidecar behavior if you race or CAS on a pointer that is used for
+   stuff like:
+   
+   - Downward-traveling iterator pointer. Say you want to write a lock-free or racy concurrent
+     iteration protocol based on pointers that you subtract from. That won't work in Deluge
+     unless you put a lock around it.
+   
+   - Some cases of intrusive structs. This one is funny. A missing sidecar means that the lower
+     bound is inferred from the capability's ptr, type, and upper. But Deluge requires that:
+
+         upper - lower = K * type->size
+
+     When recovering the sidecar, we keep upper unchanged, so the lower that we infer will often
+     be below the ptr - it'll be far enough below it so that the lower is on type boundary.
+
+     This means that an intrusive linked list can still be lock-free and racy! Linked list means
+     pointers, and pointers mean nontrivial type, and nontrivial type means that the type knows
+     the size. So, a pointer into the middle of a single object (not array) with pointers will
+     never seem to lose its sidecar, since the sidecar contains purely redundant information in
+     that case (the lower bound can always be inferred from the capability).
+     
+     However, intrusive pointers into integer-only structs won't work (the type is int in that
+     case, and int->size = 1). Also, intrusive pointers into arrays of structs with pointers
+     will appear to lose their sidecar in the sense that the pointer after race will no longer
+     know the accurate base of the array, but will instead approximate it as the base of
+     whatever array element you're pointing at.
+
+   In summary, Deluge's 32 byte wide pointers are Atomic Enough (TM) for most uses of pointers.
+   If you have code that wants to CAS pointers or race on them then go right ahead!
+
+   Eventually, I'll even fix the clang bugs and then you'll be able to just use whatever your
+   favorite compiler builtin for CAS is, instead of this junk. And those builtins will have
+   identical semantics to these functions.
+
+   If you want to CAS primitives, then just use the builtins, those work today.
+
+   I have simplified the memory ordering approach based on pretty good data that only a tiny
+   fraction of algorithms ever benefit from unfenced CAS on modern CPUs, and the fact that CPUs
+   usually only give you either one or two variants. The "unfenced" variants are like RELAXED
+   in the C model. The not-"unfenced" ones are like SEQ_CST. Strong CAS just returns the old
+   value rather than both a bool and the old value, since emprically, relying on the bit that
+   the CAS instruction returns for brancing on the CAS is never any faster than branching on
+   a comparison of your expected value and the old value returned by CAS.
+
+   I may add more ptr atomic functions as I find a need for them. */
+_Bool zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value);
+_Bool zweak_cas_ptr(void** ptr, void* expected, void* new_value);
+void* zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value);
+void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
+void* zunfenced_xchg_ptr(void** ptr, void* new_value);
+void* zxchg_ptr(void** ptr, void* new_value);
+
 /* Returns true if running in the build of the runtime that has extra (super expensive) testing
    checks.
 
@@ -502,7 +596,6 @@ void zthread_mutex_delete(void* mutex);
 _Bool zthread_mutex_lock(void* mutex);
 _Bool zthread_mutex_trylock(void* mutex);
 _Bool zthread_mutex_unlock(void* mutex);
-void zthread_boot_main_thread(void); /* Can only be called once, before any other threads are created. */
 void* zthread_self(void);
 
 #endif /* DELUGE_STDFIL_H */

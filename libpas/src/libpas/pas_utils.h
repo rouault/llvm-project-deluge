@@ -159,6 +159,9 @@ PAS_API void pas_set_reallocation_did_fail_callback(
 #define PAS_ROUND_UP_TO_POWER_OF_2(size, alignment) \
     (((size) + (alignment) - 1) & ~(alignment - 1))
 
+typedef __int128 pas_int128;
+typedef unsigned __int128 pas_uint128;
+
 static PAS_ALWAYS_INLINE void pas_compiler_fence(void)
 {
 #if PAS_COMPILER(MSVC)

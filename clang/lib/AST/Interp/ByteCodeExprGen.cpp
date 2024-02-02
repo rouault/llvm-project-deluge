@@ -17,6 +17,8 @@
 #include "Program.h"
 #include "State.h"
 
+// I'm assuming this shit needs to be fucked with so it groks Deluge, but I haven't gotten there yet.
+
 using namespace clang;
 using namespace clang::interp;
 
@@ -484,7 +486,7 @@ static CharUnits AlignOfType(QualType T, const ASTContext &ASTCtx,
   // Before 8, clang returned the preferred alignment for alignof and
   // _Alignof as well.
   if (Kind == UETT_PreferredAlignOf || AlignOfReturnsPreferred)
-    return ASTCtx.toCharUnitsFromBits(ASTCtx.getPreferredTypeAlign(T));
+    return ASTCtx.toCharUnitsFromBits(ASTCtx.getPreferredTypeAlign(T, ConstexprOrNot::Not));
 
   return ASTCtx.getTypeAlignInChars(T);
 }

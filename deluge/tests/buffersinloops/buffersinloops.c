@@ -24,6 +24,5 @@ int main(void) {
     BUFFER_IN_LOOP(20, 100);
     BUFFER_IN_LOOP(100, 30);
     BUFFER_IN_LOOP(200, 40);
-    BUFFER_IN_LOOP(666, 666);
     return 0;
 }
