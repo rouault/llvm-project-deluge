@@ -2868,6 +2868,28 @@ void deluge_alloca_stack_destroy(deluge_alloca_stack* stack)
     deluge_deallocate(stack->array);
 }
 
+static deluge_ptr get_constant_value(deluge_constant_kind kind, void* target,
+                                     deluge_global_initialization_context* context)
+{
+    switch (kind) {
+    case deluge_function_constant:
+        return deluge_ptr_forge_byte(target, &deluge_function_type);
+    case deluge_global_constant:
+        return deluge_ptr_create(
+            0, ((pas_uint128 (*)(deluge_global_initialization_context*))target)(context));
+    case deluge_expr_constant: {
+        deluge_constexpr_node* node = (deluge_constexpr_node*)target;
+        switch (node->opcode) {
+        case deluge_constexpr_add_ptr_immediate:
+            return deluge_ptr_with_offset(get_constant_value(node->left_kind, node->left_target, context),
+                                          node->right_value);
+        }
+        PAS_ASSERT(!"Bad constexpr opcode");
+    } }
+    PAS_ASSERT(!"Bad relocation kind");
+    return deluge_ptr_create(0, 0);
+}
+
 void deluge_execute_constant_relocations(
     void* constant, deluge_constant_relocation* relocations, size_t num_relocations,
     deluge_global_initialization_context* context)
@@ -2885,16 +2907,7 @@ void deluge_execute_constant_relocations(
         PAS_ASSERT(!ptr_ptr->sidecar);
         PAS_ASSERT(!ptr_ptr->capability);
         PAS_ASSERT(pas_is_aligned((uintptr_t)ptr_ptr, DELUGE_WORD_SIZE));
-        switch (relocation->kind) {
-        case deluge_function_constant:
-            *ptr_ptr = deluge_ptr_forge_byte(relocation->target, &deluge_function_type);
-            continue;
-        case deluge_global_constant:
-            *ptr_ptr = deluge_ptr_create(
-                0, ((pas_uint128 (*)(deluge_global_initialization_context*))relocation->target)(context));
-            continue;
-        }
-        PAS_ASSERT(!"Bad relocation kind");
+        *ptr_ptr = get_constant_value(relocation->kind, relocation->target, context);
     }
 }
 

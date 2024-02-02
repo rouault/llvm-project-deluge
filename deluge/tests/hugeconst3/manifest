@@ -1,0 +1,9 @@
+return:
+  success
+output-includes:
+  - "lo 5000"
+output-excludes:
+  - hello
+  - ello
+  - llo
+

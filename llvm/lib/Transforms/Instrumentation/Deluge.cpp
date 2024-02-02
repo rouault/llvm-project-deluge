@@ -12,7 +12,9 @@
 
 using namespace llvm;
 
-// This is the early 2000's Howard Stern of compiler passes.
+// This is some crazy code. I believe that it's sound (assuming assertions are on LMFAO). I did
+// it the right way for getting an experiment running quickly, but definitely the wrong way for
+// long-term maintenance.
 //
 // Some shit to look out for, I'm not even kidding:
 //
@@ -192,22 +194,40 @@ namespace {
 
 enum class ConstantKind {
   Function,
-  Global
+  Global,
+  Expr
+};
+
+struct ConstantTarget {
+  ConstantTarget() { }
+
+  ConstantTarget(ConstantKind Kind, GlobalValue* Target)
+    : Kind(Kind)
+    , Target(Target) {
+  }
+
+  explicit operator bool() const { return !!Target; }
+  
+  ConstantKind Kind { ConstantKind::Function };
+  GlobalValue* Target { nullptr }; // Getter for globals, function for functions, constexpr node for constexprs
 };
 
 struct ConstantRelocation {
   ConstantRelocation() { }
 
-  ConstantRelocation(size_t Offset, ConstantKind Kind, Function* Target)
+  ConstantRelocation(size_t Offset, ConstantKind Kind, GlobalValue* Target)
     : Offset(Offset)
     , Kind(Kind)
-    , Target(Target)
-  {
+    , Target(Target) {
   }
   
   size_t Offset { 0 };
   ConstantKind Kind { ConstantKind::Function };
-  Function* Target { nullptr }; // Getter for globals, function for functions
+  GlobalValue* Target { nullptr }; // Getter for globals, function for functions, constexpr node for constexprs
+};
+
+enum class ConstexprOpcode {
+  AddPtrImmediate
 };
 
 class Deluge {
@@ -230,6 +250,7 @@ class Deluge {
   StructType* OriginTy;
   StructType* AllocaStackTy;
   StructType* ConstantRelocationTy;
+  StructType* ConstexprNodeTy;
   FunctionType* DeludedFuncTy;
   FunctionType* GlobalGetterTy;
   FunctionType* CtorDtorTy;
@@ -1331,9 +1352,62 @@ class Deluge {
     llvm_unreachable("bad RM");
   }
 
-  bool computeConstantRelocations(Constant* C, std::vector<ConstantRelocation>& Result, size_t Offset = 0) {
+  ConstantTarget constexprRecurse(Constant* C) {
     assert(C->getType() != LowWidePtrTy);
     
+    if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
+      assert(!shouldPassThrough(G));
+      assert(!Getters.count(G));
+      if (GlobalToGetter.count(G)) {
+        Function* Getter = GlobalToGetter[G];
+        return ConstantTarget(ConstantKind::Global, Getter);
+      }
+      Function* F = dyn_cast<Function>(G);
+      if (!F) 
+        F = cast<Function>(cast<GlobalAlias>(G)->getAliasee());
+      return ConstantTarget(ConstantKind::Function, F);
+    }
+
+    if (ConstantExpr* CE = dyn_cast<ConstantExpr>(C)) {
+      switch (CE->getOpcode()) {
+      case Instruction::GetElementPtr: {
+        ConstantTarget Target = constexprRecurse(CE->getOperand(0));
+        APInt OffsetAP(64, 0, false);
+        GetElementPtrInst* GEP = cast<GetElementPtrInst>(CE->getAsInstruction());
+        bool result = GEP->accumulateConstantOffset(DL, OffsetAP);
+        delete GEP;
+        if (!result)
+          return ConstantTarget();
+        uint64_t Offset = OffsetAP.getZExtValue();
+        Constant* CS = ConstantStruct::get(
+          ConstexprNodeTy,
+          { ConstantInt::get(Int32Ty, static_cast<unsigned>(ConstexprOpcode::AddPtrImmediate)),
+            ConstantInt::get(Int32Ty, static_cast<unsigned>(Target.Kind)),
+            Target.Target,
+            ConstantInt::get(IntPtrTy, Offset) });
+        GlobalVariable* ExprG = new GlobalVariable(
+          M, ConstexprNodeTy, true, GlobalVariable::PrivateLinkage, CS, "deluge_constexpr_gep_node");
+        return ConstantTarget(ConstantKind::Expr, ExprG);
+      }
+      default:
+        return ConstantTarget();
+      }
+    }
+
+    return ConstantTarget();
+  }
+
+  bool computeConstantRelocations(Constant* C, std::vector<ConstantRelocation>& Result, size_t Offset = 0) {
+    assert(C->getType() != LowWidePtrTy);
+
+    if (ConstantTarget CT = constexprRecurse(C)) {
+      assert(!(Offset % WordSize));
+      Result.push_back(ConstantRelocation(Offset, CT.Kind, CT.Target));
+      return true;
+    }
+    
+    assert(!isa<GlobalValue>(C)); // Should have been caught by constexprRecurse.
+
     if (isa<UndefValue>(C))
       return true;
     
@@ -1342,21 +1416,6 @@ class Deluge {
 
     if (isa<ConstantAggregateZero>(C))
       return true;
-
-    if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
-      assert(!shouldPassThrough(G));
-      assert(!Getters.count(G));
-      if (GlobalToGetter.count(G)) {
-        Function* Getter = GlobalToGetter[G];
-        Result.push_back(ConstantRelocation(Offset, ConstantKind::Global, Getter));
-        return true;
-      }
-      Function* F = dyn_cast<Function>(G);
-      if (!F) 
-        F = cast<Function>(cast<GlobalAlias>(G)->getAliasee());
-      Result.push_back(ConstantRelocation(Offset, ConstantKind::Function, F));
-      return true;
-    }
 
     if (isa<ConstantData>(C))
       return true;
@@ -1372,7 +1431,7 @@ class Deluge {
     if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
       if (verbose)
         errs() << "Dealing with CS = " << *CS << "\n";
-      const StructLayout* SL = DL.getStructLayout(cast<StructType>(CS->getType()));
+      const StructLayout* SL = DL.getStructLayout(cast<StructType>(lowerType(CS->getType())));
       for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(
               CS->getOperand(Index), Result, Offset + SL->getElementOffset(Index)))
@@ -1390,10 +1449,8 @@ class Deluge {
       return true;
     }
 
-    // FIXME: Eventually add the ability to handle ConstantExpr relocations. It's not that hard. If
-    // we handle those then we won't need this function to return bool. But, it might be prudent to
-    // only handle a subset of them, depending on what real C code does.
     assert(isa<ConstantExpr>(C));
+    errs() << "Failing to handle CE: " << *C << "\n";
     return false;
   }
 
@@ -2629,6 +2686,8 @@ public:
     AllocaStackTy = StructType::create({LowRawPtrTy, IntPtrTy, IntPtrTy}, "deluge_alloca_bag");
     ConstantRelocationTy = StructType::create(
       {IntPtrTy, Int32Ty, LowRawPtrTy}, "deluge_constant_relocation");
+    ConstexprNodeTy = StructType::create(
+      { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy}, "deluge_constexpr_node");
     // See DELUDED_SIGNATURE in deluge_runtime.h.
     DeludedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);

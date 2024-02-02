@@ -38,6 +38,7 @@ PAS_BEGIN_EXTERN_C;
 
 struct deluge_alloca_stack;
 struct deluge_constant_relocation;
+struct deluge_constexpr_node;
 struct deluge_global_initialization_context;
 struct deluge_initialization_entry;
 struct deluge_origin;
@@ -48,6 +49,7 @@ struct pas_basic_heap_runtime_config;
 struct pas_stream;
 typedef struct deluge_alloca_stack deluge_alloca_stack;
 typedef struct deluge_constant_relocation deluge_constant_relocation;
+typedef struct deluge_constexpr_node deluge_constexpr_node;
 typedef struct deluge_global_initialization_context deluge_global_initialization_context;
 typedef struct deluge_initialization_entry deluge_initialization_entry;
 typedef struct deluge_origin deluge_origin;
@@ -181,10 +183,28 @@ enum deluge_constant_kind {
     deluge_function_constant,
 
     /* The target is a getter that returns a pointer to the global. */
-    deluge_global_constant
+    deluge_global_constant,
+
+    /* The target is a constexpr node. */
+    deluge_expr_constant
 };
 
 typedef enum deluge_constant_kind deluge_constant_kind;
+
+enum deluge_constexpr_opcode {
+    deluge_constexpr_add_ptr_immediate
+};
+
+typedef enum deluge_constexpr_opcode deluge_constexpr_opcode;
+
+struct deluge_constexpr_node {
+    deluge_constexpr_opcode opcode;
+
+    /* This will eventually be an operand union, I guess? */
+    deluge_constant_kind left_kind;
+    void* left_target;
+    uintptr_t right_value;
+};
 
 struct deluge_constant_relocation {
     size_t offset;
