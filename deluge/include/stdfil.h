@@ -597,6 +597,9 @@ _Bool zthread_mutex_lock(void* mutex);
 _Bool zthread_mutex_trylock(void* mutex);
 _Bool zthread_mutex_unlock(void* mutex);
 void* zthread_self(void);
+void* zthread_create(void* (*callback)(void* arg), void* arg);
+_Bool zthread_join(void* thread, void** result);
+_Bool zthread_detach(void* thread);
 
 #endif /* DELUGE_STDFIL_H */
 

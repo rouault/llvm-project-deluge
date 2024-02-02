@@ -32,9 +32,8 @@ PAS_BEGIN_EXTERN_C;
      "Bounded P^I" type system. It's fine to take extra cycles or bytes to achieve that goal.
 
    - There are no optimizations yet, but the structure of this code is such that when I choose to 
-     go into optimization mode, I will be able to wreak havoc and take many prisoners. I pity the
-     fool who bets against my ability to make this hella fucking fast. I'm just holding back from
-     going there, for now. */
+     go into optimization mode, I will be able to wreak havoc I'm just holding back from going
+     there, for now. Lots of running code is better than a small amount of fast code. */
 
 struct deluge_alloca_stack;
 struct deluge_constant_relocation;
@@ -93,7 +92,12 @@ typedef uint8_t deluge_word_type;
    ptr/lower/upper/type. That's the current idiom even though it is surely inefficient and confusing for
    debugging, since we don't clear invalid sidecars - we just lazily ignore them in the lower getter. */
 struct PAS_ALIGNED(DELUGE_WORD_SIZE) deluge_ptr {
+    /* The sidecar is optional. If it doesn't match the capability, we ignore it. In some cases, we just
+       store 0 in it. If the ptr = lower, then the sidecar is totally ignored. */
     pas_uint128 sidecar;
+
+    /* The capabiltiy is mandatory. It stores the ptr itself, the upper bound, the type, and some data
+       that's useful for inferring more accurate bounds. */
     pas_uint128 capability;
 };
 
@@ -1213,6 +1217,9 @@ void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE);
 void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE);
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
+void deluded_f_zthread_create(DELUDED_SIGNATURE);
+void deluded_f_zthread_join(DELUDED_SIGNATURE);
+void deluded_f_zthread_detach(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 

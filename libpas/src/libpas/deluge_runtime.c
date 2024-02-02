@@ -361,7 +361,12 @@ static pas_heap_ref mutex_heap = {
 
 typedef struct {
     pas_lock lock;
-    pthread_t thread;
+    pthread_t thread; /* this becomes NULL the moment that we join or detach. */
+    bool is_running;
+    bool is_joining;
+    void (*callback)(DELUDED_SIGNATURE);
+    deluge_ptr arg_ptr;
+    deluge_ptr result_ptr;
 } zthread;
 
 static void zthread_construct(zthread* thread)
@@ -388,6 +393,31 @@ static pas_heap_ref zthread_heap = {
     .heap = NULL,
     .allocator_index = 0
 };
+
+static bool should_destroy_thread(zthread* thread)
+{
+    return !thread->is_running && !thread->thread;
+}
+
+static void destroy_thread_if_appropriate(zthread* thread)
+{
+    if (should_destroy_thread(thread))
+        deluge_deallocate(thread);
+}
+
+static void zthread_destruct(void* zthread_arg)
+{
+    zthread* thread;
+
+    thread = (zthread*)zthread_arg;
+
+    pas_lock_lock(&thread->lock);
+    PAS_ASSERT(thread->is_running);
+    thread->is_running = false;
+
+    destroy_thread_if_appropriate(thread);
+    pas_lock_unlock(&thread->lock); /* We can do this safely because it's a no-page-sharing isoheap. */
+}
 
 static pthread_key_t zthread_key;
 
@@ -416,7 +446,9 @@ static void initialize_impl(void)
     zthread* result = (zthread*)deluge_allocate_one(&zthread_heap);
     PAS_ASSERT(!result->thread);
     result->thread = pthread_self();
-    PAS_ASSERT(!pthread_key_create(&zthread_key, NULL));
+    result->is_running = true;
+    PAS_ASSERT(!should_destroy_thread(result));
+    PAS_ASSERT(!pthread_key_create(&zthread_key, zthread_destruct));
     PAS_ASSERT(!pthread_setspecific(zthread_key, result));
 }
 
@@ -5028,6 +5060,197 @@ void deluded_f_zthread_self(DELUDED_SIGNATURE)
     zthread* thread = pthread_getspecific(zthread_key);
     PAS_ASSERT(thread);
     *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(thread, &zthread_type);
+}
+
+static void* start_thread(void* arg)
+{
+    zthread* thread;
+
+    thread = (zthread*)arg;
+
+    PAS_ASSERT(thread->is_running);
+    PAS_ASSERT(!pthread_setspecific(zthread_key, thread));
+
+    deluge_ptr return_buffer;
+    pas_zero_memory(&return_buffer, sizeof(return_buffer));
+
+    deluge_ptr* args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
+    deluge_ptr_store(args, deluge_ptr_load(&thread->arg_ptr));
+
+    PAS_ASSERT(thread->callback);
+
+    thread->callback(args, args + 1, &deluge_one_ptr_type,
+                     &return_buffer, &return_buffer + 1, &deluge_one_ptr_type);
+
+    pas_lock_lock(&thread->lock);
+    PAS_ASSERT(thread->is_running);
+    deluge_ptr_store(&thread->result_ptr, return_buffer);
+    thread->is_running = false;
+    destroy_thread_if_appropriate(thread);
+    pas_lock_unlock(&thread->lock);
+    return NULL;
+}
+
+void deluded_f_zthread_create(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_create",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr callback_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr arg_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_function_call(callback_ptr, &origin);
+    zthread* thread = (zthread*)deluge_allocate_one(&zthread_heap);
+    pas_lock_lock(&thread->lock);
+    /* I don't see how this could ever happen. */
+    PAS_ASSERT(!thread->thread);
+    PAS_ASSERT(!thread->is_joining);
+    PAS_ASSERT(!thread->is_running);
+    PAS_ASSERT(should_destroy_thread(thread));
+    thread->callback = (void (*)(DELUDED_SIGNATURE))deluge_ptr_ptr(callback_ptr);
+    deluge_ptr_store(&thread->arg_ptr, arg_ptr);
+    thread->is_running = true;
+    int result = pthread_create(&thread->thread, NULL, start_thread, thread);
+    if (result) {
+        int my_errno = result;
+        PAS_ASSERT(!thread->thread);
+        thread->is_running = false;
+        PAS_ASSERT(should_destroy_thread(thread));
+        deluge_deallocate(thread);
+        pas_lock_unlock(&thread->lock);
+        set_errno(my_errno);
+        *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_invalid(NULL);
+        return;
+    }
+    PAS_ASSERT(thread->thread);
+    PAS_ASSERT(!should_destroy_thread(thread));
+    pas_lock_unlock(&thread->lock);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(thread, &zthread_type);
+}
+
+void deluded_f_zthread_join(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_join",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr thread_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr result_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    deluge_check_access_opaque(thread_ptr, &zthread_type, &origin);
+    if (deluge_ptr_ptr(result_ptr))
+        deluge_check_access_ptr(result_ptr, &origin);
+    zthread* thread = (zthread*)deluge_ptr_ptr(thread_ptr);
+    pas_lock_lock(&thread->lock);
+    DELUGE_CHECK(
+        thread->thread,
+        &origin,
+        "Cannot join thread that has already been joined or detached (thread = %p).",
+        thread);
+    PAS_ASSERT(!should_destroy_thread(thread));
+    PAS_ASSERT(!thread->is_joining);
+    thread->is_joining = true;
+    pthread_t system_thread = thread->thread;
+    thread->thread = NULL;
+    PAS_ASSERT(!should_destroy_thread(thread));
+    pas_lock_unlock(&thread->lock);
+
+    int result = pthread_join(system_thread, NULL);
+    if (result) {
+        int my_errno = result;
+        pas_lock_lock(&thread->lock);
+        PAS_ASSERT(!should_destroy_thread(thread));
+        PAS_ASSERT(thread->is_joining);
+        PAS_ASSERT(!thread->thread);
+        thread->is_joining = false;
+        thread->thread = system_thread;
+        PAS_ASSERT(!should_destroy_thread(thread));
+        pas_lock_unlock(&thread->lock);
+        set_errno(my_errno);
+        *(bool*)deluge_ptr_ptr(rets) = false;
+        return;
+    }
+
+    pas_lock_lock(&thread->lock);
+    PAS_ASSERT(!should_destroy_thread(thread));
+    PAS_ASSERT(thread->is_joining);
+    PAS_ASSERT(!thread->thread);
+    PAS_ASSERT(!thread->is_running);
+    thread->is_joining = false;
+    if (deluge_ptr_ptr(result_ptr))
+        deluge_ptr_store((deluge_ptr*)deluge_ptr_ptr(result_ptr), thread->result_ptr);
+    destroy_thread_if_appropriate(thread);
+    pas_lock_unlock(&thread->lock);
+    *(bool*)deluge_ptr_ptr(rets) = true;
+    return;
+}
+
+void deluded_f_zthread_detach(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_detach",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr thread_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    deluge_check_access_opaque(thread_ptr, &zthread_type, &origin);
+    zthread* thread = (zthread*)deluge_ptr_ptr(thread_ptr);
+    pas_lock_lock(&thread->lock);
+    DELUGE_CHECK(
+        thread->thread,
+        &origin,
+        "Cannot detach thread that has already been joined or detached (thread = %p).",
+        thread);
+    PAS_ASSERT(!should_destroy_thread(thread));
+    PAS_ASSERT(!thread->is_joining);
+    pthread_t system_thread = thread->thread;
+    thread->is_joining = true;
+    thread->thread = NULL;
+    PAS_ASSERT(!should_destroy_thread(thread));
+    pas_lock_unlock(&thread->lock);
+
+    int result = pthread_detach(system_thread);
+    if (result) {
+        int my_errno = result;
+        pas_lock_lock(&thread->lock);
+        PAS_ASSERT(!should_destroy_thread(thread));
+        PAS_ASSERT(thread->is_joining);
+        PAS_ASSERT(!thread->thread);
+        thread->is_joining = false;
+        thread->thread = system_thread;
+        PAS_ASSERT(!should_destroy_thread(thread));
+        pas_lock_unlock(&thread->lock);
+        set_errno(my_errno);
+        *(bool*)deluge_ptr_ptr(rets) = false;
+        return;
+    }
+
+    pas_lock_lock(&thread->lock);
+    PAS_ASSERT(!should_destroy_thread(thread));
+    PAS_ASSERT(thread->is_joining);
+    PAS_ASSERT(!thread->thread);
+    PAS_ASSERT(!thread->is_running);
+    thread->is_joining = false;
+    destroy_thread_if_appropriate(thread);
+    pas_lock_unlock(&thread->lock);
+    *(bool*)deluge_ptr_ptr(rets) = true;
+    return;
 }
 
 #endif /* PAS_ENABLE_DELUGE */
