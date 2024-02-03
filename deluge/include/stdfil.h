@@ -601,5 +601,45 @@ void* zthread_create(void* (*callback)(void* arg), void* arg);
 _Bool zthread_join(void* thread, void** result);
 _Bool zthread_detach(void* thread);
 
+/* Parks the thread in a queue associated with the given address, which cannot be null. The
+   parking only succeeds if the condition function returns true while the queue lock is held.
+  
+   If condition returns false, it will unlock the internal parking queue and then it will
+   return false.
+  
+   If condition returns true, it will enqueue the thread, unlock the parking queue lock, call
+   the before_sleep function, and then it will sleep so long as the thread continues to be on the
+   queue and the timeout hasn't fired. Finally, this returns true if we actually got unparked or
+   false if the timeout was hit.
+  
+   Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
+   long as you don't recursively call zpark_if(). You can call zunpark_one()/zunpark_all()
+   though. It's useful to do that in before_sleep() for implementing condition variables. If you
+   do call into the zpark_if recursively, you'll get a trap.
+   
+   Crucially, when zpark_if calls your callbacks, it is only holding the queue lock associated
+   with the address, and not any other locks that the Deluge runtime uses.
+
+   The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
+   this is a civilized API.
+
+   Errors are reported by killing the shit out of your program. */
+_Bool zpark_if(const void* address,
+               _Bool (*condition)(void* arg),
+               void (*before_sleep)(void* arg),
+               void* arg,
+               double absolute_timeout_in_milliseconds);
+
+/* Unparks one thread from the queue associated with the given address, and calls the given
+   callback while the address is locked. Reports to the callback whether any thread got
+   unparked and whether there may be any other threads still on the queue. */
+void zunpark_one(const void* address,
+                 void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
+                 void* arg);
+
+/* Unparks every thread from the queue associated with the given address, which cannot be null.
+   Returns the number of threads unparked. */
+unsigned zunpark_all(const void* address);
+
 #endif /* DELUGE_STDFIL_H */
 

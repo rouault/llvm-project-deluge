@@ -11,6 +11,7 @@
 #include "deluge_heap_config.h"
 #include "deluge_heap_innards.h"
 #include "deluge_heap_table.h"
+#include "deluge_parking_lot.h"
 #include "deluge_slice_table.h"
 #include "deluge_type_table.h"
 #include "pas_deallocate.h"
@@ -60,6 +61,20 @@ const deluge_type deluge_one_ptr_type = {
         .trailing_array = NULL,
     },
     .word_types = { DELUGE_WORD_TYPES_PTR }
+};
+
+const deluge_type deluge_int_ptr_type = {
+    .index = DELUGE_INT_PTR_TYPE_INDEX,
+    .size = DELUGE_WORD_SIZE + sizeof(deluge_ptr),
+    .alignment = alignof(deluge_ptr),
+    .num_words = 1 + sizeof(deluge_ptr) / DELUGE_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL,
+    },
+    .word_types = {
+        DELUGE_WORD_TYPE_INT,
+        DELUGE_WORD_TYPES_PTR
+    }
 };
 
 const deluge_type deluge_function_type = {
@@ -431,6 +446,7 @@ static void initialize_impl(void)
     deluge_type_array[DELUGE_INVALID_TYPE_INDEX] = 0;
     deluge_type_array[DELUGE_INT_TYPE_INDEX] = &deluge_int_type;
     deluge_type_array[DELUGE_ONE_PTR_TYPE_INDEX] = &deluge_one_ptr_type;
+    deluge_type_array[DELUGE_INT_PTR_TYPE_INDEX] = &deluge_int_ptr_type;
     deluge_type_array[DELUGE_FUNCTION_TYPE_INDEX] = &deluge_function_type;
     deluge_type_array[DELUGE_TYPE_TYPE_INDEX] = &deluge_type_type;
     deluge_type_array[DELUGE_MUSL_PASSWD_TYPE_INDEX] = &musl_passwd_type;
@@ -5251,6 +5267,152 @@ void deluded_f_zthread_detach(DELUDED_SIGNATURE)
     pas_lock_unlock(&thread->lock);
     *(bool*)deluge_ptr_ptr(rets) = true;
     return;
+}
+
+typedef struct {
+    void (*condition)(DELUDED_SIGNATURE);
+    void (*before_sleep)(DELUDED_SIGNATURE);
+    deluge_ptr arg_ptr;
+} zpark_if_data;
+
+static bool zpark_if_validate_callback(void* arg)
+{
+    zpark_if_data* data = (zpark_if_data*)arg;
+
+    union {
+        uintptr_t return_buffer[2];
+        bool result;
+    } u;
+
+    pas_zero_memory(u.return_buffer, sizeof(u.return_buffer));
+
+    deluge_ptr* args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
+    deluge_ptr_store(args, data->arg_ptr);
+
+    data->condition(args, args + 1, &deluge_one_ptr_type,
+                    u.return_buffer, u.return_buffer + 2, &deluge_int_type);
+
+    return u.result;
+}
+
+static void zpark_if_before_sleep_callback(void* arg)
+{
+    zpark_if_data* data = (zpark_if_data*)arg;
+
+    uintptr_t return_buffer[2];
+    pas_zero_memory(return_buffer, sizeof(return_buffer));
+
+    deluge_ptr* args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
+    deluge_ptr_store(args, data->arg_ptr);
+
+    data->condition(args, args + 1, &deluge_one_ptr_type,
+                    return_buffer, return_buffer + 2, &deluge_int_type);
+}
+
+void deluded_f_zpark_if(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zpark_if",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr address_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr condition_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr before_sleep_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr arg_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    double absolute_timeout_in_milliseconds = deluge_ptr_get_next_double(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(bool), &origin);
+    DELUGE_CHECK(
+        deluge_ptr_ptr(address_ptr),
+        &origin,
+        "cannot zpark on a null address.");
+    deluge_check_function_call(condition_ptr, &origin);
+    deluge_check_function_call(before_sleep_ptr, &origin);
+    zpark_if_data data;
+    data.condition = (void (*)(DELUDED_SIGNATURE))deluge_ptr_ptr(condition_ptr);
+    data.before_sleep = (void (*)(DELUDED_SIGNATURE))deluge_ptr_ptr(before_sleep_ptr);
+    data.arg_ptr = arg_ptr;
+    *(bool*)deluge_ptr_ptr(rets) = deluge_park_conditionally(deluge_ptr_ptr(address_ptr),
+                                                             zpark_if_validate_callback,
+                                                             zpark_if_before_sleep_callback,
+                                                             &data,
+                                                             absolute_timeout_in_milliseconds);
+}
+
+typedef struct {
+    void (*callback)(DELUDED_SIGNATURE);
+    deluge_ptr arg_ptr;
+} zunpark_one_data;
+
+typedef struct {
+    bool did_unpark_thread;
+    bool may_have_more_threads;
+    deluge_ptr arg_ptr;
+} zunpark_one_callback_args;
+
+static void zunpark_one_callback(deluge_unpark_result result, void* arg)
+{
+    zunpark_one_data* data = (zunpark_one_data*)arg;
+
+    uintptr_t return_buffer[2];
+    pas_zero_memory(return_buffer, sizeof(return_buffer));
+
+    zunpark_one_callback_args* args = deluge_allocate_one(deluge_get_heap(&deluge_int_ptr_type));
+    args->did_unpark_thread = result.did_unpark_thread;
+    args->may_have_more_threads = result.may_have_more_threads;
+    deluge_ptr_store(&args->arg_ptr, data->arg_ptr);
+
+    data->callback(args, args + 1, &deluge_int_ptr_type,
+                   return_buffer, return_buffer + 2, &deluge_int_type);
+}
+
+void deluded_f_zunpark_one(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zunpark_one",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr address_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr callback_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr arg_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    DELUGE_CHECK(
+        deluge_ptr_ptr(address_ptr),
+        &origin,
+        "cannot zpark on a null address.");
+    deluge_check_function_call(callback_ptr, &origin);
+    zunpark_one_data data;
+    data.callback = (void (*)(DELUDED_SIGNATURE))deluge_ptr_ptr(callback_ptr);
+    data.arg_ptr = arg_ptr;
+    deluge_unpark_one(deluge_ptr_ptr(address_ptr), zunpark_one_callback, &data);
+}
+
+void deluded_f_zunpark_all(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zunpark_all",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr address_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    DELUGE_CHECK(
+        deluge_ptr_ptr(address_ptr),
+        &origin,
+        "cannot zpark on a null address.");
+    *(unsigned*)deluge_ptr_ptr(rets) = deluge_unpark_all(deluge_ptr_ptr(address_ptr));
 }
 
 #endif /* PAS_ENABLE_DELUGE */

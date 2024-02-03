@@ -36,6 +36,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
 
 #ifndef _WIN32
 #include <sys/time.h>
@@ -334,9 +335,28 @@ void pas_system_condition_timed_wait(
     static const bool verbose = false;
     
     struct timespec time_to_wake_up;
-    
-    time_to_wake_up.tv_sec = (unsigned)(
-        absolute_timeout_in_milliseconds / 1000.);
+    double absolute_timeout_in_seconds;
+    double approx_max_timeout_in_seconds;
+
+    PAS_ASSERT(absolute_timeout_in_milliseconds == absolute_timeout_in_milliseconds);
+    PAS_ASSERT(absolute_timeout_in_milliseconds >= 0);
+
+    /* it so happens that the - 1. is going to be a rounding error. */
+    approx_max_timeout_in_seconds = pow(2., 8. * sizeof(time_t)) / 2. - 1.;
+
+    absolute_timeout_in_seconds = floor(absolute_timeout_in_milliseconds / 1000.);
+    if (absolute_timeout_in_milliseconds == 1. / 0.
+        || absolute_timeout_in_seconds >= approx_max_timeout_in_seconds
+        || (time_t)absolute_timeout_in_seconds <= 0) {
+        if (verbose) {
+            pas_log("Doing untimed wait because timeout is huge = %.2lf.\n",
+                    absolute_timeout_in_milliseconds);
+        }
+        pthread_cond_wait(condition, mutex);
+        return;
+    }
+
+    time_to_wake_up.tv_sec = (time_t)absolute_timeout_in_seconds;
     time_to_wake_up.tv_nsec = (unsigned)(
         (uint64_t)(absolute_timeout_in_milliseconds * 1000. * 1000.) %
         (uint64_t)(1000. * 1000. * 1000.));

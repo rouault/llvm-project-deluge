@@ -234,6 +234,7 @@ extern const deluge_type_template deluge_int_type_template;
 
 extern const deluge_type deluge_int_type;
 extern const deluge_type deluge_one_ptr_type;
+extern const deluge_type deluge_int_ptr_type;
 extern const deluge_type deluge_function_type;
 extern const deluge_type deluge_type_type;
 
@@ -244,15 +245,16 @@ extern unsigned deluge_type_array_capacity;
 #define DELUGE_INVALID_TYPE_INDEX              0u
 #define DELUGE_INT_TYPE_INDEX                  1u
 #define DELUGE_ONE_PTR_TYPE_INDEX              2u
-#define DELUGE_FUNCTION_TYPE_INDEX             3u
-#define DELUGE_TYPE_TYPE_INDEX                 4u
-#define DELUGE_MUSL_PASSWD_TYPE_INDEX          5u
-#define DELUGE_MUSL_SIGACTION_TYPE_INDEX       6u
-#define DELUGE_THREAD_SPECIFIC_TYPE_INDEX      7u
-#define DELUGE_RWLOCK_TYPE_INDEX               8u
-#define DELUGE_MUTEX_TYPE_INDEX                9u
-#define DELUGE_THREAD_TYPE_INDEX               10u
-#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         11u
+#define DELUGE_INT_PTR_TYPE_INDEX              3u
+#define DELUGE_FUNCTION_TYPE_INDEX             4u
+#define DELUGE_TYPE_TYPE_INDEX                 5u
+#define DELUGE_MUSL_PASSWD_TYPE_INDEX          6u
+#define DELUGE_MUSL_SIGACTION_TYPE_INDEX       7u
+#define DELUGE_THREAD_SPECIFIC_TYPE_INDEX      8u
+#define DELUGE_RWLOCK_TYPE_INDEX               9u
+#define DELUGE_MUTEX_TYPE_INDEX                10u
+#define DELUGE_THREAD_TYPE_INDEX               11u
+#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         12u
 #define DELUGE_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define DELUGE_TYPE_MAX_INDEX                  0x3fffffffu
 #define DELUGE_TYPE_INDEX_MASK                 0x3fffffffu
@@ -1111,6 +1113,14 @@ static inline size_t deluge_ptr_get_next_size_t(deluge_ptr* ptr, const deluge_or
     return *(size_t*)deluge_ptr_ptr(slot_ptr);
 }
 
+static inline double deluge_ptr_get_next_double(deluge_ptr* ptr, const deluge_origin* origin)
+{
+    deluge_ptr slot_ptr;
+    slot_ptr = deluge_ptr_get_next_bytes(ptr, sizeof(double), alignof(double));
+    deluge_check_access_int(slot_ptr, sizeof(double), origin);
+    return *(double*)deluge_ptr_ptr(slot_ptr);
+}
+
 /* Given a va_list ptr (so a ptr to a ptr), this:
    
    - checks that it is indeed a ptr to a ptr
@@ -1220,6 +1230,10 @@ void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_join(DELUDED_SIGNATURE);
 void deluded_f_zthread_detach(DELUDED_SIGNATURE);
+
+void deluded_f_zpark_if(DELUDED_SIGNATURE);
+void deluded_f_zunpark_one(DELUDED_SIGNATURE);
+void deluded_f_zunpark_all(DELUDED_SIGNATURE);
 
 PAS_END_EXTERN_C;
 
