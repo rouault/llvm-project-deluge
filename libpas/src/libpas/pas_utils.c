@@ -338,8 +338,13 @@ void pas_system_condition_timed_wait(
     double absolute_timeout_in_seconds;
     double approx_max_timeout_in_seconds;
 
-    PAS_ASSERT(absolute_timeout_in_milliseconds == absolute_timeout_in_milliseconds);
-    PAS_ASSERT(absolute_timeout_in_milliseconds >= 0);
+    /* FIXME: factor out this time math into a function that I can call from tests!!! */
+    
+    if (!(absolute_timeout_in_milliseconds >= pas_get_time_in_milliseconds_for_system_condition())) {
+        pas_system_mutex_unlock(mutex);
+        pas_system_mutex_lock(mutex);
+        return;
+    }
 
     /* it so happens that the - 1. is going to be a rounding error. */
     approx_max_timeout_in_seconds = pow(2., 8. * sizeof(time_t)) / 2. - 1.;

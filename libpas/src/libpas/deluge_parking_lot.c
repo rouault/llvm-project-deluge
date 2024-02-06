@@ -733,23 +733,30 @@ void deluge_unpark_one(
 typedef struct {
     const void* address;
     ptr_array array;
-} unpark_all_data;
+    unsigned count;
+} unpark_data;
 
-static dequeue_result unpark_all_dequeue_callback(thread_data* element, void* arg)
+static dequeue_result unpark_dequeue_callback(thread_data* element, void* arg)
 {
-    unpark_all_data* data = (unpark_all_data*)arg;
+    unpark_data* data = (unpark_data*)arg;
     if (element->address != data->address)
         return dequeue_ignore;
     ptr_array_add(&data->array, element);
+    PAS_ASSERT(data->array.size <= data->count);
+    if (data->array.size == data->count)
+        return dequeue_remove_and_stop;
     return dequeue_remove_and_continue;
 }
 
-unsigned deluge_unpark_all(const void* address)
+unsigned deluge_unpark(const void* address, unsigned count)
 {
-    unpark_all_data data;
+    unpark_data data;
     data.address = address;
     ptr_array_construct(&data.array);
-    dequeue(address, bucket_ignore_empty, unpark_all_dequeue_callback, empty_finish_callback, &data);
+    data.count = count;
+    dequeue(address, bucket_ignore_empty, unpark_dequeue_callback, empty_finish_callback, &data);
+
+    PAS_ASSERT(data.array.size <= count);
 
     unsigned index;
     for (index = data.array.size; index--;) {

@@ -70,9 +70,10 @@ PAS_API void deluge_unpark_one(
     void (*callback)(deluge_unpark_result result, void* arg),
     void* arg);
 
-/* Unparks every thread from the queue associated with the given address, which cannot be null.
-   Returns the number of threads unparked. */
-PAS_API unsigned deluge_unpark_all(const void* address);
+/* Unparks up to count threads from the queue associated with the given address, which cannot be
+   null. It's OK to pass UINT_MAX as count if you want to unpark all threads. Returns the number
+   of threads unparked. */
+PAS_API unsigned deluge_unpark(const void* address, unsigned count);
 
 PAS_END_EXTERN_C;
 

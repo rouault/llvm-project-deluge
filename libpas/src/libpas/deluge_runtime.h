@@ -251,10 +251,8 @@ extern unsigned deluge_type_array_capacity;
 #define DELUGE_MUSL_PASSWD_TYPE_INDEX          6u
 #define DELUGE_MUSL_SIGACTION_TYPE_INDEX       7u
 #define DELUGE_THREAD_SPECIFIC_TYPE_INDEX      8u
-#define DELUGE_RWLOCK_TYPE_INDEX               9u
-#define DELUGE_MUTEX_TYPE_INDEX                10u
-#define DELUGE_THREAD_TYPE_INDEX               11u
-#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         12u
+#define DELUGE_THREAD_TYPE_INDEX               9u
+#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         10u
 #define DELUGE_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define DELUGE_TYPE_MAX_INDEX                  0x3fffffffu
 #define DELUGE_TYPE_INDEX_MASK                 0x3fffffffu
@@ -562,74 +560,7 @@ static inline deluge_ptr deluge_ptr_create(pas_uint128 sidecar, pas_uint128 capa
     return result;
 }
 
-static inline deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type)
-{
-    static const bool verbose = false;
-    deluge_ptr result;
-    if (!type || ((uintptr_t)ptr & ~PAS_ADDRESS_MASK)) {
-        if (!type) {
-            PAS_TESTING_ASSERT(!lower);
-            PAS_TESTING_ASSERT(!upper);
-        }
-        result.capability = (pas_uint128)(uintptr_t)ptr;
-        result.sidecar = 0;
-    } else {
-        const deluge_type* capability_type;
-        void* sidecar_lower_or_upper;
-        void* capability_upper;
-        deluge_capability_kind capability_kind;
-        deluge_sidecar_kind sidecar_kind;
-        PAS_TESTING_ASSERT(lower);
-        PAS_TESTING_ASSERT(upper);
-        if (verbose)
-            pas_log("type = %p, index = %u\n", type, type->index);
-        PAS_TESTING_ASSERT(deluge_type_lookup(type->index) == type);
-        if (ptr < lower)
-            capability_kind = deluge_capability_below_lower;
-        else if (ptr == lower)
-            capability_kind = deluge_capability_at_lower;
-        else
-            capability_kind = deluge_capability_in_array;
-        sidecar_kind = deluge_sidecar_lower;
-        capability_type = type;
-        sidecar_lower_or_upper = lower;
-        capability_upper = upper;
-        if (type->num_words && type->u.trailing_array && ptr != lower) {
-            if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
-                capability_type = type->u.trailing_array;
-            else {
-                PAS_TESTING_ASSERT(ptr > lower && (char*)ptr - (char*)lower < (ptrdiff_t)type->size);
-                capability_kind = deluge_capability_flex_base;
-                sidecar_kind = deluge_sidecar_flex_upper;
-                sidecar_lower_or_upper = upper;
-                capability_upper = (char*)lower + type->size;
-            }
-        }
-        PAS_TESTING_ASSERT(deluge_type_lookup(capability_type->index) == capability_type);
-        result.capability =
-            (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
-            ((pas_uint128)((uintptr_t)capability_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
-            ((pas_uint128)capability_type->index << (pas_uint128)96) |
-            ((pas_uint128)capability_kind << (pas_uint128)126);
-        result.sidecar =
-            (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
-            ((pas_uint128)((uintptr_t)sidecar_lower_or_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
-            ((pas_uint128)type->index << (pas_uint128)96) |
-            ((pas_uint128)sidecar_kind << (pas_uint128)126);
-    }
-    PAS_TESTING_ASSERT(deluge_ptr_ptr(result) == ptr);
-    if (((uintptr_t)ptr & ~PAS_ADDRESS_MASK)) {
-        PAS_TESTING_ASSERT(!deluge_ptr_lower(result));
-        PAS_TESTING_ASSERT(!deluge_ptr_upper(result));
-        PAS_TESTING_ASSERT(!deluge_ptr_type (result));
-    } else {
-        PAS_TESTING_ASSERT(deluge_ptr_lower(result) == lower);
-        PAS_TESTING_ASSERT(deluge_ptr_upper(result) == upper);
-        PAS_TESTING_ASSERT(deluge_ptr_type(result) == type);
-    }
-    deluge_testing_validate_ptr(result);
-    return result;
-}
+PAS_API deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_type* type);
 
 static inline deluge_ptr deluge_ptr_forge_with_size(void* ptr, size_t size, const deluge_type* type)
 {
@@ -1209,24 +1140,14 @@ void deluded_f_zsys_sigaction(DELUDED_SIGNATURE);
 void deluded_f_zsys_isatty(DELUDED_SIGNATURE);
 void deluded_f_zsys_pipe(DELUDED_SIGNATURE);
 void deluded_f_zsys_select(DELUDED_SIGNATURE);
+void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
 void deluded_f_zthread_setspecific(DELUDED_SIGNATURE);
 void deluded_f_zthread_getspecific(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_create(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_delete(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_rdlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_tryrdlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_wrlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_trywrlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_rwlock_unlock(DELUDED_SIGNATURE);
-void deluded_f_zthread_mutex_create(DELUDED_SIGNATURE);
-void deluded_f_zthread_mutex_delete(DELUDED_SIGNATURE);
-void deluded_f_zthread_mutex_lock(DELUDED_SIGNATURE);
-void deluded_f_zthread_mutex_trylock(DELUDED_SIGNATURE);
-void deluded_f_zthread_mutex_unlock(DELUDED_SIGNATURE);
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
+void deluded_f_zthread_get_id(DELUDED_SIGNATURE);
 void deluded_f_zthread_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_join(DELUDED_SIGNATURE);
 void deluded_f_zthread_detach(DELUDED_SIGNATURE);

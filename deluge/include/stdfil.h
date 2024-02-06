@@ -577,6 +577,7 @@ int zsys_sigaction(int signum, const void* act, void* oact);
 int zsys_isatty(int fd);
 int zsys_pipe(int fds[2]);
 int zsys_select(int nfds, void* reafds, void* writefds, void* errorfds, void* timeout);
+void zsys_sched_yield(void);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
@@ -584,19 +585,9 @@ void* zthread_key_create(void (*destructor)(void*));
 void zthread_key_delete(void* key);
 _Bool zthread_setspecific(void* key, const void* value);
 void* zthread_getspecific(void* key);
-void* zthread_rwlock_create(void);
-void zthread_rwlock_delete(void* rwlock);
-_Bool zthread_rwlock_rdlock(void* rwlock);
-_Bool zthread_rwlock_tryrdlock(void* rwlock);
-_Bool zthread_rwlock_wrlock(void* rwlock);
-_Bool zthread_rwlock_trywrlock(void* rwlock);
-_Bool zthread_rwlock_unlock(void* rwlock);
-void* zthread_mutex_create(void);
-void zthread_mutex_delete(void* mutex);
-_Bool zthread_mutex_lock(void* mutex);
-_Bool zthread_mutex_trylock(void* mutex);
-_Bool zthread_mutex_unlock(void* mutex);
 void* zthread_self(void);
+unsigned zthread_get_id(void* thread);
+unsigned zthread_self_id(void);
 void* zthread_create(void* (*callback)(void* arg), void* arg);
 _Bool zthread_join(void* thread, void** result);
 _Bool zthread_detach(void* thread);
@@ -630,6 +621,21 @@ _Bool zpark_if(const void* address,
                void* arg,
                double absolute_timeout_in_milliseconds);
 
+/* Simplified version of zpark_if. If the address is int-aligned, then this does a zpark_if with
+   a condition that returns true if the address contains the expected value. Does nothing on
+   before_sleep.
+   
+   This function has adorable behavior when address is misaligned. In that case, the address
+   passed to zpark_if is the original misaligned address, but the rounded-down address is used for
+   the comparison. This lets you use an atomic int as four notification channels.
+
+   This matches the basic futex API except futexes would error on misaligned.
+
+   Note that while this expects you to use an int, zpark_if has no such restriction. You could use
+   any atomic word there (or words, if you're fancy). */
+_Bool zcompare_and_park(const int* address, int expected_value,
+                        double absolute_timeout_in_milliseconds);
+
 /* Unparks one thread from the queue associated with the given address, and calls the given
    callback while the address is locked. Reports to the callback whether any thread got
    unparked and whether there may be any other threads still on the queue. */
@@ -637,9 +643,9 @@ void zunpark_one(const void* address,
                  void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
                  void* arg);
 
-/* Unparks every thread from the queue associated with the given address, which cannot be null.
-   Returns the number of threads unparked. */
-unsigned zunpark_all(const void* address);
+/* Unparks up to count threads from the queue associated with the given address, which cannot
+   be null. Returns the number of threads unparked. */
+unsigned zunpark(const void* address, unsigned count);
 
 #endif /* DELUGE_STDFIL_H */
 
