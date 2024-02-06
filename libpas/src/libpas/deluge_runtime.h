@@ -1094,7 +1094,7 @@ void deluge_run_deferred_global_ctors(void); /* Important safety property: libc 
                                                 as far as safety goes. */
 void deluded_f_zrun_deferred_global_ctors(DELUDED_SIGNATURE);
 
-void deluge_error(const deluge_origin* origin);
+void deluge_error(const char* reason, const deluge_origin* origin);
 
 void deluded_f_zprint(DELUDED_SIGNATURE);
 void deluded_f_zprint_long(DELUDED_SIGNATURE);

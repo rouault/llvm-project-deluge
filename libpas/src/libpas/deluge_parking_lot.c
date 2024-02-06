@@ -122,6 +122,10 @@ static void bucket_construct(bucket* bucket)
 static bucket* bucket_create(void)
 {
     bucket* result = (bucket*)deluge_allocate_utility(sizeof(bucket));
+    if (verbose) {
+        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": creating bucket at %p\n",
+                pas_get_current_system_thread_id(), result);
+    }
     bucket_construct(result);
     return result;
 }
@@ -317,8 +321,10 @@ static void ensure_hashtable_size(unsigned num_threads)
 {
     hashtable* old_table = the_table;
     if (old_table && (double)old_table->size / (double)num_threads >= max_load_factor) {
-        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": no need to rehash because %u / %u >= %u\n",
-                pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
+        if (verbose) {
+            pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": no need to rehash because %u / %u >= %u\n",
+                    pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
+        }
         return;
     }
 
@@ -327,13 +333,22 @@ static void ensure_hashtable_size(unsigned num_threads)
     lock_hashtable(&buckets);
 
     old_table = the_table;
+    PAS_ASSERT(old_table);
 
-    if (old_table && (double)old_table->size / (double)num_threads >= max_load_factor) {
-        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": after locking, no need to rehash because %u / %u >= %u\n",
-                pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
+    if ((double)old_table->size / (double)num_threads >= max_load_factor) {
+        if (verbose) {
+            pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": after locking, no need to rehash "
+                    "because %u / %u >= %u\n",
+                    pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
+        }
         unlock_hashtable(&buckets);
         ptr_array_destruct(&buckets);
         return;
+    }
+
+    if (verbose) {
+        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": after locking, rehashing because %u / %u < %u\n",
+                pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
     }
 
     ptr_array thread_datas;
@@ -349,6 +364,10 @@ static void ensure_hashtable_size(unsigned num_threads)
     unsigned new_size;
     PAS_ASSERT(!pas_mul_uint32_overflow(num_threads, growth_factor, &new_size));
     PAS_ASSERT(!pas_mul_uint32_overflow(new_size, max_load_factor, &new_size));
+    if (verbose) {
+        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": creating table with size %u\n",
+                pas_get_current_system_thread_id(), new_size);
+    }
 
     hashtable* new_table = hashtable_create(new_size);
     unsigned bucket_reuse_index = buckets.size;
@@ -367,9 +386,14 @@ static void ensure_hashtable_size(unsigned num_threads)
         bucket_enqueue(my_bucket, data);
     }
 
+    if (verbose) {
+        pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": bucket_reuse_index = %u\n",
+                pas_get_current_system_thread_id(), bucket_reuse_index);
+    }
+
     for (index = 0; index < new_table->size && bucket_reuse_index; ++index) {
         bucket** bucket_ptr = new_table->data + index;
-        if (!*bucket_ptr)
+        if (*bucket_ptr)
             continue;
         *bucket_ptr = buckets.array[--bucket_reuse_index];
     }
@@ -510,8 +534,10 @@ static bool enqueue(const void* address, thread_data* (*callback)(void* arg), vo
         thread_data* data = callback(arg);
         bool result;
         if (data) {
-            pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": proceeding to enqueue %p\n",
-                    pas_get_current_system_thread_id(), data);
+            if (verbose) {
+                pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": proceeding to enqueue %p\n",
+                        pas_get_current_system_thread_id(), data);
+            }
             bucket_enqueue(my_bucket, data);
             result = true;
         } else

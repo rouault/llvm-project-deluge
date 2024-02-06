@@ -375,7 +375,7 @@ static pas_heap_ref zthread_heap = {
 
 static bool should_destroy_thread(zthread* thread)
 {
-    return !thread->is_running && !thread->thread;
+    return !thread->is_running && !thread->is_joining && !thread->thread;
 }
 
 static void destroy_thread_if_appropriate(zthread* thread)
@@ -3079,9 +3079,9 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...)
     pas_panic("thwarted a futile attempt to violate memory safety.\n");
 }
 
-void deluge_error(const deluge_origin* origin)
+void deluge_error(const char* reason, const deluge_origin* origin)
 {
-    deluge_panic(origin, "deluge_error called");
+    deluge_panic(origin, "deluge_error: %s", reason);
 }
 
 static void print_str(const char* str)
@@ -4882,9 +4882,9 @@ static void* start_thread(void* arg)
     pas_lock_lock(&thread->lock);
     PAS_ASSERT(thread->is_running);
     deluge_ptr_store(&thread->result_ptr, return_buffer);
-    thread->is_running = false;
-    destroy_thread_if_appropriate(thread);
     pas_lock_unlock(&thread->lock);
+    
+    /* We let zthread_destruct say that the thread is not running. */
     return NULL;
 }
 

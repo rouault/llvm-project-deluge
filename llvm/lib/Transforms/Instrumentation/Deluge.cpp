@@ -1811,10 +1811,14 @@ class Deluge {
       }
 
       default:
-        if (!II->getCalledFunction()->doesNotAccessMemory()) {
+        if (!II->getCalledFunction()->doesNotAccessMemory()
+            && !isa<ConstrainedFPIntrinsic>(II)) {
           if (verbose)
             llvm::errs() << "Unhandled intrinsic: " << *II << "\n";
-          CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", II)
+          std::string str;
+          raw_string_ostream outs(str);
+          outs << "Unhandled intrinsic: " << *II;
+          CallInst::Create(Error, { getString(str), getOrigin(I->getDebugLoc()) }, "", II)
             ->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
@@ -2338,7 +2342,10 @@ class Deluge {
     
     if (CallInst* CI = dyn_cast<CallInst>(I)) {
       if (CI->isInlineAsm()) {
-        CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", I)
+        std::string str;
+        raw_string_ostream outs(str);
+        outs << "Cannot handle inline asm: " << *CI;
+        CallInst::Create(Error, { getString(str), getOrigin(I->getDebugLoc()) }, "", I)
           ->setDebugLoc(I->getDebugLoc());
         if (I->getType() != VoidTy) {
           // We need to produce something to RAUW the call with, but it cannot be a constant, since
@@ -2565,7 +2572,9 @@ class Deluge {
     }
 
     if (isa<UnreachableInst>(I)) {
-      CallInst::Create(Error, { getOrigin(I->getDebugLoc()) }, "", I)->setDebugLoc(I->getDebugLoc());
+      CallInst::Create(
+        Error, { getString("llvm unreachable instruction"), getOrigin(I->getDebugLoc()) }, "", I)
+        ->setDebugLoc(I->getDebugLoc());
       return;
     }
 
@@ -2866,7 +2875,7 @@ public:
     AllocaStackDestroy = M.getOrInsertFunction("deluge_alloca_stack_destroy", VoidTy, LowRawPtrTy);
     ExecuteConstantRelocations = M.getOrInsertFunction("deluge_execute_constant_relocations", VoidTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     DeferOrRunGlobalCtor = M.getOrInsertFunction("deluge_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
-    Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy);
+    Error = M.getOrInsertFunction("deluge_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     MakeConstantPool = M.getOrInsertFunction("deluge_make_constantpool", LowRawPtrTy);
 
