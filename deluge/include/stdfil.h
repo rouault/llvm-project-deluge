@@ -316,6 +316,17 @@ void* zgetlower(void* ptr);
 void* zgetupper(void* ptr);
 ztype* zgettype(void* ptr);
 
+/* Get the pointer's array length, which is the distance to upper in units of the ptr's static type. */
+#define zlength(ptr) ({ \
+        __typeof__(ptr) __d_ptr = (ptr); \
+        (__typeof__(ptr))zgetupper(__d_ptr) - __d_ptr; \
+    })
+
+/* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
+   succeed, since this does not check type. For example, valid function pointers are zinbounds but
+   cannot be "accessed" regardless of type (can only be called if in bounds). */
+_Bool zinbounds(void* ptr);
+
 /* Given a type and a range, returns a type that describes that range. Note that it's valid to ask
    for a range bigger than the type. It's also valid for this to return a type whose size is smaller
    than the range, if we can optimize repetitions (for example, InP1P2P3P4 is the same as
@@ -443,6 +454,8 @@ void zerrorf(const char* str, ...);
     } while (0)
 
 void zfence(void);
+void zstore_store_fence(void);
+void zcompiler_fence(void);
 
 /* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Deluge
    offers these functions instead.
@@ -581,13 +594,12 @@ void zsys_sched_yield(void);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
-void* zthread_key_create(void (*destructor)(void*));
-void zthread_key_delete(void* key);
-_Bool zthread_setspecific(void* key, const void* value);
-void* zthread_getspecific(void* key);
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
 unsigned zthread_self_id(void);
+void* zthread_get_cookie(void* thread);
+void* zthread_self_cookie(void);
+void zthread_set_self_cookie(void* cookie);
 void* zthread_create(void* (*callback)(void* arg), void* arg);
 _Bool zthread_join(void* thread, void** result);
 _Bool zthread_detach(void* thread);

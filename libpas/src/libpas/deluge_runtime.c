@@ -295,37 +295,6 @@ static const deluge_type musl_sigaction_type = {
 
 typedef struct {
     pas_lock lock;
-    void (*destructor)(DELUDED_SIGNATURE);
-    pthread_key_t key;
-    uint64_t version;
-} thread_specific;
-
-static void thread_specific_construct(thread_specific* specific)
-{
-    pas_lock_construct(&specific->lock);
-}
-
-DEFINE_RUNTIME_CONFIG(thread_specific_runtime_config, thread_specific, thread_specific_construct);
-
-static const deluge_type thread_specific_type = {
-    .index = DELUGE_THREAD_SPECIFIC_TYPE_INDEX,
-    .size = sizeof(thread_specific),
-    .alignment = alignof(thread_specific),
-    .num_words = 0,
-    .u = {
-        .runtime_config = &thread_specific_runtime_config
-    },
-    .word_types = { }
-};
-
-static pas_heap_ref thread_specific_heap = {
-    .type = (const pas_heap_type*)&thread_specific_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
-
-typedef struct {
-    pas_lock lock;
     pthread_t thread; /* this becomes NULL the moment that we join or detach. */
     unsigned id; /* non-zero unique identifier for this thread. if this thread dies then some future
                     thread may get this id, but the ids are unique among active threads. */
@@ -334,6 +303,7 @@ typedef struct {
     void (*callback)(DELUDED_SIGNATURE);
     deluge_ptr arg_ptr;
     deluge_ptr result_ptr;
+    deluge_ptr cookie_ptr;
 } zthread;
 
 static unsigned zthread_next_id = 1;
@@ -343,6 +313,16 @@ static void zthread_construct(zthread* thread)
     pas_lock_construct(&thread->lock);
     thread->thread = NULL;
 
+    thread->is_running = false;
+    thread->is_joining = false;
+    thread->callback = NULL;
+
+    thread->arg_ptr = deluge_ptr_forge_invalid(NULL);
+    thread->result_ptr = deluge_ptr_forge_invalid(NULL);
+    thread->cookie_ptr = deluge_ptr_forge_invalid(NULL);
+
+    /* I'm not sure if this needs to be a CAS loop. Maybe we're only called when libpas is holding
+       "enough" global locks? */
     for (;;) {
         unsigned old_value = zthread_next_id;
         unsigned new_value;
@@ -380,8 +360,16 @@ static bool should_destroy_thread(zthread* thread)
 
 static void destroy_thread_if_appropriate(zthread* thread)
 {
-    if (should_destroy_thread(thread))
+    if (should_destroy_thread(thread)) {
+        PAS_ASSERT(!thread->thread);
+        PAS_ASSERT(!thread->is_running);
+        PAS_ASSERT(!thread->is_joining);
+        thread->callback = NULL;
+        deluge_ptr_store(&thread->arg_ptr, deluge_ptr_forge_invalid(NULL));
+        deluge_ptr_store(&thread->result_ptr, deluge_ptr_forge_invalid(NULL));
+        deluge_ptr_store(&thread->cookie_ptr, deluge_ptr_forge_invalid(NULL));
         deluge_deallocate(thread);
+    }
 }
 
 static void zthread_destruct(void* zthread_arg)
@@ -415,7 +403,6 @@ static void initialize_impl(void)
     deluge_type_array[DELUGE_TYPE_TYPE_INDEX] = &deluge_type_type;
     deluge_type_array[DELUGE_MUSL_PASSWD_TYPE_INDEX] = &musl_passwd_type;
     deluge_type_array[DELUGE_MUSL_SIGACTION_TYPE_INDEX] = &musl_sigaction_type;
-    deluge_type_array[DELUGE_THREAD_SPECIFIC_TYPE_INDEX] = &thread_specific_type;
     deluge_type_array[DELUGE_THREAD_TYPE_INDEX] = &zthread_type;
     
     pthread_key_create(&type_tables_key, type_tables_destroy);
@@ -3224,6 +3211,20 @@ void deluded_f_zfence(DELUDED_SIGNATURE)
     pas_fence();
 }
 
+void deluded_f_zstore_store_fence(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    DELUDED_DELETE_ARGS();
+    pas_store_store_fence();
+}
+
+void deluded_f_zcompiler_fence(DELUDED_SIGNATURE)
+{
+    deluge_ptr args = DELUDED_ARGS;
+    DELUDED_DELETE_ARGS();
+    pas_compiler_fence(); /* lmao we don't need this */
+}
+
 void deluded_f_zunfenced_weak_cas_ptr(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -4663,168 +4664,6 @@ void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE)
     sched_yield();
 }
 
-typedef struct {
-    thread_specific* parent;
-    uint64_t version;
-    deluge_ptr value;
-} thread_specific_value;
-
-static void my_destructor(void* untyped_value)
-{
-    thread_specific_value* value;
-    void (*destructor)(DELUDED_SIGNATURE);
-
-    value = (thread_specific_value*)untyped_value;
-    if (!value)
-        return;
-    
-    destructor = value->parent->destructor;
-    if (destructor && value->version == value->parent->version) {
-        deluge_ptr* args;
-        uintptr_t return_buffer[2];
-        
-        args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
-        deluge_ptr_store(args, deluge_ptr_load(&value->value));
-        destructor(args, args + 1, &deluge_one_ptr_type,
-                   return_buffer, return_buffer + 2, &deluge_int_type);
-    }
-    
-    deluge_deallocate(value);
-}
-
-void deluded_f_zthread_key_create(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zthread_key_create",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr destructor_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    DELUDED_DELETE_ARGS();
-
-    if (deluge_ptr_ptr(destructor_ptr))
-        deluge_check_function_call(destructor_ptr, &origin);
-
-    thread_specific* result = deluge_try_allocate_one(&thread_specific_heap);
-    if (!result)
-        return;
-
-    uint64_t version = result->version;
-    pas_fence();
-    if (!version) {
-        pas_lock_lock(&result->lock);
-        version = result->version;
-        pas_fence();
-        if (!version) {
-            int my_errno;
-            my_errno = pthread_key_create(&result->key, my_destructor);
-            if (my_errno) {
-                set_errno(my_errno);
-                pas_lock_unlock(&result->lock);
-                deluge_deallocate(result);
-                return;
-            }
-            pas_fence();
-            result->version = 1;
-        }
-        pas_lock_unlock(&result->lock);
-    }
-
-    result->destructor = (void(*)(DELUDED_SIGNATURE))deluge_ptr_ptr(destructor_ptr);
-
-    deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_forge_byte(result, &thread_specific_type);
-}
-
-void deluded_f_zthread_key_delete(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zthread_key_delete",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    DELUDED_DELETE_ARGS();
-    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
-
-    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
-    specific->version++; /* This can be racy, since:
-                            
-                            - Users aren't supposed to use it in a racy way, so any memory safe
-                              outcome is acceptable if they do.
-
-                            - Version has no memory safety implications. */
-
-    deluge_deallocate(specific);
-}
-
-void deluded_f_zthread_setspecific(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zthread_setspecific",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    deluge_ptr value = deluge_ptr_get_next_ptr(&args, &origin);
-    DELUDED_DELETE_ARGS();
-
-    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
-
-    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
-    thread_specific_value* specific_value = pthread_getspecific(specific->key);
-    if (!specific_value) {
-        int my_errno;
-        specific_value = deluge_allocate_utility(sizeof(thread_specific_value));
-        specific_value->parent = specific;
-        specific_value->version = specific->version;
-        my_errno = pthread_setspecific(specific->key, specific_value);
-        if (my_errno) {
-            set_errno(my_errno);
-            return;
-        }
-    }
-
-    deluge_ptr_store(&specific_value->value, value);
-    deluge_check_access_int(rets, sizeof(bool), &origin);
-    *(bool*)deluge_ptr_ptr(rets) = true;
-}
-
-void deluded_f_zthread_getspecific(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zthread_getspecific",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr thread_specific_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    DELUDED_DELETE_ARGS();
-
-    deluge_check_access_opaque(thread_specific_ptr, &thread_specific_type, &origin);
-
-    thread_specific* specific = (thread_specific*)deluge_ptr_ptr(thread_specific_ptr);
-    thread_specific_value* value = pthread_getspecific(specific->key);
-    if (!value)
-        return;
-
-    if (value->version != value->parent->version)
-        return;
-
-    deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_load(&value->value);
-}
-
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
@@ -4857,6 +4696,41 @@ void deluded_f_zthread_get_id(DELUDED_SIGNATURE)
     deluge_check_access_opaque(thread_ptr, &zthread_type, &origin);
     zthread* thread = (zthread*)deluge_ptr_ptr(thread_ptr);
     *(unsigned*)deluge_ptr_ptr(rets) = thread->id;
+}
+
+void deluded_f_zthread_get_cookie(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_get_cookie",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr thread_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_check_access_opaque(thread_ptr, &zthread_type, &origin);
+    zthread* thread = (zthread*)deluge_ptr_ptr(thread_ptr);
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_load(&thread->cookie_ptr);
+}
+
+void deluded_f_zthread_set_self_cookie(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zthread_set_self_cookie",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr cookie_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    zthread* thread = pthread_getspecific(zthread_key);
+    PAS_ASSERT(thread);
+    deluge_ptr_store(&thread->cookie_ptr, cookie_ptr);
 }
 
 static void* start_thread(void* arg)
@@ -4910,6 +4784,9 @@ void deluded_f_zthread_create(DELUDED_SIGNATURE)
     PAS_ASSERT(!thread->is_joining);
     PAS_ASSERT(!thread->is_running);
     PAS_ASSERT(should_destroy_thread(thread));
+    PAS_ASSERT(deluge_ptr_is_totally_null(thread->arg_ptr));
+    PAS_ASSERT(deluge_ptr_is_totally_null(thread->result_ptr));
+    PAS_ASSERT(deluge_ptr_is_totally_null(thread->cookie_ptr));
     thread->callback = (void (*)(DELUDED_SIGNATURE))deluge_ptr_ptr(callback_ptr);
     deluge_ptr_store(&thread->arg_ptr, arg_ptr);
     thread->is_running = true;

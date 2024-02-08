@@ -250,9 +250,8 @@ extern unsigned deluge_type_array_capacity;
 #define DELUGE_TYPE_TYPE_INDEX                 5u
 #define DELUGE_MUSL_PASSWD_TYPE_INDEX          6u
 #define DELUGE_MUSL_SIGACTION_TYPE_INDEX       7u
-#define DELUGE_THREAD_SPECIFIC_TYPE_INDEX      8u
-#define DELUGE_THREAD_TYPE_INDEX               9u
-#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         10u
+#define DELUGE_THREAD_TYPE_INDEX               8u
+#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         9u
 #define DELUGE_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define DELUGE_TYPE_MAX_INDEX                  0x3fffffffu
 #define DELUGE_TYPE_INDEX_MASK                 0x3fffffffu
@@ -586,6 +585,17 @@ static inline deluge_ptr deluge_ptr_with_ptr(deluge_ptr ptr, void* new_ptr)
 static inline deluge_ptr deluge_ptr_with_offset(deluge_ptr ptr, uintptr_t offset)
 {
     return deluge_ptr_with_ptr(ptr, (char*)deluge_ptr_ptr(ptr) + offset);
+}
+
+static inline bool deluge_ptr_is_totally_equal(deluge_ptr a, deluge_ptr b)
+{
+    return a.sidecar == b.sidecar
+        && a.capability == b.capability;
+}
+
+static inline bool deluge_ptr_is_totally_null(deluge_ptr ptr)
+{
+    return deluge_ptr_is_totally_equal(ptr, deluge_ptr_forge_invalid(NULL));
 }
 
 static inline deluge_ptr deluge_ptr_load(deluge_ptr* ptr)
@@ -1105,6 +1115,8 @@ void deluded_f_zstrchr(DELUDED_SIGNATURE);
 void deluded_f_zisdigit(DELUDED_SIGNATURE);
 
 void deluded_f_zfence(DELUDED_SIGNATURE);
+void deluded_f_zstore_store_fence(DELUDED_SIGNATURE);
+void deluded_f_zcompiler_fence(DELUDED_SIGNATURE);
 void deluded_f_zunfenced_weak_cas_ptr(DELUDED_SIGNATURE);
 void deluded_f_zweak_cas_ptr(DELUDED_SIGNATURE);
 void deluded_f_zunfenced_strong_cas_ptr(DELUDED_SIGNATURE);
@@ -1142,12 +1154,10 @@ void deluded_f_zsys_pipe(DELUDED_SIGNATURE);
 void deluded_f_zsys_select(DELUDED_SIGNATURE);
 void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE);
 
-void deluded_f_zthread_key_create(DELUDED_SIGNATURE);
-void deluded_f_zthread_key_delete(DELUDED_SIGNATURE);
-void deluded_f_zthread_setspecific(DELUDED_SIGNATURE);
-void deluded_f_zthread_getspecific(DELUDED_SIGNATURE);
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_get_id(DELUDED_SIGNATURE);
+void deluded_f_zthread_get_cookie(DELUDED_SIGNATURE);
+void deluded_f_zthread_set_self_cookie(DELUDED_SIGNATURE);
 void deluded_f_zthread_create(DELUDED_SIGNATURE);
 void deluded_f_zthread_join(DELUDED_SIGNATURE);
 void deluded_f_zthread_detach(DELUDED_SIGNATURE);

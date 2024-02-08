@@ -1,5 +1,10 @@
 #include <stdfil.h>
 
+_Bool zinbounds(void* ptr)
+{
+    return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
+}
+
 typedef struct {
     const int* address;
     int expected_value;
@@ -28,4 +33,9 @@ _Bool zcompare_and_park(const int* address, int expected_value, double absolute_
 unsigned zthread_self_id(void)
 {
     return zthread_get_id(zthread_self());
+}
+
+void* zthread_self_cookie(void)
+{
+    return zthread_get_cookie(zthread_self());
 }
