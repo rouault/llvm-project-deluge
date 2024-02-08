@@ -2826,8 +2826,11 @@ deluge_global_initialization_context* deluge_global_initialization_context_creat
         return parent;
     }
 
+    deluge_global_initialization_lock_lock();
     result = (deluge_global_initialization_context*)
         deluge_allocate_utility(sizeof(deluge_global_initialization_context));
+    if (verbose)
+        pas_log("new context at %p\n", result);
     result->ref_count = 1;
     pas_ptr_hash_set_construct(&result->seen);
     result->entries = (deluge_initialization_entry*)
@@ -2845,7 +2848,24 @@ bool deluge_global_initialization_context_add(
     
     pas_allocation_config allocation_config;
 
-    PAS_ASSERT(!*deluded_gptr);
+    deluge_global_initialization_lock_assert_held();
+
+    if (verbose)
+        pas_log("dealing with deluded_gptr = %p\n", deluded_gptr);
+    
+    if (*deluded_gptr) {
+        /* This case happens if there is a race like this:
+           
+           Thread #1: runs global fast path for g_foo, but it's NULL, so it starts to create its
+                      context, but doesn't get as far as locking the lock.
+           Thread #2: runs global fast path for g_foo, it's NULL, so it runs the initializer, including
+                      locking/unlocking the initialization lock and all that.
+           Thread #1: finally gets the lock and calls this function, and we find that the global is
+                      already initialized. */
+        if (verbose)
+            pas_log("was already initialized\n");
+        return false;
+    }
 
     initialize_utility_allocation_config(&allocation_config);
 
@@ -2886,12 +2906,17 @@ bool deluge_global_initialization_context_add(
 
 void deluge_global_initialization_context_destroy(deluge_global_initialization_context* context)
 {
+    static const bool verbose = false;
+    
     size_t index;
     pas_allocation_config allocation_config;
     
     if (--context->ref_count)
         return;
 
+    if (verbose)
+        pas_log("destroying/comitting context at %p\n", context);
+    
     pas_store_store_fence();
 
     for (index = context->num_entries; index--;) {
@@ -2905,6 +2930,7 @@ void deluge_global_initialization_context_destroy(deluge_global_initialization_c
     deluge_deallocate(context->entries);
     pas_ptr_hash_set_destruct(&context->seen, &allocation_config);
     deluge_deallocate(context);
+    deluge_global_initialization_lock_unlock();
 }
 
 void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca)

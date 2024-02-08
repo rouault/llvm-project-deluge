@@ -767,6 +767,7 @@ static dequeue_result unpark_dequeue_callback(thread_data* element, void* arg)
     unpark_data* data = (unpark_data*)arg;
     if (element->address != data->address)
         return dequeue_ignore;
+    thread_data_ref(element);
     ptr_array_add(&data->array, element);
     PAS_ASSERT(data->array.size <= data->count);
     if (data->array.size == data->count)

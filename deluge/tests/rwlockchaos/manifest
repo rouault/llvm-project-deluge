@@ -1,0 +1,6 @@
+return:
+  success
+output-includes:
+  - "count = 20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000"
+  - "write_acquisitions = 10000, 10000"
+
