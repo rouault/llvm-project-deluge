@@ -318,8 +318,8 @@ ztype* zgettype(void* ptr);
 
 /* Get the pointer's array length, which is the distance to upper in units of the ptr's static type. */
 #define zlength(ptr) ({ \
-        __typeof__(ptr) __d_ptr = (ptr); \
-        (__typeof__(ptr))zgetupper(__d_ptr) - __d_ptr; \
+        __typeof__(ptr + 0) __d_ptr = (ptr); \
+        (__typeof__(ptr + 0))zgetupper(__d_ptr) - __d_ptr; \
     })
 
 /* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
