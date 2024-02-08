@@ -102,9 +102,6 @@ struct PAS_ALIGNED(DELUGE_WORD_SIZE) deluge_ptr {
 };
 
 enum deluge_capability_kind {
-    /* The ptr is below lower, so if the sidecar is invalid, then just create a boxed int. */
-    deluge_capability_below_lower,
-
     /* The ptr is exactly at lower, so ignore the sidecar. This avoids capability widening across
        allocation boundaries. */
     deluge_capability_at_lower,
@@ -115,7 +112,11 @@ enum deluge_capability_kind {
 
     /* The ptr is inside the base of a flex. The capability's upper refers to the upper bounds of
        the flex base. This has a special sidecar (the flex_upper sidecar). */
-    deluge_capability_flex_base
+    deluge_capability_flex_base,
+
+    /* The ptr is out of bounds. The capability does not have an upper or type. This has a special
+       sidecar (the oob_capability sidecar). */
+    deluge_capability_oob,
 };
 
 typedef enum deluge_capability_kind deluge_capability_kind;
@@ -126,7 +127,12 @@ enum deluge_sidecar_kind {
 
     /* Sidecar used for flex_base capabilities, which tells the true upper bounds of the flex
        allocation. */
-    deluge_sidecar_flex_upper
+    deluge_sidecar_flex_upper,
+
+    /* Sidecar used for oob capabilities, which contains the full capability but not the pointer.
+       I.e. the sidecar has lower, upper, and type. In this case, the sidecar's lower/upper/type
+       are combined with the capability's ptr. If that fails, then the ptr becomes a boxed int. */
+    deluge_sidecar_oob_capability
 };
 
 typedef enum deluge_sidecar_kind deluge_sidecar_kind;
@@ -371,9 +377,20 @@ static inline unsigned deluge_ptr_capability_type_index(deluge_ptr ptr)
     return (unsigned)(ptr.capability >> (pas_uint128)96) & DELUGE_TYPE_INDEX_MASK;
 }
 
+static inline deluge_capability_kind deluge_ptr_capability_kind(deluge_ptr ptr)
+{
+    return (deluge_capability_kind)(ptr.capability >> (pas_uint128)126);
+}
+
 static inline bool deluge_ptr_is_boxed_int(deluge_ptr ptr)
 {
-    return !deluge_ptr_capability_type_index(ptr);
+    return !deluge_ptr_capability_type_index(ptr)
+        && deluge_ptr_capability_kind(ptr) != deluge_capability_oob;
+}
+
+static inline bool deluge_ptr_capability_has_things(deluge_ptr ptr)
+{
+    return deluge_ptr_capability_type_index(ptr);
 }
 
 static inline void* deluge_ptr_ptr(deluge_ptr ptr)
@@ -387,8 +404,7 @@ void* deluge_ptr_ptr_impl(pas_uint128 sidecar, pas_uint128 capability);
 
 static inline void* deluge_ptr_capability_upper(deluge_ptr ptr)
 {
-    if (deluge_ptr_is_boxed_int(ptr))
-        return NULL;
+    PAS_TESTING_ASSERT(deluge_ptr_capability_has_things(ptr));
     return (void*)((uintptr_t)(ptr.capability >> (pas_uint128)48) & PAS_ADDRESS_MASK);
 }
 
@@ -398,14 +414,9 @@ static inline const deluge_type* deluge_ptr_capability_type(deluge_ptr ptr)
     return deluge_type_lookup(deluge_ptr_capability_type_index(ptr));
 }
 
-static inline deluge_capability_kind deluge_ptr_capability_kind(deluge_ptr ptr)
-{
-    return (deluge_capability_kind)(ptr.capability >> (pas_uint128)126);
-}
-
 /* Sidecar methods aren't meant to be called directly; they're here so that we can implement
    deluge_ptr_lower. */
-static inline void* deluge_ptr_sidecar_ptr(deluge_ptr ptr)
+static inline void* deluge_ptr_sidecar_ptr_or_upper(deluge_ptr ptr)
 {
     return (void*)((uintptr_t)ptr.sidecar & PAS_ADDRESS_MASK);
 }
@@ -430,15 +441,26 @@ static inline deluge_sidecar_kind deluge_ptr_sidecar_kind(deluge_ptr ptr)
     return (deluge_sidecar_kind)(ptr.sidecar >> (pas_uint128)126);
 }
 
+static inline void* deluge_ptr_sidecar_ptr(deluge_ptr ptr)
+{
+    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_lower
+                       || deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_flex_upper);
+    return deluge_ptr_sidecar_ptr_or_upper(ptr);
+}
+
 static inline void* deluge_ptr_sidecar_lower(deluge_ptr ptr)
 {
-    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_lower);
+    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_lower
+                       || deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_oob_capability);
     return deluge_ptr_sidecar_lower_or_upper(ptr);
 }
 
 static inline void* deluge_ptr_sidecar_upper(deluge_ptr ptr)
 {
-    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_flex_upper);
+    PAS_TESTING_ASSERT(deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_flex_upper
+                       || deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_oob_capability);
+    if (deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_oob_capability)
+        return deluge_ptr_sidecar_ptr_or_upper(ptr);
     return deluge_ptr_sidecar_lower_or_upper(ptr);
 }
 
@@ -453,12 +475,9 @@ static inline bool deluge_ptr_sidecar_is_relevant(deluge_ptr ptr)
     const deluge_type* sidecar_type;
     if (deluge_ptr_is_boxed_int(ptr))
         return false;
-    if (deluge_ptr_sidecar_ptr(ptr) != deluge_ptr_ptr(ptr))
-        return false;
     switch (deluge_ptr_capability_kind(ptr)) {
     case deluge_capability_at_lower:
         return false;
-    case deluge_capability_below_lower:
     case deluge_capability_in_array:
         if (deluge_ptr_sidecar_kind(ptr) != deluge_sidecar_lower)
             return false;
@@ -467,7 +486,11 @@ static inline bool deluge_ptr_sidecar_is_relevant(deluge_ptr ptr)
         if (deluge_ptr_sidecar_kind(ptr) != deluge_sidecar_flex_upper)
             return false;
         break;
+    case deluge_capability_oob:
+        return deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_oob_capability;
     }
+    if (deluge_ptr_sidecar_ptr(ptr) != deluge_ptr_ptr(ptr))
+        return false;
     capability_type = deluge_ptr_capability_type(ptr);
     sidecar_type = deluge_ptr_sidecar_type(ptr);
     if (sidecar_type == capability_type)
@@ -491,13 +514,26 @@ static inline void* deluge_ptr_upper(deluge_ptr ptr)
     if (deluge_ptr_is_boxed_int(ptr))
         return NULL;
 
-    if (deluge_ptr_capability_kind(ptr) != deluge_capability_flex_base)
+    switch (deluge_ptr_capability_kind(ptr)) {
+    case deluge_capability_at_lower:
+    case deluge_capability_in_array:
         return deluge_ptr_capability_upper(ptr);
 
-    if (!deluge_ptr_sidecar_is_relevant(ptr))
-        return deluge_ptr_capability_upper(ptr);
+    case deluge_capability_flex_base:
+        if (!deluge_ptr_sidecar_is_relevant(ptr))
+            return deluge_ptr_capability_upper(ptr);
+        
+        return deluge_ptr_sidecar_upper(ptr);
 
-    return deluge_ptr_sidecar_upper(ptr);
+    case deluge_capability_oob:
+        if (deluge_ptr_sidecar_kind(ptr) == deluge_sidecar_oob_capability)
+            return deluge_ptr_sidecar_upper(ptr);
+        
+        return NULL;
+    }
+
+    PAS_ASSERT(!"Should not be reached");
+    return NULL;
 }
 
 static inline void* deluge_ptr_lower(deluge_ptr ptr)
@@ -510,7 +546,8 @@ static inline void* deluge_ptr_lower(deluge_ptr ptr)
     if (deluge_ptr_is_boxed_int(ptr))
         return NULL;
 
-    PAS_TESTING_ASSERT(deluge_ptr_capability_type(ptr));
+    PAS_TESTING_ASSERT(deluge_ptr_capability_type(ptr)
+                       || deluge_ptr_capability_kind(ptr) == deluge_capability_oob);
 
     if (verbose)
         pas_log("capability kind = %u\n", (unsigned)deluge_ptr_capability_kind(ptr));
@@ -524,8 +561,11 @@ static inline void* deluge_ptr_lower(deluge_ptr ptr)
         return deluge_ptr_sidecar_lower(ptr);
     }
 
-    if (deluge_ptr_capability_kind(ptr) == deluge_capability_below_lower
-        || deluge_ptr_ptr(ptr) >= deluge_ptr_upper(ptr))
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_oob)
+        return NULL;
+
+    PAS_TESTING_ASSERT(deluge_ptr_ptr(ptr) <= deluge_ptr_upper(ptr));
+    if (deluge_ptr_ptr(ptr) >= deluge_ptr_upper(ptr))
         return deluge_ptr_upper(ptr);
 
     distance_to_upper = (char*)deluge_ptr_capability_upper(ptr) - (char*)deluge_ptr_ptr(ptr);
@@ -536,6 +576,9 @@ static inline void* deluge_ptr_lower(deluge_ptr ptr)
         PAS_TESTING_ASSERT(distance_to_upper < deluge_ptr_capability_type(ptr)->size);
     }
     distance_to_upper_of_element = distance_to_upper % deluge_ptr_type(ptr)->size;
+    if (!distance_to_upper_of_element)
+        return deluge_ptr_ptr(ptr);
+    
     return (char*)deluge_ptr_ptr(ptr)
         + distance_to_upper_of_element - deluge_ptr_capability_type(ptr)->size;
 }
@@ -1125,6 +1168,8 @@ void deluded_f_zunfenced_xchg_ptr(DELUDED_SIGNATURE);
 void deluded_f_zxchg_ptr(DELUDED_SIGNATURE);
 
 void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE);
+void deluded_f_zborkedptr(DELUDED_SIGNATURE);
+void deluded_f_zvalidate_ptr(DELUDED_SIGNATURE);
 
 /* Amusingly, the order of these functions tell the story of me porting musl to deluge. */
 void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE);

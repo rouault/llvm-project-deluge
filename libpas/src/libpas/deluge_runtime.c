@@ -1972,6 +1972,11 @@ void deluge_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
         pas_log("\n");
     }
 
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_oob) {
+        DELUGE_ASSERT(!deluge_ptr_capability_type_index(ptr), origin);
+        DELUGE_ASSERT(!deluge_ptr_capability_has_things(ptr), origin);
+    }
+
     void* ptr_ptr = deluge_ptr_ptr(ptr);
     void* lower = deluge_ptr_lower(ptr);
     void* borked_lower = deluge_ptr_lower(borked_ptr);
@@ -1981,11 +1986,19 @@ void deluge_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
 
     if (!lower)
         DELUGE_ASSERT(!borked_lower, origin);
-    DELUGE_ASSERT(borked_lower >= lower, origin);
-    DELUGE_ASSERT(borked_upper <= upper, origin);
+    if (ptr_ptr < lower || ptr_ptr > upper) {
+        DELUGE_ASSERT(deluge_ptr_capability_kind(ptr) == deluge_capability_oob
+                      || deluge_ptr_is_boxed_int(ptr), origin);
+        DELUGE_ASSERT(!borked_lower, origin);
+        DELUGE_ASSERT(!borked_upper, origin);
+    } else {
+        DELUGE_ASSERT(deluge_ptr_capability_kind(ptr) != deluge_capability_oob, origin);
+        DELUGE_ASSERT(borked_lower >= lower, origin);
+        DELUGE_ASSERT(borked_upper <= upper, origin);
+    }
     if (deluge_ptr_capability_kind(ptr) == deluge_capability_flex_base)
         DELUGE_ASSERT(borked_lower == lower, origin);
-    else
+    else if (deluge_ptr_capability_kind(ptr) != deluge_capability_oob)
         DELUGE_ASSERT(borked_upper == upper, origin);
     
     if (!type) {
@@ -2018,10 +2031,14 @@ void deluge_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
             }
         }
     }
-    DELUGE_ASSERT(deluge_ptr_type(borked_ptr) == expected_borked_type, origin);
+    if (deluge_ptr_capability_kind(ptr) == deluge_capability_oob)
+        DELUGE_ASSERT(!deluge_ptr_type(borked_ptr), origin);
+    else
+        DELUGE_ASSERT(deluge_ptr_type(borked_ptr) == expected_borked_type, origin);
     if (!type->num_words && lower != upper) {
         DELUGE_ASSERT((char*)upper == (char*)lower + 1, origin);
-        DELUGE_ASSERT((char*)upper == (char*)borked_lower + 1 || upper == borked_lower, origin);
+        if (deluge_ptr_capability_kind(ptr) != deluge_capability_oob)
+            DELUGE_ASSERT((char*)upper == (char*)borked_lower + 1 || upper == borked_lower, origin);
     }
 
     deluge_validate_type(type, origin);
@@ -2041,8 +2058,10 @@ deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_ty
         result.capability = (pas_uint128)(uintptr_t)ptr;
         result.sidecar = 0;
     } else {
-        const deluge_type* capability_type;
+        unsigned capability_type_index;
+        unsigned type_index;
         void* sidecar_lower_or_upper;
+        void* sidecar_ptr_or_upper;
         void* capability_upper;
         deluge_capability_kind capability_kind;
         deluge_sidecar_kind sidecar_kind;
@@ -2051,37 +2070,45 @@ deluge_ptr deluge_ptr_forge(void* ptr, void* lower, void* upper, const deluge_ty
         if (verbose)
             pas_log("type = %p, index = %u\n", type, type->index);
         PAS_TESTING_ASSERT(deluge_type_lookup(type->index) == type);
-        if (ptr < lower)
-            capability_kind = deluge_capability_below_lower;
-        else if (ptr == lower)
-            capability_kind = deluge_capability_at_lower;
-        else
-            capability_kind = deluge_capability_in_array;
-        sidecar_kind = deluge_sidecar_lower;
-        capability_type = type;
-        sidecar_lower_or_upper = lower;
-        capability_upper = upper;
-        if (type->num_words && type->u.trailing_array && ptr != lower) {
-            if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
-                capability_type = type->u.trailing_array;
-            else {
-                PAS_TESTING_ASSERT(ptr > lower && (char*)ptr - (char*)lower < (ptrdiff_t)type->size);
-                capability_kind = deluge_capability_flex_base;
-                sidecar_kind = deluge_sidecar_flex_upper;
-                sidecar_lower_or_upper = upper;
-                capability_upper = (char*)lower + type->size;
+        type_index = type->index;
+        if (ptr >= lower && ptr <= upper) {
+            if (ptr == lower)
+                capability_kind = deluge_capability_at_lower;
+            else
+                capability_kind = deluge_capability_in_array;
+            sidecar_kind = deluge_sidecar_lower;
+            capability_type_index = type_index;
+            sidecar_lower_or_upper = lower;
+            sidecar_ptr_or_upper = ptr;
+            capability_upper = upper;
+            if (type->num_words && type->u.trailing_array && ptr != lower) {
+                if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
+                    capability_type_index = type->u.trailing_array->index;
+                else {
+                    PAS_TESTING_ASSERT(ptr > lower && (char*)ptr - (char*)lower < (ptrdiff_t)type->size);
+                    capability_kind = deluge_capability_flex_base;
+                    sidecar_kind = deluge_sidecar_flex_upper;
+                    sidecar_lower_or_upper = upper;
+                    capability_upper = (char*)lower + type->size;
+                }
             }
+        } else {
+            capability_kind = deluge_capability_oob;
+            sidecar_kind = deluge_sidecar_oob_capability;
+            capability_upper = NULL;
+            capability_type_index = 0;
+            sidecar_lower_or_upper = lower;
+            sidecar_ptr_or_upper = upper;
         }
-        PAS_TESTING_ASSERT(deluge_type_lookup(capability_type->index) == capability_type);
         result.capability =
             (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
             ((pas_uint128)((uintptr_t)capability_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
-            ((pas_uint128)capability_type->index << (pas_uint128)96) |
+            ((pas_uint128)capability_type_index << (pas_uint128)96) |
             ((pas_uint128)capability_kind << (pas_uint128)126);
         result.sidecar =
-            (pas_uint128)((uintptr_t)ptr & PAS_ADDRESS_MASK) |
+            (pas_uint128)((uintptr_t)sidecar_ptr_or_upper & PAS_ADDRESS_MASK) |
             ((pas_uint128)((uintptr_t)sidecar_lower_or_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
-            ((pas_uint128)type->index << (pas_uint128)96) |
+            ((pas_uint128)type_index << (pas_uint128)96) |
             ((pas_uint128)sidecar_kind << (pas_uint128)126);
     }
     PAS_TESTING_ASSERT(deluge_ptr_ptr(result) == ptr);
@@ -3350,6 +3377,43 @@ void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE)
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(bool), &origin);
     *(bool*)deluge_ptr_ptr(rets) = !!PAS_ENABLE_TESTING;
+}
+
+void deluded_f_zborkedptr(DELUDED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zborkedptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr sidecar_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr capability_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_ptr(rets, &origin);
+    deluge_ptr result = deluge_ptr_create(sidecar_ptr.sidecar, capability_ptr.capability);
+    if (verbose)
+        pas_log("sidecar = %s, capability = %s, result = %s\n", deluge_ptr_to_new_string(sidecar_ptr), deluge_ptr_to_new_string(capability_ptr), deluge_ptr_to_new_string(result));
+    *(deluge_ptr*)deluge_ptr_ptr(rets) = result;
+}
+
+void deluded_f_zvalidate_ptr(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zvalidate_ptr",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_validate_ptr(ptr, &origin);
 }
 
 static void (*deluded_errno_handler)(DELUDED_SIGNATURE);
