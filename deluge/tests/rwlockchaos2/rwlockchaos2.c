@@ -6,10 +6,6 @@
 #define NTHREADS 10
 #define REPEAT 10000
 
-typedef struct {
-    const char* str;
-} stuff;
-
 static pthread_rwlock_t lock;
 static unsigned count;
 
