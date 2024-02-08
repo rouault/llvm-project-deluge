@@ -5027,8 +5027,8 @@ static void zpark_if_before_sleep_callback(void* arg)
     deluge_ptr* args = deluge_allocate_one(deluge_get_heap(&deluge_one_ptr_type));
     deluge_ptr_store(args, data->arg_ptr);
 
-    data->condition(args, args + 1, &deluge_one_ptr_type,
-                    return_buffer, return_buffer + 2, &deluge_int_type);
+    data->before_sleep(args, args + 1, &deluge_one_ptr_type,
+                       return_buffer, return_buffer + 2, &deluge_int_type);
 }
 
 void deluded_f_zpark_if(DELUDED_SIGNATURE)
