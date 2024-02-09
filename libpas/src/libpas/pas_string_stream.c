@@ -138,8 +138,9 @@ char* pas_string_stream_take_string(pas_string_stream* stream)
     
     if (stream->buffer == stream->inline_buffer) {
         result = stream->allocation_config.allocate(
-            stream->next, "pas_stream/taken_string", pas_object_allocation, stream->allocation_config.arg);
-        memcpy(result, stream->inline_buffer, stream->next);
+            stream->next + 1, "pas_stream/taken_string", pas_object_allocation,
+            stream->allocation_config.arg);
+        memcpy(result, stream->inline_buffer, stream->next + 1);
         return result;
     }
 

@@ -989,7 +989,7 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
 
     if ((b_size % DELUGE_WORD_SIZE)) {
         check_int_slice_range(b, pas_range_create(0, b_size), origin);
-        b_size = pas_round_up_to_power_of_2(b_size, 8);
+        b_size = pas_round_up_to_power_of_2(b_size, DELUGE_WORD_SIZE);
     }
 
     table = &get_type_tables()->cat_table;
