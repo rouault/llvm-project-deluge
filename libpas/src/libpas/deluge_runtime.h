@@ -1198,6 +1198,9 @@ void deluded_f_zsys_isatty(DELUDED_SIGNATURE);
 void deluded_f_zsys_pipe(DELUDED_SIGNATURE);
 void deluded_f_zsys_select(DELUDED_SIGNATURE);
 void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE);
+void deluded_f_zsys_socket(DELUDED_SIGNATURE);
+void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE);
+void deluded_f_zsys_bind(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_get_id(DELUDED_SIGNATURE);

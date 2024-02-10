@@ -23,10 +23,7 @@ static void* thread_main(void* arg)
         foo* f = zalloc(foo, 1);
         f->value = i;
         for (;;) {
-            foo* h = head; /* they see me racin'
-                              they hatin'
-                              patrollin' and tryna catch me racin' dirty
-                              tryna catch me racin' dirty... */
+            foo* h = head; 
             f->next = h;
             if (zweak_cas_ptr((void**)&head, h, f))
                 break;

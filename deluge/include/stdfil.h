@@ -462,72 +462,60 @@ void zcompiler_fence(void);
 
    But pointers are 32 bytes, you say! How can they be atomic, you say! What the fuck is going on!
 
-   Deluge pointers comprise a sidecar, which is optional, and a capability, which is the source of
-   truth. A missing sidecar causes the pointer's lower bound to snap up to the pointer itself.
-   Anytime that a pointer has a sidecar that doesn't match the capability (points at the wrong
-   place or has the wrong type), then the sidecar is ignored, as if it wasn't there.
+   Deluge pointers comprise a sidecar and a capability. The capability always stores the pointer
+   itself and may store other information, too. The sidecar stores additional information, and may
+   also store the pointer, or not. The system is complex, but is arranged so that:
    
-   Every possible outcome is memory-safe under Deluge Bounded P^I rules. But, some races on
-   pointers will trap in Deluge even though they would have worked in Legacy C.
-   
-   Atomic ops on pointers always just clear the sidecar.
-   
-   Pointer stores and loads will store and load the sidecar, but races may cause the sidecar to be
-   mismatched and treated as missing.
-   
-   Both sidecar and capability are always accessed using 128-bit atomics.
-   
-   The result:
-   
-   - Non-racing pointer loads and stores always get a valid sidecar, so pointers loaded sans races
-     always know their full lower bound, so you can subtract stuff from them and dereference them
-     so long as you stay within those bounds.
-   
-   - Racing pointer loads and stores are likely to lose their sidecar. Pointers loaded under races
-     still always know their upper bound and where they point. They also know the type of the
-     memory between where they point and their upper bound. But, the lower bound of a pointer
-     loaded under race will sometimes be higher than the pointer that was originally stored. So,
-     subtracting from pointers loaded under races, and then dereferencing those downward-traveling
-     pointers sometimes works and sometimes doesn't.
-   
-   - Pointers used for atomics are guaranteed to lose their sidecar, so their lower bound will
-     always snap up to where they point. Those pointers still know their full value and upper
-     bound.
-   
-   Pointers that lose their sidecar are still usable for most of what C programmers use pointers
-   for. Most of the time, you load a pointer so that you can add to it (for example to perform an
-   array or field access - both of which are additions under the hood). That always works, even
-   under races and atomics.
-   
-   You will notice the missing sidecar behavior if you race or CAS on a pointer that is used for
-   stuff like:
-   
-   - Downward-traveling iterator pointer. Say you want to write a lock-free or racy concurrent
-     iteration protocol based on pointers that you subtract from. That won't work in Deluge
-     unless you put a lock around it.
-   
-   - Some cases of intrusive structs. This one is funny. A missing sidecar means that the lower
-     bound is inferred from the capability's ptr, type, and upper. But Deluge requires that:
-
-         upper - lower = K * type->size
-
-     When recovering the sidecar, we keep upper unchanged, so the lower that we infer will often
-     be below the ptr - it'll be far enough below it so that the lower is on type boundary.
-
-     This means that an intrusive linked list can still be lock-free and racy! Linked list means
-     pointers, and pointers mean nontrivial type, and nontrivial type means that the type knows
-     the size. So, a pointer into the middle of a single object (not array) with pointers will
-     never seem to lose its sidecar, since the sidecar contains purely redundant information in
-     that case (the lower bound can always be inferred from the capability).
+   - If you ever get a sidecar from one pointer and a capability from another, then the resulting
+     mix - the "borked ptr" - offers no escape from memory safety. Instead, it might trap in cases
+     where a normal pointer wouldn't have.
      
-     However, intrusive pointers into integer-only structs won't work (the type is int in that
-     case, and int->size = 1). Also, intrusive pointers into arrays of structs with pointers
-     will appear to lose their sidecar in the sense that the pointer after race will no longer
-     know the accurate base of the array, but will instead approximate it as the base of
-     whatever array element you're pointing at.
-
-   In summary, Deluge's 32 byte wide pointers are Atomic Enough (TM) for most uses of pointers.
-   If you have code that wants to CAS pointers or race on them then go right ahead!
+   - If the capability corresponds to a pointer that points to the base of an allocation, then
+     the sidecar is always ignored, and so it doesn't matter if it matches or not. The full
+     ptr, lower, upper, type combo is encoded in the capability (since ptr = lower). So, racing
+     with pointers to the base of things always works!
+   
+   - If the sidecar and capability really did correspond to the same pointer - i.e. it's not
+     borked at all - and it wasn't to the base of the allocation, then the sidecar and capability
+     combine to give you a precise and sound ptr, lower, upper, type combo.
+   
+   - If the capability corresponds to an out-of-bounds pointer (ptr < lower and ptr > upper; that's
+     right, I said > not >=), then the borked ptr might just be a boxed int (i.e. it will think
+     it points at nothing and all access will trap).
+   
+   - If both the capability and the sidecar corresponded to an out-of-bounds pointer, then the
+     borked pointer will point wherever the capability claimed, but will have the capability
+     (lower bounds, upper bounds, and type) from the sidecar. So, all accesses are likely to trap.
+     Or, you could arithmetic your way in-bounds again, to a place you could have been pointing at
+     the normal way were it not for the race.
+   
+   - If the capability corresponds to a pointer to the inside of an object or array of objects,
+     but *not* to the base of a flex object, then a mismatched sidecar is guaranteed to result
+     in the borked ptr's lower bounds snapping up towards the ptr, subject to the
+     (upper - lower) = k * type->size rule. The upper bound and type are retained precisely. So,
+     pointing into the middle of an object with nontrivial type will result in the lower bound
+     snapping up to the base of that object, not the interior pointer. Snapping the lower bound
+     up is memory-safe but it might cause your program to trap if you wanted to subtract from
+     the pointer and then access it.
+   
+   - If the capability corresponds to a pointer to the inside of the base of a flex object,
+     then the borked ptr will forget the flex array's bounds (the upper bound will snap down as
+     if the flex had no array). Note that you have to point past the beginning of the flex, and
+     not into the flex's array, for borked ptrs to have this effect.
+   
+   How do you avoid getting borked ptrs? Don't race on pointers.
+   
+   But what if you want to race on pointers? It's cool! Just make sure it's in bounds, or better
+   yet, points at the base of something. Then borked ptrs will work just fine for you.
+   
+   Atomic ops always bork the ptr by storing 0 into the sidecar. This helps remind you what's
+   happening in your racy code, if that code also involves CASing and such, which it usually
+   does. But if you're racing so hard you don't even CAS, then you get to discover the borking
+   in a probabilistic sort of way.
+   
+   This means that atomic ops just require a 128-bit CAS and a 128-bit store (and the store
+   to the sidecar doesn't need any fancy ordering). Normal loads/stores of ptrs use 128-bit
+   atomic loads/stores.
 
    Eventually, I'll even fix the clang bugs and then you'll be able to just use whatever your
    favorite compiler builtin for CAS is, instead of this junk. And those builtins will have
@@ -618,6 +606,9 @@ int zsys_isatty(int fd);
 int zsys_pipe(int fds[2]);
 int zsys_select(int nfds, void* reafds, void* writefds, void* errorfds, void* timeout);
 void zsys_sched_yield(void);
+int zsys_socket(int domain, int type, int protocol);
+int zsys_setsockopt(int sockfd, int level, int optname, const void* optval, unsigned optlen);
+int zsys_bind(int sockfd, const void* addr, unsigned addrlen);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

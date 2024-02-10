@@ -33,6 +33,10 @@
 #include <pwd.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/un.h>
 
 const deluge_type_template deluge_int_type_template = {
     .size = 1,
@@ -4752,6 +4756,383 @@ void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE)
 {
     DELUDED_DELETE_ARGS();
     sched_yield();
+}
+
+static bool from_musl_domain(int musl_domain, int* result)
+{
+    switch (musl_domain) {
+    case 0:
+        *result = PF_UNSPEC;
+        return true;
+    case 1:
+        *result = PF_LOCAL;
+        return true;
+    case 2:
+        *result = PF_INET;
+        return true;
+    case 4:
+        *result = PF_IPX;
+        return true;
+    case 5:
+        *result = PF_APPLETALK;
+        return true;
+    case 10:
+        *result = PF_INET6;
+        return true;
+    case 12:
+        *result = PF_DECnet;
+        return true;
+    case 15:
+        *result = PF_KEY;
+        return true;
+    case 16:
+        *result = PF_ROUTE;
+        return true;
+    case 22:
+        *result = PF_SNA;
+        return true;
+    case 34:
+        *result = PF_ISDN;
+        return true;
+    case 40:
+        *result = PF_VSOCK;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool from_musl_socket_type(int musl_type, int* result)
+{
+    switch (musl_type) {
+    case 1:
+        *result = SOCK_STREAM;
+        return true;
+    case 2:
+        *result = SOCK_DGRAM;
+        return true;
+    case 3:
+        *result = SOCK_RAW;
+        return true;
+    case 4:
+        *result = SOCK_RDM;
+        return true;
+    case 5:
+        *result = SOCK_SEQPACKET;
+        return true;
+    default:
+        return false;
+    }
+}
+
+void deluded_f_zsys_socket(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_socket",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int musl_domain = deluge_ptr_get_next_int(&args, &origin);
+    int musl_type = deluge_ptr_get_next_int(&args, &origin);
+    int protocol = deluge_ptr_get_next_int(&args, &origin); /* these constants seem to align between
+                                                               Darwin and musl. */
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    int domain;
+    if (!from_musl_domain(musl_domain, &domain)) {
+        set_errno(EINVAL);
+        *(int*)deluge_ptr_ptr(rets) = -1;
+        return;
+    }
+    int type;
+    if (!from_musl_socket_type(musl_type, &type)) {
+        set_errno(EINVAL);
+        *(int*)deluge_ptr_ptr(rets) = -1;
+        return;
+    }
+    int result = socket(domain, type, protocol);
+    if (result < 0)
+        set_errno(errno);
+    *(int*)deluge_ptr_ptr(rets) = result;
+}
+
+/* The socket level is different from the protocol in that SOL_SOCKET can be passed, and oddly,
+   in Linux it shares the same constant as IPPROTO_ICMP. */
+static bool from_musl_socket_level(int musl_level, int* result)
+{
+    if (musl_level == 1)
+        *result = SOL_SOCKET;
+    else
+        *result = musl_level;
+    return true;
+}
+
+static bool from_musl_so_optname(int musl_optname, int* result)
+{
+    switch (musl_optname) {
+    case 2:
+        *result = SO_REUSEADDR;
+        return true;
+    case 7:
+        *result = SO_SNDBUF;
+        return true;
+    case 9:
+        *result = SO_KEEPALIVE;
+        return true;
+    case 20:
+        *result = SO_RCVTIMEO;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool from_musl_ipv6_optname(int musl_optname, int* result)
+{
+    switch (musl_optname) {
+    case 26:
+        *result = IPV6_V6ONLY;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool from_musl_tcp_optname(int musl_optname, int* result)
+{
+    switch (musl_optname) {
+    case 1:
+        *result = TCP_NODELAY;
+        return true;
+    case 4:
+        *result = TCP_KEEPALIVE; /* musl says KEEPIDLE, Darwin says KEEPALIVE. coooool. */
+        return true;
+    case 5:
+        *result = TCP_KEEPINTVL;
+        return true;
+    default:
+        return false;
+    }
+}
+
+void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_setsockopt",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    int musl_level = deluge_ptr_get_next_int(&args, &origin);
+    int musl_optname = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr optval_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    unsigned optlen = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    int level;
+    if (!from_musl_socket_level(musl_level, &level))
+        goto einval;
+    int optname;
+    /* for now, all of the possible arguments are primitives. */
+    deluge_check_access_int(optval_ptr, optlen, &origin);
+    /* and most of them make sense to pass through without conversion. */
+    void* optval = deluge_ptr_ptr(optval_ptr);
+    switch (level) {
+    case SOL_SOCKET:
+        if (!from_musl_so_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case SO_REUSEADDR:
+        case SO_KEEPALIVE:
+            if (optlen != sizeof(int))
+                goto einval;
+            break;
+        case SO_SNDBUF:
+            if (optlen != 4 && optlen != 8)
+                goto einval;
+            break;
+        case SO_RCVTIMEO: {
+            struct timeval* tv = alloca(sizeof(struct timeval));
+            struct musl_timeval* musl_tv = (struct musl_timeval*)optval;
+            optval = tv;
+            tv->tv_sec = musl_tv->tv_sec;
+            tv->tv_usec = musl_tv->tv_usec;
+            break;
+        }
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_TCP:
+        if (!from_musl_tcp_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case TCP_NODELAY:
+        case TCP_KEEPALIVE:
+        case TCP_KEEPINTVL:
+            if (optlen != sizeof(int))
+                goto einval;
+            break;
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_IPV6:
+        if (!from_musl_ipv6_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case IPV6_V6ONLY:
+            if (optlen != sizeof(int))
+                goto einval;
+            break;
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    default:
+        goto einval;
+    }
+    int result = setsockopt(sockfd, level, optname, optval, optlen);
+    if (result < 0)
+        set_errno(errno);
+    *(int*)deluge_ptr_ptr(rets) = result;
+    return;
+    
+enoprotoopt:
+    set_errno(ENOPROTOOPT);
+    *(int*)deluge_ptr_ptr(rets) = -1;
+    return;
+    
+einval:
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
+}
+
+struct musl_sockaddr {
+    uint16_t sa_family;
+    uint8_t sa_data[14];
+};
+
+struct musl_sockaddr_in {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t sin_zero[8];
+};
+
+struct musl_sockaddr_in6 {
+    uint16_t sin6_family;
+    uint16_t sin6_port;
+    uint32_t sin6_flowinfo;
+    uint32_t sin6_addr[4];
+    uint32_t sin6_scope_id;
+};
+
+struct musl_sockaddr_un {
+    uint16_t sun_family;
+    char sun_path[108];
+};
+
+static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_addrlen,
+                               struct sockaddr** addr, unsigned* addrlen)
+{
+    int family;
+    if (!from_musl_domain(musl_addr->sa_family, &family))
+        return false;
+    switch (family) {
+    case PF_INET: {
+        if (musl_addrlen < sizeof(struct musl_sockaddr_in))
+            return false;
+        struct musl_sockaddr_in* musl_addr_in = (struct musl_sockaddr_in*)musl_addr;
+        struct sockaddr_in* addr_in = (struct sockaddr_in*)
+            deluge_allocate_utility(sizeof(struct sockaddr_in));
+        pas_zero_memory(addr_in, sizeof(struct sockaddr_in));
+        addr_in->sin_family = PF_INET;
+        addr_in->sin_port = musl_addr_in->sin_port;
+        addr_in->sin_addr.s_addr = musl_addr_in->sin_addr;
+        *addr = (struct sockaddr*)addr_in;
+        *addrlen = sizeof(struct sockaddr_in);
+        return true;
+    }
+    case PF_LOCAL: {
+        if (musl_addrlen < sizeof(struct musl_sockaddr_un))
+            return false;
+        struct musl_sockaddr_un* musl_addr_un = (struct musl_sockaddr_un*)musl_addr;
+        struct sockaddr_un* addr_un = (struct sockaddr_un*)
+            deluge_allocate_utility(sizeof(struct sockaddr_un));
+        pas_zero_memory(addr_un, sizeof(struct sockaddr_un));
+        addr_un->sun_family = PF_LOCAL;
+        PAS_ASSERT(sizeof(addr_un->sun_path) == sizeof(musl_addr_un->sun_path));
+        memcpy(addr_un->sun_path, musl_addr_un->sun_path, sizeof(musl_addr_un->sun_path));
+        *addr = (struct sockaddr*)addr_un;
+        *addrlen = sizeof(struct sockaddr_un);
+        return true;
+    }
+    case PF_INET6: {
+        if (musl_addrlen < sizeof(struct musl_sockaddr_in6))
+            return false;
+        struct musl_sockaddr_in6* musl_addr_in6 = (struct musl_sockaddr_in6*)musl_addr;
+        struct sockaddr_in6* addr_in6 = (struct sockaddr_in6*)
+            deluge_allocate_utility(sizeof(struct sockaddr_in6));
+        pas_zero_memory(addr_in6, sizeof(struct sockaddr_in6));
+        addr_in6->sin6_family = PF_INET;
+        addr_in6->sin6_port = musl_addr_in6->sin6_port;
+        addr_in6->sin6_flowinfo = musl_addr_in6->sin6_flowinfo;
+        PAS_ASSERT(sizeof(addr_in6->sin6_addr) == sizeof(musl_addr_in6->sin6_addr));
+        memcpy(&addr_in6->sin6_addr, &musl_addr_in6->sin6_addr, sizeof(musl_addr_in6->sin6_addr));
+        addr_in6->sin6_scope_id = musl_addr_in6->sin6_scope_id;
+        *addr = (struct sockaddr*)addr_in6;
+        *addrlen = sizeof(struct sockaddr_in6);
+        return true;
+    }
+    default:
+        *addr = NULL;
+        *addrlen = 0;
+        return false;
+    }
+}
+
+void deluded_f_zsys_bind(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_bind",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_addr_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    unsigned musl_addrlen = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+    if (musl_addrlen < sizeof(struct musl_sockaddr))
+        goto einval;
+    struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)deluge_ptr_ptr(musl_addr_ptr);
+    struct sockaddr* addr;
+    unsigned addrlen;
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+        goto einval;
+
+    int result = bind(sockfd, addr, addrlen);
+    if (result < 0)
+        set_errno(errno);
+
+    deluge_deallocate(addr);
+    *(int*)deluge_ptr_ptr(rets) = result;
+    return;
+    
+einval:
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
