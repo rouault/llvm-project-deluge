@@ -257,7 +257,8 @@ extern unsigned deluge_type_array_capacity;
 #define DELUGE_MUSL_PASSWD_TYPE_INDEX          6u
 #define DELUGE_MUSL_SIGACTION_TYPE_INDEX       7u
 #define DELUGE_THREAD_TYPE_INDEX               8u
-#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         9u
+#define DELUGE_MUSL_ADDRINFO_TYPE_INDEX        9u
+#define DELUGE_TYPE_ARRAY_INITIAL_SIZE         10u
 #define DELUGE_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define DELUGE_TYPE_MAX_INDEX                  0x3fffffffu
 #define DELUGE_TYPE_INDEX_MASK                 0x3fffffffu
@@ -1201,6 +1202,7 @@ void deluded_f_zsys_sched_yield(DELUDED_SIGNATURE);
 void deluded_f_zsys_socket(DELUDED_SIGNATURE);
 void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE);
 void deluded_f_zsys_bind(DELUDED_SIGNATURE);
+void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_get_id(DELUDED_SIGNATURE);

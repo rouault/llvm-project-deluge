@@ -37,6 +37,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/un.h>
+#include <netdb.h>
 
 const deluge_type_template deluge_int_type_template = {
     .size = 1,
@@ -392,6 +393,40 @@ static void zthread_destruct(void* zthread_arg)
 
 static pthread_key_t zthread_key;
 
+struct musl_addrinfo {
+    int ai_flags;
+    int ai_family;
+    int ai_socktype;
+    int ai_protocol;
+    unsigned ai_addrlen;
+    deluge_ptr ai_addr;
+    deluge_ptr ai_canonname;
+    deluge_ptr ai_next;
+};
+
+static const deluge_type musl_addrinfo_type = {
+    .index = DELUGE_MUSL_ADDRINFO_TYPE_INDEX,
+    .size = sizeof(struct musl_addrinfo),
+    .alignment = alignof(struct musl_addrinfo),
+    .num_words = sizeof(struct musl_addrinfo) / DELUGE_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        DELUGE_WORD_TYPE_INT, /* ai_flags, ai_family, ai_socktype, ai_protocol */
+        DELUGE_WORD_TYPE_INT, /* ai_adrlen */
+        DELUGE_WORD_TYPES_PTR, /* ai_addr */
+        DELUGE_WORD_TYPES_PTR, /* ai_canonname */
+        DELUGE_WORD_TYPES_PTR /* ai_next */
+    }
+};
+
+static pas_heap_ref musl_addrinfo_heap = {
+    .type = (const pas_heap_type*)&musl_addrinfo_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
 static void initialize_impl(void)
 {
     deluge_type_array = (const deluge_type**)deluge_allocate_utility(
@@ -408,6 +443,7 @@ static void initialize_impl(void)
     deluge_type_array[DELUGE_MUSL_PASSWD_TYPE_INDEX] = &musl_passwd_type;
     deluge_type_array[DELUGE_MUSL_SIGACTION_TYPE_INDEX] = &musl_sigaction_type;
     deluge_type_array[DELUGE_THREAD_TYPE_INDEX] = &zthread_type;
+    deluge_type_array[DELUGE_MUSL_ADDRINFO_TYPE_INDEX] = &musl_addrinfo_type;
     
     pthread_key_create(&type_tables_key, type_tables_destroy);
     pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
@@ -4802,6 +4838,50 @@ static bool from_musl_domain(int musl_domain, int* result)
     }
 }
 
+static bool to_musl_domain(int domain, int* result)
+{
+    switch (domain) {
+    case PF_UNSPEC:
+        *result = 0;
+        return true;
+    case PF_LOCAL:
+        *result = 1;
+        return true;
+    case PF_INET:
+        *result = 2;
+        return true;
+    case PF_IPX:
+        *result = 4;
+        return true;
+    case PF_APPLETALK:
+        *result = 5;
+        return true;
+    case PF_INET6:
+        *result = 10;
+        return true;
+    case PF_DECnet:
+        *result = 12;
+        return true;
+    case PF_KEY:
+        *result = 15;
+        return true;
+    case PF_ROUTE:
+        *result = 16;
+        return true;
+    case PF_SNA:
+        *result = 22;
+        return true;
+    case PF_ISDN:
+        *result = 34;
+        return true;
+    case PF_VSOCK:
+        *result = 40;
+        return true;
+    default:
+        return false;
+    }
+}
+
 static bool from_musl_socket_type(int musl_type, int* result)
 {
     switch (musl_type) {
@@ -4819,6 +4899,29 @@ static bool from_musl_socket_type(int musl_type, int* result)
         return true;
     case 5:
         *result = SOCK_SEQPACKET;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool to_musl_socket_type(int type, int* result)
+{
+    switch (type) {
+    case SOCK_STREAM:
+        *result = 1;
+        return true;
+    case SOCK_DGRAM:
+        *result = 2;
+        return true;
+    case SOCK_RAW:
+        *result = 3;
+        return true;
+    case SOCK_RDM:
+        *result = 4;
+        return true;
+    case SOCK_SEQPACKET:
+        *result = 5;
         return true;
     default:
         return false;
@@ -5042,6 +5145,8 @@ struct musl_sockaddr_un {
 static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_addrlen,
                                struct sockaddr** addr, unsigned* addrlen)
 {
+    static const bool verbose = false;
+    
     int family;
     if (!from_musl_domain(musl_addr->sa_family, &family))
         return false;
@@ -5053,9 +5158,15 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
         struct sockaddr_in* addr_in = (struct sockaddr_in*)
             deluge_allocate_utility(sizeof(struct sockaddr_in));
         pas_zero_memory(addr_in, sizeof(struct sockaddr_in));
+        if (verbose)
+            pas_log("inet!\n");
         addr_in->sin_family = PF_INET;
         addr_in->sin_port = musl_addr_in->sin_port;
+        if (verbose)
+            pas_log("port = %u\n", (unsigned)addr_in->sin_port);
         addr_in->sin_addr.s_addr = musl_addr_in->sin_addr;
+        if (verbose)
+            pas_log("ip = %u\n", (unsigned)addr_in->sin_addr.s_addr);
         *addr = (struct sockaddr*)addr_in;
         *addrlen = sizeof(struct sockaddr_in);
         return true;
@@ -5081,7 +5192,9 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
         struct sockaddr_in6* addr_in6 = (struct sockaddr_in6*)
             deluge_allocate_utility(sizeof(struct sockaddr_in6));
         pas_zero_memory(addr_in6, sizeof(struct sockaddr_in6));
-        addr_in6->sin6_family = PF_INET;
+        if (verbose)
+            pas_log("inet6!\n");
+        addr_in6->sin6_family = PF_INET6;
         addr_in6->sin6_port = musl_addr_in6->sin6_port;
         addr_in6->sin6_flowinfo = musl_addr_in6->sin6_flowinfo;
         PAS_ASSERT(sizeof(addr_in6->sin6_addr) == sizeof(musl_addr_in6->sin6_addr));
@@ -5098,8 +5211,83 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
     }
 }
 
+static bool ensure_musl_sockaddr(struct musl_sockaddr** musl_addr, unsigned* musl_addrlen,
+                                 unsigned desired_musl_addrlen)
+{
+    PAS_ASSERT(musl_addr);
+    PAS_ASSERT(musl_addrlen);
+    PAS_ASSERT(!!*musl_addr == !!*musl_addrlen);
+    
+    if (*musl_addr) {
+        if (*musl_addrlen >= desired_musl_addrlen) {
+            *musl_addrlen = desired_musl_addrlen;
+            return true;
+        }
+        return false;
+    }
+
+    *musl_addr = deluge_allocate_int(desired_musl_addrlen, 1);
+    *musl_addrlen = desired_musl_addrlen;
+    return true;
+}
+
+/* if *musl_addr is NULL, this will allocate one. if it's not NULL, then we try to populate it,
+   but only up to musl_addrlen. if that's not long enough we fail. */
+static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
+                             struct musl_sockaddr** musl_addr, unsigned* musl_addrlen)
+{
+    int musl_family;
+    if (!to_musl_domain(addr->sa_family, &musl_family))
+        return false;
+    switch (addr->sa_family) {
+    case PF_INET: {
+        PAS_ASSERT(addrlen >= sizeof(struct sockaddr_in));
+        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in)))
+            return false;
+        pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_in));
+        struct musl_sockaddr_in* musl_addr_in = (struct musl_sockaddr_in*)*musl_addr;
+        struct sockaddr_in* addr_in = (struct sockaddr_in*)addr;
+        musl_addr_in->sin_family = musl_family;
+        musl_addr_in->sin_port = addr_in->sin_port;
+        musl_addr_in->sin_addr = addr_in->sin_addr.s_addr;
+        return true;
+    }
+    case PF_LOCAL: {
+        PAS_ASSERT(addrlen >= sizeof(struct sockaddr_un));
+        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_un)))
+            return false;
+        pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_un));
+        struct musl_sockaddr_un* musl_addr_un = (struct musl_sockaddr_un*)*musl_addr;
+        struct sockaddr_un* addr_un = (struct sockaddr_un*)addr;
+        musl_addr_un->sun_family = musl_family;
+        PAS_ASSERT(sizeof(addr_un->sun_path) == sizeof(musl_addr_un->sun_path));
+        memcpy(musl_addr_un->sun_path, addr_un->sun_path, sizeof(musl_addr_un->sun_path));
+        return true;
+    }
+    case PF_INET6: {
+        PAS_ASSERT(addrlen >= sizeof(struct sockaddr_in6));
+        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in6)))
+            return false;
+        pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_in6));
+        struct musl_sockaddr_in6* musl_addr_in6 = (struct musl_sockaddr_in6*)*musl_addr;
+        struct sockaddr_in6* addr_in6 = (struct sockaddr_in6*)addr;
+        musl_addr_in6->sin6_family = musl_family;
+        musl_addr_in6->sin6_port = addr_in6->sin6_port;
+        musl_addr_in6->sin6_flowinfo = addr_in6->sin6_flowinfo;
+        PAS_ASSERT(sizeof(addr_in6->sin6_addr) == sizeof(musl_addr_in6->sin6_addr));
+        memcpy(&musl_addr_in6->sin6_addr, &addr_in6->sin6_addr, sizeof(musl_addr_in6->sin6_addr));
+        musl_addr_in6->sin6_scope_id = addr_in6->sin6_scope_id;
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 void deluded_f_zsys_bind(DELUDED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static deluge_origin origin = {
         .filename = __FILE__,
         .function = "zsys_bind",
@@ -5122,6 +5310,8 @@ void deluded_f_zsys_bind(DELUDED_SIGNATURE)
     if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
         goto einval;
 
+    if (verbose)
+        pas_log("calling bind!\n");
     int result = bind(sockfd, addr, addrlen);
     if (result < 0)
         set_errno(errno);
@@ -5133,6 +5323,157 @@ void deluded_f_zsys_bind(DELUDED_SIGNATURE)
 einval:
     set_errno(EINVAL);
     *(int*)deluge_ptr_ptr(rets) = -1;
+}
+
+static bool from_musl_ai_flags(int musl_flags, int* result)
+{
+    *result = 0;
+    if (check_and_clear(&musl_flags, 0x01))
+        *result |= AI_PASSIVE;
+    if (check_and_clear(&musl_flags, 0x02))
+        *result |= AI_CANONNAME;
+    if (check_and_clear(&musl_flags, 0x04))
+        *result |= AI_NUMERICHOST;
+    if (check_and_clear(&musl_flags, 0x08))
+        *result |= AI_V4MAPPED;
+    if (check_and_clear(&musl_flags, 0x10))
+        *result |= AI_ALL;
+    if (check_and_clear(&musl_flags, 0x20))
+        *result |= AI_ADDRCONFIG;
+    if (check_and_clear(&musl_flags, 0x400))
+        *result |= AI_NUMERICSERV;
+    return !musl_flags;
+}
+
+static bool to_musl_ai_flags(int flags, int* result)
+{
+    *result = 0;
+    if (check_and_clear(&flags, AI_PASSIVE))
+        *result |= 0x01;
+    if (check_and_clear(&flags, AI_CANONNAME))
+        *result |= 0x02;
+    if (check_and_clear(&flags, AI_NUMERICHOST))
+        *result |= 0x04;
+    if (check_and_clear(&flags, AI_V4MAPPED))
+        *result |= 0x08;
+    if (check_and_clear(&flags, AI_ALL))
+        *result |= 0x10;
+    if (check_and_clear(&flags, AI_ADDRCONFIG))
+        *result |= 0x20;
+    if (check_and_clear(&flags, AI_NUMERICSERV))
+        *result |= 0x400;
+    return !flags;
+}
+
+static int to_musl_eai(int eai)
+{
+    switch (eai) {
+    case 0:
+        return 0;
+    case EAI_BADFLAGS:
+        return -1;
+    case EAI_NONAME:
+        return -2;
+    case EAI_AGAIN:
+        return -3;
+    case EAI_FAIL:
+        return -4;
+    case EAI_NODATA:
+        return -5;
+    case EAI_FAMILY:
+        return -6;
+    case EAI_SOCKTYPE:
+        return -7;
+    case EAI_SERVICE:
+        return -8;
+    case EAI_MEMORY:
+        return -10;
+    case EAI_SYSTEM:
+        set_errno(errno);
+        return -11;
+    case EAI_OVERFLOW:
+        return -12;
+    default:
+        PAS_ASSERT(!"Unexpected error code from getaddrinfo");
+        return 0;
+    }
+}
+
+void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getaddrinfo",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    deluge_ptr node_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr service_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr hints_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr res_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    const char* node = deluge_check_and_get_str(node_ptr, &origin);
+    const char* service = deluge_check_and_get_str(service_ptr, &origin);
+    struct musl_addrinfo* musl_hints = deluge_ptr_ptr(hints_ptr);
+    if (musl_hints)
+        deluge_restrict(hints_ptr, 1, &musl_addrinfo_type, &origin);
+    deluge_check_access_ptr(res_ptr, &origin);
+    struct addrinfo hints;
+    pas_zero_memory(&hints, sizeof(hints));
+    if (!from_musl_ai_flags(musl_hints->ai_flags, &hints.ai_flags)) {
+        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_BADFLAGS);
+        return;
+    }
+    if (!from_musl_domain(musl_hints->ai_family, &hints.ai_family)) {
+        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_FAMILY);
+        return;
+    }
+    if (!from_musl_socket_type(musl_hints->ai_socktype, &hints.ai_socktype)) {
+        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SOCKTYPE);
+        return;
+    }
+    hints.ai_protocol = musl_hints->ai_protocol;
+    if (musl_hints->ai_addrlen
+        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_addr))
+        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_canonname))
+        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_next))) {
+        errno = EINVAL;
+        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SYSTEM);
+        return;
+    }
+    struct addrinfo* res = NULL;
+    int result;
+    result = getaddrinfo(node, service, &hints, &res);
+    if (result) {
+        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(result);
+        return;
+    }
+    deluge_ptr* addrinfo_ptr = (deluge_ptr*)deluge_ptr_ptr(res_ptr);
+    struct addrinfo* current;
+    for (current = res; current; current = current->ai_next) {
+        struct musl_addrinfo* musl_current = deluge_allocate_one(&musl_addrinfo_heap);
+        deluge_low_level_ptr_safe_bzero(musl_current, sizeof(struct musl_addrinfo));
+        deluge_ptr_store(
+            addrinfo_ptr,
+            deluge_ptr_forge_with_size(musl_current, sizeof(struct musl_addrinfo), &musl_addrinfo_type));
+        PAS_ASSERT(to_musl_ai_flags(current->ai_flags, &musl_current->ai_flags));
+        PAS_ASSERT(to_musl_domain(current->ai_family, &musl_current->ai_family));
+        PAS_ASSERT(to_musl_socket_type(current->ai_socktype, &musl_current->ai_socktype));
+        musl_current->ai_protocol = current->ai_protocol;
+        struct musl_sockaddr* musl_addr = NULL;
+        unsigned musl_addrlen = 0;
+        PAS_ASSERT(to_musl_sockaddr(current->ai_addr, current->ai_addrlen, &musl_addr, &musl_addrlen));
+        musl_current->ai_addrlen = musl_addrlen;
+        deluge_ptr_store(
+            &musl_current->ai_addr, deluge_ptr_forge_with_size(musl_addr, musl_addrlen, &deluge_int_type));
+        deluge_ptr_store(&musl_current->ai_canonname, deluge_strdup(current->ai_canonname));
+        addrinfo_ptr = &musl_current->ai_next;
+    }
+    deluge_ptr_store(addrinfo_ptr, deluge_ptr_forge_invalid(NULL));
+    freeaddrinfo(res);
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
