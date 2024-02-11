@@ -5423,26 +5423,28 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
     deluge_check_access_ptr(res_ptr, &origin);
     struct addrinfo hints;
     pas_zero_memory(&hints, sizeof(hints));
-    if (!from_musl_ai_flags(musl_hints->ai_flags, &hints.ai_flags)) {
-        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_BADFLAGS);
-        return;
-    }
-    if (!from_musl_domain(musl_hints->ai_family, &hints.ai_family)) {
-        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_FAMILY);
-        return;
-    }
-    if (!from_musl_socket_type(musl_hints->ai_socktype, &hints.ai_socktype)) {
-        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SOCKTYPE);
-        return;
-    }
-    hints.ai_protocol = musl_hints->ai_protocol;
-    if (musl_hints->ai_addrlen
-        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_addr))
-        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_canonname))
-        || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_next))) {
-        errno = EINVAL;
-        *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SYSTEM);
-        return;
+    if (musl_hints) {
+        if (!from_musl_ai_flags(musl_hints->ai_flags, &hints.ai_flags)) {
+            *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_BADFLAGS);
+            return;
+        }
+        if (!from_musl_domain(musl_hints->ai_family, &hints.ai_family)) {
+            *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_FAMILY);
+            return;
+        }
+        if (!from_musl_socket_type(musl_hints->ai_socktype, &hints.ai_socktype)) {
+            *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SOCKTYPE);
+            return;
+        }
+        hints.ai_protocol = musl_hints->ai_protocol;
+        if (musl_hints->ai_addrlen
+            || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_addr))
+            || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_canonname))
+            || deluge_ptr_ptr(deluge_ptr_load(&musl_hints->ai_next))) {
+            errno = EINVAL;
+            *(int*)deluge_ptr_ptr(rets) = to_musl_eai(EAI_SYSTEM);
+            return;
+        }
     }
     struct addrinfo* res = NULL;
     int result;
