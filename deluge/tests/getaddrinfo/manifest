@@ -1,4 +1,5 @@
 return:
   success
 output-includes:
-  "Address:Port = 127.0.0.1:80"
+  - "(1) Address:Port = 127.0.0.1:80"
+  - "(2) Address:Port = 127.0.0.1:0"

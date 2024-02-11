@@ -864,6 +864,11 @@ void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_siz
 void* deluge_try_allocate_with_type(const deluge_type* type, size_t size);
 void* deluge_allocate_with_type(const deluge_type* type, size_t size);
 
+/* FIXME: It would be great if this had a separate freeing function, and deluge_deallocate asserted
+   if it detected that it was used to free a utility allocation.
+   
+   Right now, we just rely on the fact that zfree (and friends) do a bunch of checks that effectively
+   prevent freeing utility allocations. */
 void* deluge_allocate_utility(size_t size);
 
 void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count);
@@ -871,7 +876,7 @@ void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t co
 
 void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 
-void deluge_deallocate(void* ptr);
+void deluge_deallocate(const void* ptr);
 void deluge_deallocate_safe(deluge_ptr ptr);
 void deluded_f_zfree(DELUDED_SIGNATURE);
 void deluded_f_zgetallocsize(DELUDED_SIGNATURE);
@@ -1028,11 +1033,23 @@ static inline deluge_ptr deluge_restrict(deluge_ptr ptr, size_t count, const del
 }
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
-   get to the upper bound.
+   get to the upper bound. Returns a copy of that string allocated in the utility heap, and checks
+   that it still has the null terminator at the end. Kills the shit out of the program if any of the
+   checks fail.
+   
+   The fact that the string is allocated in the utility heap - and the fact that the utility heap
+   has no capabilities into it other than immortal and/or opaque ones - and the fact that there is
+   no way for the user to cause us to free an object of their choice in the utility heap - means
+   that the string returned by this can't change under you.
    
    It's safe to call legacy C string functions on strings returned from this, since if they lacked
-   an in-bounds terminator, then this would have trapped. */
-const char* deluge_check_and_get_str(deluge_ptr ptr, const deluge_origin* origin);
+   an in-bounds terminator, then this would have trapped.
+
+   It's necessary to free the string when you're done with it. */
+const char* deluge_check_and_get_new_str(deluge_ptr ptr, const deluge_origin* origin);
+
+const char* deluge_check_and_get_new_str_or_null(deluge_ptr ptr, const deluge_origin* origin);
+
 deluge_ptr deluge_strdup(const char* str);
 
 /* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge

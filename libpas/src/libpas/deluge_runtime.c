@@ -1508,9 +1508,9 @@ void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
         pas_reallocate_free_if_successful);
 }
 
-void deluge_deallocate(void* ptr)
+void deluge_deallocate(const void* ptr)
 {
-    pas_deallocate(ptr, DELUGE_HEAP_CONFIG);
+    pas_deallocate((void*)ptr, DELUGE_HEAP_CONFIG);
 }
 
 void deluge_deallocate_safe(deluge_ptr ptr)
@@ -2813,17 +2813,28 @@ void deluge_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
                        ptr, (char*)new_upper - (char*)deluge_ptr_ptr(ptr), origin);
 }
 
-const char* deluge_check_and_get_str(deluge_ptr str, const deluge_origin* origin)
+const char* deluge_check_and_get_new_str(deluge_ptr str, const deluge_origin* origin)
 {
     size_t available;
     size_t length;
     check_access_common(str, 1, origin);
     available = deluge_ptr_available(str);
     length = strnlen((char*)deluge_ptr_ptr(str), available);
-    PAS_ASSERT(length < available);
-    PAS_ASSERT(length + 1 <= available);
+    DELUGE_ASSERT(length < available, origin);
+    DELUGE_ASSERT(length + 1 <= available, origin);
     check_int(str, length + 1, origin);
-    return (char*)deluge_ptr_ptr(str);
+
+    char* result = deluge_allocate_utility(length + 1);
+    memcpy(result, deluge_ptr_ptr(str), length + 1);
+    DELUGE_ASSERT(!result[length], origin);
+    return result;
+}
+
+const char* deluge_check_and_get_new_str_or_null(deluge_ptr ptr, const deluge_origin* origin)
+{
+    if (deluge_ptr_ptr(ptr))
+        return deluge_check_and_get_new_str(ptr, origin);
+    return NULL;
 }
 
 deluge_ptr deluge_strdup(const char* str)
@@ -3189,10 +3200,12 @@ void deluded_f_zprint(DELUDED_SIGNATURE)
         .column = 0
     };
     deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr str;
-    str = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr str_ptr;
+    str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
-    print_str(deluge_check_and_get_str(str, &origin));
+    const char* str = deluge_check_and_get_new_str(str_ptr, &origin);
+    print_str(str);
+    deluge_deallocate(str);
 }
 
 void deluded_f_zprint_long(DELUDED_SIGNATURE)
@@ -3242,7 +3255,7 @@ void deluded_f_zerror(DELUDED_SIGNATURE)
         .column = 0
     };
     deluge_ptr args = DELUDED_ARGS;
-    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
+    const char* str = deluge_check_and_get_new_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
     pas_panic("zerror: %s\n", str);
 }
@@ -3257,10 +3270,11 @@ void deluded_f_zstrlen(DELUDED_SIGNATURE)
     };
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
-    const char* str = deluge_check_and_get_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
+    const char* str = deluge_check_and_get_new_str(deluge_ptr_get_next_ptr(&args, &origin), &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
     *(int*)deluge_ptr_ptr(rets) = strlen(str);
+    deluge_deallocate(str);
 }
 
 void deluded_f_zstrchr(DELUDED_SIGNATURE)
@@ -3274,11 +3288,12 @@ void deluded_f_zstrchr(DELUDED_SIGNATURE)
     deluge_ptr args = DELUDED_ARGS;
     deluge_ptr rets = DELUDED_RETS;
     deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    const char* str = deluge_check_and_get_str(str_ptr, &origin);
+    const char* str = deluge_check_and_get_new_str(str_ptr, &origin);
     int chr = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_ptr(rets, &origin);
     *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_with_ptr(str_ptr, strchr(str, chr));
+    deluge_deallocate(str);
 }
 
 void deluded_f_zisdigit(DELUDED_SIGNATURE)
@@ -4125,9 +4140,11 @@ void deluded_f_zsys_open(DELUDED_SIGNATURE)
         *(int*)deluge_ptr_ptr(rets) = -1;
         return;
     }
-    int result = open(deluge_check_and_get_str(path_ptr, &origin), flags, mode);
+    const char* path = deluge_check_and_get_new_str(path_ptr, &origin);
+    int result = open(path, flags, mode);
     if (result < 0)
         set_errno(errno);
+    deluge_deallocate(path);
     *(int*)deluge_ptr_ptr(rets) = result;
 }
 
@@ -4285,7 +4302,6 @@ void deluded_f_zsys_fstatat(DELUDED_SIGNATURE)
     deluge_ptr musl_stat_ptr = deluge_ptr_get_next_ptr(&args, &origin);
     int musl_flag = deluge_ptr_get_next_int(&args, &origin);
     DELUDED_DELETE_ARGS();
-    const char* path = deluge_check_and_get_str(path_ptr, &origin);
     int flag;
     if (!from_musl_fstatat_flag(musl_flag, &flag)) {
         set_errno(EINVAL);
@@ -4295,8 +4311,10 @@ void deluded_f_zsys_fstatat(DELUDED_SIGNATURE)
     if (fd == -100)
         fd = AT_FDCWD;
     struct stat st;
+    const char* path = deluge_check_and_get_new_str(path_ptr, &origin);
     int result = fstatat(fd, path, &st, flag);
     handle_fstat_result(rets, musl_stat_ptr, &st, result);
+    deluge_deallocate(path);
 }
 
 void deluded_f_zsys_fstat(DELUDED_SIGNATURE)
@@ -5415,8 +5433,6 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
     deluge_ptr res_ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_check_access_int(rets, sizeof(int), &origin);
-    const char* node = deluge_check_and_get_str(node_ptr, &origin);
-    const char* service = deluge_check_and_get_str(service_ptr, &origin);
     struct musl_addrinfo* musl_hints = deluge_ptr_ptr(hints_ptr);
     if (musl_hints)
         deluge_restrict(hints_ptr, 1, &musl_addrinfo_type, &origin);
@@ -5446,12 +5462,14 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
             return;
         }
     }
+    const char* node = deluge_check_and_get_new_str_or_null(node_ptr, &origin);
+    const char* service = deluge_check_and_get_new_str_or_null(service_ptr, &origin);
     struct addrinfo* res = NULL;
     int result;
     result = getaddrinfo(node, service, &hints, &res);
     if (result) {
         *(int*)deluge_ptr_ptr(rets) = to_musl_eai(result);
-        return;
+        goto done;
     }
     deluge_ptr* addrinfo_ptr = (deluge_ptr*)deluge_ptr_ptr(res_ptr);
     struct addrinfo* current;
@@ -5476,6 +5494,10 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
     }
     deluge_ptr_store(addrinfo_ptr, deluge_ptr_forge_invalid(NULL));
     freeaddrinfo(res);
+
+done:
+    deluge_deallocate(node);
+    deluge_deallocate(service);
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
