@@ -644,6 +644,7 @@ int zsys_setsockopt(int sockfd, int level, int optname, const void* optval, unsi
 int zsys_bind(int sockfd, const void* addr, unsigned addrlen);
 int zsys_getaddrinfo(const char* node, const char* service, const void* hints, void** res);
 int zsys_connect(int sockfd, const void* addr, unsigned addrlen);
+int zsys_getsockname(int sockfd, void* addr, unsigned* addrlen);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
@@ -677,7 +678,8 @@ _Bool zthread_detach(void* thread);
    with the address, and not any other locks that the Deluge runtime uses.
 
    The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
-   this is a civilized API.
+   this is a civilized API. Use positive infinity (aka 1. / 0.) if you just want this to wait
+   forever.
 
    Errors are reported by killing the shit out of your program. */
 _Bool zpark_if(const void* address,

@@ -5160,6 +5160,16 @@ struct musl_sockaddr_un {
     char sun_path[108];
 };
 
+#define MAX_SOCKADDRLEN PAS_MAX_CONST(PAS_MAX_CONST(sizeof(struct sockaddr), \
+                                                    sizeof(struct sockaddr_in)), \
+                                      PAS_MAX_CONST(sizeof(struct sockaddr_in6), \
+                                                    sizeof(struct sockaddr_un)))
+
+#define MAX_MUSL_SOCKADDRLEN PAS_MAX_CONST(PAS_MAX_CONST(sizeof(struct musl_sockaddr), \
+                                                         sizeof(struct musl_sockaddr_in)), \
+                                           PAS_MAX_CONST(sizeof(struct musl_sockaddr_in6), \
+                                                         sizeof(struct musl_sockaddr_un)))
+
 static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_addrlen,
                                struct sockaddr** addr, unsigned* addrlen)
 {
@@ -5229,30 +5239,20 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
     }
 }
 
-static bool ensure_musl_sockaddr(struct musl_sockaddr** musl_addr, unsigned* musl_addrlen,
+static void ensure_musl_sockaddr(struct musl_sockaddr** musl_addr, unsigned* musl_addrlen,
                                  unsigned desired_musl_addrlen)
 {
     PAS_ASSERT(musl_addr);
     PAS_ASSERT(musl_addrlen);
-    PAS_ASSERT(!!*musl_addr == !!*musl_addrlen);
+    PAS_ASSERT(!*musl_addr);
+    PAS_ASSERT(!*musl_addrlen);
     
-    if (*musl_addr) {
-        if (*musl_addrlen >= desired_musl_addrlen) {
-            *musl_addrlen = desired_musl_addrlen;
-            return true;
-        }
-        return false;
-    }
-
     *musl_addr = deluge_allocate_int(desired_musl_addrlen, 1);
     *musl_addrlen = desired_musl_addrlen;
-    return true;
 }
 
-/* if *musl_addr is NULL, this will allocate one. if it's not NULL, then we try to populate it,
-   but only up to musl_addrlen. if that's not long enough we fail. */
-static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
-                             struct musl_sockaddr** musl_addr, unsigned* musl_addrlen)
+static bool to_new_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
+                                 struct musl_sockaddr** musl_addr, unsigned* musl_addrlen)
 {
     int musl_family;
     if (!to_musl_domain(addr->sa_family, &musl_family))
@@ -5260,8 +5260,7 @@ static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
     switch (addr->sa_family) {
     case PF_INET: {
         PAS_ASSERT(addrlen >= sizeof(struct sockaddr_in));
-        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in)))
-            return false;
+        ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in));
         pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_in));
         struct musl_sockaddr_in* musl_addr_in = (struct musl_sockaddr_in*)*musl_addr;
         struct sockaddr_in* addr_in = (struct sockaddr_in*)addr;
@@ -5272,8 +5271,7 @@ static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
     }
     case PF_LOCAL: {
         PAS_ASSERT(addrlen >= sizeof(struct sockaddr_un));
-        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_un)))
-            return false;
+        ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_un));
         pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_un));
         struct musl_sockaddr_un* musl_addr_un = (struct musl_sockaddr_un*)*musl_addr;
         struct sockaddr_un* addr_un = (struct sockaddr_un*)addr;
@@ -5284,8 +5282,7 @@ static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
     }
     case PF_INET6: {
         PAS_ASSERT(addrlen >= sizeof(struct sockaddr_in6));
-        if (!ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in6)))
-            return false;
+        ensure_musl_sockaddr(musl_addr, musl_addrlen, sizeof(struct musl_sockaddr_in6));
         pas_zero_memory(*musl_addr, sizeof(struct musl_sockaddr_in6));
         struct musl_sockaddr_in6* musl_addr_in6 = (struct musl_sockaddr_in6*)*musl_addr;
         struct sockaddr_in6* addr_in6 = (struct sockaddr_in6*)addr;
@@ -5300,6 +5297,30 @@ static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
     default:
         return false;
     }
+}
+
+static bool to_musl_sockaddr(struct sockaddr* addr, unsigned addrlen,
+                             struct musl_sockaddr** musl_addr, unsigned* musl_addrlen)
+{
+    PAS_ASSERT(musl_addr);
+    PAS_ASSERT(musl_addrlen);
+    
+    struct musl_sockaddr* temp_musl_addr = NULL;
+    unsigned temp_musl_addrlen = 0;
+
+    if (!to_new_musl_sockaddr(addr, addrlen, &temp_musl_addr, &temp_musl_addrlen)) {
+        PAS_ASSERT(!temp_musl_addr);
+        PAS_ASSERT(!temp_musl_addrlen);
+        return false;
+    }
+
+    if (!*musl_addr)
+        PAS_ASSERT(!*musl_addrlen);
+
+    memcpy(*musl_addr, temp_musl_addr, pas_min_uintptr(*musl_addrlen, temp_musl_addrlen));
+    *musl_addrlen = temp_musl_addrlen;
+    deluge_deallocate(temp_musl_addr);
+    return true;
 }
 
 void deluded_f_zsys_bind(DELUDED_SIGNATURE)
@@ -5485,7 +5506,7 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE)
         musl_current->ai_protocol = current->ai_protocol;
         struct musl_sockaddr* musl_addr = NULL;
         unsigned musl_addrlen = 0;
-        PAS_ASSERT(to_musl_sockaddr(current->ai_addr, current->ai_addrlen, &musl_addr, &musl_addrlen));
+        PAS_ASSERT(to_new_musl_sockaddr(current->ai_addr, current->ai_addrlen, &musl_addr, &musl_addrlen));
         musl_current->ai_addrlen = musl_addrlen;
         deluge_ptr_store(
             &musl_current->ai_addr, deluge_ptr_forge_with_size(musl_addr, musl_addrlen, &deluge_int_type));
@@ -5535,6 +5556,43 @@ void deluded_f_zsys_connect(DELUDED_SIGNATURE)
 einval:
     set_errno(EINVAL);
     *(int*)deluge_ptr_ptr(rets) = -1;
+}
+
+void deluded_f_zsys_getsockname(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getsockname",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_addr_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr musl_addrlen_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(musl_addrlen_ptr, sizeof(unsigned), &origin);
+    unsigned musl_addrlen = *(unsigned*)deluge_ptr_ptr(musl_addrlen_ptr);
+    deluge_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+
+    unsigned addrlen = MAX_SOCKADDRLEN;
+    struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
+    int result = getsockname(sockfd, addr, &addrlen);
+    if (result < 0) {
+        set_errno(errno);
+        *(int*)deluge_ptr_ptr(rets) = result;
+        return;
+    }
+    
+    PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
+
+    struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)deluge_ptr_ptr(musl_addr_ptr);
+    /* pass our own copy of musl_addrlen to avoid TOCTOU. */
+    PAS_ASSERT(to_musl_sockaddr(addr, addrlen, &musl_addr, &musl_addrlen));
+    *(unsigned*)deluge_ptr_ptr(musl_addrlen_ptr) = musl_addrlen;
+    return;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
