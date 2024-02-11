@@ -4997,6 +4997,12 @@ static bool from_musl_so_optname(int musl_optname, int* result)
     case 2:
         *result = SO_REUSEADDR;
         return true;
+    case 3:
+        *result = SO_TYPE;
+        return true;
+    case 4:
+        *result = SO_ERROR;
+        return true;
     case 7:
         *result = SO_SNDBUF;
         return true;
@@ -5071,14 +5077,11 @@ void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE)
         switch (optname) {
         case SO_REUSEADDR:
         case SO_KEEPALIVE:
-            if (optlen != sizeof(int))
-                goto einval;
-            break;
         case SO_SNDBUF:
-            if (optlen != 4 && optlen != 8)
-                goto einval;
             break;
         case SO_RCVTIMEO: {
+            if (optlen < sizeof(struct musl_timeval))
+                goto einval;
             struct timeval* tv = alloca(sizeof(struct timeval));
             struct musl_timeval* musl_tv = (struct musl_timeval*)optval;
             optval = tv;
@@ -5097,8 +5100,6 @@ void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE)
         case TCP_NODELAY:
         case TCP_KEEPALIVE:
         case TCP_KEEPINTVL:
-            if (optlen != sizeof(int))
-                goto einval;
             break;
         default:
             goto enoprotoopt;
@@ -5109,8 +5110,6 @@ void deluded_f_zsys_setsockopt(DELUDED_SIGNATURE)
             goto enoprotoopt;
         switch (optname) {
         case IPV6_V6ONLY:
-            if (optlen != sizeof(int))
-                goto einval;
             break;
         default:
             goto enoprotoopt;
@@ -5523,6 +5522,8 @@ done:
 
 void deluded_f_zsys_connect(DELUDED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static deluge_origin origin = {
         .filename = __FILE__,
         .function = "zsys_connect",
@@ -5550,6 +5551,8 @@ void deluded_f_zsys_connect(DELUDED_SIGNATURE)
         set_errno(errno);
 
     deluge_deallocate(addr);
+    if (verbose)
+        pas_log("connect succeeded!\n");
     *(int*)deluge_ptr_ptr(rets) = result;
     return;
     
@@ -5560,6 +5563,8 @@ einval:
 
 void deluded_f_zsys_getsockname(DELUDED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static deluge_origin origin = {
         .filename = __FILE__,
         .function = "zsys_getsockname",
@@ -5592,7 +5597,111 @@ void deluded_f_zsys_getsockname(DELUDED_SIGNATURE)
     /* pass our own copy of musl_addrlen to avoid TOCTOU. */
     PAS_ASSERT(to_musl_sockaddr(addr, addrlen, &musl_addr, &musl_addrlen));
     *(unsigned*)deluge_ptr_ptr(musl_addrlen_ptr) = musl_addrlen;
+    if (verbose)
+        pas_log("getsockname succeeded!\n");
     return;
+}
+
+void deluded_f_zsys_getsockopt(DELUDED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getsockopt",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    int musl_level = deluge_ptr_get_next_int(&args, &origin);
+    int musl_optname = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr optval_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr optlen_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(optlen_ptr, sizeof(unsigned), &origin);
+    unsigned musl_optlen = *(unsigned*)deluge_ptr_ptr(optlen_ptr);
+    int level;
+    if (verbose)
+        pas_log("here!\n");
+    if (!from_musl_socket_level(musl_level, &level))
+        goto einval;
+    int optname;
+    /* everything is primitive, for now */
+    deluge_check_access_int(optval_ptr, musl_optlen, &origin);
+    void* musl_optval = deluge_ptr_ptr(optval_ptr);
+    void* optval = musl_optval;
+    unsigned optlen = musl_optlen;
+    switch (level) {
+    case SOL_SOCKET:
+        if (!from_musl_so_optname(musl_optname, &optname)) {
+            if (verbose)
+                pas_log("unrecognized proto\n");
+            goto enoprotoopt;
+        }
+        switch (optname) {
+        case SO_SNDBUF:
+        case SO_ERROR:
+        case SO_TYPE:
+            break;
+        case SO_RCVTIMEO:
+            if (musl_optlen < sizeof(struct musl_timeval))
+                goto einval;
+            optval = alloca(sizeof(struct timeval));
+            optlen = sizeof(struct timeval);
+            break;
+        default:
+            if (verbose)
+                pas_log("default case proto\n");
+            goto enoprotoopt;
+        }
+        break;
+    default:
+        goto einval;
+    }
+    int result = getsockopt(sockfd, level, optname, optval, &optlen);
+    if (result < 0) {
+        set_errno(errno);
+        *(int*)deluge_ptr_ptr(rets) = result;
+        return;
+    }
+    musl_optlen = optlen;
+    switch (level) {
+    case SOL_SOCKET:
+        switch (optname) {
+        case SO_RCVTIMEO: {
+            struct timeval* tv = (struct timeval*)optval;
+            struct musl_timeval* musl_tv = (struct musl_timeval*)musl_optval;
+            musl_tv->tv_sec = tv->tv_sec;
+            musl_tv->tv_usec = tv->tv_usec;
+            musl_optlen = sizeof(struct musl_timeval);
+            break;
+        }
+        default:
+            break;
+        }
+    default:
+        break;
+    }
+    if (verbose)
+        pas_log("all good here!\n");
+    *(unsigned*)deluge_ptr_ptr(optlen_ptr) = musl_optlen;
+    return;
+
+enoprotoopt:
+    if (verbose)
+        pas_log("bad proto\n");
+    set_errno(ENOPROTOOPT);
+    *(int*)deluge_ptr_ptr(rets) = -1;
+    return;
+    
+einval:
+    if (verbose)
+        pas_log("einval\n");
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
