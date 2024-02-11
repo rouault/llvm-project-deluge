@@ -5500,6 +5500,43 @@ done:
     deluge_deallocate(service);
 }
 
+void deluded_f_zsys_connect(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_connect",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_addr_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    unsigned musl_addrlen = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+    if (musl_addrlen < sizeof(struct musl_sockaddr))
+        goto einval;
+    struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)deluge_ptr_ptr(musl_addr_ptr);
+    struct sockaddr* addr;
+    unsigned addrlen;
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+        goto einval;
+
+    int result = connect(sockfd, addr, addrlen);
+    if (result < 0)
+        set_errno(errno);
+
+    deluge_deallocate(addr);
+    *(int*)deluge_ptr_ptr(rets) = result;
+    return;
+    
+einval:
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
+}
+
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {

@@ -643,6 +643,7 @@ int zsys_socket(int domain, int type, int protocol);
 int zsys_setsockopt(int sockfd, int level, int optname, const void* optval, unsigned optlen);
 int zsys_bind(int sockfd, const void* addr, unsigned addrlen);
 int zsys_getaddrinfo(const char* node, const char* service, const void* hints, void** res);
+int zsys_connect(int sockfd, const void* addr, unsigned addrlen);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
