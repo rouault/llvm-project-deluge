@@ -176,6 +176,39 @@ ztype* ztypeof_impl(void* type_like);
         __d_result; \
     })
 
+/* Allocates a flex object, like zalloc_flex, but is useful for cases where the type doesn't
+   actually have a flexible array member, and you'd like the flexible array to be placed after
+   sizeof the type.
+   
+   This is not what you want if the type does have a flexible array member, regardless of whether
+   it's old-school (type array[1]) or new-school (type array[]).
+   
+   base_type is a type expression. array_type is another type expression. count must be
+   __SIZE_TYPE__ ish. */
+#define zalloc_flex_cat(base_type, array_type, count) ({ \
+        base_type __d_temporary; \
+        array_type __d_trailing_temporary; \
+        (base_type*)zalloc_flex_impl( \
+            &__d_temporary, sizeof(base_type), \
+            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
+    })
+
+#define zalloc_flex_cat_zero(base_type, array_type, count) ({ \
+        base_type __d_temporary; \
+        array_type __d_trailing_temporary; \
+        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
+        base_type* __d_result = (base_type*)zalloc_flex_impl( \
+            &__d_temporary, sizeof(base_type), \
+            &__d_trailing_temporary, __d_count); \
+        if (__d_result) { \
+            __builtin_memset( \
+                __d_result, 0, \
+                sizeof(base_type) \
+                + sizeof(__d_trailing_temporary) * __d_count); \
+        } \
+        __d_result; \
+    })
+
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
    by pointers that view it as anything other than count or more repetitions of the given type.
    The new memory is populated with a copy of the passed-in pointer. If the pointer points at more
