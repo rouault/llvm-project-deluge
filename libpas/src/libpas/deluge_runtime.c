@@ -5173,6 +5173,15 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
                                struct sockaddr** addr, unsigned* addrlen)
 {
     static const bool verbose = false;
+
+    if (!musl_addr) {
+        PAS_ASSERT(!musl_addrlen);
+        *addr = NULL;
+        *addrlen = 0;
+        return true;
+    }
+
+    PAS_ASSERT(musl_addrlen >= sizeof(struct musl_sockaddr));
     
     int family;
     if (!from_musl_domain(musl_addr->sa_family, &family))
@@ -5743,6 +5752,71 @@ void deluded_f_zsys_getpeername(DELUDED_SIGNATURE)
     if (verbose)
         pas_log("getpeername succeeded!\n");
     return;
+}
+
+static bool from_musl_msg_flags(int musl_flags, int* result)
+{
+    *result = 0;
+    if (check_and_clear(&musl_flags, 0x0001))
+        *result |= MSG_OOB;
+    if (check_and_clear(&musl_flags, 0x0002))
+        *result |= MSG_PEEK;
+    if (check_and_clear(&musl_flags, 0x0004))
+        *result |= MSG_DONTROUTE;
+    if (check_and_clear(&musl_flags, 0x0008))
+        *result |= MSG_CTRUNC;
+    if (check_and_clear(&musl_flags, 0x0020))
+        *result |= MSG_TRUNC;
+    if (check_and_clear(&musl_flags, 0x0040))
+        *result |= MSG_DONTWAIT;
+    if (check_and_clear(&musl_flags, 0x0080))
+        *result |= MSG_EOR;
+    if (check_and_clear(&musl_flags, 0x0100))
+        *result |= MSG_WAITALL;
+    if (check_and_clear(&musl_flags, 0x4000))
+        *result |= MSG_NOSIGNAL;
+    return !musl_flags;
+}
+
+void deluded_f_zsys_sendto(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_sendto",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr buf_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    size_t len = deluge_ptr_get_next_size_t(&args, &origin);
+    int musl_flags = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_addr_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    unsigned musl_addrlen = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(ssize_t), &origin);
+    deluge_check_access_int(buf_ptr, len, &origin);
+    deluge_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+    int flags;
+    if (!from_musl_msg_flags(musl_flags, &flags))
+        goto einval;
+    struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)deluge_ptr_ptr(musl_addr_ptr);
+    struct sockaddr* addr;
+    unsigned addrlen;
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+        goto einval;
+    ssize_t result = sendto(sockfd, deluge_ptr_ptr(buf_ptr), len, flags, addr, addrlen);
+    if (result < 0)
+        set_errno(errno);
+
+    deluge_deallocate(addr);
+    *(ssize_t*)deluge_ptr_ptr(rets) = result;
+    return;
+
+einval:
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
