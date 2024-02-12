@@ -5704,6 +5704,47 @@ einval:
     *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
+void deluded_f_zsys_getpeername(DELUDED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getpeername",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int sockfd = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr musl_addr_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    deluge_ptr musl_addrlen_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(musl_addrlen_ptr, sizeof(unsigned), &origin);
+    unsigned musl_addrlen = *(unsigned*)deluge_ptr_ptr(musl_addrlen_ptr);
+    deluge_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+
+    unsigned addrlen = MAX_SOCKADDRLEN;
+    struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
+    int result = getpeername(sockfd, addr, &addrlen);
+    if (result < 0) {
+        set_errno(errno);
+        *(int*)deluge_ptr_ptr(rets) = result;
+        return;
+    }
+    
+    PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
+
+    struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)deluge_ptr_ptr(musl_addr_ptr);
+    /* pass our own copy of musl_addrlen to avoid TOCTOU. */
+    PAS_ASSERT(to_musl_sockaddr(addr, addrlen, &musl_addr, &musl_addrlen));
+    *(unsigned*)deluge_ptr_ptr(musl_addrlen_ptr) = musl_addrlen;
+    if (verbose)
+        pas_log("getpeername succeeded!\n");
+    return;
+}
+
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {

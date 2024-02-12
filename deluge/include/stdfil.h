@@ -646,6 +646,7 @@ int zsys_getaddrinfo(const char* node, const char* service, const void* hints, v
 int zsys_connect(int sockfd, const void* addr, unsigned addrlen);
 int zsys_getsockname(int sockfd, void* addr, unsigned* addrlen);
 int zsys_getsockopt(int sockfd, int level, int optname, void* optval, unsigned* optlen);
+int zsys_getpeername(int sockfd, void* addr, unsigned* addrlen);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

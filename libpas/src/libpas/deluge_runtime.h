@@ -1223,6 +1223,7 @@ void deluded_f_zsys_getaddrinfo(DELUDED_SIGNATURE);
 void deluded_f_zsys_connect(DELUDED_SIGNATURE);
 void deluded_f_zsys_getsockname(DELUDED_SIGNATURE);
 void deluded_f_zsys_getsockopt(DELUDED_SIGNATURE);
+void deluded_f_zsys_getpeername(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_get_id(DELUDED_SIGNATURE);
