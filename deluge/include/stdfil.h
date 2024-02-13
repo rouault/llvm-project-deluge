@@ -351,8 +351,8 @@ ztype* zgettype(void* ptr);
 
 /* Get the pointer's array length, which is the distance to upper in units of the ptr's static type. */
 #define zlength(ptr) ({ \
-        __typeof__(ptr + 0) __d_ptr = (ptr); \
-        (__typeof__(ptr + 0))zgetupper(__d_ptr) - __d_ptr; \
+        __typeof__((ptr) + 0) __d_ptr = (ptr); \
+        (__typeof__((ptr) + 0))zgetupper(__d_ptr) - __d_ptr; \
     })
 
 /* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
@@ -406,6 +406,22 @@ ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
    around. Other than allowing you to specify a type dynamically (which implies picking the right
    isoheap dynamically), it's exactly the same as zalloc. */
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
+
+void* zalloc_with_type_zero(ztype* type, __SIZE_TYPE__ size);
+
+/* Allocate an object that is exactly like the one passed in, including the lower bound. For example,
+   if you pass in a pointer to the middle of an array, this will allocate an array and return a
+   pointer to the middle of it, offset in the same way as the original.
+
+   For now, this is useful if you want to describe the type+size in a simple-to-carry-around kind of
+   way. In particular, if you want to describe the type+size of something in a const initializer,
+   then using a pointer to a "default" instance of that thing is the simplest way to do it. This
+   should be seen as a deficiency in Deluge, but it's one we can live with for now.
+
+   Ideally, there would be a way to carry around the type+size and put it in a const initializer. */
+void* zalloc_clone(void* obj);
+
+void* zalloc_clone_zero(void* obj);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
    Returns that string. You have to zfree the string when you're done with it.

@@ -5,6 +5,34 @@ _Bool zinbounds(void* ptr)
     return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
 }
 
+void* zalloc_with_type_zero(ztype* type, __SIZE_TYPE__ size)
+{
+    void* result = zalloc_with_type(type, size);
+    if (result)
+        __builtin_memset(result, 0, zlength((char*)result));
+    return result;
+}
+
+static void *clone_impl(void* obj, void* (*alloc_with_type)(ztype* type, __SIZE_TYPE__ size))
+{
+    /* FIXME: This doesn't work right for flexes, but probably only because zalloc_with_type doesn't
+       work for flexes. */
+    void* result = alloc_with_type(zgettype(obj), (char*)zgetupper(obj) - (char*)zgetlower(obj));
+    if (!result)
+        return 0;
+    return (char*)result + ((char*)obj - (char*)zgetlower(obj));
+}
+
+void* zalloc_clone(void* obj)
+{
+    return clone_impl(obj, zalloc_with_type);
+}
+
+void* zalloc_clone_zero(void* obj)
+{
+    return clone_impl(obj, zalloc_with_type_zero);
+}
+
 typedef struct {
     const int* address;
     int expected_value;
