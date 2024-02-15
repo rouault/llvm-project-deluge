@@ -327,6 +327,8 @@ void deluge_panic(const deluge_origin* origin, const char* format, ...);
    fine to call this more than once. */
 PAS_API void deluge_initialize(void);
 
+void deluge_origin_dump(const deluge_origin* origin, pas_stream* stream);
+
 static inline const deluge_type* deluge_type_lookup(unsigned index)
 {
     PAS_TESTING_ASSERT(index < deluge_type_array_size);
@@ -794,6 +796,7 @@ PAS_API pas_heap_runtime_config* deluge_type_as_heap_type_assert_default_runtime
     const pas_heap_type* type, pas_heap_runtime_config* config);
 
 PAS_API void deluge_word_type_dump(deluge_word_type type, pas_stream* stream);
+PAS_API char* deluge_word_type_to_new_string(deluge_word_type type);
 
 PAS_API void deluge_type_dump(const deluge_type* type, pas_stream* stream);
 PAS_API void deluge_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
@@ -932,6 +935,10 @@ void deluge_hard_deallocate(void* ptr);
    it this way makes it more obviously correct. */
 pas_uint128 deluge_new_capability(void* ptr, size_t size, const deluge_type* type);
 pas_uint128 deluge_new_sidecar(void* ptr, size_t size, const deluge_type* type);
+
+void deluge_log_allocation(deluge_ptr ptr, const deluge_origin* origin);
+void deluge_log_allocation_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                const deluge_origin* origin);
 
 void deluge_check_forge(
     void* ptr, size_t size, size_t count, const deluge_type* type, const deluge_origin* origin);

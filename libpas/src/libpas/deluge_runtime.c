@@ -464,6 +464,21 @@ void deluge_initialize(void)
     pas_system_once_run(&global_once, initialize_impl);
 }
 
+void deluge_origin_dump(const deluge_origin* origin, pas_stream* stream)
+{
+    if (origin) {
+        pas_stream_printf(stream, "%s", origin->filename);
+        if (origin->line) {
+            pas_stream_printf(stream, ":%u", origin->line);
+            if (origin->column)
+                pas_stream_printf(stream, ":%u", origin->column);
+        }
+        if (origin->function)
+            pas_stream_printf(stream, ": %s", origin->function);
+    } else
+        pas_stream_printf(stream, "<somewhere>");
+}
+
 static void type_template_dump_impl(const deluge_type_template* type, pas_stream* stream)
 {
     static const bool dump_ptr = false;
@@ -761,6 +776,16 @@ void deluge_word_type_dump(deluge_word_type type, pas_stream* stream)
     }
 }
 
+char* deluge_word_type_to_new_string(deluge_word_type type)
+{
+    pas_string_stream stream;
+    pas_allocation_config allocation_config;
+    initialize_utility_allocation_config(&allocation_config);
+    pas_string_stream_construct(&stream, &allocation_config);
+    deluge_word_type_dump(type, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
 static void type_dump_impl(const deluge_type* type, pas_stream* stream)
 {
     static const bool dump_ptr = false;
@@ -974,6 +999,7 @@ const deluge_type* deluge_type_slice(const deluge_type* type, pas_range range, c
                !pas_is_aligned(pas_range_size(range), type_template->alignment))
             type_template->alignment /= 2;
         PAS_ASSERT(type_template->alignment >= DELUGE_WORD_SIZE);
+        type_template->trailing_array = NULL;
         for (index = pas_range_size(range) / DELUGE_WORD_SIZE; index--;) {
             type_template->word_types[index] =
                 deluge_type_get_word_type(type, index + range.begin / DELUGE_WORD_SIZE);
@@ -1078,6 +1104,7 @@ const deluge_type* deluge_type_cat(const deluge_type* a, size_t a_size,
 
         result_type->size = aligned_size;
         result_type->alignment = alignment;
+        result_type->trailing_array = NULL;
         PAS_ASSERT(pas_is_aligned(result_type->size, result_type->alignment));
         for (index = a_size / DELUGE_WORD_SIZE; index--;)
             result_type->word_types[index] = deluge_type_get_word_type(a, index);
@@ -1412,30 +1439,50 @@ void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_siz
 
 void* deluge_try_allocate_with_type(const deluge_type* type, size_t size)
 {
+    static const bool verbose = false;
+    
     static deluge_origin origin = {
         .filename = __FILE__,
         .function = "deluge_try_allocate_with_type",
         .line = 0,
         .column = 0
     };
+
+    if (verbose) {
+        pas_log("try_allocate_with_type: allocating ");
+        deluge_type_dump(type, &pas_log_stream.base);
+        pas_log(" with size %zu.\n", size);
+    }
+
+    void* result;
     if (type == &deluge_int_type)
-        return deluge_try_allocate_int(size, 1);
-    DELUGE_CHECK(
-        type->num_words,
-        &origin,
-        "cannot allocate instance of opaque type (type = %s).",
-        deluge_type_to_new_string(type));
-    DELUGE_CHECK(
-        !type->u.trailing_array,
-        &origin,
-        "cannot reflectively allocate instance of type with trailing array (type = %s).",
-        deluge_type_to_new_string(type));
-    DELUGE_CHECK(
-        !(size % type->size),
-        &origin,
-        "cannot allocate %zu bytes of type %s (have %zu remainder).",
-        size, deluge_type_to_new_string(type), size % type->size);
-    return deluge_try_allocate_many(deluge_get_heap(type), size / type->size);
+        result = deluge_try_allocate_int(size, 1);
+    else {
+        DELUGE_CHECK(
+            type->num_words,
+            &origin,
+            "cannot allocate instance of opaque type (type = %s).",
+            deluge_type_to_new_string(type));
+        DELUGE_CHECK(
+            !type->u.trailing_array,
+            &origin,
+            "cannot reflectively allocate instance of type with trailing array (type = %s).",
+            deluge_type_to_new_string(type));
+        DELUGE_CHECK(
+            !(size % type->size),
+            &origin,
+            "cannot allocate %zu bytes of type %s (have %zu remainder).",
+            size, deluge_type_to_new_string(type), size % type->size);
+        result = deluge_try_allocate_many(deluge_get_heap(type), size / type->size);
+    }
+
+    if (verbose) {
+        pas_log("try_allocate_with_type: allocated ");
+        deluge_type_dump(type, &pas_log_stream.base);
+        pas_log(" with size %zu at %p.\n", size, result);
+    }
+
+    return result;
 }
 
 void* deluge_allocate_with_type(const deluge_type* type, size_t size)
@@ -1831,6 +1878,19 @@ pas_uint128 deluge_new_sidecar(void* ptr, size_t size, const deluge_type* type)
                 deluge_type_to_new_string(type));
     }
     return new_ptr(ptr, size, type).sidecar;
+}
+
+void deluge_log_allocation(deluge_ptr ptr, const deluge_origin* origin)
+{
+    deluge_origin_dump(origin, &pas_log_stream.base);
+    pas_log(": allocated ");
+    deluge_ptr_dump(ptr, &pas_log_stream.base);
+    pas_log("\n");
+}
+
+void deluge_log_allocation_impl(pas_uint128 sidecar, pas_uint128 capability, const deluge_origin* origin)
+{
+    deluge_log_allocation(deluge_ptr_create(sidecar, capability), origin);
 }
 
 void deluge_check_forge(
@@ -2627,11 +2687,23 @@ static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
     first_src_word_type_index = src_offset / DELUGE_WORD_SIZE;
 
     for (word_type_index_offset = num_word_types; word_type_index_offset--;) {
-        DELUGE_ASSERT(
-            deluge_type_get_word_type(dst_type, first_dst_word_type_index + word_type_index_offset)
-            ==
-            deluge_type_get_word_type(src_type, first_src_word_type_index + word_type_index_offset),
-            origin);
+        deluge_word_type dst_word_type;
+        deluge_word_type src_word_type;
+
+        dst_word_type = deluge_type_get_word_type(
+            dst_type, first_dst_word_type_index + word_type_index_offset);
+        src_word_type = deluge_type_get_word_type(
+            src_type, first_src_word_type_index + word_type_index_offset);
+        
+        DELUGE_CHECK(
+            dst_word_type == src_word_type,
+            origin,
+            "memory type overlap error at offset %zu; dst = %s, src = %s, count = %zu. "
+            "dst has %s while src has %s.",
+            word_type_index_offset * DELUGE_WORD_SIZE,
+            deluge_ptr_to_new_string(dst), deluge_ptr_to_new_string(src), count,
+            deluge_word_type_to_new_string(dst_word_type),
+            deluge_word_type_to_new_string(src_word_type));
     }
 
     /* We cannot copy parts of pointers. */
@@ -3151,18 +3223,8 @@ void deluded_f_zrun_deferred_global_ctors(DELUDED_SIGNATURE)
 void deluge_panic(const deluge_origin* origin, const char* format, ...)
 {
     va_list args;
-    if (origin) {
-        pas_log("%s:", origin->filename);
-        if (origin->line) {
-            pas_log("%u:", origin->line);
-            if (origin->column)
-                pas_log("%u:", origin->column);
-        }
-        pas_log(" ");
-        if (origin->function)
-            pas_log("%s: ", origin->function);
-    } else
-        pas_log("<somewhere>: ");
+    deluge_origin_dump(origin, &pas_log_stream.base);
+    pas_log(": ");
     va_start(args, format);
     pas_vlog(format, args);
     va_end(args);

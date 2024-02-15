@@ -40,8 +40,15 @@ using namespace llvm;
 
 namespace {
 
-static constexpr bool verbose = false;
-static constexpr bool ultraVerbose = false;
+static cl::opt<bool> verbose(
+  "deluge-verbose", cl::desc("Make Deluge verbose"),
+  cl::Hidden, cl::init(false));
+static cl::opt<bool> ultraVerbose(
+  "deluge-ultra-verbose", cl::desc("Make Deluge ultra verbose"),
+  cl::Hidden, cl::init(false));
+static cl::opt<bool> logAllocations(
+  "deluge-log-allocations", cl::desc("Make Deluge emit code to log every allocation"),
+  cl::Hidden, cl::init(false));
 
 static constexpr size_t MinAlign = 16;
 static constexpr size_t WordSize = 16;
@@ -304,6 +311,7 @@ class Deluge {
   FunctionCallee TryHardReallocateInt;
   FunctionCallee TryHardReallocateIntWithAlignment;
   FunctionCallee TryHardReallocate;
+  FunctionCallee LogAllocation;
   FunctionCallee PtrPtr;
   FunctionCallee UpdateSidecar;
   FunctionCallee UpdateCapability;
@@ -1937,8 +1945,13 @@ class Deluge {
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndCount(Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(1), CI));
+        Value* Result = forgePtrWithTypeRepAndCount(
+          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(1), CI);
+        if (logAllocations) {
+          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
+            ->setDebugLoc(CI->getDebugLoc());
+        }
+        CI->replaceAllUsesWith(Result);
         CI->eraseFromParent();
         return true;
       }
@@ -1981,8 +1994,13 @@ class Deluge {
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndCount(Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI));
+        Value* Result = forgePtrWithTypeRepAndCount(
+          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI);
+        if (logAllocations) {
+          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
+            ->setDebugLoc(CI->getDebugLoc());
+        }
+        CI->replaceAllUsesWith(Result);
         CI->eraseFromParent();
         return true;
       }
@@ -2025,8 +2043,13 @@ class Deluge {
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndCount(Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI));
+        Value* Result = forgePtrWithTypeRepAndCount(
+          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI);
+        if (logAllocations) {
+          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
+            ->setDebugLoc(CI->getDebugLoc());
+        }
+        CI->replaceAllUsesWith(Result);
         CI->eraseFromParent();
         return true;
       }
@@ -2105,7 +2128,12 @@ class Deluge {
           Instruction::Add, ArraySize, ConstantInt::get(IntPtrTy, BaseSize),
           "deluge_alloc_size", CI);
         Size->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(forgePtrWithTypeRepAndSize(Alloc, Size, getTypeRep(DTD, CI), CI));
+        Value* Result = forgePtrWithTypeRepAndSize(Alloc, Size, getTypeRep(DTD, CI), CI);
+        if (logAllocations) {
+          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
+            ->setDebugLoc(CI->getDebugLoc());
+        }
+        CI->replaceAllUsesWith(Result);
         CI->eraseFromParent();
         return true;
       }
@@ -2852,6 +2880,7 @@ public:
     TryHardReallocateInt = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     TryHardReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     TryHardReallocate = M.getOrInsertFunction("deluge_try_hard_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    LogAllocation = M.getOrInsertFunction("deluge_log_allocation_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     PtrPtr = M.getOrInsertFunction("deluge_ptr_ptr_impl", LowRawPtrTy, LowWidePtrTy);
     UpdateSidecar = M.getOrInsertFunction("deluge_update_sidecar", Int128Ty, LowWidePtrTy, LowRawPtrTy);
     UpdateCapability = M.getOrInsertFunction("deluge_update_capability", Int128Ty, LowWidePtrTy, LowRawPtrTy);
@@ -2945,8 +2974,8 @@ public:
         Type* LowT = lowerType(T);
         // FIXME: We could totally mark these constant if we know that there's no pointer fixup!
         GlobalToGlobal[G] = new GlobalVariable(
-          M, LowT, false, GlobalValue::PrivateLinkage, UndefValue::get(LowT),
-          "deluge_hidden_global");
+          M, LowT, false, GlobalValue::InternalLinkage, UndefValue::get(LowT),
+          "deluge_hidden_global_" + G->getName());
       }
       HandleGlobal(G);
     }
