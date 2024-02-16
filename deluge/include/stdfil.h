@@ -445,8 +445,6 @@ void zprint_ptr(const void* ptr);
 /* Low-level functions that should be provided by libc, which should live above this. For now they are
    here because we don't have that libc. */
 __SIZE_TYPE__ zstrlen(const char* str);
-char* zstrchr(const char* str, int chr);
-void* zmemchr(const void* str, int chr, __SIZE_TYPE__ length);
 int zisdigit(int chr);
 
 /* This is almost like sprintf, but because Deluge knows the upper bounds of buf, this actually ends

@@ -3339,25 +3339,6 @@ void deluded_f_zstrlen(DELUDED_SIGNATURE)
     deluge_deallocate(str);
 }
 
-void deluded_f_zstrchr(DELUDED_SIGNATURE)
-{
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "zstrlen",
-        .line = 0,
-        .column = 0
-    };
-    deluge_ptr args = DELUDED_ARGS;
-    deluge_ptr rets = DELUDED_RETS;
-    deluge_ptr str_ptr = deluge_ptr_get_next_ptr(&args, &origin);
-    const char* str = deluge_check_and_get_new_str(str_ptr, &origin);
-    int chr = deluge_ptr_get_next_int(&args, &origin);
-    DELUDED_DELETE_ARGS();
-    deluge_check_access_ptr(rets, &origin);
-    *(deluge_ptr*)deluge_ptr_ptr(rets) = deluge_ptr_with_ptr(str_ptr, strchr(str, chr));
-    deluge_deallocate(str);
-}
-
 void deluded_f_zisdigit(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {

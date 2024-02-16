@@ -22,7 +22,7 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
   a function with the wrong signature will result in Deluge killing your program.
 
 - Deluge instruments va_arg and friends, so misusing it (even stashing/escaping it and then doing
-  stuff after the function returns) will not violate the Deluge type system, but will most likely kill
+  stuff after the function returns) will not break the Deluge type system, but will most likely kill
   your program.
 
 - Deluge is careful about what it tells the linker about your program, so that it can protect type or
