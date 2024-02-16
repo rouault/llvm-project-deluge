@@ -427,8 +427,9 @@ void zprint(const char* str);
 void zprint_long(long x);
 void zprint_ptr(const void* ptr);
 
-/* Low-level functions that should be provided by libc, which should live above this. For now they are
-   here because we don't have that libc. */
+/* Low-level functions that should be provided by libc, which lives above this. These are exposed for
+   the purpose of Deluge's own snprintf implementation, which lives below libc. They are also safe to
+   call instead of what libc offers. */
 __SIZE_TYPE__ zstrlen(const char* str);
 int zisdigit(int chr);
 

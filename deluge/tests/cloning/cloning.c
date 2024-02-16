@@ -28,6 +28,13 @@ struct foo_baz {
     struct baz baz;
 };
 
+struct thingy {
+    char* a;
+    int b;
+    char* c;
+    int d;
+};
+
 int main(int argc, char** argv)
 {
     struct foo* f = zalloc_zero(struct foo, 42);
@@ -70,6 +77,21 @@ int main(int argc, char** argv)
     baz_whatever->d = 6.1;
     char* whatever = (char*)(baz_whatever + 1);
     strcpy(whatever, "hello, world");
+
+    struct thingy* t = opaque(
+        zalloc_with_type(zcattype(ztypeof(struct thingy), sizeof(struct thingy) * 10,
+                                  ztypeof(double), sizeof(double) * 666),
+                         sizeof(struct thingy) * 10 + sizeof(double) * 666));
+    size_t i;
+    for (i = 10; i--;) {
+        t[i].a = "chrona";
+        t[i].b = i;
+        t[i].c = "zalew";
+        t[i].d = 42;
+    }
+    double* d = (double*)(t + 10);
+    for (i = 666; i--;)
+        d[i] = i + 0.666;
     
     zprintf("Spoko\n");
     return 0;
