@@ -64,3 +64,18 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 
 Right now it's like 200x slower than C. But I can kinda sorta run some of openssl and some of curl.
 Zlib works fine.
+
+This currently only works on Mac. To start, do:
+
+    ./setup_gits.sh
+    ./build_all.sh
+
+Then you can try compiling your first memory-safe hello world like:
+
+    xcrun build/bin/clang -o hello hello.c -g -O
+
+Feel free to use <stdio.h> since musl mostly works.
+
+If you want to play with Deluge API, include <stdfil.h> (see deluge/include/stdfil.h).
+
+Note that the resulting binary will run without needing to specify a DYLD_LIBRARY_PATH because hacks.
