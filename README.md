@@ -59,8 +59,8 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 
 - Deluge has a zunsafe_forge() primitive for forging any kind of capability you like, but I haven't
   used it anywhere other than the test suite. It's not even critical for the test suite, so I might
-  remove it. I thought it was going to be useful, but it's not. And it's unsafe. So it's great that I
-  haven't had to use it!
+  remove it entirely or else restrict it. Currently, this primitive's existence violates the GIMSO
+  principle (and it's the only violation of the principle that I know of).
 
 Right now it's like 200x slower than C. But I can kinda sorta run some of openssl and some of curl.
 Zlib works fine.
