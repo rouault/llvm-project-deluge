@@ -21,6 +21,10 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 - The Deluge calling convention carries bounds and type for the arguments and return value, so calling
   a function with the wrong signature will result in Deluge killing your program.
 
+- Deluge instruments va_arg and friends, so misusing it (even stashing/escaping it and then doing
+  stuff after the function returns) will not violate the Deluge type system, but will most likely kill
+  your program.
+
 - Memory allocation in Deluge prevents type confusion by isolating each Deluge type into its own heap
   and being careful about type alignment. This makes free() into at worst a logic error. This also
   means that some code changes are necessary. You need to tell Deluge the type at time of allocation.
@@ -30,6 +34,10 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
   type at runtime and ask the allocator to deal with it), and optional "hard" allocation (what OpenSSL
   calls the secure heap, so it's mlocked, DONT_DUMPed, zeroed on alloc and free, guarded with
   mprotected pages, and some other stuff).
+
+- I'm a lover of good GCs, so I've been designing Deluge with that in mind. There isn't anything in
+  Deluge that prevents me switching to a real-time GC instead of isolated heaps. I have a sick algo in
+  mind. But for now, I like how stuff Just Works with isoheaps.
 
 - Although Deluge pointers are 32 bytes, they are atomic by default, and are safe and useful to race
   on. Racing on a Deluge pointer will never result in a more capable pointer than any of the pointers
