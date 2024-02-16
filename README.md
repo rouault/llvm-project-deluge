@@ -47,7 +47,7 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 
 - Although Deluge pointers are 32 bytes, they are atomic by default, and are safe and useful to race
   on. Racing on a Deluge pointer will never result in a more capable pointer than any of the pointers
-  that were racily stores. Deluge achieves this without requiring extra fences or atomic ops on pointer
+  that were racily stored. Deluge achieves this without requiring extra fences or atomic ops on pointer
   loads and stores. Deluge pointers support wait-free compare-and-swap. I call this algorithm SideCap
   and I'll have to write it up at some point because it is hella dank.
 
