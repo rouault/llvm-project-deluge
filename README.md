@@ -1,39 +1,51 @@
-# The LLVM Compiler Infrastructure
+# Deluge
 
-Welcome to the LLVM project!
+This is an LLVM fork that I am doing for fun. It's called Deluge.
 
-This repository contains the source code for LLVM, a toolkit for the
-construction of highly optimized compilers, optimizers, and run-time
-environments.
+Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 
-The LLVM project has multiple components. The core of the project is
-itself called "LLVM". This contains all of the tools, libraries, and header
-files needed to process intermediate representations and convert them into
-object files. Tools include an assembler, disassembler, bitcode analyzer, and
-bitcode optimizer.
+- Deluge will kill your program if it detects a futile attempt to violate memory safety.
 
-C-like languages use the [Clang](http://clang.llvm.org/) frontend. This
-component compiles C, C++, Objective-C, and Objective-C++ code into LLVM bitcode
--- and from there into object files, using LLVM.
+- Deluge operates on the GIMSO principle: "Garbage In, Memory Safety Out!". In other words, given any
+  sequence of characters in your .h and .c files, even those written adversarially and in anger, the
+  Deluge compiler will either reject the program (possibly by crashing - most of my static checks are
+  implemented as assert() rn, LMAO - so be sure to compile with asserts on), or it will generate a
+  program that obeys the Deluge type system.
 
-Other components include:
-the [libc++ C++ standard library](https://libcxx.llvm.org),
-the [LLD linker](https://lld.llvm.org), and more.
+- Every pointer carries a capability under the Deluge type system. Each pointer knows its bounds and
+  each pointer knows the type of the memory it points at. Deluge will kill your program if you attempt
+  out-of-bounds accesses or type-confused accesses (accessing an int as a ptr or vice-versa). Deluge
+  will kill your program if you try to access a function pointer or call a data pointer.
 
-## Getting the Source Code and Building LLVM
+- The Deluge calling convention carries bounds and type for the arguments and return value, so calling
+  a function with the wrong signature will result in Deluge killing your program.
 
-Consult the
-[Getting Started with LLVM](https://llvm.org/docs/GettingStarted.html#getting-the-source-code-and-building-llvm)
-page for information on building and running LLVM.
+- Memory allocation in Deluge prevents type confusion by isolating each Deluge type into its own heap
+  and being careful about type alignment. This makes free() into at worst a logic error. This also
+  means that some code changes are necessary. You need to tell Deluge the type at time of allocation.
+  Deluge's allocation API natively supports objects or arrays of objects of any size and alignment
+  (including enormous alignments), flexes (objects with flexible array members, aka trailing arrays),
+  cloning (allocate memory of a type that matches some other object), reflection (you can build up a
+  type at runtime and ask the allocator to deal with it), and optional "hard" allocation (what OpenSSL
+  calls the secure heap, so it's mlocked, DONT_DUMPed, zeroed on alloc and free, guarded with
+  mprotected pages, and some other stuff).
 
-For information on how to contribute to the LLVM project, please take a look at
-the [Contributing to LLVM](https://llvm.org/docs/Contributing.html) guide.
+- Although Deluge pointers are 32 bytes, they are atomic by default, and are safe and useful to race
+  on. Racing on a Deluge pointer will never result in a more capable pointer than any of the pointers
+  that were racily stores. Deluge achieves this without requiring extra fences or atomic ops on pointer
+  loads and stores. Deluge pointers support wait-free compare-and-swap. I call this algorithm SideCap
+  and I'll have to write it up at some point because it is hella dank.
 
-## Getting in touch
+- Deluge has its own include and lib. To call a library from deluded code, you must delude that
+  library. Deluge's libc is a hacked musl. Its runtime, libdeluge, is based on libpas. The deluded musl
+  makes syscalls by calling into the syscall surface area that libdeluge provides. See
+  libpas/src/libpas/deluge_runtime.c for most of the action. Currently everything gets put into the
+  pizfix, so you can pizfix/bin/openssl or pizfix/bin/curl (kinda, there's more to do).
 
-Join the [LLVM Discourse forums](https://discourse.llvm.org/), [Discord
-chat](https://discord.gg/xS7Z362), or #llvm IRC channel on
-[OFTC](https://oftc.net/).
+- Deluge has a zunsafe_forge() primitive for forging any kind of capability you like, but I haven't
+  used it anywhere other than the test suite. It's not even critical for the test suite, so I might
+  remove it. I thought it was going to be useful, but it's not. And it's unsafe. So it's great that I
+  haven't had to use it!
 
-The LLVM project has adopted a [code of conduct](https://llvm.org/docs/CodeOfConduct.html) for
-participants to all modes of communication within the project.
+Right now it's like 200x slower than C. But I can kinda sorta run some of openssl and some of curl.
+Zlib works fine.
