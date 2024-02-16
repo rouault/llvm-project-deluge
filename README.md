@@ -15,7 +15,9 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
 - Every pointer carries a capability under the Deluge type system. Each pointer knows its bounds and
   each pointer knows the type of the memory it points at. Deluge will kill your program if you attempt
   out-of-bounds accesses or type-confused accesses (accessing an int as a ptr or vice-versa). Deluge
-  will kill your program if you try to access a function pointer or call a data pointer.
+  will kill your program if you try to access a function pointer or call a data pointer. Deluge loves
+  killing your program, so there are other pointer/type/bounds confusion cases that I'm forgetting
+  about right now.
 
 - The Deluge calling convention carries bounds and type for the arguments and return value, so calling
   a function with the wrong signature will result in Deluge killing your program.
