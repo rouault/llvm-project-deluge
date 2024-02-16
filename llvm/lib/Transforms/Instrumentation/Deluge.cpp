@@ -266,7 +266,6 @@ class Deluge {
   BitCastInst* Dummy;
 
   // High-level functions available to the user.
-  Value* ZunsafeForgeImpl;
   Value* ZrestrictImpl;
   Value* ZallocImpl;
   Value* ZallocFlexImpl;
@@ -1853,27 +1852,6 @@ class Deluge {
           return true;
       }
       
-      if (CI->getCalledOperand() == ZunsafeForgeImpl) {
-        if (verbose)
-          errs() << "Lowering unsafe forge\n";
-        lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
-        lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        Value* LowPtr = lowerPtr(CI->getArgOperand(0), CI);
-        Value* TypeRep = getTypeRep(dataForLowType(LowT), CI);
-        Instruction* Check = CallInst::Create(
-          CheckForge,
-          { LowPtr, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowT)), CI->getArgOperand(2), TypeRep,
-            getOrigin(CI->getDebugLoc()) },
-          "", CI);
-        Check->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndCount(LowPtr, TypeRep, LowT, CI->getArgOperand(2), CI));
-        CI->eraseFromParent();
-        return true;
-      }
-
       if (CI->getCalledOperand() == ZrestrictImpl) {
         if (verbose)
           errs() << "Lowering restrict\n";
@@ -2390,7 +2368,6 @@ class Deluge {
       if (verbose)
         errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
 
-      assert(CI->getCalledOperand() != ZunsafeForgeImpl);
       assert(CI->getCalledOperand() != ZrestrictImpl);
       assert(CI->getCalledOperand() != ZallocImpl);
       assert(CI->getCalledOperand() != ZallocFlexImpl);
@@ -2739,8 +2716,6 @@ public:
       DSO->eraseFromParent();
     }
     
-    ZunsafeForgeImpl = M.getOrInsertFunction(
-      "zunsafe_forge_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZrestrictImpl = M.getOrInsertFunction(
       "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZallocImpl = M.getOrInsertFunction(
@@ -2761,7 +2736,6 @@ public:
       "zhard_realloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
     ZtypeofImpl = M.getOrInsertFunction("ztypeof_impl", LowRawPtrTy, LowRawPtrTy).getCallee();
 
-    assert(cast<Function>(ZunsafeForgeImpl)->isDeclaration());
     assert(cast<Function>(ZrestrictImpl)->isDeclaration());
     assert(cast<Function>(ZallocImpl)->isDeclaration());
     assert(cast<Function>(ZallocFlexImpl)->isDeclaration());
@@ -2774,7 +2748,6 @@ public:
     assert(cast<Function>(ZtypeofImpl)->isDeclaration());
     
     if (verbose) {
-      errs() << "zunsafe_forge_impl = " << ZunsafeForgeImpl << "\n";
       errs() << "zrestrict_impl = " << ZrestrictImpl << "\n";
       errs() << "zalloc_impl = " << ZallocImpl << "\n";
       errs() << "zalloc_flex_impl = " << ZallocFlexImpl << "\n";
@@ -3080,7 +3053,6 @@ public:
     }
     for (Function* F : Functions) {
       if (F->isIntrinsic() ||
-          F == ZunsafeForgeImpl ||
           F == ZrestrictImpl ||
           F == ZallocImpl ||
           F == ZallocFlexImpl ||

@@ -69,7 +69,6 @@ typedef struct ztype ztype;
 
 /* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may 
    crash the compiler or produce a program that traps extra hard. */
-void* zunsafe_forge_impl(const void* ptr, void* type_like, __SIZE_TYPE__ count);
 void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
 void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
 void* zalloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
@@ -83,20 +82,6 @@ void* zhard_aligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_
 void* zhard_realloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
 _Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
 ztype* ztypeof_impl(void* type_like);
-
-/* Unsafely creates a pointer that will claim to point at count repetitions of the given type.
-   
-   It's super awesome to never use this. So, far the only uses of this are in the test suite, just
-   to make sure it works at all.
-   
-   This is the only escape hatch (other than writing legacy C code and linking it to your Deluge code).
-   
-   ptr can be anything castable to const void*. type is a type expression. count must be __SIZE_TYPE__
-   ish. */
-#define zunsafe_forge(ptr, type, count) ({ \
-        type __d_temporary; \
-        (type*)zunsafe_forge_impl((const void*)(ptr), &__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
 
 /* Safely restricts the capability of the incoming pointer. If the given pointer cannot be treated as
    the given type and size, trap.
@@ -599,21 +584,13 @@ _Bool zis_runtime_testing_enabled(void);
    This is here so that the test suite can simulate pointer races.
    
    There is no way to use this API in a memory-unsafe way. If you find a way to create a more
-   powerful capability by using this API, then it's a Deluge bug and we should fix it.
-   
-   Note that it *is* possible to combine zunsafe_forge and this API to do bizarre things. For
-   example, the defenses against races assume that you'll never have two capabilities to the same
-   memory that disagree on type. Also, the rest of Deluge makes that assumption. That assumption
-   holds if you don't use zunsafe_forge. But you can totally use zunsafe_forge to violate that
-   assumption. Also, you shouldn't ever use zunsafe_forge except if there is literally like no
-   other way to make your shit work, and even then you should feel super bad about yourself. */
+   powerful capability by using this API, then it's a Deluge bug and we should fix it. */
 void* zborkedptr(void* sidecar, void* capability);
 
-/* Asks Deluge to run additional pointer validation on this pointer. If memory safety holds (i.e.
-   there are no Deluge bugs and you didn't zunsafe_forge and you didn't link to any legacy C
-   other than what libdeluge uses), then these checks will succeed. If they don't, then it's a
-   Deluge bug, and we should fix it. It could be a real bug, or it could be a bug in the validation
-   checks. They are designed to be hella strict and maybe I made them too strict.
+/* Asks Deluge to run additional pointer validation on this pointer. If memory safety holds, then
+   these checks will succeed. If they don't, then it's a Deluge bug, and we should fix it. It could
+   be a real bug, or it could be a bug in the validation checks. They are designed to be hella strict
+   and maybe I made them too strict.
    
    If you run with pizfix/lib_test in your library path, then this check happens in a bunch of
    random places anyway (and that's the main reason why the lib_test version is so slow). */

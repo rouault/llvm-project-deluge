@@ -1,7 +1,0 @@
-return:
-  failure
-output-includes:
-  - "This ptr is 0x12345,0x12345,0x125df,type{int} and stuff."
-  - "This type is type{2976,16,iSCiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiSCiiiiiiiiiiiSCi} or whatever."
-  - "deluge panic: thwarted a futile attempt to violate memory safety."
-  - "bad zunsafe_forge: pointer is not aligned to the type's alignment"

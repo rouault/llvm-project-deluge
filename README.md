@@ -57,10 +57,11 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
   libpas/src/libpas/deluge_runtime.c for most of the action. Currently everything gets put into the
   pizfix, so you can pizfix/bin/openssl or pizfix/bin/curl (kinda, there's more to do).
 
-- Deluge has a zunsafe_forge() primitive for forging any kind of capability you like, but I haven't
-  used it anywhere other than the test suite. It's not even critical for the test suite, so I might
-  remove it entirely or else restrict it. Currently, this primitive's existence violates the GIMSO
-  principle (and it's the only violation of the principle that I know of).
+- There is no escape! Deluded code cannot call anything other than other Deluded code or legacy C code
+  that exposes itself using Deluge ABI. The only such legacy C code that exists right now is in
+  libdeluge and we should probably keep it that way. Therefore, from within Deluge, it's not possible
+  to escape Deluge. It's just as GIMSO as Java. (It's even more GIMSO than Java if you put yourself in
+  the Java boot classpath and go to town on sun.misc.Unsafe - Deluge has nothing like that.)
 
 Right now it's like 200x slower than C. But I can kinda sorta run some of openssl and some of curl.
 Zlib works fine.
