@@ -25,6 +25,12 @@ Deluge is a memory-safe compiler and runtime for C. What I mean by that is:
   stuff after the function returns) will not violate the Deluge type system, but will most likely kill
   your program.
 
+- Deluge is careful about what it tells the linker about your program, so that it can protect type or
+  bounds confusion arising from mislinked globals. If you define a global of one type in one file, and
+  declare it extra with a different type (or different bounds) in another file, and then link and run,
+  then the moment that the second file actually tries to access its type-confused reference, Deluge
+  will kill your program.
+
 - Memory allocation in Deluge prevents type confusion by isolating each Deluge type into its own heap
   and being careful about type alignment. This makes free() into at worst a logic error. This also
   means that some code changes are necessary. You need to tell Deluge the type at time of allocation.
