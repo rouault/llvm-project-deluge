@@ -2661,6 +2661,7 @@ static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
     uintptr_t word_type_index_offset;
     uintptr_t first_dst_word_type_index;
     uintptr_t first_src_word_type_index;
+    type_overlap_result result;
 
     dst_type = deluge_ptr_type(dst);
     src_type = deluge_ptr_type(src);
@@ -2682,6 +2683,8 @@ static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
         return int_type_overlap;
     }
 
+    result = int_type_overlap;
+    
     num_word_types = (dst_offset + count - 1) / DELUGE_WORD_SIZE - dst_offset / DELUGE_WORD_SIZE + 1;
     first_dst_word_type_index = dst_offset / DELUGE_WORD_SIZE;
     first_src_word_type_index = src_offset / DELUGE_WORD_SIZE;
@@ -2704,6 +2707,9 @@ static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
             deluge_ptr_to_new_string(dst), deluge_ptr_to_new_string(src), count,
             deluge_word_type_to_new_string(dst_word_type),
             deluge_word_type_to_new_string(src_word_type));
+
+        if (dst_word_type != DELUGE_WORD_TYPE_INT)
+            result = possible_ptr_type_overlap;
     }
 
     /* We cannot copy parts of pointers. */
@@ -2730,8 +2736,7 @@ static type_overlap_result check_type_overlap(deluge_ptr dst, deluge_ptr src,
             origin);
     }
 
-    /* We could do better here if we really wanted to. */
-    return possible_ptr_type_overlap;
+    return result;
 }
 
 static type_overlap_result check_copy(deluge_ptr dst, deluge_ptr src,
