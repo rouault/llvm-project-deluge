@@ -16,11 +16,11 @@ int main(int argc, char** argv)
     struct bar* b = zalloc_flex(struct bar, z, 3333);
     b->x = 42;
     b->y = zalloc(struct foo, 1);
-    b->y->x = zalloc_flex_zero(struct bar, z, 0);
+    b->y->x = zalloc_flex(struct bar, z, 0);
     b->y->y = 1410;
     unsigned index;
     for (index = 3333; index--;) {
-        b->z[index].x = zalloc_flex_zero(struct bar, z, index % 666);
+        b->z[index].x = zalloc_flex(struct bar, z, index % 666);
         b->z[index].y = 1000 - index;
     }
 

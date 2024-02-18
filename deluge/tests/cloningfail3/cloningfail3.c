@@ -30,9 +30,9 @@ struct foo_baz {
 
 int main(int argc, char** argv)
 {
-    struct foo* f = zalloc_zero(struct foo, 42);
-    struct bar* b = zalloc_flex_zero(struct bar, d, 666);
-    unsigned* a = zalloc_zero(unsigned, 100);
+    struct foo* f = zalloc(struct foo, 42);
+    struct bar* b = zalloc_flex(struct bar, d, 666);
+    unsigned* a = zalloc(unsigned, 100);
 
     ztype* ft = zgettype(f);
     struct foo* f2 = zalloc_with_type(ft, sizeof(struct foo));

@@ -17,7 +17,7 @@ int main(int argc, char** argv)
     struct bar* b = zalloc_flex_cat(struct bar, unsigned short, 3333);
     b->x = 42;
     b->y = zalloc(struct foo, 1);
-    b->y->x = zalloc_flex_cat_zero(struct bar, unsigned short, 0);
+    b->y->x = zalloc_flex_cat(struct bar, unsigned short, 0);
     b->y->y = 1410;
     unsigned index;
     for (index = 3333; index--;)

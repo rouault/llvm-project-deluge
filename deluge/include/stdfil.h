@@ -96,6 +96,8 @@ ztype* ztypeof_impl(void* type_like);
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
    by pointers that view it as anything other than count or more repetitions of the given type.
    
+   Always zeroes newly allocated memory. There is no way to allocate memory that isn't zeroed.
+   
    Misuse of zalloc/zfree may cause logic errors where zalloc will return the same pointer as it had
    previously returned, so pointers that you expected to different objects will end up pointing at the
    same object.
@@ -108,19 +110,10 @@ ztype* ztypeof_impl(void* type_like);
         (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
-#define zalloc_zero(type, count) ({ \
-        type __d_temporary; \
-        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
-        type* __d_result = (type*)zalloc_impl(&__d_temporary, __d_count); \
-        if (__d_result) \
-            __builtin_memset(__d_result, 0, sizeof(type) * __d_count); \
-        __d_result; \
-    })
-
 #define zcalloc(type, something_to_multiply, another_thing_to_multiply) ({ \
         __SIZE_TYPE__ __d_size; \
         _Bool __d_mul = zcalloc_multiply((something_to_multiply), (another_thing_to_multiply), &__d_size); \
-        __d_mul ? zalloc_zero(type, __d_size) : NULL; \
+        __d_mul ? zalloc(type, __d_size) : NULL; \
     })
 
 #define zaligned_alloc(type, alignment, count) ({ \
@@ -145,22 +138,6 @@ ztype* ztypeof_impl(void* type_like);
             &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
     })
 
-#define zalloc_flex_zero(struct_type, field, count) ({ \
-        struct_type __d_temporary; \
-        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
-        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
-        struct_type* __d_result = (struct_type*)zalloc_flex_impl( \
-            &__d_temporary, __builtin_offsetof(struct_type, field), \
-            &__d_trailing_temporary, __d_count); \
-        if (__d_result) { \
-            __builtin_memset( \
-                __d_result, 0, \
-                __builtin_offsetof(struct_type, field) \
-                + sizeof(__d_trailing_temporary) * __d_count); \
-        } \
-        __d_result; \
-    })
-
 /* Allocates a flex object, like zalloc_flex, but is useful for cases where the type doesn't
    actually have a flexible array member, and you'd like the flexible array to be placed after
    sizeof the type.
@@ -178,22 +155,6 @@ ztype* ztypeof_impl(void* type_like);
             &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
     })
 
-#define zalloc_flex_cat_zero(base_type, array_type, count) ({ \
-        base_type __d_temporary; \
-        array_type __d_trailing_temporary; \
-        __SIZE_TYPE__ __d_count = (__SIZE_TYPE__)(count); \
-        base_type* __d_result = (base_type*)zalloc_flex_impl( \
-            &__d_temporary, sizeof(base_type), \
-            &__d_trailing_temporary, __d_count); \
-        if (__d_result) { \
-            __builtin_memset( \
-                __d_result, 0, \
-                sizeof(base_type) \
-                + sizeof(__d_trailing_temporary) * __d_count); \
-        } \
-        __d_result; \
-    })
-
 /* Allocates count repetitions of the given type from virtual memory that has never been pointed at
    by pointers that view it as anything other than count or more repetitions of the given type.
    The new memory is populated with a copy of the passed-in pointer. If the pointer points at more
@@ -201,7 +162,10 @@ ztype* ztypeof_impl(void* type_like);
    at fewer than count repetitions of the type, then we only copy whatever it has.
    
    The pointer must point at an allocation of the same type as the one we're requesting, else this
-   traps.
+   traps. See the rules for zfree for all of the checks performed on the old pointer.
+   
+   In addition to copying data from the old allocation, the new memory is zeroed. So, if you use
+   zrealloc to grow an array, then the added elements will start out zero.
    
    Misuse of zrealloc/zalloc/zfree may cause logic errors where zalloc/realloc will return the same
    pointer as it had previously returned.
@@ -380,8 +344,6 @@ ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
    isoheap dynamically), it's exactly the same as zalloc. */
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
-void* zalloc_with_type_zero(ztype* type, __SIZE_TYPE__ size);
-
 /* Allocate an object that is exactly like the one passed in, including the lower bound. For example,
    if you pass in a pointer to the middle of an array, this will allocate an array and return a
    pointer to the middle of it, offset in the same way as the original.
@@ -393,8 +355,6 @@ void* zalloc_with_type_zero(ztype* type, __SIZE_TYPE__ size);
 
    Ideally, there would be a way to carry around the type+size and put it in a const initializer. */
 void* zalloc_clone(void* obj);
-
-void* zalloc_clone_zero(void* obj);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
    Returns that string. You have to zfree the string when you're done with it.
