@@ -45,6 +45,9 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_conf
 
     switch (config.fast_megapage_kind_func(begin)) {
     case pas_small_exclusive_segregated_fast_megapage_kind:
+        if (config.small_segregated_config.check_deallocation
+            && !pas_segregated_page_is_allocated(begin, config.small_segregated_config))
+            return 0;
         return pas_segregated_page_get_object_size_for_address_and_page_config(
             begin, config.small_segregated_config, pas_segregated_page_exclusive_role);
     case pas_small_other_fast_megapage_kind: {
@@ -52,6 +55,9 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_conf
         page_and_kind = pas_get_page_base_and_kind_for_small_other_in_fast_megapage(begin, config);
         switch (page_and_kind.page_kind) {
         case pas_small_shared_segregated_page_kind:
+            if (config.small_segregated_config.check_deallocation
+                && !pas_segregated_page_is_allocated(begin, config.small_segregated_config))
+                return 0;
             return pas_segregated_page_get_object_size_for_address_in_page(
                 pas_page_base_get_segregated(page_and_kind.page_base),
                 begin,
@@ -76,6 +82,11 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_conf
             switch (pas_page_base_get_kind(page_base)) {
             case pas_small_shared_segregated_page_kind:
                 PAS_ASSERT(!config.small_segregated_is_in_megapage);
+                if (config.small_segregated_config.check_deallocation
+                    && !pas_segregated_page_is_allocated_with_page(
+                        pas_page_base_get_segregated(page_base), begin,
+                        config.small_segregated_config))
+                    return 0;
                 return pas_segregated_page_get_object_size_for_address_in_page(
                     pas_page_base_get_segregated(page_base),
                     begin,
@@ -83,6 +94,11 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_conf
                     pas_segregated_page_shared_role);
             case pas_small_exclusive_segregated_page_kind:
                 PAS_ASSERT(!config.small_segregated_is_in_megapage);
+                if (config.small_segregated_config.check_deallocation
+                    && !pas_segregated_page_is_allocated_with_page(
+                        pas_page_base_get_segregated(page_base), begin,
+                        config.small_segregated_config))
+                    return 0;
                 return pas_segregated_page_get_object_size_for_address_in_page(
                     pas_page_base_get_segregated(page_base),
                     begin,
@@ -94,12 +110,22 @@ static PAS_ALWAYS_INLINE size_t pas_get_allocation_size(void* ptr, pas_heap_conf
                     pas_page_base_get_bitfit(page_base),
                     begin);
             case pas_medium_shared_segregated_page_kind:
+                if (config.medium_segregated_config.check_deallocation
+                    && !pas_segregated_page_is_allocated_with_page(
+                        pas_page_base_get_segregated(page_base), begin,
+                        config.medium_segregated_config))
+                    return 0;
                 return pas_segregated_page_get_object_size_for_address_in_page(
                     pas_page_base_get_segregated(page_base),
                     begin,
                     config.medium_segregated_config,
                     pas_segregated_page_shared_role);
             case pas_medium_exclusive_segregated_page_kind:
+                if (config.medium_segregated_config.check_deallocation
+                    && !pas_segregated_page_is_allocated_with_page(
+                        pas_page_base_get_segregated(page_base), begin,
+                        config.medium_segregated_config))
+                    return 0;
                 return pas_segregated_page_get_object_size_for_address_in_page(
                     pas_page_base_get_segregated(page_base),
                     begin,

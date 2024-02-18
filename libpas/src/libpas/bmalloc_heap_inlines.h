@@ -95,9 +95,9 @@ PAS_API void* bmalloc_try_allocate_with_nontrivial_alignment(size_t size, size_t
 PAS_API void* bmalloc_allocate_with_nontrivial_alignment(size_t size, size_t alignment);
 
 PAS_API void* bmalloc_try_reallocate_with_nontrivial_alignment(void* old_ptr, size_t new_size, size_t alignment,
-															   pas_reallocate_free_mode free_mode);
+                                                               pas_reallocate_free_mode free_mode);
 PAS_API void* bmalloc_reallocate_with_nontrivial_alignment(void* old_ptr, size_t new_size, size_t alignment,
-														   pas_reallocate_free_mode free_mode);
+                                                           pas_reallocate_free_mode free_mode);
 
 PAS_API void* bmalloc_try_reallocate_casual(void* old_ptr, size_t new_size, pas_reallocate_free_mode free_mode);
 PAS_API void* bmalloc_reallocate_casual(void* old_ptr, size_t new_size, pas_reallocate_free_mode free_mode);
@@ -114,8 +114,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_try_allocate_inline(size_t size)
 static PAS_ALWAYS_INLINE void*
 bmalloc_try_allocate_with_alignment_inline(size_t size, size_t alignment)
 {
-	if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
-		return bmalloc_try_allocate_inline(size);
+    if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
+        return bmalloc_try_allocate_inline(size);
     return bmalloc_try_allocate_with_nontrivial_alignment(size, alignment);
 }
 
@@ -138,8 +138,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_allocate_inline(size_t size)
 static PAS_ALWAYS_INLINE void*
 bmalloc_allocate_with_alignment_inline(size_t size, size_t alignment)
 {
-	if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
-		return bmalloc_allocate_inline(size);
+    if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
+        return bmalloc_allocate_inline(size);
     return bmalloc_allocate_with_nontrivial_alignment(size, alignment);
 }
 
@@ -151,23 +151,23 @@ static PAS_ALWAYS_INLINE void* bmalloc_allocate_zeroed_inline(size_t size)
 }
 
 static PAS_ALWAYS_INLINE pas_allocation_result bmalloc_try_reallocate_fast_inline_only_callback(pas_heap* heap,
-																								size_t new_size,
-																								void* arg,
-																								pas_thread_local_cache* cache)
+                                                                                                size_t new_size,
+                                                                                                void* arg,
+                                                                                                pas_thread_local_cache* cache)
 {
-	PAS_ASSERT(!arg);
-	PAS_UNUSED_PARAM(heap);
+    PAS_ASSERT(!arg);
+    PAS_UNUSED_PARAM(heap);
 
-	return bmalloc_try_allocate_impl_inline_only_with_cache(new_size, 1, cache);
+    return bmalloc_try_allocate_impl_inline_only_with_cache(new_size, 1, cache);
 }
 
 static PAS_ALWAYS_INLINE void*
 bmalloc_try_reallocate_inline(void* old_ptr, size_t new_size,
                               pas_reallocate_free_mode free_mode)
 {
-	pas_allocation_result result;
+    pas_allocation_result result;
 
-	result = pas_try_reallocate_fast_inline_only(
+    result = pas_try_reallocate_fast_inline_only(
         old_ptr,
         &bmalloc_common_primitive_heap,
         new_size,
@@ -176,30 +176,30 @@ bmalloc_try_reallocate_inline(void* old_ptr, size_t new_size,
         bmalloc_try_reallocate_fast_inline_only_callback,
         NULL);
 
-	if (result.did_succeed)
-		return (void*)result.begin;
+    if (result.did_succeed)
+        return (void*)result.begin;
 
-	return bmalloc_try_reallocate_casual(old_ptr, new_size, free_mode);
+    return bmalloc_try_reallocate_casual(old_ptr, new_size, free_mode);
 }
 
 static PAS_ALWAYS_INLINE pas_allocation_result bmalloc_reallocate_fast_inline_only_callback(pas_heap* heap,
-																							size_t new_size,
-																							void* arg,
-																							pas_thread_local_cache* cache)
+                                                                                            size_t new_size,
+                                                                                            void* arg,
+                                                                                            pas_thread_local_cache* cache)
 {
-	PAS_ASSERT(!arg);
-	PAS_UNUSED_PARAM(heap);
+    PAS_ASSERT(!arg);
+    PAS_UNUSED_PARAM(heap);
 
-	return bmalloc_allocate_impl_inline_only_with_cache(new_size, 1, cache);
+    return bmalloc_allocate_impl_inline_only_with_cache(new_size, 1, cache);
 }
 
 static PAS_ALWAYS_INLINE void*
 bmalloc_reallocate_inline(void* old_ptr, size_t new_size,
                           pas_reallocate_free_mode free_mode)
 {
-	pas_allocation_result result;
+    pas_allocation_result result;
 
-	result = pas_try_reallocate_fast_inline_only(
+    result = pas_try_reallocate_fast_inline_only(
         old_ptr,
         &bmalloc_common_primitive_heap,
         new_size,
@@ -208,28 +208,28 @@ bmalloc_reallocate_inline(void* old_ptr, size_t new_size,
         bmalloc_reallocate_fast_inline_only_callback,
         NULL);
 
-	if (result.did_succeed)
-		return (void*)result.begin;
+    if (result.did_succeed)
+        return (void*)result.begin;
 
-	return bmalloc_reallocate_casual(old_ptr, new_size, free_mode);
+    return bmalloc_reallocate_casual(old_ptr, new_size, free_mode);
 }
 
 static PAS_ALWAYS_INLINE void*
 bmalloc_try_reallocate_with_alignment_inline(void* old_ptr, size_t new_size, size_t alignment,
                                              pas_reallocate_free_mode free_mode)
 {
-	if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
-		return bmalloc_try_reallocate_inline(old_ptr, new_size, free_mode);
-	return bmalloc_try_reallocate_with_nontrivial_alignment(old_ptr, new_size, alignment, free_mode);
+    if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
+        return bmalloc_try_reallocate_inline(old_ptr, new_size, free_mode);
+    return bmalloc_try_reallocate_with_nontrivial_alignment(old_ptr, new_size, alignment, free_mode);
 }
 
 static PAS_ALWAYS_INLINE void*
 bmalloc_reallocate_with_alignment_inline(void* old_ptr, size_t new_size, size_t alignment,
                                          pas_reallocate_free_mode free_mode)
 {
-	if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
-		return bmalloc_reallocate_inline(old_ptr, new_size, free_mode);
-	return bmalloc_reallocate_with_nontrivial_alignment(old_ptr, new_size, alignment, free_mode);
+    if (PAS_LIKELY(alignment <= BMALLOC_MINALIGN_SIZE))
+        return bmalloc_reallocate_inline(old_ptr, new_size, free_mode);
+    return bmalloc_reallocate_with_nontrivial_alignment(old_ptr, new_size, alignment, free_mode);
 }
 
 PAS_CREATE_TRY_ALLOCATE(
@@ -377,7 +377,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_try_iso_reallocate_array_by_size_inline(
         bmalloc_try_iso_allocate_array_impl_for_realloc,
         &bmalloc_typed_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void* bmalloc_iso_reallocate_array_by_size_inline(
@@ -391,7 +392,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_iso_reallocate_array_by_size_inline(
         bmalloc_iso_allocate_array_impl_for_realloc,
         &bmalloc_typed_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void* bmalloc_try_iso_reallocate_array_by_count_inline(
@@ -405,7 +407,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_try_iso_reallocate_array_by_count_inline(
         bmalloc_try_iso_allocate_array_impl_for_realloc,
         &bmalloc_typed_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void* bmalloc_iso_reallocate_array_by_count_inline(
@@ -419,7 +422,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_iso_reallocate_array_by_count_inline(
         bmalloc_iso_allocate_array_impl_for_realloc,
         &bmalloc_typed_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 PAS_CREATE_TRY_ALLOCATE_PRIMITIVE(
@@ -508,7 +512,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_try_reallocate_flex_inline(
         bmalloc_try_allocate_flex_impl_for_realloc,
         &bmalloc_flex_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void* bmalloc_reallocate_flex_inline(
@@ -522,7 +527,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_reallocate_flex_inline(
         bmalloc_allocate_flex_impl_for_realloc,
         &bmalloc_flex_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 PAS_CREATE_TRY_ALLOCATE_PRIMITIVE(
@@ -619,7 +625,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_try_reallocate_auxiliary_inline(
         bmalloc_try_allocate_auxiliary_impl_for_realloc,
         &bmalloc_primitive_runtime_config.base,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void* bmalloc_reallocate_auxiliary_inline(void* old_ptr,
@@ -635,7 +642,8 @@ static PAS_ALWAYS_INLINE void* bmalloc_reallocate_auxiliary_inline(void* old_ptr
         bmalloc_allocate_auxiliary_impl_for_realloc,
         &bmalloc_primitive_runtime_config.base,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void bmalloc_deallocate_inline(void* ptr)

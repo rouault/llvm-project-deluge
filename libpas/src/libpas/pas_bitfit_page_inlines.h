@@ -598,10 +598,24 @@ static PAS_ALWAYS_INLINE uintptr_t pas_bitfit_page_deallocate_with_page_impl(
 
     switch (mode) {
     case pas_bitfit_page_deallocate_with_page_impl_get_allocation_size_mode:
+        if ((bit_index << page_config.base.min_align_shift) != offset)
+            return 0;
+
+        if (offset < pas_bitfit_page_offset_to_first_object(page_config))
+            return 0;
+        
+        if (offset > pas_bitfit_page_offset_to_first_object(page_config)
+            && (!pas_bitvector_get(pas_bitfit_page_free_bits(page), bit_index - 1)
+                && !pas_bitvector_get(pas_bitfit_page_object_end_bits(page, page_config),
+                                      bit_index - 1)))
+            return 0;
         break;
         
     case pas_bitfit_page_deallocate_with_page_impl_deallocate_mode:
     case pas_bitfit_page_deallocate_with_page_impl_shrink_mode:
+        if ((bit_index << page_config.base.min_align_shift) != offset)
+            pas_deallocation_did_fail("attempt to free interior pointer", begin);
+        
         pas_lock_lock(&owner->ownership_lock);
         
         pas_bitfit_page_testing_verify(page);
@@ -923,7 +937,7 @@ static PAS_ALWAYS_INLINE size_t pas_bitfit_page_get_allocation_size_with_page(
 {
     PAS_ASSERT(page_config.base.is_enabled);
     return pas_bitfit_page_deallocate_with_page_impl(
-        page, begin, page_config, pas_bitfit_page_deallocate_with_page_impl_get_allocation_size_mode ,0)
+        page, begin, page_config, pas_bitfit_page_deallocate_with_page_impl_get_allocation_size_mode, 0)
         << page_config.base.min_align_shift;
 }
 

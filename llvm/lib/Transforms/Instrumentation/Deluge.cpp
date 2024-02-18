@@ -103,8 +103,7 @@ struct CoreDelugeType {
       assert(WordTypes.back() == DelugeWordType::Int);
     }
     Size = (Size + Alignment - 1) / Alignment * Alignment;
-    while ((Size + WordSize - 1) / WordSize > WordTypes.size())
-      WordTypes.push_back(DelugeWordType::OffLimits);
+    addOffLimits();
   }
 
   // Append two types to each other. Does not work for special types like int or func. Returns the
@@ -122,13 +121,23 @@ struct CoreDelugeType {
     return Result;
   }
 
-  void truncate(size_t NewSize) {
-    assert(NewSize <= Size);
+  void truncateOrPad(size_t NewSize) {
     if (NewSize == Size)
       return;
+    if (NewSize > Size) {
+      Size = NewSize;
+      addOffLimits();
+      return;
+    }
     Size = NewSize;
     while (WordTypes.size() > (Size + WordSize - 1) / WordSize)
       WordTypes.pop_back();
+  }
+
+private:
+  void addOffLimits() {
+    while ((Size + WordSize - 1) / WordSize > WordTypes.size())
+      WordTypes.push_back(DelugeWordType::OffLimits);
   }
 };
 
@@ -2051,7 +2060,8 @@ class Deluge {
         assert(TrailingDTD->Type.Main.Size);
 
         DelugeType FlexType = BaseDTD->Type;
-        FlexType.Main.truncate(static_cast<size_t>(cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue()));
+        FlexType.Main.truncateOrPad(
+          static_cast<size_t>(cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue()));
         assert(!FlexType.Trailing.isValid());
         assert(!TrailingDTD->Type.Trailing.isValid());
         if (verbose) {

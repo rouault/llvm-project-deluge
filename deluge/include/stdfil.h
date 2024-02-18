@@ -233,20 +233,8 @@ ztype* ztypeof_impl(void* type_like);
    identify an object it had allocated that it will now free, or it will kill the shit out of your
    program.
    
-   If you pass a pointer to the middle of an allocated object (which is still possible by zrestricting
-   and then zfreeing), then this might either free the whole object, or trap now, or trap at any future
-   call to zfree or zalloc. Basically, for interior pointers the allocator might first round them down
-   to some minalign as a byproduct of the algorithm's bitvector implementation. So if this works:
-   
-       zfree(ptr);
-   
-   Then this will also work and be equivalent in practice for right now, assuming that at ptr+1 there's
-   an int byte:
-   
-       zfree(zrestrict((char*)ptr + 1, char, 1));
-   
-   It works and is safe because the allocator happens to not mind whatever's in the low 4 bits. The
-   zrestrict call is necessary to get around the ptr=lower check.
+   If you pass a pointer to the middle of an allocated object even when ptr == lower (which is still
+   possible by zrestricting and then zfreeing), then this will trap.
    
    If you free an object and then use it again, then that might be fine. But, free memory may be
    decommitted at any time (so many start to trap or suddenly become all-zero). Memory that becomes
@@ -596,6 +584,11 @@ void* zborkedptr(void* sidecar, void* capability);
    If you run with pizfix/lib_test in your library path, then this check happens in a bunch of
    random places anyway (and that's the main reason why the lib_test version is so slow). */
 void zvalidate_ptr(void* ptr);
+
+/* Suspend the scavenger. If the scavenger is suspended, then free pages are not returned to the OS.
+   This is intended to be used only for testing. */
+void zscavenger_suspend(void);
+void zscavenger_resume(void);
 
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 

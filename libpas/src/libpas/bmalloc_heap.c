@@ -67,16 +67,16 @@ PAS_NEVER_INLINE void* bmalloc_allocate_casual(size_t size)
 
 PAS_NEVER_INLINE void* bmalloc_try_allocate_with_nontrivial_alignment(size_t size, size_t alignment)
 {
-	return (void*)bmalloc_try_allocate_with_alignment_impl(size, alignment).begin;
+    return (void*)bmalloc_try_allocate_with_alignment_impl(size, alignment).begin;
 }
 
 PAS_NEVER_INLINE void* bmalloc_allocate_with_nontrivial_alignment(size_t size, size_t alignment)
 {
-	return (void*)bmalloc_allocate_with_alignment_impl(size, alignment).begin;
+    return (void*)bmalloc_allocate_with_alignment_impl(size, alignment).begin;
 }
 
 PAS_NEVER_INLINE void* bmalloc_try_reallocate_with_nontrivial_alignment(void* old_ptr, size_t new_size, size_t alignment,
-																		pas_reallocate_free_mode free_mode)
+                                                                        pas_reallocate_free_mode free_mode)
 {
     return pas_try_reallocate_intrinsic_with_alignment(
         old_ptr,
@@ -86,11 +86,12 @@ PAS_NEVER_INLINE void* bmalloc_try_reallocate_with_nontrivial_alignment(void* ol
         BMALLOC_HEAP_CONFIG,
         bmalloc_try_allocate_with_alignment_impl_for_realloc_with_alignment,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 PAS_NEVER_INLINE void* bmalloc_reallocate_with_nontrivial_alignment(void* old_ptr, size_t new_size, size_t alignment,
-																	pas_reallocate_free_mode free_mode)
+                                                                    pas_reallocate_free_mode free_mode)
 {
     return pas_try_reallocate_intrinsic_with_alignment(
         old_ptr,
@@ -100,11 +101,12 @@ PAS_NEVER_INLINE void* bmalloc_reallocate_with_nontrivial_alignment(void* old_pt
         BMALLOC_HEAP_CONFIG,
         bmalloc_allocate_with_alignment_impl_for_realloc_with_alignment,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 PAS_NEVER_INLINE void* bmalloc_try_reallocate_casual(void* old_ptr, size_t new_size,
-													 pas_reallocate_free_mode free_mode)
+                                                     pas_reallocate_free_mode free_mode)
 {
     return pas_try_reallocate_intrinsic(
         old_ptr,
@@ -113,11 +115,12 @@ PAS_NEVER_INLINE void* bmalloc_try_reallocate_casual(void* old_ptr, size_t new_s
         BMALLOC_HEAP_CONFIG,
         bmalloc_try_allocate_impl_for_realloc,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 PAS_NEVER_INLINE void* bmalloc_reallocate_casual(void* old_ptr, size_t new_size,
-												 pas_reallocate_free_mode free_mode)
+                                                 pas_reallocate_free_mode free_mode)
 {
     return pas_try_reallocate_intrinsic(
         old_ptr,
@@ -126,7 +129,8 @@ PAS_NEVER_INLINE void* bmalloc_reallocate_casual(void* old_ptr, size_t new_size,
         BMALLOC_HEAP_CONFIG,
         bmalloc_allocate_impl_for_realloc,
         pas_reallocate_allow_heap_teleport,
-        free_mode);
+        free_mode,
+        pas_try_reallocate_default_copy_callback);
 }
 
 void* bmalloc_try_allocate(size_t size)

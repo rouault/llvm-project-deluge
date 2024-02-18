@@ -44,6 +44,19 @@ typedef void*
                                         size_t new_size,
                                         void* arg);
 
+typedef void (*pas_try_reallocate_copy_callback)(void* new_ptr, void* old_ptr,
+                                                 size_t copy_size, size_t new_size);
+
+static PAS_ALWAYS_INLINE void pas_try_reallocate_default_copy_callback(void* new_ptr, void* old_ptr,
+                                                                       size_t copy_size, size_t new_size)
+{
+    PAS_ASSERT(new_ptr);
+    PAS_ASSERT(new_size >= copy_size);
+    if (!old_ptr)
+        PAS_ASSERT(!copy_size);
+    memcpy(new_ptr, old_ptr, copy_size);
+}
+
 static PAS_ALWAYS_INLINE void*
 pas_try_allocate_for_reallocate_and_copy(
     pas_heap* source_heap,
@@ -53,7 +66,8 @@ pas_try_allocate_for_reallocate_and_copy(
     size_t new_size,
     pas_reallocate_heap_teleport_rule teleport_rule,
     pas_try_reallocate_allocate_callback allocate_callback,
-    void* allocate_callback_arg)
+    void* allocate_callback_arg,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     static const bool verbose = false;
     
@@ -97,7 +111,7 @@ pas_try_allocate_for_reallocate_and_copy(
         if (verbose)
             pas_log("result = %p\n", (void*)result);
         size_t copy_size = pas_min_uintptr(new_size, old_size);
-        memcpy(result, old_ptr, copy_size);
+        copy_callback(result, old_ptr, copy_size, new_size);
     }
     
     return result;
@@ -113,7 +127,8 @@ pas_try_reallocate_table_segregated_case(pas_page_base* page_base,
                                          pas_reallocate_heap_teleport_rule teleport_rule,
                                          pas_reallocate_free_mode free_mode,
                                          pas_try_reallocate_allocate_callback allocate_callback,
-                                         void* allocate_callback_arg)
+                                         void* allocate_callback_arg,
+                                         pas_try_reallocate_copy_callback copy_callback)
 {
     size_t old_size;
     void* result;
@@ -121,6 +136,13 @@ pas_try_reallocate_table_segregated_case(pas_page_base* page_base,
     pas_segregated_page* page;
     
     page = pas_page_base_get_segregated(page_base);
+
+    if (segregated_config.check_deallocation
+        && !pas_segregated_page_is_allocated_with_page(page, begin, segregated_config)) {
+        pas_reallocation_did_fail(
+            "Source object not allocated (segregated case)",
+            NULL, heap, (void*)begin, 0, new_size);
+    }
     
     switch (teleport_rule) {
     case pas_reallocate_allow_heap_teleport:
@@ -140,7 +162,7 @@ pas_try_reallocate_table_segregated_case(pas_page_base* page_base,
     
     result = pas_try_allocate_for_reallocate_and_copy(
         old_heap, heap, (void*)begin, old_size, new_size, teleport_rule,
-        allocate_callback, allocate_callback_arg);
+        allocate_callback, allocate_callback_arg, copy_callback);
     if (result || free_mode == pas_reallocate_free_always)
         pas_deallocate_known_segregated((void*)begin, segregated_config, segregated_role);
     return result;
@@ -155,7 +177,8 @@ pas_try_reallocate_table_bitfit_case(pas_page_base* page_base,
                                      pas_reallocate_heap_teleport_rule teleport_rule,
                                      pas_reallocate_free_mode free_mode,
                                      pas_try_reallocate_allocate_callback allocate_callback,
-                                     void* allocate_callback_arg)
+                                     void* allocate_callback_arg,
+                                     pas_try_reallocate_copy_callback copy_callback)
 {
     size_t old_size;
     void* result;
@@ -164,6 +187,11 @@ pas_try_reallocate_table_bitfit_case(pas_page_base* page_base,
     
     page = pas_page_base_get_bitfit(page_base);
     old_size = bitfit_config.specialized_page_get_allocation_size_with_page(page, begin);
+    if (!old_size) {
+        pas_reallocation_did_fail(
+            "Source object not allocated (bitfit case)",
+            NULL, heap, (void*)begin, 0, new_size);
+    }
     
     switch (teleport_rule) {
     case pas_reallocate_allow_heap_teleport:
@@ -180,7 +208,7 @@ pas_try_reallocate_table_bitfit_case(pas_page_base* page_base,
     
     result = pas_try_allocate_for_reallocate_and_copy(
         old_heap, heap, (void*)begin, old_size, new_size, teleport_rule,
-        allocate_callback, allocate_callback_arg);
+        allocate_callback, allocate_callback_arg, copy_callback);
     if (result || free_mode == pas_reallocate_free_always)
         bitfit_config.specialized_page_deallocate_with_page(page, begin);
     return result;
@@ -194,14 +222,18 @@ pas_try_reallocate(void* old_ptr,
                    pas_reallocate_heap_teleport_rule teleport_rule,
                    pas_reallocate_free_mode free_mode,
                    pas_try_reallocate_allocate_callback allocate_callback,
-                   void* allocate_callback_arg)
+                   void* allocate_callback_arg,
+                   pas_try_reallocate_copy_callback copy_callback)
 {
     uintptr_t begin;
     
     begin = (uintptr_t)old_ptr;
 	
-    if (!begin)
-        return allocate_callback(heap, new_size, allocate_callback_arg);
+    if (!begin) {
+        void* result = allocate_callback(heap, new_size, allocate_callback_arg);
+        copy_callback(result, NULL, 0, new_size);
+        return result;
+    }
 
     if (!new_size) {
         pas_deallocate(old_ptr, config);
@@ -210,34 +242,11 @@ pas_try_reallocate(void* old_ptr,
 
     switch (config.fast_megapage_kind_func(begin)) {
     case pas_small_exclusive_segregated_fast_megapage_kind: {
-        size_t old_size;
-        void* result;
-        pas_heap* old_heap;
-
-        switch (teleport_rule) {
-        case pas_reallocate_allow_heap_teleport:
-            old_size = pas_segregated_page_get_object_size_for_address_and_page_config(
-                begin, config.small_segregated_config, pas_segregated_page_exclusive_role);
-            old_heap = NULL;
-            break;
-
-        case pas_reallocate_disallow_heap_teleport: {
-            pas_segregated_size_directory* directory;
-            directory = pas_segregated_page_get_directory_for_address_and_page_config(
-                begin, config.small_segregated_config, pas_segregated_page_exclusive_role);
-            old_size = directory->object_size;
-            old_heap = pas_heap_for_segregated_heap(directory->heap);
-            break;
-        } }
-
-        result = pas_try_allocate_for_reallocate_and_copy(
-            old_heap, heap, old_ptr, old_size, new_size, teleport_rule,
-            allocate_callback, allocate_callback_arg);
-        if (result || free_mode == pas_reallocate_free_always) {
-            pas_deallocate_known_segregated(old_ptr, config.small_segregated_config,
-                                            pas_segregated_page_exclusive_role);
-        }
-        return result;
+        return pas_try_reallocate_table_segregated_case(
+            pas_page_base_for_address_and_page_config(begin, config.small_segregated_config.base),
+            begin, heap, new_size, config.small_segregated_config,
+            pas_segregated_page_exclusive_role, teleport_rule, free_mode, allocate_callback,
+            allocate_callback_arg, copy_callback);
     }
     case pas_small_other_fast_megapage_kind: {
         pas_page_base_and_kind page_and_kind;
@@ -247,11 +256,11 @@ pas_try_reallocate(void* old_ptr,
             return pas_try_reallocate_table_segregated_case(
                 page_and_kind.page_base, begin, heap, new_size, config.small_segregated_config,
                 pas_segregated_page_shared_role, teleport_rule, free_mode, allocate_callback,
-                allocate_callback_arg);
+                allocate_callback_arg, copy_callback);
         case pas_small_bitfit_page_kind:
             return pas_try_reallocate_table_bitfit_case(
                 page_and_kind.page_base, begin, heap, new_size, config.small_bitfit_config,
-                teleport_rule, free_mode, allocate_callback, allocate_callback_arg);
+                teleport_rule, free_mode, allocate_callback, allocate_callback_arg, copy_callback);
         default:
             PAS_ASSERT(!"Should not be reached");
             return NULL;
@@ -272,42 +281,42 @@ pas_try_reallocate(void* old_ptr,
                 return pas_try_reallocate_table_segregated_case(
                     page_base, begin, heap, new_size, config.small_segregated_config,
                     pas_segregated_page_shared_role, teleport_rule, free_mode, allocate_callback,
-                    allocate_callback_arg);
+                    allocate_callback_arg, copy_callback);
 
             case pas_small_exclusive_segregated_page_kind:
                 PAS_ASSERT(!config.small_segregated_is_in_megapage);
                 return pas_try_reallocate_table_segregated_case(
                     page_base, begin, heap, new_size, config.small_segregated_config,
                     pas_segregated_page_exclusive_role, teleport_rule, free_mode, allocate_callback,
-                    allocate_callback_arg);
+                    allocate_callback_arg, copy_callback);
 
             case pas_small_bitfit_page_kind:
                 PAS_ASSERT(!config.small_bitfit_is_in_megapage);
                 return pas_try_reallocate_table_bitfit_case(
                     page_base, begin, heap, new_size, config.small_bitfit_config,
-                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg);
+                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg, copy_callback);
 
             case pas_medium_shared_segregated_page_kind:
                 return pas_try_reallocate_table_segregated_case(
                     page_base, begin, heap, new_size, config.medium_segregated_config,
                     pas_segregated_page_shared_role, teleport_rule, free_mode, allocate_callback,
-                    allocate_callback_arg);
+                    allocate_callback_arg, copy_callback);
 
             case pas_medium_exclusive_segregated_page_kind:
                 return pas_try_reallocate_table_segregated_case(
                     page_base, begin, heap, new_size, config.medium_segregated_config,
                     pas_segregated_page_exclusive_role, teleport_rule, free_mode, allocate_callback,
-                    allocate_callback_arg);
+                    allocate_callback_arg, copy_callback);
 
             case pas_medium_bitfit_page_kind:
                 return pas_try_reallocate_table_bitfit_case(
                     page_base, begin, heap, new_size, config.medium_bitfit_config,
-                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg);
+                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg, copy_callback);
 
             case pas_marge_bitfit_page_kind:
                 return pas_try_reallocate_table_bitfit_case(
                     page_base, begin, heap, new_size, config.marge_bitfit_config,
-                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg);
+                    teleport_rule, free_mode, allocate_callback, allocate_callback_arg, copy_callback);
             }
             
             PAS_ASSERT(!"Wrong page kind");
@@ -316,6 +325,7 @@ pas_try_reallocate(void* old_ptr,
 
         if (PAS_UNLIKELY(pas_debug_heap_is_enabled(config.kind))) {
             PAS_ASSERT(free_mode == pas_reallocate_free_if_successful);
+            PAS_ASSERT(copy_callback == pas_try_reallocate_default_copy_callback);
             return pas_debug_heap_realloc(old_ptr, new_size);
         }
 
@@ -339,7 +349,7 @@ pas_try_reallocate(void* old_ptr,
         
         result = pas_try_allocate_for_reallocate_and_copy(
             source_heap, heap, old_ptr, old_size, new_size, teleport_rule,
-            allocate_callback, allocate_callback_arg);
+            allocate_callback, allocate_callback_arg, copy_callback);
         
         if (result || free_mode == pas_reallocate_free_always)
             pas_deallocate_known_large(old_ptr, config.config_ptr);
@@ -420,6 +430,10 @@ static PAS_ALWAYS_INLINE pas_allocation_result pas_try_reallocate_fast_inline_on
     old_size = pas_segregated_page_get_object_size_for_address_and_page_config(
         (uintptr_t)old_ptr, config.small_segregated_config, pas_segregated_page_exclusive_role);
 
+    if (config.small_segregated_config.check_deallocation
+        && !pas_segregated_page_is_allocated((uintptr_t)old_ptr, config.small_segregated_config))
+        return pas_allocation_result_create_failure();
+
     result = allocate_callback(heap, new_size, allocate_callback_arg, cache);
     if (!result.did_succeed) {
         if (verbose)
@@ -469,7 +483,8 @@ pas_try_reallocate_intrinsic_with_alignment(
     pas_heap_config config,
     pas_try_allocate_intrinsic_for_realloc_with_alignment try_allocate_intrinsic,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     pas_try_reallocate_intrinsic_allocate_with_alignment_data data;
     
@@ -484,7 +499,8 @@ pas_try_reallocate_intrinsic_with_alignment(
         teleport_rule,
         free_mode,
         pas_try_reallocate_intrinsic_allocate_with_alignment_callback,
-        &data);
+        &data,
+        copy_callback);
 }
 
 typedef struct {
@@ -514,7 +530,8 @@ pas_try_reallocate_intrinsic(
     pas_heap_config config,
     pas_try_allocate_intrinsic_for_realloc try_allocate_intrinsic,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     pas_try_reallocate_intrinsic_allocate_data data;
     
@@ -528,7 +545,8 @@ pas_try_reallocate_intrinsic(
         teleport_rule,
         free_mode,
         pas_try_reallocate_intrinsic_allocate_callback,
-        &data);
+        &data,
+        copy_callback);
 }
 
 typedef struct {
@@ -562,7 +580,8 @@ pas_try_reallocate_single(
     pas_try_allocate_for_realloc try_allocate,
     pas_heap_runtime_config* runtime_config,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     pas_try_reallocate_single_allocate_data data;
     
@@ -580,7 +599,8 @@ pas_try_reallocate_single(
         teleport_rule,
         free_mode,
         pas_try_reallocate_single_allocate_callback,
-        &data);
+        &data,
+        copy_callback);
 }
 
 typedef struct {
@@ -613,7 +633,8 @@ pas_try_reallocate_array_by_size(
     pas_try_allocate_array_for_realloc try_allocate_array,
     pas_heap_runtime_config* runtime_config,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     pas_try_reallocate_array_allocate_data data;
     
@@ -631,7 +652,8 @@ pas_try_reallocate_array_by_size(
         teleport_rule,
         free_mode,
         pas_try_reallocate_array_allocate_callback,
-        &data);
+        &data,
+        copy_callback);
 }
 
 static PAS_ALWAYS_INLINE void*
@@ -643,7 +665,8 @@ pas_try_reallocate_array_by_count(
     pas_try_allocate_array_for_realloc try_allocate_array,
     pas_heap_runtime_config* runtime_config,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     const pas_heap_type* type;
     size_t type_size;
@@ -656,7 +679,8 @@ pas_try_reallocate_array_by_count(
         return NULL;
 
     return pas_try_reallocate_array_by_size(
-        old_ptr, heap_ref, new_size, config, try_allocate_array, runtime_config, teleport_rule, free_mode);
+        old_ptr, heap_ref, new_size, config, try_allocate_array, runtime_config, teleport_rule,
+        free_mode, copy_callback);
 }
 
 typedef struct {
@@ -696,7 +720,8 @@ pas_try_reallocate_primitive(
     pas_try_allocate_primitive_for_realloc try_allocate_primitive,
     pas_heap_runtime_config* runtime_config,
     pas_reallocate_heap_teleport_rule teleport_rule,
-    pas_reallocate_free_mode free_mode)
+    pas_reallocate_free_mode free_mode,
+    pas_try_reallocate_copy_callback copy_callback)
 {
     pas_try_reallocate_primitive_allocate_data data;
     
@@ -714,7 +739,8 @@ pas_try_reallocate_primitive(
         teleport_rule,
         free_mode,
         pas_try_reallocate_primitive_allocate_callback,
-        &data);
+        &data,
+        copy_callback);
 }
 
 PAS_END_EXTERN_C;

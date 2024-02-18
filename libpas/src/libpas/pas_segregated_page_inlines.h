@@ -368,6 +368,9 @@ pas_segregated_page_deallocate_with_page(pas_segregated_page* page,
     }
 
     bit_index_unmasked = begin >> page_config.base.min_align_shift;
+    if (page_config.check_deallocation
+        && (bit_index_unmasked << page_config.base.min_align_shift) != begin)
+        pas_segregated_page_deallocation_did_fail(begin);
     
     word_index = pas_modulo_power_of_2(
         (begin >> (page_config.base.min_align_shift + PAS_BITVECTOR_WORD_SHIFT)),

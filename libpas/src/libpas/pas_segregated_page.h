@@ -402,6 +402,9 @@ pas_segregated_page_is_allocated_with_page(pas_segregated_page* page,
     offset_in_page = begin - (uintptr_t)pas_segregated_page_boundary(page, page_config);
     bit_index = pas_page_base_index_of_object_at_offset_from_page_boundary(
         offset_in_page, page_config.base);
+    if (pas_page_base_object_offset_from_page_boundary_at_index(bit_index, page_config.base)
+        != offset_in_page)
+        return false;
     
     word_index = PAS_BITVECTOR_WORD_INDEX(bit_index);
     bit_mask = PAS_BITVECTOR_BIT_MASK(bit_index);

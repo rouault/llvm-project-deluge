@@ -1194,6 +1194,8 @@ void deluded_f_zxchg_ptr(DELUDED_SIGNATURE);
 void deluded_f_zis_runtime_testing_enabled(DELUDED_SIGNATURE);
 void deluded_f_zborkedptr(DELUDED_SIGNATURE);
 void deluded_f_zvalidate_ptr(DELUDED_SIGNATURE);
+void deluded_f_zscavenger_suspend(DELUDED_SIGNATURE);
+void deluded_f_zscavenger_resume(DELUDED_SIGNATURE);
 
 /* Amusingly, the order of these functions tell the story of me porting musl to deluge. */
 void deluded_f_zregister_sys_errno_handler(DELUDED_SIGNATURE);

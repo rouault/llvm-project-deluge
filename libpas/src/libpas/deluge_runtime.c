@@ -17,6 +17,7 @@
 #include "pas_deallocate.h"
 #include "pas_get_allocation_size.h"
 #include "pas_hashtable.h"
+#include "pas_scavenger.h"
 #include "pas_string_stream.h"
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
@@ -1508,6 +1509,8 @@ void* deluge_allocate_utility(size_t size)
     return deluge_allocate_utility_impl_ptr(size, 1);
 }
 
+/* FIXME: all of the reallocation functions do inadequate checks. They allow freeing things that are
+   outside your capability, for instance. They even allow freeing stuff in the utility heap! */
 void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count)
 {
     if (pas_mul_uintptr_overflow(size, count, &size)) {
@@ -1521,7 +1524,8 @@ void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count)
         DELUGE_HEAP_CONFIG,
         deluge_try_allocate_int_impl_for_realloc,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
 }
 
 void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment)
@@ -1538,7 +1542,34 @@ void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t co
         DELUGE_HEAP_CONFIG,
         deluge_try_allocate_int_with_alignment_impl_for_realloc_with_alignment,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        pas_try_reallocate_default_copy_callback);
+}
+
+static void int_copy_and_zero_callback(void* new_ptr, void* old_ptr,
+                                       size_t copy_size, size_t new_size)
+{
+    PAS_ASSERT(new_size >= copy_size);
+    memcpy(new_ptr, old_ptr, copy_size);
+    pas_zero_memory((char*)new_ptr + copy_size, new_size - copy_size);
+}
+
+static void typed_copy_callback(void* new_ptr, void* old_ptr,
+                                size_t copy_size, size_t new_size)
+{
+    PAS_ASSERT(pas_is_aligned((uintptr_t)new_ptr, DELUGE_WORD_SIZE));
+    PAS_ASSERT(pas_is_aligned((uintptr_t)old_ptr, DELUGE_WORD_SIZE));
+    PAS_ASSERT(pas_is_aligned(copy_size, DELUGE_WORD_SIZE));
+    PAS_ASSERT(pas_is_aligned(new_size, DELUGE_WORD_SIZE));
+    PAS_ASSERT(new_size >= copy_size);
+    deluge_low_level_ptr_safe_memcpy(new_ptr, old_ptr, copy_size);
+}
+
+static void typed_copy_and_zero_callback(void* new_ptr, void* old_ptr,
+                                         size_t copy_size, size_t new_size)
+{
+    typed_copy_callback(new_ptr, old_ptr, copy_size, new_size);
+    deluge_low_level_ptr_safe_bzero((char*)new_ptr + copy_size, new_size - copy_size);
 }
 
 void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
@@ -1552,7 +1583,8 @@ void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
         deluge_try_allocate_many_impl_for_realloc,
         &deluge_typed_runtime_config.base,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        typed_copy_callback);
 }
 
 void deluge_deallocate(const void* ptr)
@@ -1690,7 +1722,9 @@ void* deluge_try_hard_allocate_int(size_t size, size_t count)
         set_errno(ENOMEM);
         return NULL;
     }
-    return deluge_try_hard_allocate_int_impl_ptr(size, 1);
+    void* result = deluge_try_hard_allocate_int_impl_ptr(size, 1);
+    pas_zero_memory(result, size);
+    return result;
 }
 
 void* deluge_try_hard_allocate_int_with_alignment(size_t size, size_t count, size_t alignment)
@@ -1699,7 +1733,9 @@ void* deluge_try_hard_allocate_int_with_alignment(size_t size, size_t count, siz
         set_errno(ENOMEM);
         return NULL;
     }
-    return deluge_try_hard_allocate_int_impl_ptr(size, alignment);
+    void* result = deluge_try_hard_allocate_int_impl_ptr(size, alignment);
+    pas_zero_memory(result, size);
+    return result;
 }
 
 PAS_CREATE_TRY_ALLOCATE(
@@ -1713,7 +1749,9 @@ void* deluge_try_hard_allocate_one(pas_heap_ref* ref)
 {
     PAS_TESTING_ASSERT(!ref->heap || ref->heap->config_kind == pas_heap_config_kind_deluge_hard);
     PAS_TESTING_ASSERT(!deluge_type_get_trailing_array((const deluge_type*)ref->type));
-    return deluge_try_hard_allocate_one_impl_ptr(ref);
+    void* result = deluge_try_hard_allocate_one_impl_ptr(ref);
+    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size);
+    return result;
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
@@ -1730,7 +1768,9 @@ void* deluge_try_hard_allocate_many(pas_heap_ref* ref, size_t count)
     PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
     if (count == 1)
         return deluge_try_hard_allocate_one(ref);
-    return (void*)deluge_try_hard_allocate_many_impl_by_count(ref, count, 1).begin;
+    void* result = (void*)deluge_try_hard_allocate_many_impl_by_count(ref, count, 1).begin;
+    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
+    return result;
 }
 
 void* deluge_try_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment)
@@ -1740,7 +1780,9 @@ void* deluge_try_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t cou
     PAS_TESTING_ASSERT(!((const deluge_type*)ref->type)->u.trailing_array);
     if (count == 1 && alignment <= PAS_MIN_ALIGN)
         return deluge_try_hard_allocate_one(ref);
-    return (void*)deluge_try_hard_allocate_many_impl_by_count(ref, count, alignment).begin;
+    void* result = (void*)deluge_try_hard_allocate_many_impl_by_count(ref, count, alignment).begin;
+    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
+    return result;
 }
 
 void* deluge_try_hard_allocate_int_flex(size_t base_size, size_t element_size, size_t count)
@@ -1748,7 +1790,9 @@ void* deluge_try_hard_allocate_int_flex(size_t base_size, size_t element_size, s
     size_t total_size;
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
-    return deluge_try_hard_allocate_int_impl_ptr(total_size, 1);
+    void* result = deluge_try_hard_allocate_int_impl_ptr(total_size, 1);
+    pas_zero_memory(result, total_size);
+    return result;
 }
 
 void* deluge_try_hard_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
@@ -1757,7 +1801,9 @@ void* deluge_try_hard_allocate_int_flex_with_alignment(size_t base_size, size_t 
     size_t total_size;
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
-    return deluge_try_hard_allocate_int_impl_ptr(total_size, alignment);
+    void* result = deluge_try_hard_allocate_int_impl_ptr(total_size, alignment);
+    pas_zero_memory(result, total_size);
+    return result;
 }
 
 PAS_CREATE_TRY_ALLOCATE_ARRAY(
@@ -1775,7 +1821,9 @@ void* deluge_try_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t 
     PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->u.trailing_array);
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
-    return (void*)deluge_try_hard_allocate_flex_impl_by_size(ref, total_size, 1).begin;
+    void* result = (void*)deluge_try_hard_allocate_flex_impl_by_size(ref, total_size, 1).begin;
+    deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
+    return result;
 }
 
 void* deluge_try_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
@@ -1787,7 +1835,9 @@ void* deluge_try_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t bas
     PAS_TESTING_ASSERT(((const deluge_type*)ref->type)->u.trailing_array);
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
-    return (void*)deluge_try_hard_allocate_flex_impl_by_size(ref, total_size, alignment).begin;
+    void* result = (void*)deluge_try_hard_allocate_flex_impl_by_size(ref, total_size, alignment).begin;
+    deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
+    return result;
 }
 
 void* deluge_try_hard_reallocate_int(void* ptr, size_t size, size_t count)
@@ -1803,7 +1853,8 @@ void* deluge_try_hard_reallocate_int(void* ptr, size_t size, size_t count)
         DELUGE_HARD_HEAP_CONFIG,
         deluge_try_hard_allocate_int_impl_for_realloc,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        int_copy_and_zero_callback);
 }
 
 void* deluge_try_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment)
@@ -1820,7 +1871,8 @@ void* deluge_try_hard_reallocate_int_with_alignment(void* ptr, size_t size, size
         DELUGE_HARD_HEAP_CONFIG,
         deluge_try_hard_allocate_int_impl_for_realloc_with_alignment,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        int_copy_and_zero_callback);
 }
 
 void* deluge_try_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
@@ -1834,7 +1886,8 @@ void* deluge_try_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
         deluge_try_hard_allocate_many_impl_for_realloc,
         &deluge_hard_typed_runtime_config,
         pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful);
+        pas_reallocate_free_if_successful,
+        typed_copy_and_zero_callback);
 }
 
 void deluge_hard_deallocate(void* ptr)
@@ -3543,6 +3596,18 @@ void deluded_f_zvalidate_ptr(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
     deluge_validate_ptr(ptr, &origin);
+}
+
+void deluded_f_zscavenger_suspend(DELUDED_SIGNATURE)
+{
+    DELUDED_DELETE_ARGS();
+    pas_scavenger_suspend();
+}
+
+void deluded_f_zscavenger_resume(DELUDED_SIGNATURE)
+{
+    DELUDED_DELETE_ARGS();
+    pas_scavenger_resume();
 }
 
 static void (*deluded_errno_handler)(DELUDED_SIGNATURE);

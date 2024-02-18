@@ -136,7 +136,6 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(jit_heap_config);
             .min_align_shift = JIT_ ## variant_uppercase ## _BITFIT_MIN_ALIGN_SHIFT, \
             .page_size = JIT_ ## variant_uppercase ## _PAGE_SIZE, \
             .granule_size = JIT_ ## variant_uppercase ## _GRANULE_SIZE, \
-			.non_committable_granule_bitvector = NULL, \
             .max_object_size = \
                 PAS_BITFIT_MAX_FREE_MAX_VALID << JIT_ ## variant_uppercase ## _BITFIT_MIN_ALIGN_SHIFT, \
 	    .non_committable_granule_bitvector = NULL, \

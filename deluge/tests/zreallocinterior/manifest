@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - reallocation did fail
