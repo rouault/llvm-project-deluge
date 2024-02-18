@@ -5,7 +5,7 @@ _Bool zinbounds(void* ptr)
     return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
 }
 
-void* zalloc_clone(void* obj)
+void* zalloc_like(void* obj)
 {
     /* FIXME: This doesn't work right for flexes, but probably only because zalloc_with_type doesn't
        work for flexes. */

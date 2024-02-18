@@ -344,17 +344,46 @@ ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
    isoheap dynamically), it's exactly the same as zalloc. */
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
-/* Allocate an object that is exactly like the one passed in, including the lower bound. For example,
-   if you pass in a pointer to the middle of an array, this will allocate an array and return a
-   pointer to the middle of it, offset in the same way as the original.
+/* Allocate a zero-initialized object that is exactly like the one passed in from the standpoint of
+   the Deluge type system. The new object will have the same type as what the obj pointer points to
+   and the same lower/upper bounds. This information comes from the pointer itself, so if you had
+   zrestricted the pointer or the pointer got borked, this will reflect in the allocated object. As
+   well, the resulting pointer will point at the same offset from lower as the obj pointer you
+   passed in. For example, if you pass in a pointer to the middle of an array, this will allocate
+   an array and return a pointer to the middle of it, offset in the same way as the original.
 
-   For now, this is useful if you want to describe the type+size in a simple-to-carry-around kind of
-   way. In particular, if you want to describe the type+size of something in a const initializer,
-   then using a pointer to a "default" instance of that thing is the simplest way to do it. This
-   should be seen as a deficiency in Deluge, but it's one we can live with for now.
+   zalloc_like() is most useful if you want to describe the type+size in a simple-to-carry-around
+   kind of way. In particular, if you want to describe the type+size of something in a const
+   initializer, then using a pointer to a "default" instance of that thing is the simplest way to
+   do it. This should be seen as a deficiency in Deluge, but it's one we can live with for now.
+   
+   Both the OpenSSL and Curl patches have some variant of this idiom (read this as a unified diff
+   snippet reflecting changes needed for Deluge):
+   
+       +static const foo_bar_type foo_bar_type_prototype;
+        static const type_info foo_bar_type_info = {
+            ... (some stuff),
+       +    &foo_bar_type_prototype
+       -    sizeof(foo_bar_type)
+        };
 
-   Ideally, there would be a way to carry around the type+size and put it in a const initializer. */
-void* zalloc_clone(void* obj);
+   In the original code, the size was used to tell some polymorphic allocator how big the foo_bar
+   object was going to be, so they can pass that to malloc. But that's not enough for Deluge. So,
+   instead, we pass around a const void* prototype, and the polymorphic allocator now calls
+   zalloc_like(type_info->prototype) instead of malloc(type_info->size).
+   
+   In the future, you'd have been able to say ztypeof(foo_bar_type) in the static initializer, but:
+       1. That's not as convenient, since you still need to pass around the size!
+       2. You can't do it today, because clang's and llvm's notion of constexpr strongly rejects
+          everything about ztypeof(). A nontrivial amount of compiler surgery will be needed to
+          make that possible. Someday, maybe.
+
+   Ideally, there would be a way to carry around the type+size and put it in a const initializer.
+   Basically, a neatly-packaged tuple of ztype* and size, which would then constitute a Deluge
+   dynamic equivalent of a C type. That thing would be a great replacement for prototypes. If we
+   built it today, then it would solve problem (1) above, but not problem (2). Ergo, we shall
+   proceed undaunted with prototypes and zalloc_like()! */
+void* zalloc_like(void* obj);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
    Returns that string. You have to zfree the string when you're done with it.
