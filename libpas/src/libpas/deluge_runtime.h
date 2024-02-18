@@ -728,6 +728,12 @@ PAS_API char* deluge_ptr_to_new_string(deluge_ptr ptr); /* WARNING: this is diff
                                                            DELUDED CODE - whereas the other one
                                                            uses the int heap. */
 
+/* Returns true if this type has no trailing array and is not opaque. */
+static inline bool deluge_type_is_normal(const deluge_type* type)
+{
+    return type->num_words && !type->u.trailing_array;
+}
+
 static inline const deluge_type* deluge_type_get_trailing_array(const deluge_type* type)
 {
     if (type->num_words)
@@ -851,6 +857,7 @@ void* deluge_allocate_int_with_alignment(size_t size, size_t count, size_t align
 
 void* deluge_try_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_one(pas_heap_ref* ref);
+void* deluge_allocate_opaque(pas_heap_ref* ref);
 void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
