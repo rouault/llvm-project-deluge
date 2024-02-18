@@ -1243,7 +1243,8 @@ void* deluge_try_allocate_int(size_t size, size_t count)
         return NULL;
     }
     void* result = deluge_try_allocate_int_impl_ptr(size, 1);
-    pas_zero_memory(result, size);
+    if (result)
+        pas_zero_memory(result, size);
     return result;
 }
 
@@ -1264,7 +1265,8 @@ void* deluge_try_allocate_int_with_alignment(size_t size, size_t count, size_t a
         return NULL;
     }
     void* result = deluge_try_allocate_int_with_alignment_impl_ptr(size, alignment);
-    pas_zero_memory(result, size);
+    if (result)
+        pas_zero_memory(result, size);
     return result;
 }
 
@@ -1322,7 +1324,8 @@ void* deluge_try_allocate_one(pas_heap_ref* ref)
     PAS_TESTING_ASSERT(!deluge_type_get_trailing_array((const deluge_type*)ref->type));
     PAS_TESTING_ASSERT(!ref->heap || ref->heap->config_kind == pas_heap_config_kind_deluge);
     void* result = deluge_try_allocate_one_impl_ptr(ref);
-    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size);
+    if (result)
+        deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size);
     return result;
 }
 
@@ -1363,7 +1366,8 @@ void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count)
     if (count == 1)
         return deluge_try_allocate_one(ref);
     void* result = (void*)deluge_try_allocate_many_impl_by_count(ref, count, 1).begin;
-    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
+    if (result)
+        deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
     return result;
 }
 
@@ -1374,7 +1378,8 @@ void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, s
     if (count == 1 && alignment <= PAS_MIN_ALIGN)
         return deluge_try_allocate_one(ref);
     void* result = (void*)deluge_try_allocate_many_impl_by_count(ref, count, alignment).begin;
-    deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
+    if (result)
+        deluge_low_level_ptr_safe_bzero(result, ((const deluge_type*)ref->type)->size * count);
     return result;
 }
 
@@ -1419,7 +1424,8 @@ void* deluge_try_allocate_int_flex(size_t base_size, size_t element_size, size_t
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
     void* result = deluge_try_allocate_int_impl_ptr(total_size, 1);
-    pas_zero_memory(result, total_size);
+    if (result)
+        pas_zero_memory(result, total_size);
     return result;
 }
 
@@ -1430,7 +1436,8 @@ void* deluge_try_allocate_int_flex_with_alignment(size_t base_size, size_t eleme
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
     void* result = deluge_try_allocate_int_with_alignment_impl_ptr(total_size, alignment);
-    pas_zero_memory(result, total_size);
+    if (result)
+        pas_zero_memory(result, total_size);
     return result;
 }
 
@@ -1449,7 +1456,8 @@ void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t eleme
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
     void* result = (void*)deluge_try_allocate_flex_impl_by_size(ref, total_size, 1).begin;
-    deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
+    if (result)
+        deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
     return result;
 }
 
@@ -1462,7 +1470,8 @@ void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_siz
     if (!get_flex_size(base_size, element_size, count, &total_size))
         return NULL;
     void* result = (void*)deluge_try_allocate_flex_impl_by_size(ref, total_size, alignment).begin;
-    deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
+    if (result)
+        deluge_low_level_ptr_safe_bzero(result, pas_round_up_to_power_of_2(total_size, PAS_MIN_ALIGN));
     return result;
 }
 
@@ -3147,10 +3156,10 @@ void deluge_alloca_stack_push(deluge_alloca_stack* stack, void* alloca)
 
 void deluge_alloca_stack_restore(deluge_alloca_stack* stack, size_t size)
 {
-    // We use our own origin because the compiler would have had to mess up real bad for an error to
-    // happen here. Not sure it's possible for an error to happen here other than via a miscompile. But,
-    // even in case of miscompile, we'll always do the type-safe thing here. Worst case, we free allocas
-    // too soon, but then they are freed into the right heap.
+    /* We use our own origin because the compiler would have had to mess up real bad for an error to
+       happen here. Not sure it's possible for an error to happen here other than via a miscompile. But,
+       even in case of miscompile, we'll always do the type-safe thing here. Worst case, we free allocas
+       too soon, but then they are freed into the right heap. */
     static deluge_origin origin = {
         .filename = __FILE__,
         .function = "deluge_alloca_stack_restore",

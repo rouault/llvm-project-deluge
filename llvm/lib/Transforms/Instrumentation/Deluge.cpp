@@ -353,6 +353,7 @@ class Deluge {
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<DILocation*, GlobalVariable*> Origins;
+  std::unordered_map<Function*, GlobalVariable*> OriginsForFunctions;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -422,6 +423,21 @@ class Deluge {
     GlobalVariable* Result = new GlobalVariable(
       M, C->getType(), true, GlobalVariable::PrivateLinkage, C, "deluge_string");
     Strings[Str.str()] = Result;
+    return Result;
+  }
+
+  Value* getOriginForFunction(Function* F) {
+    auto iter = OriginsForFunctions.find(F);
+    if (iter != OriginsForFunctions.end())
+      return iter->second;
+
+    Constant* C = ConstantStruct::get(
+      OriginTy,
+      { getString(F->getName()), getString(F->getSubprogram()->getFilename()),
+        ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "deluge_function_origin");
+    OriginsForFunctions[F] = Result;
     return Result;
   }
 
