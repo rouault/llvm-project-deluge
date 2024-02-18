@@ -963,6 +963,13 @@ void deluded_f_zptr_to_new_string(DELUDED_SIGNATURE);
 pas_uint128 deluge_update_sidecar(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
 pas_uint128 deluge_update_capability(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
 
+void deluge_check_deallocate_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                  const deluge_origin* origin);
+static inline void deluge_check_deallocate(deluge_ptr ptr, const deluge_origin* origin)
+{
+    deluge_check_deallocate_impl(ptr.sidecar, ptr.capability, origin);
+}
+
 void deluge_check_access_int_impl(pas_uint128 sidecar, pas_uint128 capability,
                                   uintptr_t bytes, const deluge_origin* origin);
 void deluge_check_access_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,

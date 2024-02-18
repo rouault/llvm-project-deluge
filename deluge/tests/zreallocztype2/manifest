@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - deluge panic
+  - Spoko
+output-excludes:
+  - "Nie dobrze"

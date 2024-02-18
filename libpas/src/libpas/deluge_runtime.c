@@ -1509,8 +1509,6 @@ void* deluge_allocate_utility(size_t size)
     return deluge_allocate_utility_impl_ptr(size, 1);
 }
 
-/* FIXME: all of the reallocation functions do inadequate checks. They allow freeing things that are
-   outside your capability, for instance. They even allow freeing stuff in the utility heap! */
 void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count)
 {
     if (pas_mul_uintptr_overflow(size, count, &size)) {
@@ -1592,15 +1590,10 @@ void deluge_deallocate(const void* ptr)
     pas_deallocate((void*)ptr, DELUGE_HEAP_CONFIG);
 }
 
-void deluge_deallocate_safe(deluge_ptr ptr)
+void deluge_check_deallocate_impl(pas_uint128 sidecar, pas_uint128 capability, const deluge_origin* origin)
 {
-    static deluge_origin origin = {
-        .filename = __FILE__,
-        .function = "deluge_deallocate_safe",
-        .line = 0,
-        .column = 0
-    };
-
+    deluge_ptr ptr = deluge_ptr_create(sidecar, capability);
+    
     /* These checks aren't necessary to protect the allocator, which will already rule out
        pointers that don't belong to it. But, they are necessary to prevent the following:
        
@@ -1614,7 +1607,7 @@ void deluge_deallocate_safe(deluge_ptr ptr)
          a pointer with an inttoptr cast. */
     DELUGE_CHECK(
         deluge_ptr_ptr(ptr) == deluge_ptr_lower(ptr),
-        &origin,
+        origin,
         "attempt to free a pointer with ptr != lower (ptr = %s).",
         deluge_ptr_to_new_string(ptr));
     
@@ -1623,15 +1616,27 @@ void deluge_deallocate_safe(deluge_ptr ptr)
     
     DELUGE_CHECK(
         deluge_ptr_type(ptr),
-        &origin,
+        origin,
         "attempt to free nonnull pointer with invalid type (ptr = %s).",
         deluge_ptr_to_new_string(ptr));
     DELUGE_CHECK(
         deluge_ptr_type(ptr)->num_words,
-        &origin,
+        origin,
         "attempt to free nonnull pointer to opaque type (ptr = %s).",
         deluge_ptr_to_new_string(ptr));
-    
+}
+
+void deluge_deallocate_safe(deluge_ptr ptr)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "deluge_deallocate_safe",
+        .line = 0,
+        .column = 0
+    };
+
+    deluge_check_deallocate(ptr, &origin);
+
     deluge_deallocate(deluge_ptr_ptr(ptr));
 }
 
@@ -1990,25 +1995,7 @@ void deluded_f_zhard_free(DELUDED_SIGNATURE)
     deluge_ptr ptr = deluge_ptr_get_next_ptr(&args, &origin);
     DELUDED_DELETE_ARGS();
 
-    DELUGE_CHECK(
-        deluge_ptr_ptr(ptr) == deluge_ptr_lower(ptr),
-        &origin,
-        "attempt to hard free a pointer with ptr != lower (ptr = %s).",
-        deluge_ptr_to_new_string(ptr));
-
-    if (!deluge_ptr_ptr(ptr))
-        return;
-
-    DELUGE_CHECK(
-        deluge_ptr_type(ptr),
-        &origin,
-        "attempt to hard free nonnull pointer with invalid type (ptr = %s).",
-        deluge_ptr_to_new_string(ptr));
-    DELUGE_CHECK(
-        deluge_ptr_type(ptr)->num_words,
-        &origin,
-        "attempt to hard free nonnull pointer to opaque type (ptr = %s).",
-        deluge_ptr_to_new_string(ptr));
+    deluge_check_deallocate(ptr, &origin);
     
     deluge_hard_deallocate(deluge_ptr_ptr(ptr));
 }

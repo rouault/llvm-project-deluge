@@ -321,6 +321,7 @@ class Deluge {
   FunctionCallee TryHardReallocate;
   FunctionCallee LogAllocation;
   FunctionCallee PtrPtr;
+  FunctionCallee CheckDeallocate;
   FunctionCallee UpdateSidecar;
   FunctionCallee UpdateCapability;
   FunctionCallee NewSidecar;
@@ -1997,7 +1998,11 @@ class Deluge {
           errs() << "Lowering realloc\n";
         lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
         lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
-        Value* OrigPtr = lowerPtr(CI->getArgOperand(0), CI);
+        Value* OrigWidePtr = CI->getArgOperand(0);
+        Value* OrigPtr = lowerPtr(OrigWidePtr, CI);
+        CallInst::Create(CheckDeallocate, { OrigWidePtr, getOrigin(CI->getDebugLoc()) }, "", CI)
+          ->setDebugLoc(CI->getDebugLoc());
+        
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
         assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
@@ -2867,6 +2872,7 @@ public:
     PtrPtr = M.getOrInsertFunction("deluge_ptr_ptr_impl", LowRawPtrTy, LowWidePtrTy);
     UpdateSidecar = M.getOrInsertFunction("deluge_update_sidecar", Int128Ty, LowWidePtrTy, LowRawPtrTy);
     UpdateCapability = M.getOrInsertFunction("deluge_update_capability", Int128Ty, LowWidePtrTy, LowRawPtrTy);
+    CheckDeallocate = M.getOrInsertFunction("deluge_check_deallocate_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     NewSidecar = M.getOrInsertFunction("deluge_new_sidecar", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     NewCapability = M.getOrInsertFunction("deluge_new_capability", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     CheckForge = M.getOrInsertFunction("deluge_check_forge", VoidTy, LowRawPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
