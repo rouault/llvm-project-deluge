@@ -39,6 +39,7 @@
 #include <netinet/tcp.h>
 #include <sys/un.h>
 #include <netdb.h>
+#include <sys/resource.h>
 
 const deluge_type_template deluge_int_type_template = {
     .size = 1,
@@ -5997,6 +5998,92 @@ void deluded_f_zsys_recvfrom(DELUDED_SIGNATURE)
     }
 
     *(ssize_t*)deluge_ptr_ptr(rets) = result;
+}
+
+struct musl_rlimit {
+    unsigned long long rlim_cur;
+    unsigned long long rlim_max;
+};
+
+static bool from_musl_resource(int musl_resource, int* result)
+{
+    switch (musl_resource) {
+    case 0:
+        *result = RLIMIT_CPU;
+        return true;
+    case 1:
+        *result = RLIMIT_FSIZE;
+        return true;
+    case 2:
+        *result = RLIMIT_DATA;
+        return true;
+    case 3:
+        *result = RLIMIT_STACK;
+        return true;
+    case 4:
+        *result = RLIMIT_CORE;
+        return true;
+    case 5:
+        *result = RLIMIT_RSS;
+        return true;
+    case 6:
+        *result = RLIMIT_NPROC;
+        return true;
+    case 7:
+        *result = RLIMIT_NOFILE;
+        return true;
+    case 8:
+        *result = RLIMIT_MEMLOCK;
+        return true;
+    case 9:
+        *result = RLIMIT_AS;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static unsigned long long to_musl_rlimit_value(rlim_t value)
+{
+    if (value == RLIM_INFINITY)
+        return ~0ULL;
+    return value;
+}
+
+void deluded_f_zsys_getrlimit(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getrlimit",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    int musl_resource = deluge_ptr_get_next_int(&args, &origin);
+    deluge_ptr rlim_ptr = deluge_ptr_get_next_ptr(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(int), &origin);
+    deluge_check_access_int(rlim_ptr, sizeof(struct musl_rlimit), &origin);
+    int resource;
+    if (!from_musl_resource(musl_resource, &resource))
+        goto einval;
+    struct rlimit rlim;
+    int result = getrlimit(resource, &rlim);
+    if (result < 0)
+        set_errno(errno);
+    else {
+        PAS_ASSERT(!result);
+        struct musl_rlimit* musl_rlim = (struct musl_rlimit*)deluge_ptr_ptr(rlim_ptr);
+        musl_rlim->rlim_cur = to_musl_rlimit_value(rlim.rlim_cur);
+        musl_rlim->rlim_max = to_musl_rlimit_value(rlim.rlim_max);
+    }
+    *(int*)deluge_ptr_ptr(rets) = result;
+    return;
+
+einval:
+    set_errno(EINVAL);
+    *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE)

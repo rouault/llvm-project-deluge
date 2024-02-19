@@ -1248,6 +1248,7 @@ void deluded_f_zsys_getsockopt(DELUDED_SIGNATURE);
 void deluded_f_zsys_getpeername(DELUDED_SIGNATURE);
 void deluded_f_zsys_sendto(DELUDED_SIGNATURE);
 void deluded_f_zsys_recvfrom(DELUDED_SIGNATURE);
+void deluded_f_zsys_getrlimit(DELUDED_SIGNATURE);
 
 void deluded_f_zthread_self(DELUDED_SIGNATURE);
 void deluded_f_zthread_get_id(DELUDED_SIGNATURE);

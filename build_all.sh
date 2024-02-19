@@ -22,3 +22,4 @@ deluge/run-tests
 
 (cd curl-8.5.0 && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --with-openssl --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
+(cd deluded-openssh-portable && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)

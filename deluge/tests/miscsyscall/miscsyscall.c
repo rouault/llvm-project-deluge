@@ -11,6 +11,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 
 int main(int argc, char** argv)
 {
@@ -129,6 +130,10 @@ int main(int argc, char** argv)
 
     act.sa_handler = SIG_IGN;
     ZASSERT(sigaction(SIGPIPE, &act, NULL) == 0);
+
+    struct rlimit rlim;
+    ZASSERT(!getrlimit(RLIMIT_NPROC, &rlim));
+    ZASSERT(!getrlimit(RLIMIT_CPU, &rlim));
     
     zprintf("No worries.\n");
     return 0;

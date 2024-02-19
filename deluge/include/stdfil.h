@@ -549,6 +549,62 @@ void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zunfenced_xchg_ptr(void** ptr, void* new_value);
 void* zxchg_ptr(void** ptr, void* new_value);
 
+/* Parks the thread in a queue associated with the given address, which cannot be null. The
+   parking only succeeds if the condition function returns true while the queue lock is held.
+  
+   If condition returns false, it will unlock the internal parking queue and then it will
+   return false.
+  
+   If condition returns true, it will enqueue the thread, unlock the parking queue lock, call
+   the before_sleep function, and then it will sleep so long as the thread continues to be on the
+   queue and the timeout hasn't fired. Finally, this returns true if we actually got unparked or
+   false if the timeout was hit.
+  
+   Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
+   long as you don't recursively call zpark_if(). You can call zunpark_one()/zunpark_all()
+   though. It's useful to do that in before_sleep() for implementing condition variables. If you
+   do call into the zpark_if recursively, you'll get a trap.
+   
+   Crucially, when zpark_if calls your callbacks, it is only holding the queue lock associated
+   with the address, and not any other locks that the Deluge runtime uses.
+
+   The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
+   this is a civilized API. Use positive infinity (aka 1. / 0.) if you just want this to wait
+   forever.
+
+   Errors are reported by killing the shit out of your program. */
+_Bool zpark_if(const void* address,
+               _Bool (*condition)(void* arg),
+               void (*before_sleep)(void* arg),
+               void* arg,
+               double absolute_timeout_in_milliseconds);
+
+/* Simplified version of zpark_if. If the address is int-aligned, then this does a zpark_if with
+   a condition that returns true if the address contains the expected value. Does nothing on
+   before_sleep.
+   
+   This function has adorable behavior when address is misaligned. In that case, the address
+   passed to zpark_if is the original misaligned address, but the rounded-down address is used for
+   the comparison. This lets you use an atomic int as four notification channels.
+
+   This matches the basic futex API except futexes would error on misaligned.
+
+   Note that while this expects you to use an int, zpark_if has no such restriction. You could use
+   any atomic word there (or words, if you're fancy). */
+_Bool zcompare_and_park(const int* address, int expected_value,
+                        double absolute_timeout_in_milliseconds);
+
+/* Unparks one thread from the queue associated with the given address, and calls the given
+   callback while the address is locked. Reports to the callback whether any thread got
+   unparked and whether there may be any other threads still on the queue. */
+void zunpark_one(const void* address,
+                 void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
+                 void* arg);
+
+/* Unparks up to count threads from the queue associated with the given address, which cannot
+   be null. Returns the number of threads unparked. */
+unsigned zunpark(const void* address, unsigned count);
+
 /* Returns true if running in the build of the runtime that has extra (super expensive) testing
    checks.
 
@@ -625,6 +681,7 @@ long zsys_sendto(int sockfd, const void* buf, __SIZE_TYPE__ len, int flags,
                  const void* addr, unsigned addrlen);
 long zsys_recvfrom(int sockfd, void* buf, __SIZE_TYPE__ len, int flags,
                    void* addr, unsigned* addrlen);
+int zsys_getrlimit(int resource, void* rlim);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
@@ -637,62 +694,6 @@ void zthread_set_self_cookie(void* cookie);
 void* zthread_create(void* (*callback)(void* arg), void* arg);
 _Bool zthread_join(void* thread, void** result);
 _Bool zthread_detach(void* thread);
-
-/* Parks the thread in a queue associated with the given address, which cannot be null. The
-   parking only succeeds if the condition function returns true while the queue lock is held.
-  
-   If condition returns false, it will unlock the internal parking queue and then it will
-   return false.
-  
-   If condition returns true, it will enqueue the thread, unlock the parking queue lock, call
-   the before_sleep function, and then it will sleep so long as the thread continues to be on the
-   queue and the timeout hasn't fired. Finally, this returns true if we actually got unparked or
-   false if the timeout was hit.
-  
-   Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
-   long as you don't recursively call zpark_if(). You can call zunpark_one()/zunpark_all()
-   though. It's useful to do that in before_sleep() for implementing condition variables. If you
-   do call into the zpark_if recursively, you'll get a trap.
-   
-   Crucially, when zpark_if calls your callbacks, it is only holding the queue lock associated
-   with the address, and not any other locks that the Deluge runtime uses.
-
-   The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
-   this is a civilized API. Use positive infinity (aka 1. / 0.) if you just want this to wait
-   forever.
-
-   Errors are reported by killing the shit out of your program. */
-_Bool zpark_if(const void* address,
-               _Bool (*condition)(void* arg),
-               void (*before_sleep)(void* arg),
-               void* arg,
-               double absolute_timeout_in_milliseconds);
-
-/* Simplified version of zpark_if. If the address is int-aligned, then this does a zpark_if with
-   a condition that returns true if the address contains the expected value. Does nothing on
-   before_sleep.
-   
-   This function has adorable behavior when address is misaligned. In that case, the address
-   passed to zpark_if is the original misaligned address, but the rounded-down address is used for
-   the comparison. This lets you use an atomic int as four notification channels.
-
-   This matches the basic futex API except futexes would error on misaligned.
-
-   Note that while this expects you to use an int, zpark_if has no such restriction. You could use
-   any atomic word there (or words, if you're fancy). */
-_Bool zcompare_and_park(const int* address, int expected_value,
-                        double absolute_timeout_in_milliseconds);
-
-/* Unparks one thread from the queue associated with the given address, and calls the given
-   callback while the address is locked. Reports to the callback whether any thread got
-   unparked and whether there may be any other threads still on the queue. */
-void zunpark_one(const void* address,
-                 void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
-                 void* arg);
-
-/* Unparks up to count threads from the queue associated with the given address, which cannot
-   be null. Returns the number of threads unparked. */
-unsigned zunpark(const void* address, unsigned count);
 
 #endif /* DELUGE_STDFIL_H */
 
