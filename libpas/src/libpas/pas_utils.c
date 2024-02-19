@@ -135,7 +135,7 @@ void pas_assertion_failed_no_inline_with_extra_detail(const char* filename, int 
 
 void pas_panic_on_out_of_memory_error(void)
 {
-    __builtin_trap();
+    pas_panic("out of memory.\n");
 }
 
 static void (*deallocation_did_fail_callback)(const char* reason, void* begin);

@@ -10,8 +10,7 @@ void* zalloc_like(void* obj)
     /* FIXME: This doesn't work right for flexes, but probably only because zalloc_with_type doesn't
        work for flexes. */
     void* result = zalloc_with_type(zgettype(obj), (char*)zgetupper(obj) - (char*)zgetlower(obj));
-    if (!result)
-        return 0;
+    ZASSERT(result);
     return (char*)result + ((char*)obj - (char*)zgetlower(obj));
 }
 

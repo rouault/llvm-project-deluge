@@ -850,28 +850,23 @@ static inline deluge_ptr deluge_ptr_get_next_bytes(
    strictly necessary so we could change that if we needed to.) */
 pas_heap_ref* deluge_get_heap(const deluge_type* type);
 
-void* deluge_try_allocate_int(size_t size, size_t count);
-void* deluge_try_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
 void* deluge_allocate_int(size_t size, size_t cout);
 void* deluge_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
 
-void* deluge_try_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_one(pas_heap_ref* ref);
 void* deluge_allocate_opaque(pas_heap_ref* ref);
-void* deluge_try_allocate_many(pas_heap_ref* ref, size_t count);
 void* deluge_allocate_many(pas_heap_ref* ref, size_t count);
-void* deluge_try_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+void* deluge_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
 
-void* deluge_try_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
-void* deluge_try_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
-                                                  size_t alignment);
-void* deluge_try_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
-void* deluge_try_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
-                                              size_t count, size_t alignment);
+void* deluge_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
+void* deluge_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
+                                              size_t alignment);
+void* deluge_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
+void* deluge_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
+                                          size_t count, size_t alignment);
 
 /* This can allocate any type (ints or not), but it's considerably slower than the other allocation
    entrypoints. The compiler avoids this in most cases. */
-void* deluge_try_allocate_with_type(const deluge_type* type, size_t size);
 void* deluge_allocate_with_type(const deluge_type* type, size_t size);
 
 /* FIXME: It would be great if this had a separate freeing function, and deluge_deallocate asserted
@@ -881,10 +876,10 @@ void* deluge_allocate_with_type(const deluge_type* type, size_t size);
    prevent freeing utility allocations. */
 void* deluge_allocate_utility(size_t size);
 
-void* deluge_try_reallocate_int(void* ptr, size_t size, size_t count);
-void* deluge_try_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment);
+void* deluge_reallocate_int(void* ptr, size_t size, size_t count);
+void* deluge_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment);
 
-void* deluge_try_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
+void* deluge_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 
 void deluge_deallocate(const void* ptr);
 void deluge_deallocate_safe(deluge_ptr ptr);
@@ -895,22 +890,22 @@ void deluded_f_zcalloc_multiply(DELUDED_SIGNATURE);
 
 pas_heap_ref* deluge_get_hard_heap(const deluge_type* type);
 
-void* deluge_try_hard_allocate_int(size_t size, size_t count);
-void* deluge_try_hard_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
-void* deluge_try_hard_allocate_one(pas_heap_ref* ref);
-void* deluge_try_hard_allocate_many(pas_heap_ref* ref, size_t count);
-void* deluge_try_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
-void* deluge_try_hard_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
-void* deluge_try_hard_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
-                                                       size_t alignment);
-void* deluge_try_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
-void* deluge_try_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
-                                                   size_t count, size_t alignment);
-void* deluge_try_hard_reallocate_int(void* ptr, size_t size, size_t count);
-void* deluge_try_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count,
-                                                    size_t alignment);
+void* deluge_hard_allocate_int(size_t size, size_t count);
+void* deluge_hard_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
+void* deluge_hard_allocate_one(pas_heap_ref* ref);
+void* deluge_hard_allocate_many(pas_heap_ref* ref, size_t count);
+void* deluge_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+void* deluge_hard_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
+void* deluge_hard_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
+                                                   size_t alignment);
+void* deluge_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
+void* deluge_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
+                                               size_t count, size_t alignment);
+void* deluge_hard_reallocate_int(void* ptr, size_t size, size_t count);
+void* deluge_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count,
+                                                size_t alignment);
 
-void* deluge_try_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
+void* deluge_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 void deluge_hard_deallocate(void* ptr);
 
 /* This is super gross but it's fine for now. When the compiler allocates, it emits three calls.

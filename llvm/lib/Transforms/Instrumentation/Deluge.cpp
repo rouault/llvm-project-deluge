@@ -290,35 +290,31 @@ class Deluge {
   FunctionCallee ValidateType;
   FunctionCallee GetType;
   FunctionCallee GetHeap;
-  FunctionCallee TryAllocateInt;
-  FunctionCallee TryAllocateIntWithAlignment;
   FunctionCallee AllocateInt;
   FunctionCallee AllocateIntWithAlignment;
-  FunctionCallee TryAllocateOne;
   FunctionCallee AllocateOne;
-  FunctionCallee TryAllocateMany;
-  FunctionCallee TryAllocateManyWithAlignment;
   FunctionCallee AllocateMany;
-  FunctionCallee TryAllocateIntFlex;
-  FunctionCallee TryAllocateIntFlexWithAlignment;
-  FunctionCallee TryAllocateFlex;
+  FunctionCallee AllocateManyWithAlignment;
+  FunctionCallee AllocateIntFlex;
+  FunctionCallee AllocateIntFlexWithAlignment;
+  FunctionCallee AllocateFlex;
   FunctionCallee AllocateUtility;
-  FunctionCallee TryReallocateInt;
-  FunctionCallee TryReallocateIntWithAlignment;
-  FunctionCallee TryReallocate;
+  FunctionCallee ReallocateInt;
+  FunctionCallee ReallocateIntWithAlignment;
+  FunctionCallee Reallocate;
   FunctionCallee Deallocate;
   FunctionCallee GetHardHeap;
-  FunctionCallee TryHardAllocateInt;
-  FunctionCallee TryHardAllocateIntWithAlignment;
-  FunctionCallee TryHardAllocateOne;
-  FunctionCallee TryHardAllocateMany;
-  FunctionCallee TryHardAllocateManyWithAlignment;
-  FunctionCallee TryHardAllocateIntFlex;
-  FunctionCallee TryHardAllocateIntFlexWithAlignment;
-  FunctionCallee TryHardAllocateFlex;
-  FunctionCallee TryHardReallocateInt;
-  FunctionCallee TryHardReallocateIntWithAlignment;
-  FunctionCallee TryHardReallocate;
+  FunctionCallee HardAllocateInt;
+  FunctionCallee HardAllocateIntWithAlignment;
+  FunctionCallee HardAllocateOne;
+  FunctionCallee HardAllocateMany;
+  FunctionCallee HardAllocateManyWithAlignment;
+  FunctionCallee HardAllocateIntFlex;
+  FunctionCallee HardAllocateIntFlexWithAlignment;
+  FunctionCallee HardAllocateFlex;
+  FunctionCallee HardReallocateInt;
+  FunctionCallee HardReallocateIntWithAlignment;
+  FunctionCallee HardReallocate;
   FunctionCallee LogAllocation;
   FunctionCallee PtrPtr;
   FunctionCallee CheckDeallocate;
@@ -1921,13 +1917,13 @@ class Deluge {
           size_t Size = DL.getTypeStoreSize(LowT);
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              isHard ? TryHardAllocateIntWithAlignment : TryAllocateIntWithAlignment,
+              isHard ? HardAllocateIntWithAlignment : AllocateIntWithAlignment,
               { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
                 ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              isHard ? TryHardAllocateInt : TryAllocateInt,
+              isHard ? HardAllocateInt : AllocateInt,
               { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size) },
               "deluge_alloc_int", CI);
           }
@@ -1937,13 +1933,13 @@ class Deluge {
           if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
             if (C->isOneValue()) {
               Alloc = CallInst::Create(
-                isHard ? TryHardAllocateOne : TryAllocateOne,
+                isHard ? HardAllocateOne : AllocateOne,
                 { Heap }, "deluge_alloc_one", CI);
             }
           }
           if (!Alloc) {
             Alloc = CallInst::Create(
-              isHard ? TryHardAllocateMany : TryAllocateMany,
+              isHard ? HardAllocateMany : AllocateMany,
               { Heap, CI->getArgOperand(1) }, "deluge_alloc_many", CI);
           }
         }
@@ -1986,14 +1982,14 @@ class Deluge {
             Compare, TypeAlignment, PassedAlignment, "deluge_aligned_alloc_select", CI);
           AlignmentValue->setDebugLoc(CI->getDebugLoc());
           Alloc = CallInst::Create(
-            isHard ? TryHardAllocateIntWithAlignment : TryAllocateIntWithAlignment,
+            isHard ? HardAllocateIntWithAlignment : AllocateIntWithAlignment,
             { Count, ConstantInt::get(IntPtrTy, Size), AlignmentValue },
             "deluge_alloc_int", CI);
         } else {
           Value* Heap = getHeap(
             DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            isHard ? TryHardAllocateManyWithAlignment : TryAllocateManyWithAlignment,
+            isHard ? HardAllocateManyWithAlignment : AllocateManyWithAlignment,
             { Heap, Count, PassedAlignment }, "deluge_alloc_many", CI);
         }
         
@@ -2032,13 +2028,13 @@ class Deluge {
           size_t Size = DL.getTypeStoreSize(LowT);
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              isHard ? TryHardReallocateIntWithAlignment : TryReallocateIntWithAlignment,
+              isHard ? HardReallocateIntWithAlignment : ReallocateIntWithAlignment,
               { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
                 ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_realloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              isHard ? TryHardReallocateInt : TryReallocateInt,
+              isHard ? HardReallocateInt : ReallocateInt,
               { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size) },
               "deluge_realloc_int", CI);
           }
@@ -2046,7 +2042,7 @@ class Deluge {
           Value* Heap = getHeap(
             DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            isHard ? TryHardReallocate : TryReallocate,
+            isHard ? HardReallocate : Reallocate,
             { OrigPtr, Heap, CI->getArgOperand(2) }, "deluge_realloc", CI);
         }
         
@@ -2109,13 +2105,13 @@ class Deluge {
           size_t Alignment = FlexType.Main.Alignment;
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
-              isHard ? TryHardAllocateIntFlexWithAlignment : TryAllocateIntFlexWithAlignment,
+              isHard ? HardAllocateIntFlexWithAlignment : AllocateIntFlexWithAlignment,
               { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize),
                 Count, ConstantInt::get(IntPtrTy, Alignment) },
               "deluge_alloc_int", CI);
           } else {
             Alloc = CallInst::Create(
-              isHard ? TryHardAllocateIntFlex : TryAllocateIntFlex,
+              isHard ? HardAllocateIntFlex : AllocateIntFlex,
               { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
               "deluge_alloc_int", CI);
           }
@@ -2123,7 +2119,7 @@ class Deluge {
           Value* Heap = getHeap(
             DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
-            isHard ? TryHardAllocateFlex : TryAllocateFlex,
+            isHard ? HardAllocateFlex : AllocateFlex,
             { Heap, ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
             "deluge_alloc_many", CI);
         }
@@ -2855,35 +2851,31 @@ public:
     ValidateType = M.getOrInsertFunction("deluge_validate_type", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetType = M.getOrInsertFunction("deluge_get_type", LowRawPtrTy, LowRawPtrTy);
     GetHeap = M.getOrInsertFunction("deluge_get_heap", LowRawPtrTy, LowRawPtrTy);
-    TryAllocateInt = M.getOrInsertFunction("deluge_try_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
-    TryAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     AllocateInt = M.getOrInsertFunction("deluge_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateIntWithAlignment = M.getOrInsertFunction("deluge_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryAllocateOne = M.getOrInsertFunction("deluge_try_allocate_one", LowRawPtrTy, LowRawPtrTy);
     AllocateOne = M.getOrInsertFunction("deluge_allocate_one", LowRawPtrTy, LowRawPtrTy);
-    TryAllocateMany = M.getOrInsertFunction("deluge_try_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    TryAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     AllocateMany = M.getOrInsertFunction("deluge_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    TryAllocateIntFlex = M.getOrInsertFunction("deluge_try_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_try_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryAllocateFlex = M.getOrInsertFunction("deluge_try_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    AllocateManyWithAlignment = M.getOrInsertFunction("deluge_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    AllocateIntFlex = M.getOrInsertFunction("deluge_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    AllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    AllocateFlex = M.getOrInsertFunction("deluge_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("deluge_allocate_utility", LowRawPtrTy, IntPtrTy);
-    TryReallocateInt = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    TryReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryReallocate = M.getOrInsertFunction("deluge_try_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    ReallocateInt = M.getOrInsertFunction("deluge_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    ReallocateIntWithAlignment = M.getOrInsertFunction("deluge_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    Reallocate = M.getOrInsertFunction("deluge_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     Deallocate = M.getOrInsertFunction("deluge_deallocate", VoidTy, LowRawPtrTy);
     GetHardHeap = M.getOrInsertFunction("deluge_get_hard_heap", LowRawPtrTy, LowRawPtrTy);
-    TryHardAllocateInt = M.getOrInsertFunction("deluge_try_hard_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
-    TryHardAllocateIntWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryHardAllocateOne = M.getOrInsertFunction("deluge_try_hard_allocate_one", LowRawPtrTy, LowRawPtrTy);
-    TryHardAllocateMany = M.getOrInsertFunction("deluge_try_hard_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    TryHardAllocateManyWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    TryHardAllocateIntFlex = M.getOrInsertFunction("deluge_try_hard_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryHardAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_try_hard_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryHardAllocateFlex = M.getOrInsertFunction("deluge_try_hard_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryHardReallocateInt = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    TryHardReallocateIntWithAlignment = M.getOrInsertFunction("deluge_try_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    TryHardReallocate = M.getOrInsertFunction("deluge_try_hard_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    HardAllocateInt = M.getOrInsertFunction("deluge_hard_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
+    HardAllocateIntWithAlignment = M.getOrInsertFunction("deluge_hard_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    HardAllocateOne = M.getOrInsertFunction("deluge_hard_allocate_one", LowRawPtrTy, LowRawPtrTy);
+    HardAllocateMany = M.getOrInsertFunction("deluge_hard_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    HardAllocateManyWithAlignment = M.getOrInsertFunction("deluge_hard_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    HardAllocateIntFlex = M.getOrInsertFunction("deluge_hard_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    HardAllocateIntFlexWithAlignment = M.getOrInsertFunction("deluge_hard_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    HardAllocateFlex = M.getOrInsertFunction("deluge_hard_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    HardReallocateInt = M.getOrInsertFunction("deluge_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    HardReallocateIntWithAlignment = M.getOrInsertFunction("deluge_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
+    HardReallocate = M.getOrInsertFunction("deluge_hard_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     LogAllocation = M.getOrInsertFunction("deluge_log_allocation_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     PtrPtr = M.getOrInsertFunction("deluge_ptr_ptr_impl", LowRawPtrTy, LowWidePtrTy);
     UpdateSidecar = M.getOrInsertFunction("deluge_update_sidecar", Int128Ty, LowWidePtrTy, LowRawPtrTy);

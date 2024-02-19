@@ -80,7 +80,7 @@ void* zhard_alloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
                            void* trailing_type_like, __SIZE_TYPE__ count);
 void* zhard_aligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void* zhard_realloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
-_Bool zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right, __SIZE_TYPE__ *result);
+__SIZE_TYPE__ zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right);
 ztype* ztypeof_impl(void* type_like);
 
 /* Safely restricts the capability of the incoming pointer. If the given pointer cannot be treated as
@@ -98,6 +98,8 @@ ztype* ztypeof_impl(void* type_like);
    
    Always zeroes newly allocated memory. There is no way to allocate memory that isn't zeroed.
    
+   Crashes your program if allocation fails.
+   
    Misuse of zalloc/zfree may cause logic errors where zalloc will return the same pointer as it had
    previously returned, so pointers that you expected to different objects will end up pointing at the
    same object.
@@ -110,11 +112,8 @@ ztype* ztypeof_impl(void* type_like);
         (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
     })
 
-#define zcalloc(type, something_to_multiply, another_thing_to_multiply) ({ \
-        __SIZE_TYPE__ __d_size; \
-        _Bool __d_mul = zcalloc_multiply((something_to_multiply), (another_thing_to_multiply), &__d_size); \
-        __d_mul ? zalloc(type, __d_size) : NULL; \
-    })
+#define zcalloc(type, something_to_multiply, another_thing_to_multiply) \
+    zalloc(type, zcalloc_multiply((something_to_multiply), (another_thing_to_multiply)))
 
 #define zaligned_alloc(type, alignment, count) ({ \
         type __d_temporary; \
