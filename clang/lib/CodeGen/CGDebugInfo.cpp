@@ -4917,7 +4917,7 @@ void CGDebugInfo::EmitDeclareOfBlockDeclRefVariable(
   const llvm::DataLayout &target = CGM.getDataLayout();
 
   CharUnits offset = CharUnits::fromQuantity(
-      target.getStructLayoutBeforeDeluge(blockInfo.StructureType)
+      target.getStructLayoutBeforeFilC(blockInfo.StructureType)
           ->getElementOffset(blockInfo.getCapture(VD).getIndex()));
 
   SmallVector<uint64_t, 9> addr;
@@ -5029,7 +5029,7 @@ void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
   getDeclContextDescriptor(blockDecl);
 
   const llvm::StructLayout *blockLayout =
-      CGM.getDataLayout().getStructLayoutBeforeDeluge(block.StructureType);
+      CGM.getDataLayout().getStructLayoutBeforeFilC(block.StructureType);
 
   SmallVector<llvm::Metadata *, 16> fields;
   collectDefaultFieldsForBlockLiteralDeclare(block, C, loc, *blockLayout, tunit,

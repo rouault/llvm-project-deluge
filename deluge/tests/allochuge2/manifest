@@ -1,8 +1,0 @@
-return:
-  failure
-output-includes:
-  - deluge panic
-  - out of memory
-output-excludes:
-  - "huge = 0"
-  - "*huge = 42"

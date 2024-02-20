@@ -5280,12 +5280,12 @@ static GEPOffsetAndOverflow EmitGEPOffsetInBytes(Value *BasePtr, Value *GEPVal,
       // specified field.
       unsigned FieldNo = cast<llvm::ConstantInt>(Index)->getZExtValue();
       LocalOffset = llvm::ConstantInt::get(
-          IntPtrTy, DL.getStructLayoutBeforeDeluge(STy)->getElementOffset(FieldNo));
+          IntPtrTy, DL.getStructLayoutBeforeFilC(STy)->getElementOffset(FieldNo));
     } else {
       // Otherwise this is array-like indexing. The local offset is the index
       // multiplied by the element size.
       auto *ElementSize = llvm::ConstantInt::get(
-          IntPtrTy, DL.getTypeAllocSizeBeforeDeluge(GTI.getIndexedType()));
+          IntPtrTy, DL.getTypeAllocSizeBeforeFilC(GTI.getIndexedType()));
       auto *IndexS = Builder.CreateIntCast(Index, IntPtrTy, /*isSigned=*/true);
       LocalOffset = eval(BO_Mul, ElementSize, IndexS);
     }

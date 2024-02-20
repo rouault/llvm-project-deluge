@@ -1,0 +1,5 @@
+return:
+  success
+output-includes:
+  - argv[0] =
+  - filc/tests/argv/argv

@@ -1,8 +1,0 @@
-return:
-  success
-output-includes:
-  - Good
-  - Thingy = 4200
-output-excludes:
-  - deluge panic
-  - Bad

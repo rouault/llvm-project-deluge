@@ -9,7 +9,7 @@ set -x
 
 (cd musl && make clean && make -j `sysctl -n hw.ncpu` && make install)
 
-deluge/run-tests
+filc/run-tests
 
 (cd zlib-1.3 && make clean && make -j `sysctl -n hw.ncpu` && make install)
 

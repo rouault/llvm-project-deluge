@@ -710,7 +710,7 @@ bool ARMSwiftABIInfo::isLegalVectorType(CharUnits VectorSize, llvm::Type *EltTy,
                                         unsigned NumElts) const {
   if (!llvm::isPowerOf2_32(NumElts))
     return false;
-  unsigned size = CGT.getDataLayout().getTypeStoreSizeInBitsBeforeDeluge(EltTy);
+  unsigned size = CGT.getDataLayout().getTypeStoreSizeInBitsBeforeFilC(EltTy);
   if (size > 64)
     return false;
   if (VectorSize.getQuantity() != 8 &&

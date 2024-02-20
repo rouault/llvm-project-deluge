@@ -736,9 +736,9 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-rpath");
     CmdArgs.push_back(Args.MakeArgString(P));
-    CmdArgs.push_back("-ldeluge");
+    CmdArgs.push_back("-lpizlo");
     
-    // libdeluge depends on libSystem, so lets make sure it's there.
+    // libpizlo depends on libSystem, so lets make sure it's there.
     getMachOToolChain().AddLinkRuntimeLibArgs(Args, CmdArgs,
                                               ForceLinkBuiltins);
     
@@ -747,7 +747,7 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     Args.ClaimAllArgs(options::OPT_pthreads);
 
     if (!NoStdOrDefaultLibs)
-      CmdArgs.push_back("-ldeluded_c");
+      CmdArgs.push_back("-lpizlonated_c");
   } else {
     if (!NoStdOrDefaultLibs || ForceLinkBuiltins) {
       // link_ssp spec is empty.
@@ -1291,7 +1291,7 @@ void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
   DarwinLibName += getOSLibraryNameSuffix();
   DarwinLibName += IsShared ? "_dynamic.dylib" : ".a";
   SmallString<128> Dir(getDriver().InstalledDir);
-  llvm::sys::path::append(Dir, "..", ".."); // at /crap/llvm-project-deluge
+  llvm::sys::path::append(Dir, "..", ".."); // at /crap/llvm-project-filc
   llvm::sys::path::append(Dir, "runtime-build", "lib", "clang", "17"); // LMAYO
   llvm::sys::path::append(Dir, "lib", "darwin");
   if (Opts & RLO_IsEmbedded)
@@ -2419,7 +2419,7 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
     llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
     addSystemInclude(DriverArgs, CC1Args, P);
     
-    // Add the Clang builtin headers that are allowlisted for Deluge
+    // Add the Clang builtin headers that are allowlisted for FilC
     if (!(NoStdInc && !ForceBuiltinInc) && !NoBuiltinInc) {
       SmallString<128> P(D.InstalledDir);
       llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
@@ -3314,7 +3314,7 @@ static void addDefaultCRTLinkArgs(const Darwin &D, const ArgList &Args,
     CmdArgs.push_back("-lcrt1.10.6.o");
   // darwin_crt2 spec is empty.
 
-  CmdArgs.push_back("-ldeluge_crt");
+  CmdArgs.push_back("-lfilc_crt");
 }
 
 void Darwin::addStartObjectFileArgs(const ArgList &Args,

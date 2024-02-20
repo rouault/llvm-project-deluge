@@ -121,7 +121,7 @@ packArgsIntoNVPTXFormatBuffer(CodeGenFunction *CGF, const CallArgList &Args) {
     }
     llvm::Value *BufferPtr =
         Builder.CreatePointerCast(Alloca, llvm::Type::getInt8PtrTy(Ctx));
-    return {BufferPtr, DL.getTypeAllocSizeBeforeDeluge(AllocaTy)};
+    return {BufferPtr, DL.getTypeAllocSizeBeforeFilC(AllocaTy)};
   }
 }
 

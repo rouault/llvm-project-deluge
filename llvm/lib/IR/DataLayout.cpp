@@ -45,7 +45,7 @@ using namespace llvm;
 // Support for StructLayout
 //===----------------------------------------------------------------------===//
 
-StructLayout::StructLayout(StructType *ST, const DataLayout &DL, DelugeMode DM)
+StructLayout::StructLayout(StructType *ST, const DataLayout &DL, FilCMode DM)
     : StructSize(TypeSize::Fixed(0)) {
   assert(!ST->isOpaque() && "Cannot get layout of opaque structs");
   IsPadded = false;
@@ -683,7 +683,7 @@ namespace {
 class StructLayoutMap {
   using LayoutInfoTy = DenseMap<StructType*, StructLayout*>;
   LayoutInfoTy LayoutInfo;
-  LayoutInfoTy LayoutInfoBeforeDeluge;
+  LayoutInfoTy LayoutInfoBeforeFilC;
 
 public:
   ~StructLayoutMap() {
@@ -695,9 +695,9 @@ public:
     }
   }
 
-  StructLayout *&get(StructType *STy, DelugeMode DM) {
-    if (DM == BeforeDeluge)
-      return LayoutInfoBeforeDeluge[STy];
+  StructLayout *&get(StructType *STy, FilCMode DM) {
+    if (DM == BeforeFilC)
+      return LayoutInfoBeforeFilC[STy];
     return LayoutInfo[STy];
   }
 };
@@ -718,7 +718,7 @@ DataLayout::~DataLayout() {
   clear();
 }
 
-const StructLayout *DataLayout::getStructLayout(StructType *Ty, DelugeMode DM) const {
+const StructLayout *DataLayout::getStructLayout(StructType *Ty, FilCMode DM) const {
   if (!LayoutMap)
     LayoutMap = new StructLayoutMap();
 
@@ -787,17 +787,17 @@ unsigned DataLayout::getIndexTypeSizeInBits(Type *Ty) const {
   Get the ABI (\a abi_or_pref == true) or preferred alignment (\a abi_or_pref
   == false) for the requested type \a Ty.
  */
-Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref, DelugeMode DM) const {
+Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref, FilCMode DM) const {
   assert(Ty->isSized() && "Cannot getTypeInfo() on a type that is unsized!");
   switch (Ty->getTypeID()) {
   // Early escape for the non-numeric types.
   case Type::LabelTyID:
-    if (DM == BeforeDeluge)
+    if (DM == BeforeFilC)
       return Align(128);
     return abi_or_pref ? getPointerABIAlignment(0) : getPointerPrefAlignment(0);
   case Type::PointerTyID: {
     unsigned AS = cast<PointerType>(Ty)->getAddressSpace();
-    if (AS == 0 && DM == BeforeDeluge)
+    if (AS == 0 && DM == BeforeFilC)
       return Align(128);
     return abi_or_pref ? getPointerABIAlignment(AS)
                        : getPointerPrefAlignment(AS);
@@ -867,16 +867,16 @@ Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref, DelugeMode DM) const 
   }
 }
 
-Align DataLayout::getABITypeAlign(Type *Ty, DelugeMode DM) const {
+Align DataLayout::getABITypeAlign(Type *Ty, FilCMode DM) const {
   return getAlignment(Ty, true, DM);
 }
 
 /// TODO: Remove this function once the transition to Align is over.
-uint64_t DataLayout::getPrefTypeAlignment(Type *Ty, DelugeMode DM) const {
+uint64_t DataLayout::getPrefTypeAlignment(Type *Ty, FilCMode DM) const {
   return getPrefTypeAlign(Ty, DM).value();
 }
 
-Align DataLayout::getPrefTypeAlign(Type *Ty, DelugeMode DM) const {
+Align DataLayout::getPrefTypeAlign(Type *Ty, FilCMode DM) const {
   return getAlignment(Ty, false, DM);
 }
 

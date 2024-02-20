@@ -300,7 +300,7 @@ void AggExprEmitter::withReturnValueSlot(
   } else {
     RetAddr = CGF.CreateMemTemp(RetTy, "tmp", &RetAllocaAddr);
     llvm::TypeSize Size =
-        CGF.CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(CGF.ConvertTypeForMem(RetTy));
+        CGF.CGM.getDataLayout().getTypeAllocSizeBeforeFilC(CGF.ConvertTypeForMem(RetTy));
     LifetimeSizePtr = CGF.EmitLifetimeStart(Size, RetAllocaAddr.getPointer());
     if (LifetimeSizePtr) {
       LifetimeStartInst =

@@ -176,7 +176,7 @@ private:
 
     // Add a struct type to the coercion type, starting at Offset (in bits).
     void addStruct(uint64_t Offset, llvm::StructType *StrTy) {
-      const llvm::StructLayout *Layout = DL.getStructLayoutBeforeDeluge(StrTy);
+      const llvm::StructLayout *Layout = DL.getStructLayoutBeforeFilC(StrTy);
       for (unsigned i = 0, e = StrTy->getNumElements(); i != e; ++i) {
         llvm::Type *ElemTy = StrTy->getElementType(i);
         uint64_t ElemOffset = Offset + Layout->getElementOffsetInBits(i);
@@ -263,7 +263,7 @@ SparcV9ABIInfo::classifyType(QualType Ty, unsigned SizeLimit) const {
 
   CoerceBuilder CB(getVMContext(), getDataLayout());
   CB.addStruct(0, StrTy);
-  CB.pad(llvm::alignTo(CB.DL.getTypeSizeInBitsBeforeDeluge(StrTy), 64));
+  CB.pad(llvm::alignTo(CB.DL.getTypeSizeInBitsBeforeFilC(StrTy), 64));
 
   // Try to use the original type for coercion.
   llvm::Type *CoerceTy = CB.isUsableType(StrTy) ? StrTy : CB.getType();
@@ -306,7 +306,7 @@ Address SparcV9ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   }
 
   case ABIArgInfo::Direct: {
-    auto AllocSize = getDataLayout().getTypeAllocSizeBeforeDeluge(AI.getCoerceToType());
+    auto AllocSize = getDataLayout().getTypeAllocSizeBeforeFilC(AI.getCoerceToType());
     Stride = CharUnits::fromQuantity(AllocSize).alignTo(SlotSize);
     ArgAddr = Addr;
     break;

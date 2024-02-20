@@ -130,13 +130,13 @@ PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(outline_non_committable_granules,
 									   OUTLINE_NON_COMMITTABLE_GRANULES_CONFIG.small_segregated_config)
 #endif
 
-#if PAS_ENABLE_DELUGE
-PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_small_segregated,
-                                       DELUGE_HEAP_CONFIG.small_segregated_config)
-PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_medium_segregated,
-                                       DELUGE_HEAP_CONFIG.medium_segregated_config)
+#if PAS_ENABLE_FILC
+PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(filc_small_segregated,
+                                       FILC_HEAP_CONFIG.small_segregated_config)
+PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(filc_medium_segregated,
+                                       FILC_HEAP_CONFIG.medium_segregated_config)
 
-PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(deluge_hard_segregated,
-                                       DELUGE_HARD_HEAP_CONFIG.small_segregated_config)
+PAS_DEFINE_SEGREGATED_PAGE_CONFIG_KIND(filc_hard_segregated,
+                                       FILC_HARD_HEAP_CONFIG.small_segregated_config)
 #endif
 

@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - filc panic
+  - reallocation did fail

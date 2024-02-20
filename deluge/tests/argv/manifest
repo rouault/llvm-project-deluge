@@ -1,5 +1,0 @@
-return:
-  success
-output-includes:
-  - argv[0] =
-  - deluge/tests/argv/argv

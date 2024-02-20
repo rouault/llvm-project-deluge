@@ -14,7 +14,7 @@ mkdir -p runtime-build
 
 (cd musl && CC=$PWD/../build/bin/clang ./configure --target=aarch64 --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
-deluge/run-tests
+filc/run-tests
 
 (cd zlib-1.3 && CC="xcrun $PWD/../build/bin/clang" CFLAGS="-O3 -g" ./configure --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 

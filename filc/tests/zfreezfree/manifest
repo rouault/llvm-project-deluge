@@ -1,0 +1,7 @@
+return:
+  failure
+output-excludes:
+  Nie dobrze
+output-includes:
+  - filc panic
+  - attempt to free nonnull pointer to opaque type

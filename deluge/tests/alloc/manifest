@@ -1,8 +1,0 @@
-return:
-  failure
-output-includes:
-  - YAY
-  - deluge panic
-output-excludes:
-  - "NO"
-

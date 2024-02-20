@@ -166,7 +166,7 @@ Address XCoreABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
   case ABIArgInfo::Direct:
     Val = AP.withElementType(ArgTy);
     ArgSize = CharUnits::fromQuantity(
-        getDataLayout().getTypeAllocSizeBeforeDeluge(AI.getCoerceToType()));
+        getDataLayout().getTypeAllocSizeBeforeFilC(AI.getCoerceToType()));
     ArgSize = ArgSize.alignTo(SlotSize);
     break;
   case ABIArgInfo::Indirect:

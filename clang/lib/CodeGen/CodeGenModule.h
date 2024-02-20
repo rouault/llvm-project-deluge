@@ -1326,7 +1326,7 @@ public:
   llvm::GlobalVariable::LinkageTypes getVTableLinkage(const CXXRecordDecl *RD);
 
   /// Return the store size, in character units, of the given LLVM type.
-  CharUnits GetTargetTypeStoreSizeBeforeDeluge(llvm::Type *Ty) const;
+  CharUnits GetTargetTypeStoreSizeBeforeFilC(llvm::Type *Ty) const;
 
   /// Returns LLVM linkage for a declarator.
   llvm::GlobalValue::LinkageTypes

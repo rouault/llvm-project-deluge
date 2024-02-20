@@ -363,7 +363,7 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
   CharUnits VarSize = CGM.getContext().getTypeSizeInChars(D.getType()) +
                       D.getFlexibleArrayInitChars(getContext());
   CharUnits CstSize = CharUnits::fromQuantity(
-      CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Init->getType()));
+      CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Init->getType()));
   assert(VarSize == CstSize && "Emitted constant has unexpected size");
 #endif
 
@@ -1059,7 +1059,7 @@ static llvm::Constant *constStructWithPadding(CodeGenModule &CGM,
                                               llvm::StructType *STy,
                                               llvm::Constant *constant) {
   const llvm::DataLayout &DL = CGM.getDataLayout();
-  const llvm::StructLayout *Layout = DL.getStructLayoutBeforeDeluge(STy);
+  const llvm::StructLayout *Layout = DL.getStructLayoutBeforeFilC(STy);
   llvm::Type *Int8Ty = llvm::IntegerType::getInt8Ty(CGM.getLLVMContext());
   unsigned SizeSoFar = 0;
   SmallVector<llvm::Constant *, 8> Values;
@@ -1080,7 +1080,7 @@ static llvm::Constant *constStructWithPadding(CodeGenModule &CGM,
     if (CurOp != NewOp)
       NestedIntact = false;
     Values.push_back(NewOp);
-    SizeSoFar = CurOff + DL.getTypeAllocSizeBeforeDeluge(CurOp->getType());
+    SizeSoFar = CurOff + DL.getTypeAllocSizeBeforeFilC(CurOp->getType());
   }
   unsigned TotalSize = Layout->getSizeInBytes();
   if (SizeSoFar < TotalSize) {
@@ -1194,7 +1194,7 @@ static void emitStoresForConstant(CodeGenModule &CGM, const VarDecl &D,
                                   CGBuilderTy &Builder,
                                   llvm::Constant *constant, bool IsAutoInit) {
   auto *Ty = constant->getType();
-  uint64_t ConstantSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Ty);
+  uint64_t ConstantSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Ty);
   if (!ConstantSize)
     return;
 
@@ -1585,7 +1585,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
         // is rare.
         if (!Bypasses.IsBypassed(&D) &&
             !(!getLangOpts().CPlusPlus && hasLabelBeenSeenInCurrentScope())) {
-          llvm::TypeSize Size = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(allocaTy);
+          llvm::TypeSize Size = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(allocaTy);
           emission.SizeForLifetimeMarkers =
               EmitLifetimeStart(Size, AllocaAddr.getPointer());
         }

@@ -17,7 +17,7 @@
 #include "Program.h"
 #include "State.h"
 
-// I'm assuming this shit needs to be fucked with so it groks Deluge, but I haven't gotten there yet.
+// I'm assuming this shit needs to be fucked with so it groks FilC, but I haven't gotten there yet.
 
 using namespace clang;
 using namespace clang::interp;

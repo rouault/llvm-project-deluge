@@ -1,0 +1,9 @@
+return:
+  failure
+output-includes:
+  - filc panic
+  - span has opaque type
+  - type{function}
+output-excludes:
+  - blah
+  - bytes when upper - ptr

@@ -1,0 +1,9 @@
+return:
+   failure
+output-includes:
+ - thingy
+ - stuff
+ - yay
+ - filc panic
+output-excludes:
+ - nonono

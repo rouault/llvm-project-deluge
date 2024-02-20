@@ -615,7 +615,7 @@ llvm::Function *CGNVCUDARuntime::makeRegisterGlobalsFn() {
     switch (Info.Flags.getKind()) {
     case DeviceVarFlags::Variable: {
       uint64_t VarSize =
-          CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Var->getValueType());
+          CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Var->getValueType());
       if (Info.Flags.isManaged()) {
         auto *ManagedVar = new llvm::GlobalVariable(
             CGM.getModule(), Var->getType(),
@@ -1144,7 +1144,7 @@ void CGNVCUDARuntime::createOffloadingEntries() {
 
   for (VarInfo &I : DeviceVars) {
     uint64_t VarSize =
-        CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(I.Var->getValueType());
+        CGM.getDataLayout().getTypeAllocSizeBeforeFilC(I.Var->getValueType());
     if (I.Flags.getKind() == DeviceVarFlags::Variable) {
       OMPBuilder.emitOffloadingEntry(
           I.Var, getDeviceSideName(I.D), VarSize,

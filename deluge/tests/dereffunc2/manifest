@@ -1,9 +1,0 @@
-return:
-  failure
-output-includes:
-  - deluge panic
-  - span has opaque type
-  - type{function}
-output-excludes:
-  - blah
-  - bytes when upper - ptr

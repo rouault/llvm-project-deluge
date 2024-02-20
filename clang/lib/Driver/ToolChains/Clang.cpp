@@ -1314,7 +1314,7 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
       // This is used only by the driver. No need to pass to cc1.
       continue;
     } else if (A->getOption().matches(options::OPT_isysroot)) {
-      // In Deluge, we ignore isysroot, except for the linker (which I think only happens on Darwin,
+      // In FilC, we ignore isysroot, except for the linker (which I think only happens on Darwin,
       // elsewhere it's jsut plain ignored).
       continue;
     }

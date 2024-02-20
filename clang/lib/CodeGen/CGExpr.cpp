@@ -115,7 +115,7 @@ llvm::AllocaInst *CodeGenFunction::CreateTempAlloca(llvm::Type *Ty,
 Address CodeGenFunction::CreateDefaultAlignTempAlloca(llvm::Type *Ty,
                                                       const Twine &Name) {
   CharUnits Align =
-      CharUnits::fromQuantity(CGM.getDataLayout().getPrefTypeAlignBeforeDeluge(Ty));
+      CharUnits::fromQuantity(CGM.getDataLayout().getPrefTypeAlignBeforeFilC(Ty));
   return CreateTempAlloca(Ty, Align, Name);
 }
 
@@ -518,7 +518,7 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
     switch (M->getStorageDuration()) {
     case SD_Automatic:
       if (auto *Size = EmitLifetimeStart(
-              CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Alloca.getElementType()),
+              CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Alloca.getElementType()),
               Alloca.getPointer())) {
         pushCleanupAfterFullExpr<CallLifetimeEnd>(NormalEHLifetimeMarker,
                                                   Alloca, Size);
@@ -553,7 +553,7 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       }
 
       if (auto *Size = EmitLifetimeStart(
-              CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Alloca.getElementType()),
+              CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Alloca.getElementType()),
               Alloca.getPointer())) {
         pushFullExprCleanup<CallLifetimeEnd>(NormalEHLifetimeMarker, Alloca,
                                              Size);

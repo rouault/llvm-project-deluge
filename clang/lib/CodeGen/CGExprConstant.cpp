@@ -47,11 +47,11 @@ struct ConstantAggregateBuilderUtils {
 
   CharUnits getAlignment(const llvm::Constant *C) const {
     return CharUnits::fromQuantity(
-        CGM.getDataLayout().getABITypeAlignBeforeDeluge(C->getType()));
+        CGM.getDataLayout().getABITypeAlignBeforeFilC(C->getType()));
   }
 
   CharUnits getSize(llvm::Type *Ty) const {
-    return CharUnits::fromQuantity(CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(Ty));
+    return CharUnits::fromQuantity(CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Ty));
   }
 
   CharUnits getSize(const llvm::Constant *C) const {
@@ -338,7 +338,7 @@ bool ConstantAggregateBuilder::split(size_t Index, CharUnits Hint) {
       // Must be a struct.
       auto *ST = cast<llvm::StructType>(CA->getType());
       const llvm::StructLayout *Layout =
-          CGM.getDataLayout().getStructLayoutBeforeDeluge(ST);
+          CGM.getDataLayout().getStructLayoutBeforeFilC(ST);
       replace(Offsets, Index, Index + 1,
               llvm::map_range(
                   llvm::seq(0u, CA->getNumOperands()), [&](unsigned Op) {
@@ -1084,8 +1084,8 @@ public:
       SmallVector<llvm::Type*, 2> Types;
       Elts.push_back(C);
       Types.push_back(C->getType());
-      unsigned CurSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(C->getType());
-      unsigned TotalSize = CGM.getDataLayout().getTypeAllocSizeBeforeDeluge(destTy);
+      unsigned CurSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(C->getType());
+      unsigned TotalSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(destTy);
 
       assert(CurSize <= TotalSize && "Union size mismatch!");
       if (unsigned NumPadBytes = TotalSize - CurSize) {

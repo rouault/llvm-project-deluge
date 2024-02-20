@@ -1,9 +1,0 @@
-return:
-  failure
-output-excludes:
-  - Kurza melodia
-output-includes:
-  - Spoko
-  - deluge panic
-  - cannot access pointer with ptr < lower
-

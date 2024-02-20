@@ -63,7 +63,7 @@
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
 #include "llvm/Transforms/Instrumentation/BoundsChecking.h"
 #include "llvm/Transforms/Instrumentation/DataFlowSanitizer.h"
-#include "llvm/Transforms/Instrumentation/Deluge.h"
+#include "llvm/Transforms/Instrumentation/FilPizlonator.h"
 #include "llvm/Transforms/Instrumentation/GCOVProfiler.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/InstrProfiling.h"
@@ -931,7 +931,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
     PB.registerPipelineStartEPCallback(
         [](ModulePassManager &MPM, OptimizationLevel Level) {
-          MPM.addPass(DelugePass());
+          MPM.addPass(FilPizlonatorPass());
         });
 
     if (LangOpts.ObjCAutoRefCount) {

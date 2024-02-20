@@ -1,0 +1,8 @@
+return:
+  failure
+output-includes:
+  - filc panic
+  - out of memory
+output-excludes:
+  - "huge = 0"
+  - "*huge = 42"
