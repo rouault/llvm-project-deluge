@@ -134,6 +134,9 @@ int main(int argc, char** argv)
     struct rlimit rlim;
     ZASSERT(!getrlimit(RLIMIT_NPROC, &rlim));
     ZASSERT(!getrlimit(RLIMIT_CPU, &rlim));
+
+    ZASSERT(umask(0644));
+    ZASSERT(umask(0644) == 0644);
     
     zprintf("No worries.\n");
     return 0;

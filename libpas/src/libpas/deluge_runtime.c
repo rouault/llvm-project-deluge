@@ -5952,6 +5952,22 @@ einval:
     *(int*)deluge_ptr_ptr(rets) = -1;
 }
 
+void deluded_f_zsys_umask(DELUDED_SIGNATURE)
+{
+    static deluge_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_umask",
+        .line = 0,
+        .column = 0
+    };
+    deluge_ptr args = DELUDED_ARGS;
+    deluge_ptr rets = DELUDED_RETS;
+    unsigned mask = deluge_ptr_get_next_unsigned(&args, &origin);
+    DELUDED_DELETE_ARGS();
+    deluge_check_access_int(rets, sizeof(unsigned), &origin);
+    *(unsigned*)deluge_ptr_ptr(rets) = umask(mask);
+}
+
 void deluded_f_zthread_self(DELUDED_SIGNATURE)
 {
     static deluge_origin origin = {
