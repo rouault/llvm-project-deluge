@@ -416,7 +416,9 @@ and most pointers that you can create (either with `&`, pointer decay, or alloca
 at the lower bound already. Those pointers work fine with the no-lower-bound representation.
 
 I believe that it's very unusual to race on a pointer that is subtracted from after load,
-since those pointers usually arise in local algorithms where the pointer is an iterator.
+since those pointers usually arise in local algorithms where the pointer is an iterator,
+rather than being stored into what the structured assembly programmer thinks of as their
+heap, let alone raced on.
 
 This is the intuition behind SideCap: preserve lower and upper bounds if there is no race,
 but lose the lower bound if there is a race. So, SideCap is all about encoding the bounds,

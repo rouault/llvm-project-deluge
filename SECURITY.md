@@ -1,5 +1,4 @@
-# Reporting LLVM Security Issues
+# Reporting Fil-C Security Issues
 
-To report security issues in LLVM, please follow the steps outlined on the
-[LLVM Security Group](https://llvm.org/docs/Security.html#how-to-report-a-security-issue)
-page.
+To report security issues in Fil-C, please contact Phil.
+
