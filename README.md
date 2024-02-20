@@ -8,8 +8,7 @@ Fil-C is a memory-safe compiler and runtime for C. What I mean by that is:
 
 - Fil-C operates on the GIMSO principle: "Garbage In, Memory Safety Out!". In other words, given any
   sequence of characters in your .h and .c files, even those written adversarially and in anger, the
-  Fil-C compiler will either reject the program (possibly by crashing - most of my static checks are
-  implemented as assert() rn, LMAO - so be sure to compile with asserts on), or it will generate a
+  Fil-C compiler will either reject the program (possibly by crashing), or it will generate a
   program that obeys the Fil-C type system.
 
 - Every pointer carries a capability under the Fil-C type system. Each pointer knows its bounds and
@@ -17,15 +16,6 @@ Fil-C is a memory-safe compiler and runtime for C. What I mean by that is:
   out-of-bounds accesses or type-confused accesses (accessing an int as a ptr or vice-versa). Fil-C
   will kill your program if you try to access a function pointer or call a data pointer. Fil-C loves
   killing your program!
-
-- The Fil-C calling convention carries bounds and type for the arguments and return value, so calling
-  a function with the wrong signature will result in Fil-C killing your program.
-
-- Fil-C is careful about what it tells the linker about your program, so that it can protect type or
-  bounds confusion arising from mislinked globals. If you define a global of one type in one file, and
-  declare it extern with a different type (or different bounds) in another file, and then link and run,
-  then the moment that the second file actually tries to access its type-confused reference, Fil-C
-  will kill your program.
 
 - Memory allocation in Fil-C prevents type confusion by isolating each Fil-C type into its own heap
   and being careful about type alignment. This makes free() into at worst a logic error. This also
@@ -36,6 +26,15 @@ Fil-C is a memory-safe compiler and runtime for C. What I mean by that is:
   type at runtime and ask the allocator to deal with it), and optional "hard" allocation (what OpenSSL
   calls the secure heap, so it's mlocked, DONT_DUMPed, zeroed on alloc and free, guarded with
   mprotected pages, and some other stuff).
+
+- The Fil-C calling convention carries bounds and type for the arguments and return value, so calling
+  a function with the wrong signature will result in Fil-C killing your program.
+
+- Fil-C is careful about what it tells the linker about your program, so that it can protect type or
+  bounds confusion arising from mislinked globals. If you define a global of one type in one file, and
+  declare it extern with a different type (or different bounds) in another file, and then link and run,
+  then the moment that the second file actually tries to access its type-confused reference, Fil-C
+  will kill your program.
 
 - Fil-C allocates all local variables in isoheaps, including ones created with alloca(). Escaping a
   pointer to a stack allocation does not lead to type confusion, but may lead to logic errors.
