@@ -1,4 +1,4 @@
-# The Fil-C Manifesto
+# The Fil-C Manifesto: Garbage In, Memory Safety Out!
 
 The C programming language is wonderful. There is a ton of amazing code written in C. But C is
 an unsafe language. Simple logic errors may result in an attacker controlling where a pointer points
@@ -32,14 +32,15 @@ Fil-C solves this problem by introducing memory safety at the core of C:
   thwarted at runtime by Fil-C.
 
 Fil-C is already powerful enough to run a memory-safe curl on top of a memory-safe OpenSSL,
-memory-safe zlib, and memory-safe musl (Fil-C's current libc). This works:
+memory-safe zlib, and memory-safe musl (Fil-C's current libc). This works for me on my Apple Silicon
+Mac:
 
     pizfix/bin/curl https://www.google.com/
 
 Where the `pizfix` is the Fil-C staging environment for *pizlonated* programs (programs that now
-successfully compile with Fil-C and run without being thwarted). The only unsafety in Fil-C is in
-libpizlo (the runtime library), which exposes all of the API that musl needs (low-level syscall and
-thread primitives, which themselves perform comprehensive safety checking).
+successfully compile with Fil-C). The only unsafety in Fil-C is in libpizlo (the runtime library),
+which exposes all of the API that musl needs (low-level syscall and thread primitives, which
+themselves perform comprehensive safety checking).
 
 On the other hand, Fil-C is quite slow. It's 200x slower than legacy C right now. I have not done any
 optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
@@ -49,7 +50,8 @@ but it'll be easiest to make it fast once there is a large corpus of code that c
 This document goes into the details of Fil-C and is organized as follows. First, I show you how to
 use Fil-C. Then, I describe the Fil-C development plan, which explains my views on growing the set
 of things Fil-C can run and how to make it run fast. The section about making it run fast also delves
-into a lot of technical details about how Fil-C works.
+into a lot of technical details about how Fil-C works. Then I conclude with a description of the
+SideCap 32-byte atomic pointer algorithm.
 
 ## Using Fil-C
 
@@ -204,7 +206,7 @@ particularly evil because:
 
 - If your language doesn't run anything yet, then you cannot meaningfully test any of your
   optimizations. Therefore, fast memory-safe C prototypes are likely to only be fast on whatever
-  tiny corpus of tests that prototype was built to run. Worse, it's likely that they can ony run
+  tiny corpus of tests that prototype was built to run. Worse, it's likely that they can only run
   whatever corpus they were optimized for and nothing else! In practice, it leads to
   abandonware like [CCured](https://people.eecs.berkeley.edu/~necula/Papers/ccured_toplas.pdf)
   and [SoftBound](https://llvm.org/pubs/2009-06-PLDI-SoftBound.html) or solutions that are not
@@ -300,11 +302,11 @@ to get right, reason about, and test. For example:
   that you never point any pointers at is a store from the language's standpoint; it's just that
   the compiler can super reliably work out that you didn't really mean for the dang thing to be in
   memory. But I'm pizlonating the program before LLVM gets to do its magic. Once the program is
-  pizlonated, there is no hope for LLVM to do anything about those loads and stores, sinec by now
+  pizlonated, there is no hope for LLVM to do anything about those loads and stores, since by now
   they will have been surrounded by hella function calls. What fun it will be to fix this silly
   mistake!
 
-The plan to make Fil-C fast is to do the following five things. The last of those seven - language
+The plan to make Fil-C fast is to do the following seven things. The last of those seven - language
 changes - should happen after the first six have gained traction.
 
 1. Switching to two pointer representations - pointers-in-flight and pointers-at-rest.
@@ -370,9 +372,98 @@ changes - should happen after the first six have gained traction.
    may add other annotations, like `zarray`, that requests a 128-bit pointer that just has a
    pointer and a size. I'll add enough different pointer kinds to cover most of the use cases of
    pointers, while keeping full SideCaps as the default. This will create the following situation
-   for Fil-C users: you can easily convert your code to Fil-C and you don't have to annotate your =
+   for Fil-C users: you can easily convert your code to Fil-C and you don't have to annotate your
    pointers to get there. But if you want speed, then just profile your code and throw in some
    pointer annotations in the hot spots.
 
 I believe that all seven of these things put together might bring Fil-C to 1.5x of legacy C perf.
+
+## SideCap
+
+To me, the most exciting thing about Fil-C is that even races on pointers cannot break memory
+safety. This works even though pointers are 32 bytes. Storing and loading SideCaps just requires
+128-bit atomic stores and loads, and the ordering can be relaxed. Compare-and-swapping SideCaps
+just requires one 128-bit compare-and-swap and one 128-bit atomic store. Pretty cool, right?
+
+Let's go into how this works by first considering a few options that don't work, but that give
+us the intuitions we need to get to SideCap.
+
+### Intuition One: Compress To 128 Bits
+
+If I was willing to restrict the address space of Fil-C to 32 bits, then I could compress the
+entire ptr,lower,upper,type combination to 32 bits.
+
+I don't want to do that! This would severely restrict the utility of Fil-C. But, interestingly,
+this is always an option for folks who want a faster Fil-C with a smaller address space.
+
+SideCaps support 48-bit address spaces. For boxed integers (the result of casing an int to a
+pointer), SideCaps support 64-bit integer values.
+
+### Intuition Two: Forget The Lower Bound
+
+Say we didn't care about the lower bound. In that case, we could compress the pointer to
+48 bits, compress the upper bound to 48 bits, and compress the type to 32 bits. This fits in
+128 bits!
+
+But it's not good enough. Losing the lower bound would mean that if you subtract from any
+pointer - even one stored to a local variable - then you'll immediately go out of bounds.
+
+### Intuition Three: Forget The Lower Bound On Races
+
+Is it ever OK to forget the lower bound? Sure! Lots of C pointers point to the base of
+something. Pointers stored in heap data structures, shared across function call boundaries,
+and most pointers that you can create (either with `&`, pointer decay, or allocation) point
+at the lower bound already. Those pointers work fine with the no-lower-bound representation.
+
+I believe that it's very unusual to race on a pointer that is subtracted from after load,
+since those pointers usually arise in local algorithms where the pointer is an iterator.
+
+This is the intuition behind SideCap: preserve lower and upper bounds if there is no race,
+but lose the lower bound if there is a race. So, SideCap is all about encoding the bounds,
+type, and pointer value in two atomic 128-bit words in such a way that we can always tell
+if they are mismatched and we always know which of them to rely on in that case.
+
+SideCap pointers comprise:
+
+- The *sidecar*, which may be ignored if it doesn't match the capability.
+- The *capability*, which is authoritative.
+
+SideCap pointers can take the following kinds. Two bits are used to represent kind in both
+the capability and the sidecar. This leaves 30 bits for type and 2x48 bits for two pointer
+values.
+
+- Boxed integers. The type is zero in this case, and the lower 64 bits of the capability
+  stores an integer. The pointer is interpreted as having NULL bounds and invalid type.
+  These pointers cannot be accessed, but can be cast back to integer.
+
+- `at_lower` pointers, where `ptr == lower` already. These are encoded entirely in the
+  capability and the sidecar is always ignored.
+
+- `in_array` pointers, where `ptr > lower` and `ptr <= upper`. The capability stores the
+  pointer itself, the upper bounds, and the type. The sidecar stores the pointer itself,
+  the lower bounds, and the type. For any such pointer, if the pointer and type of the
+  sidecar and capability match, then we know that the lower bounds in the sidecar can be
+  matched with the upper bounds of the capability. This is ensured thanks to all
+  pointers originating from isoheaped allocations. Two pointers into the same allocation
+  claiming to be in-bounds and to have the same type must have bounds that are mixable.
+  If the sidecar doesn't match, the lower bound is inferred from ptr, upper, and type.
+  Because the type has a size, and the span must be a multiple of type size, Fil-C
+  usually infers a lower bound that is the base of the object.
+
+- `flex_base` pointers, where `ptr > lower` and the pointer is inside the base of a flex
+  object (an object with a trailing array). In this case, the capability stores the
+  upper bound of the flex base. The lower bound can be inferred from the upper bound and
+  type. The sidecar stores the true upper bound. Mismatched sidecar means you lose the
+  flex array's bound (so the flex array looks to be a zero-length array).
+
+- `oob` pointers, where `ptr < lower` or `ptr > upper`. In this case, the capability
+  stores just the pointer, and the sidecar stores lower,upper,type. This means that racing
+  on OOB pointers might result in an OOB pointer with some other OOB pointer's bounds and
+  type.
+
+Forging a SideCap pointer requires picking the right kind based on where it is in its
+bounds. Decoding a SideCap pointer means checking its kind, checking if the sidecar is
+relevant, and then doing a bunch of bit fiddling.
+
+Types are represented as 30-bit indices into a type table controlled by libpizlo.
 

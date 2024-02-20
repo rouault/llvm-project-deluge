@@ -15,10 +15,10 @@
 
 PAS_BEGIN_EXTERN_C;
 
-/* Internal Deluge runtime header, defining how the Deluge runtime maintains its state.
+/* Internal FilC runtime header, defining how the FilC runtime maintains its state.
  
-   Currently, including this header is the only way to perform FFI to Deluge code, and the API for
-   that is too low-level for comfort. That's probably fine, since the Deluge ABI is going to
+   Currently, including this header is the only way to perform FFI to FilC code, and the API for
+   that is too low-level for comfort. That's probably fine, since the FilC ABI is going to
    change the moment I start giving a shit about performance.
 
    This runtime is engineered under the following principles:
@@ -28,7 +28,7 @@ PAS_BEGIN_EXTERN_C;
      has been thoroughly battle-tested and we can trust it.
 
    - Coding standards have to be extremely high, and assert usage should be full-ass
-     belt-and-suspenders. The goal of this code is to achieve memory safety under the Deluge
+     belt-and-suspenders. The goal of this code is to achieve memory safety under the FilC
      "Bounded P^I" type system. It's fine to take extra cycles or bytes to achieve that goal.
 
    - There are no optimizations yet, but the structure of this code is such that when I choose to 
@@ -86,7 +86,7 @@ typedef uint8_t filc_word_type;
    
    It would be smart to someday optimize both the compiler and the runtime for the filc pointer's flight
    format: ptr, lower, upper, and type. That would be an awesome optimization, but I haven't done it yet,
-   because I am not yet interested in Deluge's performance so long as I don't have a lot of running code.
+   because I am not yet interested in FilC's performance so long as I don't have a lot of running code.
    
    Instead, we pass around filc_ptrs, but to do anything with them, we have to call getters to get the
    ptr/lower/upper/type. That's the current idiom even though it is surely inefficient and confusing for
@@ -322,8 +322,8 @@ void filc_panic(const filc_origin* origin, const char* format, ...);
         PAS_UNUSED_PARAM(pizlonated_ret_type); \
     } while (false)
 
-/* Must be called from CRT before any Deluge happens. If we ever allow Deluge dylibs to be loaded 
-   into non-Deluge code, then we'll have to call it from compiler-generated initializers, too. It's
+/* Must be called from CRT before any FilC happens. If we ever allow FilC dylibs to be loaded 
+   into non-FilC code, then we'll have to call it from compiler-generated initializers, too. It's
    fine to call this more than once. */
 PAS_API void filc_initialize(void);
 
@@ -359,7 +359,7 @@ PAS_API const filc_type* filc_get_type(const filc_type_template* type_template);
    There may be others.
    
    This does not check if the pointer is in bounds or that it's pointing at something that has any
-   particular type. This isn't the actual Deluge check that the compiler uses to achieve memory
+   particular type. This isn't the actual FilC check that the compiler uses to achieve memory
    safety! */
 void filc_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
                               const filc_origin* origin);
@@ -661,7 +661,7 @@ static inline void filc_ptr_store(filc_ptr* ptr, filc_ptr value)
 static inline bool filc_ptr_unfenced_weak_cas(
     filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    /* This is optional; it's legal to do it or not do it, from the standpoint of Deluge soundness.
+    /* This is optional; it's legal to do it or not do it, from the standpoint of FilC soundness.
        If whoever reads the ptr sees a sidecar that doesn't match the capability, then it'll be
        rejected anyway. Nuking the sidecar turns a rarely-occurring bad case into a deterministic
        bad case, so code has to always deal with it. */
@@ -820,8 +820,8 @@ PAS_API const filc_type* filc_type_cat(const filc_type* a, size_t a_size,
                                            const filc_origin* origin);
 
 /* This is basically va_arg, but it doesn't check that the type matches. That's fine if the consumer
-   of the pointer is code compiled by Deluge, since that will check on every access. That's not fine if
-   the consumer is someone writing legacy C code against some Deluge flight API. */
+   of the pointer is code compiled by FilC, since that will check on every access. That's not fine if
+   the consumer is someone writing legacy C code against some FilC flight API. */
 static inline filc_ptr filc_ptr_get_next_bytes(
     filc_ptr* ptr, size_t size, size_t alignment)
 {
@@ -1068,7 +1068,7 @@ const char* filc_check_and_get_new_str_or_null(filc_ptr ptr, const filc_origin* 
 
 filc_ptr filc_strdup(const char* str);
 
-/* This is basically va_arg. Whatever kind of API we expose to native C code to interact with Deluge
+/* This is basically va_arg. Whatever kind of API we expose to native C code to interact with FilC
    code will have to use this kind of API to parse the flights. */
 static inline filc_ptr filc_ptr_get_next(
     filc_ptr* ptr, size_t count, size_t alignment, const filc_type* type,
