@@ -34,9 +34,11 @@ Fil-C introduces memory safety at the core of C:
   possibly go on to escape out of the Fil-C type system. At worst, the program's execution will be
   thwarted at runtime by Fil-C.
 
-Fil-C is already powerful enough to run a memory-safe curl on top of a memory-safe OpenSSL,
-memory-safe zlib, and memory-safe musl (Fil-C's current libc). This works for me on my Apple Silicon
-Mac:
+Fil-C is already powerful enough to run a [memory-safe curl](https://github.com/pizlonator/deluded-curl-8.5.0)
+on top of a [memory-safe OpenSSL](https://github.com/pizlonator/deluded-openssl-3.2.0),
+[memory-safe zlib](https://github.com/pizlonator/deluded-zlib-1.3), and
+[memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
+me on my Apple Silicon Mac:
 
     pizfix/bin/curl https://www.google.com/
 
