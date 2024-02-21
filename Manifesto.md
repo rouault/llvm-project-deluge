@@ -39,8 +39,9 @@ Mac:
 
 Where the `pizfix` is the Fil-C staging environment for *pizlonated* programs (programs that now
 successfully compile with Fil-C). The only unsafety in Fil-C is in libpizlo (the runtime library),
-which exposes all of the API that musl needs (low-level syscall and thread primitives, which
-themselves perform comprehensive safety checking).
+which exposes all of the API that musl needs (low-level
+[syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#L3538),
+which themselves perform comprehensive safety checking).
 
 On the other hand, Fil-C is quite slow. It's 200x slower than legacy C right now. I have not done any
 optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
@@ -128,7 +129,8 @@ that your linker will understand. Some caveats:
 Fil-C requires that some C code does change. In particular, Fil-C must know about the types of any
 allocations that contain pointers in them. It's fine to allocate primitive memory (like int arrays,
 strings, etc) using malloc. But for anything with pointers in it, you must use the `zalloc` API
-provided by `<stdfil.h>`. For example:
+provided by [`<stdfil.h>`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/filc/include/stdfil.h).
+For example:
 
     char** str_ptr = zalloc(char*, 1);
 
@@ -139,7 +141,7 @@ Fil-C allocation functions trap if allocation fails and returns zero-initialized
 You can free memory allocated by zalloc using the normal `free()` function. Freeing doesn't require
 knowing the type. Also, malloc is internally just a wrapper for `zalloc(char, count)`.
 
-Fil-C provides a rich API for memory allocation in <stdfil.h>. Some examples:
+Fil-C provides a rich API for memory allocation in `<stdfil.h>`. Some examples:
 
 - You can allocate aligned by saying `zaligned_alloc(type, alignment, count)`.
 
@@ -191,7 +193,7 @@ is zero, then the resulting pointer will be inaccessible.
 Most of the changes I've had to make to zlib, OpenSSL, curl, and OpenSSH are about replacing calls
 to malloc/calloc/realloc to use zalloc/zalloc_flex/zrealloc instead. I believe that those changes
 could be abstracted behind C preprocessor macros to make the code still also compile with legacy C,
-but I have not done this for now; I just replaced the existing allocator calls with <stdfil.h>
+but I have not done this for now; I just replaced the existing allocator calls with `<stdfil.h>`
 calls.
 
 ## The Fil-C Development Plan
@@ -290,6 +292,12 @@ to get right, reason about, and test. For example:
   But using SideCaps everywhere was simpler, and that probably accounts for something like 10x
   slowdown alone! And what an easy problem to fix, if I cared!
 
+- The Fil-C ABI currently has the caller isoheap-allocate a buffer in the heap to store the
+  arguments. The callee deallocates the argument buffer. This makes dealing with `va_list` (and
+  all of the ways it could be misused) super easy. But, it wouldn't be hard to change the ABI to
+  have the caller stack-allocate the buffer and then have the caller isoheap-allocate a clone if
+  it finds itself needing to `va_start`.
+
 - The code for doing checks on pointer access has almost no fast path optimizations and sometimes
   does hard math like modulo. Other parts of the runtime are similarly written to just get it right.
 
@@ -317,15 +325,16 @@ changes - should happen after the first six have gained traction.
    lead to an entirely new performance baseline, since this is the majority of the overhead
    right now. Once this is done, the rest of the optimizations in this list can proceed.
 
-2. Grindy optimizations to `llvm::FilPizlonatorPass`. There are many cases where the pass emits
-   multiple calls to the runtime when it could have emitted one or none. I did it that way for
-   ease and speed of bring-up. Fixing this just means typing more compiler code and being more
-   mindful of how LLVM API is used.
+2. Stack-allocate the argument buffer instead of heap-allocating it. This likely accounts for a
+   good chunk of the current slowness.
 
-3. Grindy optimizations to the runtime. Profiling of the runtime's functions is likely to reveal
-   that some of them could just be written better. It'll be easy to do this kind of work once
-   there's a good corpus! It's going to involve typing more C code, but ought not be conceptually
-   difficult.
+2. Grindy optimizations to `llvm::FilPizlonatorPass` and the runtime. There are many cases where
+   the pass emits multiple calls to the runtime when it could have emitted one or none. I did it
+   that way for ease and speed of bring-up. Fixing this just means typing more compiler code and
+   being more mindful of how LLVM API is used. Profiling of the runtime's functions is likely to
+   reveal that some of them could just be written better. It'll be easy to do this kind of work
+   once there's a good corpus! It's going to involve typing more C code, but ought not be
+   conceptually difficult.
 
 4. Create a `llvm::FilCTargetMachine` with opaque 32-byte/16-byte-aligned pointers so that we can
    run LLVM optimizations before `llvm::FilPizlonatorPass`. Even if it's not possible to run the

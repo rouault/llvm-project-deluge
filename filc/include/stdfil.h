@@ -1,17 +1,17 @@
-#ifndef DELUGE_STDFIL_H
-#define DELUGE_STDFIL_H
+#ifndef FILC_STDFIL_H
+#define FILC_STDFIL_H
 
-/* ztype: Opaque representation of the Deluge type. It's not possible to access the contents of a
-   Deluge type except through whatever APIs we provide. Deluge types are tricky, since they are
+/* ztype: Opaque representation of the Fil-C type. It's not possible to access the contents of a
+   Fil-C type except through whatever APIs we provide. Fil-C types are tricky, since they are
    orthogonal to bounds. Every pointer has a bounds separate from the type, and the type's job is
    to provide additional information. The only requirement is that a pointer's total range is a
    multiple of whatever type it uses, or that it makes the math of flexes work out (where there is
    an array of some type and a header).
 
-   Deluge types can tell you the layout of memory if you also give them a slice, or span - a tuple
+   Fil-C types can tell you the layout of memory if you also give them a slice, or span - a tuple
    of begin and end, in bytes.
 
-   Deluge types by themselves know a size for the purpose of informing the internal algorithm. It
+   Fil-C types by themselves know a size for the purpose of informing the internal algorithm. It
    should not be taken to mean the actual size of something. In particular, say you have a struct
    like:
 
@@ -29,13 +29,13 @@
            U b;
        };
    
-   It's valid for a deluge pointer to struct dejavu to describe itself in either of the following
+   It's valid for a filc pointer to struct dejavu to describe itself in either of the following
    ways:
    
        1. We could say that the pointer points to one dejavu.
        2. We could say that the pointer points to two pairs.
    
-   The statements are equivalent under the Deluge type system, so the runtime and compiler are free
+   The statements are equivalent under the Fil-C type system, so the runtime and compiler are free
    to pick whichever representation is most convenient. The type checks will work out the same
    either way, because every type check (and every compiler-generated type introspection and all
    type introspection in the runtime itself) always starts with a type and a slice, and the slice
@@ -58,7 +58,7 @@
    bounds" of the type works as if we were asking for the layout of an array of that type, or the
    layout of a flex with the appropriate array length to fit the slice.
 
-   This fact about ztypes can be traced to the fact that *every* pointer access in Deluge must
+   This fact about ztypes can be traced to the fact that *every* pointer access in Fil-C must
    perform a bounds check based on that pointer's lower and upper, and the lower/upper pair can't be
    faked or tricked. So, the ztype's job is to give you information that is orthogonal to the bounds.
    Therefore, ztypes are not in the business of bounds checking and always assume that your slice
@@ -104,7 +104,7 @@ ztype* ztypeof_impl(void* type_like);
    previously returned, so pointers that you expected to different objects will end up pointing at the
    same object.
    
-   It's not possible to misuse zalloc/zfree to cause type confusion under the Deluge P^I type system.
+   It's not possible to misuse zalloc/zfree to cause type confusion under the Fil-C P^I type system.
    
    type is a type expression. count must be __SIZE_TYPE__ish. */
 #define zalloc(type, count) ({ \
@@ -127,7 +127,7 @@ ztype* ztypeof_impl(void* type_like);
    __SIZE_TYPE__ ish.
 
    Misuse of this API may cause logic errors, or more likely, a situation where the returned pointer
-   has a type that is incompatible with all subsequent accesses, leading to deluge thwarting your
+   has a type that is incompatible with all subsequent accesses, leading to filc thwarting your
    program's execution. */
 #define zalloc_flex(struct_type, field, count) ({ \
         struct_type __d_temporary; \
@@ -169,7 +169,7 @@ ztype* ztypeof_impl(void* type_like);
    Misuse of zrealloc/zalloc/zfree may cause logic errors where zalloc/realloc will return the same
    pointer as it had previously returned.
    
-   It's not possible to misuse zrealloc to cause type confusion under the Deluge P^I type system.
+   It's not possible to misuse zrealloc to cause type confusion under the Fil-C P^I type system.
    
    ptr is a pointer of the given type, type is a type expression, count must be __SIZE_TYPE__ ish. */
 #define zrealloc(ptr, type, count) ({ \
@@ -185,7 +185,7 @@ ztype* ztypeof_impl(void* type_like);
    
    If you pass a pointer that is offset from lower (i.e. ptr != lower), this panicks your dumb program.
    
-   If you pass a pointer that has an opaque type (like the type type, the function type, or deluge
+   If you pass a pointer that has an opaque type (like the type type, the function type, or filc
    runtime types like the ones used to implement zthread APIs), this kills the shit out of your
    program.
    
@@ -344,7 +344,7 @@ ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
 void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
 
 /* Allocate a zero-initialized object that is exactly like the one passed in from the standpoint of
-   the Deluge type system. The new object will have the same type as what the obj pointer points to
+   the Fil-C type system. The new object will have the same type as what the obj pointer points to
    and the same lower/upper bounds. This information comes from the pointer itself, so if you had
    zrestricted the pointer or the pointer got borked, this will reflect in the allocated object. As
    well, the resulting pointer will point at the same offset from lower as the obj pointer you
@@ -354,10 +354,10 @@ void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
    zalloc_like() is most useful if you want to describe the type+size in a simple-to-carry-around
    kind of way. In particular, if you want to describe the type+size of something in a const
    initializer, then using a pointer to a "default" instance of that thing is the simplest way to
-   do it. This should be seen as a deficiency in Deluge, but it's one we can live with for now.
+   do it. This should be seen as a deficiency in Fil-C, but it's one we can live with for now.
    
    Both the OpenSSL and Curl patches have some variant of this idiom (read this as a unified diff
-   snippet reflecting changes needed for Deluge):
+   snippet reflecting changes needed for Fil-C):
    
        +static const foo_bar_type foo_bar_type_prototype;
         static const type_info foo_bar_type_info = {
@@ -367,7 +367,7 @@ void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
         };
 
    In the original code, the size was used to tell some polymorphic allocator how big the foo_bar
-   object was going to be, so they can pass that to malloc. But that's not enough for Deluge. So,
+   object was going to be, so they can pass that to malloc. But that's not enough for Fil-C. So,
    instead, we pass around a const void* prototype, and the polymorphic allocator now calls
    zalloc_like(type_info->prototype) instead of malloc(type_info->size).
    
@@ -378,7 +378,7 @@ void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
           make that possible. Someday, maybe.
 
    Ideally, there would be a way to carry around the type+size and put it in a const initializer.
-   Basically, a neatly-packaged tuple of ztype* and size, which would then constitute a Deluge
+   Basically, a neatly-packaged tuple of ztype* and size, which would then constitute a Fil-C
    dynamic equivalent of a C type. That thing would be a great replacement for prototypes. If we
    built it today, then it would solve problem (1) above, but not problem (2). Ergo, we shall
    proceed undaunted with prototypes and zalloc_like()! */
@@ -396,7 +396,7 @@ char* ztype_to_new_string(ztype* type);
    This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);
 
-/* Low-level printing functions. These might die someday. They are useful for Deluge's own tests. They
+/* Low-level printing functions. These might die someday. They are useful for Fil-C's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
    for sure, and it will never print out of bounds even if there is no null terminator). */
 void zprint(const char* str);
@@ -404,13 +404,13 @@ void zprint_long(long x);
 void zprint_ptr(const void* ptr);
 
 /* Low-level functions that should be provided by libc, which lives above this. These are exposed for
-   the purpose of Deluge's own snprintf implementation, which lives below libc. They are also safe to
+   the purpose of Fil-C's own snprintf implementation, which lives below libc. They are also safe to
    call instead of what libc offers. */
 __SIZE_TYPE__ zstrlen(const char* str);
 int zisdigit(int chr);
 
-/* This is almost like sprintf, but because Deluge knows the upper bounds of buf, this actually ends
-   up working exactly like snprintf where the size is upper-ptr. Hence, in Deluge, it's preferable
+/* This is almost like sprintf, but because Fil-C knows the upper bounds of buf, this actually ends
+   up working exactly like snprintf where the size is upper-ptr. Hence, in Fil-C, it's preferable
    to call zsprintf instead of zsnprintf.
 
    In libc, sprintf (without the z) behaves kinda like zsprintf, but traps on OOB.
@@ -419,8 +419,8 @@ int zisdigit(int chr);
    This is based on the samba snprintf, origindally by Patrick Powell, but it uses the zstrlen/zisdigit/etc
    functions rather than the libc ones, and it has some additional features:
 
-       - '%P', which prints the full deluge_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
-       - '%T', which prints the deluge_type or traps if you give it anything but a ztype.
+       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
+       - '%T', which prints the filc_type or traps if you give it anything but a ztype.
 
    It's not obvious that this code will do the right thing for floating point formats. But this code is
    deluded, so if it goes wrong, at least it'll stop your program from causing any more damage. */
@@ -441,8 +441,8 @@ char* zasprintf(const char* format, ...);
 
    Note that the main reason why you might want to use this for debugging over printf is that it supports:
 
-       - '%P', which prints the full deluge_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
-       - '%T', which prints the deluge_type or traps if you give it anything but a ztype.
+       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
+       - '%T', which prints the filc_type or traps if you give it anything but a ztype.
 
    But if you want to debug floating point, you should maybe go with printf. */
 void zvprintf(const char* format, __builtin_va_list args);
@@ -466,12 +466,12 @@ void zfence(void);
 void zstore_store_fence(void);
 void zcompiler_fence(void);
 
-/* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Deluge
+/* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Fil-C
    offers these functions instead.
 
    But pointers are 32 bytes, you say! How can they be atomic, you say! What the fuck is going on!
 
-   Deluge pointers comprise a sidecar and a capability. The capability always stores the pointer
+   Fil-C pointers comprise a sidecar and a capability. The capability always stores the pointer
    itself and may store other information, too. The sidecar stores additional information, and may
    also store the pointer, or not. The system is complex, but is arranged so that:
    
@@ -565,7 +565,7 @@ void* zxchg_ptr(void** ptr, void* new_value);
    do call into the zpark_if recursively, you'll get a trap.
    
    Crucially, when zpark_if calls your callbacks, it is only holding the queue lock associated
-   with the address, and not any other locks that the Deluge runtime uses.
+   with the address, and not any other locks that the Fil-C runtime uses.
 
    The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
    this is a civilized API. Use positive infinity (aka 1. / 0.) if you just want this to wait
@@ -617,11 +617,11 @@ _Bool zis_runtime_testing_enabled(void);
    This is here so that the test suite can simulate pointer races.
    
    There is no way to use this API in a memory-unsafe way. If you find a way to create a more
-   powerful capability by using this API, then it's a Deluge bug and we should fix it. */
+   powerful capability by using this API, then it's a Fil-C bug and we should fix it. */
 void* zborkedptr(void* sidecar, void* capability);
 
-/* Asks Deluge to run additional pointer validation on this pointer. If memory safety holds, then
-   these checks will succeed. If they don't, then it's a Deluge bug, and we should fix it. It could
+/* Asks Fil-C to run additional pointer validation on this pointer. If memory safety holds, then
+   these checks will succeed. If they don't, then it's a Fil-C bug, and we should fix it. It could
    be a real bug, or it could be a bug in the validation checks. They are designed to be hella strict
    and maybe I made them too strict.
    
@@ -636,7 +636,7 @@ void zscavenger_resume(void);
 
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 
-/* These APIs are memory-safe, so you won't escape the deluge by using them. But it's not clear to me to
+/* These APIs are memory-safe, so you won't escape the filc by using them. But it's not clear to me to
    what extent I give a shit about maintaining compatible semantics for these calls. They're meant as a
    replacement for musl's syscall layer, and they're very much tailored to my hacks to musl. */
 
@@ -695,5 +695,5 @@ void* zthread_create(void* (*callback)(void* arg), void* arg);
 _Bool zthread_join(void* thread, void** result);
 _Bool zthread_detach(void* thread);
 
-#endif /* DELUGE_STDFIL_H */
+#endif /* FILC_STDFIL_H */
 
