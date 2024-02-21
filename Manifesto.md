@@ -5,7 +5,10 @@ an unsafe language. Simple logic errors may result in an attacker controlling wh
 and what is written into it, which leads to an easy path to exploitation. Lots of other languages
 (Rust, Java, Haskell, Verse, even JavaScript) don't have this problem!
 
-Fil-C solves this problem by introducing memory safety at the core of C:
+But I love C. I grew up on it. It's such a joy for me to use! Therefore, in my spare time, I decided
+to make my own memory-safe C. This is a personal project and an expression of my love for C.
+
+Fil-C introduces memory safety at the core of C:
  
 - All pointers carry a *capability*, which tracks the bounds and type of the pointed-to memory. Fil-C
   pointers are 32 bytes, require 16 byte alignment, and use a special encoding for bounds and type
@@ -477,4 +480,10 @@ bounds. Decoding a SideCap pointer means checking its kind, checking if the side
 relevant, and then doing a bunch of bit fiddling.
 
 Types are represented as 30-bit indices into a type table controlled by libpizlo.
+
+## Conclusion
+
+I would like to thank my awesome employer, Epic Games, for allowing me to work on this in my spare
+time. Hence, Fil-C is (C) Epic Games, but all of its components are permissively-licensed open
+source. In short, Fil-C's compiler bits are Apache2 while the runtime bits are BSD.
 

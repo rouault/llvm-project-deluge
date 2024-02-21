@@ -423,7 +423,7 @@ int zisdigit(int chr);
        - '%T', which prints the filc_type or traps if you give it anything but a ztype.
 
    It's not obvious that this code will do the right thing for floating point formats. But this code is
-   deluded, so if it goes wrong, at least it'll stop your program from causing any more damage. */
+   pizlonated, so if it goes wrong, at least it'll stop your program from causing any more damage. */
 int zvsprintf(char* buf, const char* format, __builtin_va_list args);
 int zsprintf(char* buf, const char* format, ...);
 
