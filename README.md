@@ -2,6 +2,8 @@
 
 This is an LLVM fork that I am doing for fun. It's called Fil-C.
 
+[See here for more information.](Manifesto.md)
+
 Fil-C is a memory-safe compiler and runtime for C. What I mean by that is:
 
 - Fil-C will kill your program if it detects a futile attempt to violate memory safety.
