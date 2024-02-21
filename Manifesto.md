@@ -400,7 +400,7 @@ safety. This works even though pointers are 32 bytes. Storing and loading SideCa
 128-bit atomic stores and loads, and the ordering can be relaxed. Compare-and-swapping SideCaps
 just requires one 128-bit compare-and-swap and one 128-bit atomic store. Pretty cool, right?
 
-Let's go into how this works by first considering a few options that don't work, but that give
+Let's go into how this works by first considering a couple options that don't work, but that give
 us the intuitions we need to get to SideCap.
 
 ### Intuition One: Compress To 128 Bits
