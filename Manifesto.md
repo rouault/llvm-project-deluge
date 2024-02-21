@@ -128,8 +128,9 @@ that your linker will understand. Some caveats:
 - Fil-C currently relies on you *not* installing the compiler. You have to use it directly from the
   build directory created by the build_all.sh script.
 
-- The `llvm::FilPizlonatorPass` uses assert() as its error checking for now, so you must compile llvm
-  with assertions enabled (the build_all.sh script does this).
+- The [`llvm::FilPizlonatorPass`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/llvm/lib/Transforms/Instrumentation/FilPizlonator.cpp)
+  uses assert() as its error checking for now, so you must compile llvm with assertions enabled (the
+  build_all.sh script does this).
 
 Fil-C requires that some C code does change. In particular, Fil-C must know about the types of any
 allocations that contain pointers in them. It's fine to allocate primitive memory (like int arrays,
