@@ -406,7 +406,7 @@ us the intuitions we need to get to SideCap.
 ### Intuition One: Compress To 128 Bits
 
 If I was willing to restrict the address space of Fil-C to 32 bits, then I could compress the
-entire ptr,lower,upper,type combination to 32 bits.
+entire ptr,lower,upper,type combination to 128 bits, and that would be atomic.
 
 I don't want to do that! This would severely restrict the utility of Fil-C. But, interestingly,
 this is always an option for folks who want a faster Fil-C with a smaller address space.
