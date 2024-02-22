@@ -146,6 +146,7 @@ int main(int argc, char** argv)
     ZASSERT(strlen(utsname.release));
     ZASSERT(strlen(utsname.version));
     ZASSERT(strlen(utsname.machine));
+    strlen(utsname.__domainname); // Run for effect; the string may be empty!
     
     zprintf("No worries.\n");
     return 0;

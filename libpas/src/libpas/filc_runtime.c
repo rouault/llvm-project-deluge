@@ -5975,6 +5975,7 @@ struct musl_utsname {
     char release[65];
     char version[65];
     char machine[65];
+    char domainname[65];
 };
 
 void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
@@ -5993,16 +5994,14 @@ void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
     filc_check_access_int(buf_ptr, sizeof(struct musl_utsname), &origin);
     struct musl_utsname* musl_buf = (struct musl_utsname*)filc_ptr_ptr(buf_ptr);
     struct utsname buf;
-    if (uname(&buf) < 0) {
-        set_errno(errno);
-        *(int*)filc_ptr_ptr(rets) = -1;
-        return;
-    }
+    PAS_ASSERT(!uname(&buf));
     snprintf(musl_buf->sysname, sizeof(musl_buf->sysname), "%s", buf.sysname);
     snprintf(musl_buf->nodename, sizeof(musl_buf->nodename), "%s", buf.nodename);
     snprintf(musl_buf->release, sizeof(musl_buf->release), "%s", buf.release);
     snprintf(musl_buf->version, sizeof(musl_buf->version), "%s", buf.version);
     snprintf(musl_buf->machine, sizeof(musl_buf->machine), "%s", buf.machine);
+    PAS_ASSERT(!getdomainname(musl_buf->domainname, sizeof(musl_buf->domainname) - 1));
+    musl_buf->domainname[sizeof(musl_buf->domainname) - 1] = 0;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
