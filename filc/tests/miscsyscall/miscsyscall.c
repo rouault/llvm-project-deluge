@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/utsname.h>
 
 int main(int argc, char** argv)
 {
@@ -137,6 +138,14 @@ int main(int argc, char** argv)
 
     ZASSERT(umask(0644));
     ZASSERT(umask(0644) == 0644);
+
+    struct utsname utsname;
+    ZASSERT(!uname(&utsname));
+    ZASSERT(strlen(utsname.sysname));
+    ZASSERT(strlen(utsname.nodename));
+    ZASSERT(strlen(utsname.release));
+    ZASSERT(strlen(utsname.version));
+    ZASSERT(strlen(utsname.machine));
     
     zprintf("No worries.\n");
     return 0;

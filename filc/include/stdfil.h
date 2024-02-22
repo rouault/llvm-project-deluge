@@ -682,6 +682,7 @@ long zsys_recvfrom(int sockfd, void* buf, __SIZE_TYPE__ len, int flags,
                    void* addr, unsigned* addrlen);
 int zsys_getrlimit(int resource, void* rlim);
 unsigned zsys_umask(unsigned mask);
+int zsys_uname(void* buf);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

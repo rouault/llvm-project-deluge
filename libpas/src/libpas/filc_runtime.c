@@ -40,6 +40,7 @@
 #include <sys/un.h>
 #include <netdb.h>
 #include <sys/resource.h>
+#include <sys/utsname.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -5966,6 +5967,42 @@ void pizlonated_f_zsys_umask(PIZLONATED_SIGNATURE)
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
     *(unsigned*)filc_ptr_ptr(rets) = umask(mask);
+}
+
+struct musl_utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+};
+
+void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_uname",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr buf_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(buf_ptr, sizeof(struct musl_utsname), &origin);
+    struct musl_utsname* musl_buf = (struct musl_utsname*)filc_ptr_ptr(buf_ptr);
+    struct utsname buf;
+    if (uname(&buf) < 0) {
+        set_errno(errno);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    snprintf(musl_buf->sysname, sizeof(musl_buf->sysname), "%s", buf.sysname);
+    snprintf(musl_buf->nodename, sizeof(musl_buf->nodename), "%s", buf.nodename);
+    snprintf(musl_buf->release, sizeof(musl_buf->release), "%s", buf.release);
+    snprintf(musl_buf->version, sizeof(musl_buf->version), "%s", buf.version);
+    snprintf(musl_buf->machine, sizeof(musl_buf->machine), "%s", buf.machine);
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

@@ -1245,6 +1245,7 @@ void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getrlimit(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_umask(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
