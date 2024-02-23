@@ -147,6 +147,14 @@ int main(int argc, char** argv)
     ZASSERT(strlen(utsname.version));
     ZASSERT(strlen(utsname.machine));
     strlen(utsname.__domainname); // Run for effect; the string may be empty!
+
+    struct itimerval timerval;
+    memset(&timerval, 42, sizeof(struct itimerval));
+    ZASSERT(!getitimer(ITIMER_REAL, &timerval));
+    ZASSERT(!timerval.it_interval.tv_sec);
+    ZASSERT(!timerval.it_interval.tv_usec);
+    ZASSERT(!timerval.it_value.tv_sec);
+    ZASSERT(!timerval.it_value.tv_usec);
     
     zprintf("No worries.\n");
     return 0;

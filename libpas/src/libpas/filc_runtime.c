@@ -41,6 +41,7 @@
 #include <netdb.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <sys/time.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -625,12 +626,15 @@ static bool generic_pollcheck(zthread* thread)
     /* I'm guessing at some point I'll actually have to care about the order here? */
     for (index = MAX_MUSL_SIGNUM + 1; index--;) {
         uint64_t num_deferred_signals;
+        /* We rely on the CAS for a fence, too. */
         for (;;) {
             num_deferred_signals = thread->num_deferred_signals[index];
             if (pas_compare_and_swap_uint64_weak(
                     thread->num_deferred_signals + index, num_deferred_signals, 0))
                 break;
         }
+        if (!num_deferred_signals)
+            continue;
 
         signal_handler* handler = signal_table[index];
         PAS_ASSERT(handler);
@@ -6275,6 +6279,106 @@ void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
     PAS_ASSERT(!getdomainname(musl_buf->domainname, sizeof(musl_buf->domainname) - 1));
     filc_enter();
     musl_buf->domainname[sizeof(musl_buf->domainname) - 1] = 0;
+}
+
+struct musl_itimerval {
+    struct musl_timeval it_interval;
+    struct musl_timeval it_value;
+};
+
+void pizlonated_f_zsys_getitimer(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getitimer",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int which = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr musl_value_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(musl_value_ptr, sizeof(struct musl_itimerval), &origin);
+    filc_exit();
+    struct itimerval value;
+    int result = getitimer(which, &value);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0) {
+        set_errno(my_errno);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    struct musl_itimerval* musl_value = (struct musl_itimerval*)filc_ptr_ptr(musl_value_ptr);
+    musl_value->it_interval.tv_sec = value.it_interval.tv_sec;
+    musl_value->it_interval.tv_usec = value.it_interval.tv_usec;
+    musl_value->it_value.tv_sec = value.it_value.tv_sec;
+    musl_value->it_value.tv_usec = value.it_value.tv_usec;
+}
+
+void pizlonated_f_zsys_setitimer(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_setitimer",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int which = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr musl_new_value_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_old_value_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(musl_new_value_ptr, sizeof(struct musl_itimerval), &origin);
+    if (filc_ptr_ptr(musl_old_value_ptr))
+        filc_check_access_int(musl_old_value_ptr, sizeof(struct musl_itimerval), &origin);
+    struct itimerval new_value;
+    struct musl_itimerval* musl_new_value = (struct musl_itimerval*)filc_ptr_ptr(musl_new_value_ptr);
+    new_value.it_interval.tv_sec = musl_new_value->it_interval.tv_sec;
+    new_value.it_interval.tv_usec = musl_new_value->it_interval.tv_usec;
+    new_value.it_value.tv_sec = musl_new_value->it_value.tv_sec;
+    new_value.it_value.tv_usec = musl_new_value->it_value.tv_usec;
+    filc_exit();
+    struct itimerval old_value;
+    int result = setitimer(which, &new_value, &old_value);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0) {
+        set_errno(my_errno);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    struct musl_itimerval* musl_old_value = (struct musl_itimerval*)filc_ptr_ptr(musl_old_value_ptr);
+    if (musl_old_value) {
+        musl_old_value->it_interval.tv_sec = old_value.it_interval.tv_sec;
+        musl_old_value->it_interval.tv_usec = old_value.it_interval.tv_usec;
+        musl_old_value->it_value.tv_sec = old_value.it_value.tv_sec;
+        musl_old_value->it_value.tv_usec = old_value.it_value.tv_usec;
+    }
+}
+
+void pizlonated_f_zsys_pause(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_pause",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr rets = PIZLONATED_RETS;
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int result = pause();
+    int my_errno = errno;
+    filc_enter();
+    PAS_ASSERT(result == -1);
+    set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = -1;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
