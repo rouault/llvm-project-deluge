@@ -434,7 +434,7 @@ static void thread_data_destroy(thread_data* data)
     PAS_ASSERT(!data->ref_count);
     pas_system_mutex_destruct(&data->lock);
     pas_system_condition_destruct(&data->condition);
-    filc_deallocate(data);
+    filc_deallocate_yolo(data);
 
     for (;;) {
         unsigned old_num_threads = num_threads;
@@ -661,6 +661,7 @@ bool filc_park_conditionally(
     before_sleep(arg);
 
     bool did_get_dequeued;
+    filc_exit();
     pas_system_mutex_lock(&data.me->lock);
     while (data.me->address
            && pas_get_time_in_milliseconds_for_system_condition() < absolute_timeout_milliseconds) {
@@ -676,6 +677,7 @@ bool filc_park_conditionally(
     PAS_ASSERT(!data.me->address || data.me->address == address);
     did_get_dequeued = !data.me->address;
     pas_system_mutex_unlock(&data.me->lock);
+    filc_enter();
 
     if (did_get_dequeued) {
         /* This is the normal case - we got dequeued by someone before the timer expired. */
@@ -687,6 +689,7 @@ bool filc_park_conditionally(
 
     PAS_ASSERT(!data.me->next_in_queue);
 
+    filc_exit();
     pas_system_mutex_lock(&data.me->lock);
     if (!data.did_dequeue) {
         while (data.me->address)
@@ -694,6 +697,7 @@ bool filc_park_conditionally(
     }
     data.me->address = NULL;
     pas_system_mutex_unlock(&data.me->lock);
+    filc_enter();
 
     return !data.did_dequeue;
 }
@@ -746,10 +750,12 @@ void filc_unpark_one(
 
     PAS_ASSERT(data.target->address == address);
 
+    filc_exit();
     pas_system_mutex_lock(&data.target->lock);
     data.target->address = NULL;
     pas_system_mutex_unlock(&data.target->lock);
     pas_system_condition_broadcast(&data.target->condition);
+    filc_enter();
 
     /* Note that we could have just signaled a dead thread, if there was a timeout. That's fine
        since we're using refcounting. */
@@ -789,10 +795,12 @@ unsigned filc_unpark(const void* address, unsigned count)
     for (index = data.array.size; index--;) {
         thread_data* target = (thread_data*)data.array.array[index];
         PAS_ASSERT(target->address == address);
+        filc_exit();
         pas_system_mutex_lock(&target->lock);
         target->address = NULL;
         pas_system_mutex_unlock(&target->lock);
         pas_system_condition_broadcast(&target->condition);
+        filc_enter();
         thread_data_deref(target);
     }
 

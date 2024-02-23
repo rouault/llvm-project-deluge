@@ -151,7 +151,7 @@ static void deallocate_for_allocation_config(
     PAS_UNUSED_PARAM(size);
     PAS_ASSERT(allocation_kind == pas_object_allocation);
     PAS_ASSERT(!arg);
-    filc_deallocate(ptr);
+    filc_deallocate_yolo(ptr);
 }
 
 static void initialize_utility_allocation_config(pas_allocation_config* allocation_config)
@@ -188,7 +188,7 @@ static void type_tables_destroy(void* value)
     initialize_utility_allocation_config(&allocation_config);
     filc_slice_table_destruct(&tables->slice_table, &allocation_config);
     filc_cat_table_destruct(&tables->cat_table, &allocation_config);
-    filc_deallocate(tables);
+    filc_deallocate_yolo(tables);
 }
 
 struct musl_passwd {
@@ -238,7 +238,7 @@ static void musl_passwd_threadlocal_destructor(void* ptr)
 {
     struct musl_passwd* musl_passwd = (struct musl_passwd*)ptr;
     musl_passwd_free_guts(musl_passwd);
-    filc_deallocate(musl_passwd);
+    filc_deallocate_yolo(musl_passwd);
 }
 
 static pthread_key_t musl_passwd_threadlocal_key;
@@ -301,6 +301,80 @@ static const filc_type musl_sigaction_type = {
         .page_caches = &filc_page_caches \
     }
 
+static int from_musl_signum(int signum)
+{
+    switch (signum) {
+    case 1: return SIGHUP;
+    case 2: return SIGINT;
+    case 3: return SIGQUIT;
+    case 4: return SIGILL;
+    case 5: return SIGTRAP;
+    case 6: return SIGABRT;
+    case 7: return SIGBUS;
+    case 8: return SIGFPE;
+    case 9: return SIGKILL;
+    case 10: return SIGUSR1;
+    case 11: return SIGSEGV;
+    case 12: return SIGUSR2;
+    case 13: return SIGPIPE;
+    case 14: return SIGALRM;
+    case 15: return SIGTERM;
+    case 17: return SIGCHLD;
+    case 18: return SIGCONT;
+    case 19: return SIGSTOP;
+    case 20: return SIGTSTP;
+    case 21: return SIGTTIN;
+    case 22: return SIGTTOU;
+    case 23: return SIGURG;
+    case 24: return SIGXCPU;
+    case 25: return SIGXFSZ;
+    case 26: return SIGVTALRM;
+    case 27: return SIGPROF;
+    case 28: return SIGWINCH;
+    case 29: return SIGIO;
+    case 31: return SIGSYS;
+    default: return -1;
+    }
+}
+
+static int to_musl_signum(int signum)
+{
+    switch (signum) {
+    case SIGHUP: return 1;
+    case SIGINT: return 2;
+    case SIGQUIT: return 3;
+    case SIGILL: return 4;
+    case SIGTRAP: return 5;
+    case SIGABRT: return 6;
+    case SIGBUS: return 7;
+    case SIGFPE: return 8;
+    case SIGKILL: return 9;
+    case SIGUSR1: return 10;
+    case SIGSEGV: return 11;
+    case SIGUSR2: return 12;
+    case SIGPIPE: return 13;
+    case SIGALRM: return 14;
+    case SIGTERM: return 15;
+    case SIGCHLD: return 17;
+    case SIGCONT: return 18;
+    case SIGSTOP: return 19;
+    case SIGTSTP: return 20;
+    case SIGTTIN: return 21;
+    case SIGTTOU: return 22;
+    case SIGURG: return 23;
+    case SIGXCPU: return 24;
+    case SIGXFSZ: return 25;
+    case SIGVTALRM: return 26;
+    case SIGPROF: return 27;
+    case SIGWINCH: return 28;
+    case SIGIO: return 29;
+    case SIGSYS: return 31;
+    default: PAS_ASSERT(!"Bad signal number"); return -1;
+    }
+}
+
+#define MAX_MUSL_SIGNUM 31u
+
 typedef struct {
     pas_lock lock;
     pthread_t thread; /* this becomes NULL the moment that we join or detach. */
@@ -312,6 +386,10 @@ typedef struct {
     filc_ptr arg_ptr;
     filc_ptr result_ptr;
     filc_ptr cookie_ptr;
+
+    bool have_deferred_signals;
+    uint64_t num_deferred_signals[MAX_MUSL_SIGNUM + 1];
+    bool in_filc;
 } zthread;
 
 static unsigned zthread_next_id = 1;
@@ -340,6 +418,12 @@ static void zthread_construct(zthread* thread)
             break;
         }
     }
+
+    thread->have_deferred_signals = false;
+    size_t index;
+    for (index = MAX_MUSL_SIGNUM + 1; index--;)
+        thread->num_deferred_signals[index] = 0;
+    thread->in_filc = false;
 }
 
 DEFINE_RUNTIME_CONFIG(zthread_runtime_config, zthread, zthread_construct);
@@ -376,7 +460,7 @@ static void destroy_thread_if_appropriate(zthread* thread)
         filc_ptr_store(&thread->arg_ptr, filc_ptr_forge_invalid(NULL));
         filc_ptr_store(&thread->result_ptr, filc_ptr_forge_invalid(NULL));
         filc_ptr_store(&thread->cookie_ptr, filc_ptr_forge_invalid(NULL));
-        filc_deallocate(thread);
+        filc_deallocate_yolo(thread);
     }
 }
 
@@ -386,7 +470,16 @@ static void zthread_destruct(void* zthread_arg)
 
     thread = (zthread*)zthread_arg;
 
+    sigset_t set;
+    PAS_ASSERT(!sigfillset(&set));
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &set, NULL));
+
     pas_lock_lock(&thread->lock);
+    PAS_ASSERT(!thread->in_filc);
+    PAS_ASSERT(!thread->have_deferred_signals);
+    size_t index;
+    for (index = MAX_MUSL_SIGNUM + 1; index--;)
+        PAS_ASSERT(!thread->num_deferred_signals[index]);
     PAS_ASSERT(thread->is_running);
     thread->is_running = false;
 
@@ -430,6 +523,21 @@ static pas_heap_ref musl_addrinfo_heap = {
     .allocator_index = 0
 };
 
+/* These are currently leaked. This is fine, because it's super unlikely that someone will call
+   sigaction in a loop.
+   
+   If I find such a fucker, then I'll deal with it then. That would be a fun excuse to do that
+   version-multiCAS thing that I came up with that one time. */
+typedef struct {
+    void (*function)(PIZLONATED_SIGNATURE);
+    sigset_t mask;
+    int musl_signum; /* This is only needed for assertion discipline. */
+} signal_handler;
+
+static signal_handler* signal_table[MAX_MUSL_SIGNUM + 1];
+
+static bool is_initialized = false; /* Useful for assertions. */
+
 static void initialize_impl(void)
 {
     filc_type_array = (const filc_type**)filc_allocate_utility(
@@ -458,6 +566,8 @@ static void initialize_impl(void)
     PAS_ASSERT(!should_destroy_thread(result));
     PAS_ASSERT(!pthread_key_create(&zthread_key, zthread_destruct));
     PAS_ASSERT(!pthread_setspecific(zthread_key, result));
+
+    is_initialized = true;
 }
 
 static pas_system_once global_once = PAS_SYSTEM_ONCE_INIT;
@@ -465,6 +575,112 @@ static pas_system_once global_once = PAS_SYSTEM_ONCE_INIT;
 void filc_initialize(void)
 {
     pas_system_once_run(&global_once, initialize_impl);
+}
+
+static zthread* get_thread(void)
+{
+    return (zthread*)pthread_getspecific(zthread_key);
+}
+
+static void enter_impl(zthread* thread)
+{
+    PAS_ASSERT(!thread->have_deferred_signals);
+    PAS_ASSERT(!thread->in_filc);
+    thread->in_filc = true;
+}
+
+void filc_enter(void)
+{
+    enter_impl(get_thread());
+}
+
+/* This *just* exits and doesn't do the required post-exit pollcheck! */
+static void exit_impl(zthread* thread)
+{
+    PAS_ASSERT(thread->in_filc);
+    thread->in_filc = false;
+}
+
+static void call_handler(signal_handler* handler, int signum)
+{
+    PAS_ASSERT(handler);
+    PAS_ASSERT(handler->musl_signum == signum);
+    
+    uintptr_t return_buffer[2];
+    int* args = filc_allocate_int(sizeof(int), 1);
+    *args = signum;
+    handler->function(args, args + 1, &filc_int_type, return_buffer, return_buffer + 2, &filc_int_type);
+}
+
+/* This function works whether we're in filc or not. */
+static bool generic_pollcheck(zthread* thread)
+{
+    if (!thread->have_deferred_signals)
+        return false;
+    thread->have_deferred_signals = false;
+    bool in_filc = thread->in_filc;
+    if (!in_filc)
+        enter_impl(thread);
+    size_t index;
+    /* I'm guessing at some point I'll actually have to care about the order here? */
+    for (index = MAX_MUSL_SIGNUM + 1; index--;) {
+        uint64_t num_deferred_signals;
+        for (;;) {
+            num_deferred_signals = thread->num_deferred_signals[index];
+            if (pas_compare_and_swap_uint64_weak(
+                    thread->num_deferred_signals + index, num_deferred_signals, 0))
+                break;
+        }
+
+        signal_handler* handler = signal_table[index];
+        PAS_ASSERT(handler);
+        sigset_t oldset;
+        PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &handler->mask, &oldset));
+        call_handler(handler, (int)index);
+        PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
+    }
+    if (!in_filc)
+        exit_impl(thread);
+    return true;
+}
+
+void filc_exit(void)
+{
+    zthread* thread = get_thread();
+    exit_impl(thread);
+    while (generic_pollcheck(thread));
+}
+
+void filc_pollcheck(void)
+{
+    zthread* thread = get_thread();
+    PAS_ASSERT(thread->in_filc);
+    generic_pollcheck(thread);
+}
+
+static void signal_pizlonator(int signum)
+{
+    int musl_signum = to_musl_signum(signum);
+    PAS_ASSERT((unsigned)musl_signum <= MAX_MUSL_SIGNUM);
+    zthread* thread = get_thread();
+    if (thread->in_filc) {
+        /* For all we know the user asked for a mask that allows us to recurse, hence the lock-freedom. */
+        for (;;) {
+            uint64_t old_value = thread->num_deferred_signals[musl_signum];
+            if (pas_compare_and_swap_uint64_weak(
+                    thread->num_deferred_signals + musl_signum, old_value, old_value + 1))
+                break;
+        }
+        thread->have_deferred_signals = true;
+        return;
+    }
+
+    filc_enter();
+    /* Even if the signal mask allows the signal to recurse, at this point the signal_pizlonator
+       will just count and defer. */
+    
+    call_handler(signal_table[musl_signum], musl_signum);
+    filc_exit();
 }
 
 void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
@@ -1285,6 +1501,7 @@ void* filc_allocate_opaque(pas_heap_ref* ref)
 {
     PAS_TESTING_ASSERT(!((const filc_type*)ref->type)->num_words);
     PAS_TESTING_ASSERT(!ref->heap || ref->heap->config_kind == pas_heap_config_kind_filc);
+    PAS_TESTING_ASSERT(!is_initialized || get_thread()->in_filc);
     return filc_allocate_one_impl_ptr(ref);
 }
 
@@ -1444,6 +1661,7 @@ PAS_CREATE_TRY_ALLOCATE_INTRINSIC(
 
 void* filc_allocate_utility(size_t size)
 {
+    PAS_TESTING_ASSERT(!is_initialized || get_thread()->in_filc);
     return filc_allocate_utility_impl_ptr(size, 1);
 }
 
@@ -1512,9 +1730,15 @@ void* filc_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
         typed_copy_and_zero_callback);
 }
 
-void filc_deallocate(const void* ptr)
+void filc_deallocate_yolo(const void* ptr)
 {
     pas_deallocate((void*)ptr, FILC_HEAP_CONFIG);
+}
+
+void filc_deallocate(const void* ptr)
+{
+    PAS_TESTING_ASSERT(!is_initialized || get_thread()->in_filc);
+    filc_deallocate_yolo(ptr);
 }
 
 void filc_check_deallocate_impl(pas_uint128 sidecar, pas_uint128 capability, const filc_origin* origin)
@@ -2555,6 +2779,7 @@ void filc_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
             }
         }
 
+        filc_exit();
         if ((uintptr_t)raw_ptr % FILC_WORD_SIZE) {
             size_t sliver_size;
             char* new_raw_ptr;
@@ -2562,6 +2787,7 @@ void filc_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
             sliver_size = new_raw_ptr - raw_ptr;
             if (sliver_size > count) {
                 memset(raw_ptr, 0, count);
+                filc_enter();
                 return;
             }
             memset(raw_ptr, 0, sliver_size);
@@ -2572,11 +2798,14 @@ void filc_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
         raw_ptr += pas_round_down_to_power_of_2(count, FILC_WORD_SIZE);
         count -= pas_round_down_to_power_of_2(count, FILC_WORD_SIZE);
         memset(raw_ptr, 0, count);
+        filc_enter();
         return;
     }
 
     check_int(ptr, count, origin);
+    filc_exit();
     memset(raw_ptr, value, count);
+    filc_enter();
 }
 
 enum type_overlap_result {
@@ -2711,9 +2940,12 @@ void filc_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
     
     switch (check_copy(dst, src, count, origin)) {
     case int_type_overlap:
+        filc_exit();
         memcpy(raw_dst_ptr, raw_src_ptr, count);
+        filc_enter();
         return;
     case possible_ptr_type_overlap: {
+        filc_exit();
         PAS_TESTING_ASSERT(
             ((uintptr_t)raw_dst_ptr % FILC_WORD_SIZE) == ((uintptr_t)raw_src_ptr % FILC_WORD_SIZE));
         if ((uintptr_t)raw_dst_ptr % FILC_WORD_SIZE) {
@@ -2725,6 +2957,7 @@ void filc_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
             sliver_size = new_raw_dst_ptr - raw_dst_ptr;
             if (sliver_size > count) {
                 memcpy(raw_dst_ptr, raw_src_ptr, count);
+                filc_enter();
                 return;
             }
             memcpy(raw_dst_ptr, raw_src_ptr, sliver_size);
@@ -2738,6 +2971,7 @@ void filc_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
         raw_src_ptr += pas_round_down_to_power_of_2(count, FILC_WORD_SIZE);
         count -= pas_round_down_to_power_of_2(count, FILC_WORD_SIZE);
         memcpy(raw_dst_ptr, raw_src_ptr, count);
+        filc_enter();
         return;
     } }
     PAS_ASSERT(!"Should not be reached");
@@ -2754,7 +2988,7 @@ void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
     
     if (!count)
         return;
-    
+
     dst = filc_ptr_create(dst_sidecar, dst_capability);
     src = filc_ptr_create(src_sidecar, src_capability);
 
@@ -2763,9 +2997,12 @@ void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
     
     switch (check_copy(dst, src, count, origin)) {
     case int_type_overlap:
+        filc_exit();
         memmove(raw_dst_ptr, raw_src_ptr, count);
+        filc_enter();
         return;
     case possible_ptr_type_overlap: {
+        filc_exit();
         void* low_dst;
         void* low_src;
         size_t low_count;
@@ -2785,6 +3022,7 @@ void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
         sliver_size = new_raw_dst_ptr - raw_dst_ptr;
         if (sliver_size > count) {
             memmove(raw_dst_ptr, raw_src_ptr, count);
+            filc_enter();
             return;
         }
         low_dst = raw_dst_ptr;
@@ -2811,6 +3049,7 @@ void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
             filc_low_level_ptr_safe_memmove(mid_dst, mid_src, mid_count);
             memmove(low_dst, low_src, low_count);
         }
+        filc_enter();
         return;
     } }
     PAS_ASSERT(!"Should not be reached");
@@ -3662,10 +3901,13 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         musl_winsize_ptr = filc_ptr_get_next_ptr(&args, &origin);
         filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
+        filc_exit();
         if (ioctl(fd, TIOCGWINSZ, &winsize) < 0) {
+            filc_enter();
             set_errno(errno);
             return -1;
         }
+        filc_enter();
         musl_winsize->ws_row = winsize.ws_row;
         musl_winsize->ws_col = winsize.ws_col;
         musl_winsize->ws_xpixel = winsize.ws_xpixel;
@@ -3754,9 +3996,12 @@ void pizlonated_f_zsys_writev(PIZLONATED_SIGNATURE)
     ssize_t result;
     PIZLONATED_DELETE_ARGS();
     struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
+    filc_exit();
     result = writev(fd, iov, iovcnt);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_deallocate(iov);
     filc_check_access_int(rets, sizeof(ssize_t), &origin);
     *(ssize_t*)filc_ptr_ptr(rets) = result;
@@ -3777,9 +4022,12 @@ void pizlonated_f_zsys_read(PIZLONATED_SIGNATURE)
     ssize_t size = filc_ptr_get_next_size_t(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(buf, size, &origin);
+    filc_exit();
     int result = read(fd, filc_ptr_ptr(buf), size);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_check_access_int(rets, sizeof(ssize_t), &origin);
     *(ssize_t*)filc_ptr_ptr(rets) = result;
 }
@@ -3800,9 +4048,12 @@ void pizlonated_f_zsys_readv(PIZLONATED_SIGNATURE)
     ssize_t result;
     PIZLONATED_DELETE_ARGS();
     struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
+    filc_exit();
     result = readv(fd, iov, iovcnt);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_deallocate(iov);
     filc_check_access_int(rets, sizeof(ssize_t), &origin);
     *(ssize_t*)filc_ptr_ptr(rets) = result;
@@ -3823,9 +4074,12 @@ void pizlonated_f_zsys_write(PIZLONATED_SIGNATURE)
     ssize_t size = filc_ptr_get_next_size_t(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(buf, size, &origin);
+    filc_exit();
     int result = write(fd, filc_ptr_ptr(buf), size);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_check_access_int(rets, sizeof(ssize_t), &origin);
     *(ssize_t*)filc_ptr_ptr(rets) = result;
 }
@@ -3842,9 +4096,12 @@ void pizlonated_f_zsys_close(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     int fd = filc_ptr_get_next_int(&args, &origin);
     PIZLONATED_DELETE_ARGS();
+    filc_exit();
     int result = close(fd);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_check_access_int(rets, sizeof(int), &origin);
     *(int*)filc_ptr_ptr(rets) = result;
 }
@@ -3863,9 +4120,12 @@ void pizlonated_f_zsys_lseek(PIZLONATED_SIGNATURE)
     long offset = filc_ptr_get_next_long(&args, &origin);
     int whence = filc_ptr_get_next_int(&args, &origin);
     PIZLONATED_DELETE_ARGS();
+    filc_exit();
     long result = lseek(fd, offset, whence);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_check_access_int(rets, sizeof(long), &origin);
     *(long*)filc_ptr_ptr(rets) = result;
 }
@@ -3881,100 +4141,9 @@ void pizlonated_f_zsys_exit(PIZLONATED_SIGNATURE)
     filc_ptr args = PIZLONATED_ARGS;
     int return_code = filc_ptr_get_next_int(&args, &origin);
     PIZLONATED_DELETE_ARGS();
+    filc_exit();
     _exit(return_code);
     PAS_ASSERT(!"Should not be reached");
-}
-
-static int from_musl_signum(int signum)
-{
-    switch (signum) {
-    case 1: return SIGHUP;
-    case 2: return SIGINT;
-    case 3: return SIGQUIT;
-    case 4: return SIGILL;
-    case 5: return SIGTRAP;
-    case 6: return SIGABRT;
-    case 7: return SIGBUS;
-    case 8: return SIGFPE;
-    case 9: return SIGKILL;
-    case 10: return SIGUSR1;
-    case 11: return SIGSEGV;
-    case 12: return SIGUSR2;
-    case 13: return SIGPIPE;
-    case 14: return SIGALRM;
-    case 15: return SIGTERM;
-    case 17: return SIGCHLD;
-    case 18: return SIGCONT;
-    case 19: return SIGSTOP;
-    case 20: return SIGTSTP;
-    case 21: return SIGTTIN;
-    case 22: return SIGTTOU;
-    case 23: return SIGURG;
-    case 24: return SIGXCPU;
-    case 25: return SIGXFSZ;
-    case 26: return SIGVTALRM;
-    case 27: return SIGPROF;
-    case 28: return SIGWINCH;
-    case 29: return SIGIO;
-    case 31: return SIGSYS;
-    default: return -1;
-    }
-}
-
-static void check_signal(int signum, const filc_origin* origin)
-{
-    FILC_CHECK(signum != SIGILL, origin, "cannot override SIGILL.");
-    FILC_CHECK(signum != SIGTRAP, origin, "cannot override SIGTRAP.");
-    FILC_CHECK(signum != SIGBUS, origin, "cannot override SIGBUS.");
-    FILC_CHECK(signum != SIGSEGV, origin, "cannot override SIGSEGV.");
-}
-
-static void* from_musl_signal_handler(void* handler, const filc_origin* origin)
-{
-    FILC_CHECK(
-        handler == NULL || handler == (void*)(uintptr_t)1,
-        origin,
-        "signal handler dan only be SIG_DFL or SIG_IGN.");
-    return handler == NULL ? SIG_DFL : SIG_IGN;
-}
-
-static filc_ptr to_musl_signal_handler(void* handler)
-{
-    if (handler == SIG_DFL)
-        return filc_ptr_forge_invalid(NULL);
-    if (handler == SIG_IGN)
-        return filc_ptr_forge_invalid((void*)(uintptr_t)1);
-    return filc_ptr_forge_invalid(handler);
-}
-
-void pizlonated_f_zsys_signal(PIZLONATED_SIGNATURE)
-{
-    static filc_origin origin = {
-        .filename = __FILE__,
-        .function = "zsys_signal",
-        .line = 0,
-        .column = 0
-    };
-    filc_ptr args = PIZLONATED_ARGS;
-    filc_ptr rets = PIZLONATED_RETS;
-    int musl_signum = filc_ptr_get_next_int(&args, &origin);
-    filc_ptr sighandler = filc_ptr_get_next_ptr(&args, &origin);
-    PIZLONATED_DELETE_ARGS();
-    filc_check_access_ptr(rets, &origin);
-    int signum = from_musl_signum(musl_signum);
-    if (signum < 0) {
-        set_errno(EINVAL);
-        *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_invalid((void*)(intptr_t)-1);
-        return;
-    }
-    check_signal(signum, &origin);
-    void* result = signal(signum, from_musl_signal_handler(filc_ptr_ptr(sighandler), &origin));
-    if (result == SIG_ERR) {
-        *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_invalid((void*)(intptr_t)-1);
-        set_errno(errno);
-        return;
-    }
-    *(filc_ptr*)filc_ptr_ptr(rets) = to_musl_signal_handler(result);
 }
 
 void pizlonated_f_zsys_getuid(PIZLONATED_SIGNATURE)
@@ -4587,12 +4756,11 @@ static void from_musl_sigset(struct musl_sigset* musl_sigset,
 static bool from_musl_sa_flags(int musl_flags, int* flags)
 {
     *flags = 0;
+    /* NOTE: We explicitly exclude SA_SIGINFO because we do not support it yet!! */
     if (check_and_clear(&musl_flags, 1))
         *flags |= SA_NOCLDSTOP;
     if (check_and_clear(&musl_flags, 2))
         *flags |= SA_NOCLDWAIT;
-    if (check_and_clear(&musl_flags, 4))
-        *flags |= SA_SIGINFO;
     if (check_and_clear(&musl_flags, 0x08000000))
         *flags |= SA_ONSTACK;
     if (check_and_clear(&musl_flags, 0x10000000))
@@ -4644,6 +4812,41 @@ static int to_musl_sa_flags(int sa_flags)
     return result;
 }
 
+static void check_signal(int signum, const filc_origin* origin)
+{
+    FILC_CHECK(signum != SIGILL, origin, "cannot override SIGILL.");
+    FILC_CHECK(signum != SIGTRAP, origin, "cannot override SIGTRAP.");
+    FILC_CHECK(signum != SIGBUS, origin, "cannot override SIGBUS.");
+    FILC_CHECK(signum != SIGSEGV, origin, "cannot override SIGSEGV.");
+    FILC_CHECK(signum != SIGFPE, origin, "cannot override SIGFPE.");
+}
+
+static bool is_musl_special_signal_handler(void* handler)
+{
+    return handler == NULL || handler == (void*)(uintptr_t)1;
+}
+
+static void* from_musl_special_signal_handler(void* handler)
+{
+    PAS_ASSERT(is_musl_special_signal_handler(handler));
+    return handler == NULL ? SIG_DFL : SIG_IGN;
+}
+
+static bool is_special_signal_handler(void* handler)
+{
+    return handler == SIG_DFL || handler == SIG_IGN;
+}
+
+static filc_ptr to_musl_special_signal_handler(void* handler)
+{
+    if (handler == SIG_DFL)
+        return filc_ptr_forge_invalid(NULL);
+    if (handler == SIG_IGN)
+        return filc_ptr_forge_invalid((void*)(uintptr_t)1);
+    PAS_ASSERT(!"Bad special handler");
+    return filc_ptr_forge_invalid(NULL);
+}
+
 void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
@@ -4676,9 +4879,21 @@ void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE)
     struct sigaction act;
     struct sigaction oact;
     if (musl_act) {
-        act.sa_handler = from_musl_signal_handler(
-            filc_ptr_ptr(filc_ptr_load(&musl_act->sa_handler_ish)), &origin);
         from_musl_sigset(&musl_act->sa_mask, &act.sa_mask);
+        filc_ptr musl_handler = filc_ptr_load(&musl_act->sa_handler_ish);
+        if (is_musl_special_signal_handler(filc_ptr_ptr(musl_handler)))
+            act.sa_handler = from_musl_special_signal_handler(filc_ptr_ptr(musl_handler));
+        else {
+            filc_check_function_call(musl_handler, &origin);
+            signal_handler* handler = filc_allocate_utility(sizeof(signal_handler));
+            handler->function = filc_ptr_ptr(musl_handler);
+            handler->mask = act.sa_mask;
+            handler->musl_signum = musl_signum;
+            pas_store_store_fence();
+            PAS_ASSERT((unsigned)musl_signum <= MAX_MUSL_SIGNUM);
+            signal_table[musl_signum] = handler;
+            act.sa_handler = signal_pizlonator;
+        }
         if (!from_musl_sa_flags(musl_act->sa_flags, &act.sa_flags)) {
             set_errno(EINVAL);
             *(int*)filc_ptr_ptr(rets) = -1;
@@ -4687,14 +4902,24 @@ void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE)
     }
     if (musl_oact)
         pas_zero_memory(&oact, sizeof(struct sigaction));
+    filc_exit();
     int result = sigaction(signum, musl_act ? &act : NULL, musl_oact ? &oact : NULL);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = 1;
         return;
     }
     if (musl_oact) {
-        filc_ptr_store(&musl_oact->sa_handler_ish, to_musl_signal_handler(oact.sa_handler));
+        if (is_special_signal_handler(oact.sa_handler))
+            filc_ptr_store(&musl_oact->sa_handler_ish, to_musl_special_signal_handler(oact.sa_handler));
+        else {
+            PAS_ASSERT(oact.sa_handler == signal_pizlonator);
+            PAS_ASSERT((unsigned)musl_signum <= MAX_MUSL_SIGNUM);
+            filc_ptr_store(&musl_oact->sa_handler_ish,
+                           filc_ptr_forge_byte(signal_table[musl_signum], &filc_function_type));
+        }
         to_musl_sigset(&oact.sa_mask, &musl_oact->sa_mask);
         musl_oact->sa_flags = to_musl_sa_flags(oact.sa_flags);
     }
@@ -4713,10 +4938,13 @@ void pizlonated_f_zsys_isatty(PIZLONATED_SIGNATURE)
     int fd = filc_ptr_get_next_int(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
     errno = 0;
     int result = isatty(fd);
-    if (!result && errno)
-        set_errno(errno);
+    int my_errno = errno;
+    filc_enter();
+    if (!result && my_errno)
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -4735,12 +4963,15 @@ void pizlonated_f_zsys_pipe(PIZLONATED_SIGNATURE)
     filc_check_access_int(rets, sizeof(int), &origin);
     filc_check_access_int(fds_ptr, sizeof(int) * 2, &origin);
     int fds[2];
+    filc_exit();
     int result = pipe(fds);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
         /* Make sure not to modify what fds_ptr points to on error, even if the system modified
            our fds, since that would be nonconforming behavior. Probably doesn't matter since of
            course we would never run on a nonconforming system. */
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = -1;
         return;
     }
@@ -4792,9 +5023,12 @@ void pizlonated_f_zsys_select(PIZLONATED_SIGNATURE)
         timeout.tv_sec = musl_timeout->tv_sec;
         timeout.tv_usec = musl_timeout->tv_usec;
     }
+    filc_exit();
     int result = select(nfds, readfds, writefds, exceptfds, musl_timeout ? &timeout : NULL);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_check_access_int(rets, sizeof(int), &origin);
     *(int*)filc_ptr_ptr(rets) = result;
     if (musl_timeout) {
@@ -4806,7 +5040,9 @@ void pizlonated_f_zsys_select(PIZLONATED_SIGNATURE)
 void pizlonated_f_zsys_sched_yield(PIZLONATED_SIGNATURE)
 {
     PIZLONATED_DELETE_ARGS();
+    filc_exit();
     sched_yield();
+    filc_enter();
 }
 
 static bool from_musl_domain(int musl_domain, int* result)
@@ -4971,9 +5207,12 @@ void pizlonated_f_zsys_socket(PIZLONATED_SIGNATURE)
         *(int*)filc_ptr_ptr(rets) = -1;
         return;
     }
+    filc_exit();
     int result = socket(domain, type, protocol);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -5115,9 +5354,12 @@ void pizlonated_f_zsys_setsockopt(PIZLONATED_SIGNATURE)
     default:
         goto einval;
     }
+    filc_exit();
     int result = setsockopt(sockfd, level, optname, optval, optlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
     return;
     
@@ -5355,9 +5597,12 @@ void pizlonated_f_zsys_bind(PIZLONATED_SIGNATURE)
 
     if (verbose)
         pas_log("calling bind!\n");
+    filc_exit();
     int result = bind(sockfd, addr, addrlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
 
     filc_deallocate(addr);
     *(int*)filc_ptr_ptr(rets) = result;
@@ -5491,7 +5736,9 @@ void pizlonated_f_zsys_getaddrinfo(PIZLONATED_SIGNATURE)
     const char* service = filc_check_and_get_new_str_or_null(service_ptr, &origin);
     struct addrinfo* res = NULL;
     int result;
+    filc_exit();
     result = getaddrinfo(node, service, &hints, &res);
+    filc_enter();
     if (result) {
         *(int*)filc_ptr_ptr(rets) = to_musl_eai(result);
         goto done;
@@ -5551,9 +5798,12 @@ void pizlonated_f_zsys_connect(PIZLONATED_SIGNATURE)
     if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
         goto einval;
 
+    filc_exit();
     int result = connect(sockfd, addr, addrlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
 
     filc_deallocate(addr);
     if (verbose)
@@ -5589,9 +5839,12 @@ void pizlonated_f_zsys_getsockname(PIZLONATED_SIGNATURE)
 
     unsigned addrlen = MAX_SOCKADDRLEN;
     struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
+    filc_exit();
     int result = getsockname(sockfd, addr, &addrlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = result;
         return;
     }
@@ -5666,9 +5919,12 @@ void pizlonated_f_zsys_getsockopt(PIZLONATED_SIGNATURE)
     default:
         goto einval;
     }
+    filc_exit();
     int result = getsockopt(sockfd, level, optname, optval, &optlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = result;
         return;
     }
@@ -5732,9 +5988,12 @@ void pizlonated_f_zsys_getpeername(PIZLONATED_SIGNATURE)
 
     unsigned addrlen = MAX_SOCKADDRLEN;
     struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
+    filc_exit();
     int result = getpeername(sockfd, addr, &addrlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = result;
         return;
     }
@@ -5802,9 +6061,12 @@ void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE)
     unsigned addrlen;
     if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
         goto einval;
+    filc_exit();
     ssize_t result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags, addr, addrlen);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
 
     filc_deallocate(addr);
     *(ssize_t*)filc_ptr_ptr(rets) = result;
@@ -5851,11 +6113,14 @@ void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE)
     struct sockaddr* addr = NULL;
     if (filc_ptr_ptr(musl_addr_ptr))
         addr = (struct sockaddr*)alloca(addrlen);
+    filc_exit();
     ssize_t result = recvfrom(
         sockfd, filc_ptr_ptr(buf_ptr), len, flags,
         addr, filc_ptr_ptr(musl_addrlen_ptr) ? &addrlen : NULL);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
 
     if (filc_ptr_ptr(musl_addrlen_ptr)) {
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
@@ -5936,9 +6201,12 @@ void pizlonated_f_zsys_getrlimit(PIZLONATED_SIGNATURE)
     if (!from_musl_resource(musl_resource, &resource))
         goto einval;
     struct rlimit rlim;
+    filc_exit();
     int result = getrlimit(resource, &rlim);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     else {
         PAS_ASSERT(!result);
         struct musl_rlimit* musl_rlim = (struct musl_rlimit*)filc_ptr_ptr(rlim_ptr);
@@ -5966,7 +6234,10 @@ void pizlonated_f_zsys_umask(PIZLONATED_SIGNATURE)
     unsigned mask = filc_ptr_get_next_unsigned(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)filc_ptr_ptr(rets) = umask(mask);
+    filc_exit();
+    unsigned result = umask(mask);
+    filc_enter();
+    *(unsigned*)filc_ptr_ptr(rets) = result;
 }
 
 struct musl_utsname {
@@ -5994,6 +6265,7 @@ void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
     filc_check_access_int(buf_ptr, sizeof(struct musl_utsname), &origin);
     struct musl_utsname* musl_buf = (struct musl_utsname*)filc_ptr_ptr(buf_ptr);
     struct utsname buf;
+    filc_exit();
     PAS_ASSERT(!uname(&buf));
     snprintf(musl_buf->sysname, sizeof(musl_buf->sysname), "%s", buf.sysname);
     snprintf(musl_buf->nodename, sizeof(musl_buf->nodename), "%s", buf.nodename);
@@ -6001,6 +6273,7 @@ void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE)
     snprintf(musl_buf->version, sizeof(musl_buf->version), "%s", buf.version);
     snprintf(musl_buf->machine, sizeof(musl_buf->machine), "%s", buf.machine);
     PAS_ASSERT(!getdomainname(musl_buf->domainname, sizeof(musl_buf->domainname) - 1));
+    filc_enter();
     musl_buf->domainname[sizeof(musl_buf->domainname) - 1] = 0;
 }
 
@@ -6082,6 +6355,8 @@ static void* start_thread(void* arg)
     PAS_ASSERT(thread->is_running);
     PAS_ASSERT(!pthread_setspecific(zthread_key, thread));
 
+    filc_enter();
+
     filc_ptr return_buffer;
     pas_zero_memory(&return_buffer, sizeof(return_buffer));
 
@@ -6097,6 +6372,8 @@ static void* start_thread(void* arg)
     PAS_ASSERT(thread->is_running);
     filc_ptr_store(&thread->result_ptr, return_buffer);
     pas_lock_unlock(&thread->lock);
+
+    filc_exit();
     
     /* We let zthread_destruct say that the thread is not running. */
     return NULL;
@@ -6131,7 +6408,9 @@ void pizlonated_f_zthread_create(PIZLONATED_SIGNATURE)
     thread->callback = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
     filc_ptr_store(&thread->arg_ptr, arg_ptr);
     thread->is_running = true;
+    filc_exit();
     int result = pthread_create(&thread->thread, NULL, start_thread, thread);
+    filc_enter();
     if (result) {
         int my_errno = result;
         PAS_ASSERT(!thread->thread);
@@ -6181,7 +6460,9 @@ void pizlonated_f_zthread_join(PIZLONATED_SIGNATURE)
     PAS_ASSERT(!should_destroy_thread(thread));
     pas_lock_unlock(&thread->lock);
 
+    filc_exit();
     int result = pthread_join(system_thread, NULL);
+    filc_enter();
     if (result) {
         int my_errno = result;
         pas_lock_lock(&thread->lock);
@@ -6240,7 +6521,9 @@ void pizlonated_f_zthread_detach(PIZLONATED_SIGNATURE)
     PAS_ASSERT(!should_destroy_thread(thread));
     pas_lock_unlock(&thread->lock);
 
+    filc_exit();
     int result = pthread_detach(system_thread);
+    filc_enter();
     if (result) {
         int my_errno = result;
         pas_lock_lock(&thread->lock);
@@ -6336,10 +6619,10 @@ void pizlonated_f_zpark_if(PIZLONATED_SIGNATURE)
     data.before_sleep = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(before_sleep_ptr);
     data.arg_ptr = arg_ptr;
     *(bool*)filc_ptr_ptr(rets) = filc_park_conditionally(filc_ptr_ptr(address_ptr),
-                                                             zpark_if_validate_callback,
-                                                             zpark_if_before_sleep_callback,
-                                                             &data,
-                                                             absolute_timeout_in_milliseconds);
+                                                         zpark_if_validate_callback,
+                                                         zpark_if_before_sleep_callback,
+                                                         &data,
+                                                         absolute_timeout_in_milliseconds);
 }
 
 typedef struct {

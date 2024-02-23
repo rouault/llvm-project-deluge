@@ -30,6 +30,9 @@
 
 PAS_BEGIN_EXTERN_C;
 
+/* This is a port of the WTF::ParkingLot, with a bunch of simplications, to Fil-C. This parking
+   lot could be "generalized" to be a libpas parking lot, but that would take effort. */
+
 struct filc_unpark_result;
 typedef struct filc_unpark_result filc_unpark_result;
 

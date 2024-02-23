@@ -287,6 +287,7 @@ class Pizlonator {
   Value* ZtypeofImpl;
 
   // Low-level functions used by codegen.
+  FunctionCallee Pollcheck;
   FunctionCallee ValidateType;
   FunctionCallee GetType;
   FunctionCallee GetHeap;
@@ -2848,6 +2849,7 @@ public:
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
     FutureAllocaStack = makeDummy(LowRawPtrTy);
 
+    Pollcheck = M.getOrInsertFunction("filc_pollcheck", VoidTy);
     ValidateType = M.getOrInsertFunction("filc_validate_type", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetType = M.getOrInsertFunction("filc_get_type", LowRawPtrTy, LowRawPtrTy);
     GetHeap = M.getOrInsertFunction("filc_get_heap", LowRawPtrTy, LowRawPtrTy);
@@ -3122,6 +3124,9 @@ public:
             Instructions.push_back(&I);
             captureTypesIfNecessary(&I);
           }
+
+          // LMAO who needs backwards edge analysis when you don't give a fuck about perf?
+          CallInst::Create(Pollcheck, { }, "", BB->getTerminator());
         }
 
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);

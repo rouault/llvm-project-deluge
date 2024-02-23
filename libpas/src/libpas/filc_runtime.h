@@ -327,6 +327,27 @@ void filc_panic(const filc_origin* origin, const char* format, ...);
    fine to call this more than once. */
 PAS_API void filc_initialize(void);
 
+/* Begin execution in Fil-C. Executing Fil-C comes with the promise that you'll periodically do
+   a pollcheck and that all signals will be deferred to pollchecks.
+   
+   In the future, this might mean acquiring heap access (if Fil-C ever gets a GC). */
+PAS_API void filc_enter(void);
+
+/* End execution in Fil-C. Call this before doing anything that might block or anything to
+   affect signal masks.
+   
+   You can exit and then reenter as much as you like. It'll be super cheap eventually. */
+PAS_API void filc_exit(void);
+
+/* Check if there's a pending signal, and if so, run its handler.
+   
+   This mechanism allows us to have signal handlers that allocate even though the allocator uses
+   locks. It also means that signal handlers can call into almost all stdfil API and all
+   compiler-facing runtime API.
+
+   Only call this inside Fil-C execution and never after exiting. */
+PAS_API void filc_pollcheck(void);
+
 void filc_origin_dump(const filc_origin* origin, pas_stream* stream);
 
 static inline const filc_type* filc_type_lookup(unsigned index)
@@ -881,8 +902,19 @@ void* filc_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, s
 
 void* filc_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
 
+/* Deallocation usually checks if the thread is in_filc. But, some deallocations happen during
+   thread destruction, when we've blocked all signals. Deallocations that can happen at that time
+   call the yolo version, which has no such check. This is a testing-only check, so the yolo version
+   is equivalent to the normal one in production. */
+void filc_deallocate_yolo(const void* ptr);
+
+/* Deallocate without the Fil-C type system checks. Super dangerous to use except for pointers
+   allocated by the Fil-C runtime! */
 void filc_deallocate(const void* ptr);
+
+/* Deallocate with all of the checks! */
 void filc_deallocate_safe(filc_ptr ptr);
+
 void pizlonated_f_zfree(PIZLONATED_SIGNATURE);
 void pizlonated_f_zgetallocsize(PIZLONATED_SIGNATURE);
 
@@ -1216,7 +1248,6 @@ void pizlonated_f_zsys_write(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_close(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_lseek(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_exit(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_signal(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getuid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_geteuid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getgid(PIZLONATED_SIGNATURE);

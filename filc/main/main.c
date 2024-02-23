@@ -58,6 +58,7 @@ int main(int argc, char** argv)
     PAS_ASSERT(argc >= 1);
 
     filc_initialize();
+    filc_enter();
 
     init_libc_args_type = filc_get_type(&init_libc_args_type_template);
     main_args_type = filc_get_type(&main_args_type_template);
