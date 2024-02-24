@@ -3101,6 +3101,8 @@ void filc_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
 {
     filc_ptr ptr;
     ptr = filc_ptr_create(sidecar, capability);
+    if (!filc_ptr_lower(ptr) && !filc_ptr_ptr(ptr) && !new_upper)
+        return;
     check_access_common(ptr, (char*)new_upper - (char*)filc_ptr_ptr(ptr), origin);
     FILC_CHECK(new_type, origin, "cannot restrict to NULL type");
     check_type_overlap(filc_ptr_forge(filc_ptr_ptr(ptr), filc_ptr_ptr(ptr), new_upper, new_type),
@@ -6416,6 +6418,64 @@ void pizlonated_f_zsys_pause(PIZLONATED_SIGNATURE)
     PAS_ASSERT(result == -1);
     set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = -1;
+}
+
+void pizlonated_f_zsys_pselect(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_pselect",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int nfds = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr readfds_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr writefds_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr exceptfds_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr timeout_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr sigmask_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    PAS_ASSERT(FD_SETSIZE == 1024);
+    filc_check_access_int(rets, sizeof(int), &origin);
+    FILC_CHECK(
+        nfds <= 1024,
+        &origin,
+        "attempt to select with nfds = %d (should be 1024 or less).",
+        nfds);
+    if (filc_ptr_ptr(readfds_ptr))
+        filc_check_access_int(readfds_ptr, sizeof(fd_set), &origin);
+    if (filc_ptr_ptr(writefds_ptr))
+        filc_check_access_int(writefds_ptr, sizeof(fd_set), &origin);
+    if (filc_ptr_ptr(exceptfds_ptr))
+        filc_check_access_int(exceptfds_ptr, sizeof(fd_set), &origin);
+    if (filc_ptr_ptr(timeout_ptr))
+        filc_check_access_int(timeout_ptr, sizeof(struct musl_timespec), &origin);
+    if (filc_ptr_ptr(sigmask_ptr))
+        filc_check_access_int(timeout_ptr, sizeof(struct musl_sigset), &origin);
+    fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
+    fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
+    fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
+    struct musl_timespec* musl_timeout = (struct musl_timespec*)filc_ptr_ptr(timeout_ptr);
+    struct timespec timeout;
+    if (musl_timeout) {
+        timeout.tv_sec = musl_timeout->tv_sec;
+        timeout.tv_nsec = musl_timeout->tv_nsec;
+    }
+    struct musl_sigset* musl_sigmask = (struct musl_sigset*)filc_ptr_ptr(sigmask_ptr);
+    sigset_t sigmask;
+    if (musl_sigmask)
+        from_musl_sigset(musl_sigmask, &sigmask);
+    filc_exit();
+    int result = pselect(nfds, readfds, writefds, exceptfds,
+                         musl_timeout ? &timeout : NULL,
+                         musl_sigmask ? &sigmask : NULL);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

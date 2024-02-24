@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/select.h>
 
 int main(int argc, char** argv)
 {
@@ -82,6 +83,15 @@ int main(int argc, char** argv)
     int fds[2];
     ZASSERT(!pipe(fds));
     ZASSERT(write(fds[1], "hello", strlen("hello") + 1) == strlen("hello") + 1);
+
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(fds[0], &readfds);
+    ZASSERT(select(fds[0] + 1, &readfds, NULL, NULL, NULL) == 1);
+    ZASSERT(FD_ISSET(fds[0], &readfds));
+    ZASSERT(pselect(fds[0] + 1, &readfds, NULL, NULL, NULL, NULL) == 1);
+    ZASSERT(FD_ISSET(fds[0], &readfds));
+    
     ZASSERT(read(fds[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));
     
