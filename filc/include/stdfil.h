@@ -160,8 +160,14 @@ ztype* ztypeof_impl(void* type_like);
    than count repetitions of the type, then only the first count are copied. If the pointer points
    at fewer than count repetitions of the type, then we only copy whatever it has.
    
-   The pointer must point at an allocation of the same type as the one we're requesting, else this
-   traps. See the rules for zfree for all of the checks performed on the old pointer.
+   The pointer must point at the base of an allocation that is already some number of repetitions of
+   the given type (or a compatible type - in the sense of a pair being compatible with a pair of
+   pairs). In addition, this does all of the checks that deallocation would do. See the rules for
+   zfree for all of the checks performed on the old pointer.
+   
+   The size of the old allocation is based on the pointer's upper bounds, *not* on the underlying
+   allocation size! This means that you can do the OpenBSD-style recallocarray (which takes an old
+   size for the old pointer) by combining zrealloc with zrestrict.
    
    In addition to copying data from the old allocation, the new memory is zeroed. So, if you use
    zrealloc to grow an array, then the added elements will start out zero.

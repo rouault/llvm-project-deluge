@@ -897,10 +897,14 @@ void* filc_allocate_with_type(const filc_type* type, size_t size);
    prevent freeing utility allocations. */
 void* filc_allocate_utility(size_t size);
 
-void* filc_reallocate_int(void* ptr, size_t size, size_t count);
-void* filc_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment);
+void* filc_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
+                               const filc_origin* origin);
+void* filc_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                              size_t size, size_t count, size_t alignment,
+                                              const filc_origin* origin);
 
-void* filc_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
+void* filc_reallocate_impl(pas_uint128 sidecar, pas_uint128 capability,
+                           pas_heap_ref* ref, size_t count, const filc_origin* origin);
 
 /* Deallocation usually checks if the thread is in_filc. But, some deallocations happen during
    thread destruction, when we've blocked all signals. Deallocations that can happen at that time
@@ -912,7 +916,8 @@ void filc_deallocate_yolo(const void* ptr);
    allocated by the Fil-C runtime! */
 void filc_deallocate(const void* ptr);
 
-/* Deallocate with all of the checks! */
+/* Deallocate with all of the checks! This is equivalent to filc_check_deallocate and then
+   filc_deallocate. */
 void filc_deallocate_safe(filc_ptr ptr);
 
 void pizlonated_f_zfree(PIZLONATED_SIGNATURE);
@@ -933,12 +938,15 @@ void* filc_hard_allocate_int_flex_with_alignment(size_t base_size, size_t elemen
 void* filc_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
 void* filc_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
                                                size_t count, size_t alignment);
-void* filc_hard_reallocate_int(void* ptr, size_t size, size_t count);
-void* filc_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count,
-                                                size_t alignment);
+void* filc_hard_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
+                                    const filc_origin* origin);
+void* filc_hard_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                                   size_t size, size_t count, size_t alignment,
+                                                   const filc_origin* origin);
 
-void* filc_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count);
-void filc_hard_deallocate(void* ptr);
+void* filc_hard_reallocate(pas_uint128 sidecar, pas_uint128 capability, pas_heap_ref* ref, size_t count,
+                           const filc_origin* origin);
+void filc_hard_deallocate(const void* ptr);
 
 /* This is super gross but it's fine for now. When the compiler allocates, it emits three calls.
    First it calls the allocator. Then it calls new_capability. Then it calls new_sidecar.
@@ -1069,10 +1077,10 @@ static inline void filc_memmove(filc_ptr dst, filc_ptr src, size_t count, const 
    not have to check that you did that. This property is ensured by the compiler and the fact that
    the user-visible API (zrestrict) takes a count. */
 void filc_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
-                           void* new_upper, const filc_type* new_type, const filc_origin* origin);
+                         void* new_upper, const filc_type* new_type, const filc_origin* origin);
 
 static inline filc_ptr filc_restrict(filc_ptr ptr, size_t count, const filc_type* new_type,
-                                         const filc_origin* origin)
+                                     const filc_origin* origin)
 {
     void* new_upper;
     new_upper = (char*)filc_ptr_ptr(ptr) + count * new_type->size;

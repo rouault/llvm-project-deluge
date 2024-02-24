@@ -318,7 +318,6 @@ class Pizlonator {
   FunctionCallee HardReallocate;
   FunctionCallee LogAllocation;
   FunctionCallee PtrPtr;
-  FunctionCallee CheckDeallocate;
   FunctionCallee UpdateSidecar;
   FunctionCallee UpdateCapability;
   FunctionCallee NewSidecar;
@@ -1885,7 +1884,7 @@ class Pizlonator {
         Value* TypeRep = getTypeRep(dataForLowType(LowT), CI);
         Value* LowPtr = lowerPtr(CI->getOperand(0), CI);
         Instruction* NewUpper = GetElementPtrInst::Create(
-          LowT, LowPtr, { ConstantInt::get(IntPtrTy, 1) }, "filc_NewUpper", CI);
+          LowT, LowPtr, { CI->getArgOperandUse(2) }, "filc_NewUpper", CI);
         NewUpper->setDebugLoc(CI->getDebugLoc());
         CallInst::Create(
           CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep, getOrigin(CI->getDebugLoc()) }, "", CI)
@@ -2012,9 +2011,6 @@ class Pizlonator {
         lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
         lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
         Value* OrigWidePtr = CI->getArgOperand(0);
-        Value* OrigPtr = lowerPtr(OrigWidePtr, CI);
-        CallInst::Create(CheckDeallocate, { OrigWidePtr, getOrigin(CI->getDebugLoc()) }, "", CI)
-          ->setDebugLoc(CI->getDebugLoc());
         
         Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
         Type* LowT = lowerType(HighT);
@@ -2030,13 +2026,14 @@ class Pizlonator {
           if (Alignment > MinAlign) {
             Alloc = CallInst::Create(
               isHard ? HardReallocateIntWithAlignment : ReallocateIntWithAlignment,
-              { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
-                ConstantInt::get(IntPtrTy, Alignment) },
+              { OrigWidePtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
+                ConstantInt::get(IntPtrTy, Alignment), getOrigin(CI->getDebugLoc()) },
               "filc_realloc_int", CI);
           } else {
             Alloc = CallInst::Create(
               isHard ? HardReallocateInt : ReallocateInt,
-              { OrigPtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size) },
+              { OrigWidePtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
+                getOrigin(CI->getDebugLoc()) },
               "filc_realloc_int", CI);
           }
         } else {
@@ -2044,7 +2041,7 @@ class Pizlonator {
             DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
           Alloc = CallInst::Create(
             isHard ? HardReallocate : Reallocate,
-            { OrigPtr, Heap, CI->getArgOperand(2) }, "filc_realloc", CI);
+            { OrigWidePtr, Heap, CI->getArgOperand(2), getOrigin(CI->getDebugLoc()) }, "filc_realloc", CI);
         }
         
         Alloc->setDebugLoc(CI->getDebugLoc());
@@ -2862,9 +2859,9 @@ public:
     AllocateIntFlexWithAlignment = M.getOrInsertFunction("filc_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     AllocateFlex = M.getOrInsertFunction("filc_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     AllocateUtility = M.getOrInsertFunction("filc_allocate_utility", LowRawPtrTy, IntPtrTy);
-    ReallocateInt = M.getOrInsertFunction("filc_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    ReallocateIntWithAlignment = M.getOrInsertFunction("filc_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    Reallocate = M.getOrInsertFunction("filc_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    ReallocateInt = M.getOrInsertFunction("filc_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    ReallocateIntWithAlignment = M.getOrInsertFunction("filc_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    Reallocate = M.getOrInsertFunction("filc_reallocate_impl", LowRawPtrTy, LowWidePtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     Deallocate = M.getOrInsertFunction("filc_deallocate", VoidTy, LowRawPtrTy);
     GetHardHeap = M.getOrInsertFunction("filc_get_hard_heap", LowRawPtrTy, LowRawPtrTy);
     HardAllocateInt = M.getOrInsertFunction("filc_hard_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
@@ -2875,14 +2872,13 @@ public:
     HardAllocateIntFlex = M.getOrInsertFunction("filc_hard_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     HardAllocateIntFlexWithAlignment = M.getOrInsertFunction("filc_hard_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
     HardAllocateFlex = M.getOrInsertFunction("filc_hard_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardReallocateInt = M.getOrInsertFunction("filc_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    HardReallocateIntWithAlignment = M.getOrInsertFunction("filc_hard_reallocate_int", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardReallocate = M.getOrInsertFunction("filc_hard_reallocate", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    HardReallocateInt = M.getOrInsertFunction("filc_hard_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    HardReallocateIntWithAlignment = M.getOrInsertFunction("filc_hard_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    HardReallocate = M.getOrInsertFunction("filc_hard_reallocate_impl", LowRawPtrTy, LowWidePtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     LogAllocation = M.getOrInsertFunction("filc_log_allocation_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     PtrPtr = M.getOrInsertFunction("filc_ptr_ptr_impl", LowRawPtrTy, LowWidePtrTy);
     UpdateSidecar = M.getOrInsertFunction("filc_update_sidecar", Int128Ty, LowWidePtrTy, LowRawPtrTy);
     UpdateCapability = M.getOrInsertFunction("filc_update_capability", Int128Ty, LowWidePtrTy, LowRawPtrTy);
-    CheckDeallocate = M.getOrInsertFunction("filc_check_deallocate_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
     NewSidecar = M.getOrInsertFunction("filc_new_sidecar", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     NewCapability = M.getOrInsertFunction("filc_new_capability", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     CheckForge = M.getOrInsertFunction("filc_check_forge", VoidTy, LowRawPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);

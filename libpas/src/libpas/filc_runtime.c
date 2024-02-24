@@ -22,7 +22,6 @@
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
 #include "pas_try_allocate_intrinsic.h"
-#include "pas_try_reallocate.h"
 #include "pas_utils.h"
 #include <ctype.h>
 #include <termios.h>
@@ -616,6 +615,8 @@ static void call_handler(signal_handler* handler, int signum)
 /* This function works whether we're in filc or not. */
 static bool generic_pollcheck(zthread* thread)
 {
+    static const bool verbose = false;
+    
     if (!thread->have_deferred_signals)
         return false;
     thread->have_deferred_signals = false;
@@ -636,11 +637,15 @@ static bool generic_pollcheck(zthread* thread)
         if (!num_deferred_signals)
             continue;
 
+        if (verbose)
+            pas_log("calling signal handler from pollcheck\n");
+        
         signal_handler* handler = signal_table[index];
         PAS_ASSERT(handler);
         sigset_t oldset;
         PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &handler->mask, &oldset));
-        call_handler(handler, (int)index);
+        while (num_deferred_signals--)
+            call_handler(handler, (int)index);
         PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
     }
     if (!in_filc)
@@ -664,6 +669,8 @@ void filc_pollcheck(void)
 
 static void signal_pizlonator(int signum)
 {
+    static const bool verbose = false;
+    
     int musl_signum = to_musl_signum(signum);
     PAS_ASSERT((unsigned)musl_signum <= MAX_MUSL_SIGNUM);
     zthread* thread = get_thread();
@@ -682,6 +689,9 @@ static void signal_pizlonator(int signum)
     filc_enter();
     /* Even if the signal mask allows the signal to recurse, at this point the signal_pizlonator
        will just count and defer. */
+
+    if (verbose)
+        pas_log("calling signal handler from pizlonator\n");
     
     call_handler(signal_table[musl_signum], musl_signum);
     filc_exit();
@@ -1689,49 +1699,93 @@ static void typed_copy_and_zero_callback(void* new_ptr, void* old_ptr,
     filc_low_level_ptr_safe_bzero((char*)new_ptr + copy_size, new_size - copy_size);
 }
 
-void* filc_reallocate_int(void* ptr, size_t size, size_t count)
+static void* reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                 size_t size, size_t count, size_t alignment,
+                                 const filc_origin* origin,
+                                 void* (*allocate)(size_t size, size_t alignment),
+                                 void (*deallocate)(const void* ptr))
 {
-    size = get_size(size, count);
-    return pas_try_reallocate_intrinsic(
-        ptr,
-        &filc_int_heap,
-        size,
-        FILC_HEAP_CONFIG,
-        filc_allocate_int_impl_for_realloc,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        int_copy_and_zero_callback);
+    filc_ptr old_ptr = filc_ptr_create(sidecar, capability);
+    filc_check_deallocate(old_ptr, origin);
+    
+    size_t old_size = filc_ptr_available(old_ptr);
+
+    filc_check_access_int(old_ptr, old_size, origin);
+
+    size_t new_size = get_size(size, count);
+    void* new_ptr = allocate(new_size, alignment);
+
+    size_t copy_size = pas_min_uintptr(old_size, new_size);
+    memcpy(new_ptr, filc_ptr_ptr(old_ptr), copy_size);
+    pas_zero_memory((char*)new_ptr + copy_size, new_size - copy_size);
+
+    deallocate(filc_ptr_ptr(old_ptr));
+    
+    return new_ptr;
 }
 
-void* filc_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment)
+void* filc_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
+                               const filc_origin* origin)
 {
-    size = get_size(size, count);
-    return pas_try_reallocate_intrinsic_with_alignment(
-        ptr,
-        &filc_int_heap,
-        size,
-        alignment,
-        FILC_HEAP_CONFIG,
-        filc_allocate_int_with_alignment_impl_for_realloc_with_alignment,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        int_copy_and_zero_callback);
+    return reallocate_int_impl(sidecar, capability, size, count, 1, origin,
+                               filc_allocate_int_impl_ptr,
+                               filc_deallocate);
 }
 
-void* filc_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
+void* filc_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                              size_t size, size_t count, size_t alignment,
+                                              const filc_origin* origin)
+{
+    return reallocate_int_impl(sidecar, capability, size, count, alignment, origin,
+                               filc_allocate_int_with_alignment_impl_ptr,
+                               filc_deallocate);
+}
+
+static void* reallocate_impl(pas_uint128 sidecar, pas_uint128 capability,
+                             pas_heap_ref* ref, size_t count,
+                             const filc_origin* origin,
+                             pas_allocation_result (*allocate)(
+                                 pas_heap_ref* ref, size_t count, size_t alignment),
+                             void (*deallocate)(const void* ptr))
+{
+    const filc_type* new_type = (const filc_type*)ref->type;
+    PAS_TESTING_ASSERT(filc_type_is_normal(new_type));
+    PAS_TESTING_ASSERT(pas_is_aligned(new_type->size, FILC_WORD_SIZE));
+
+    filc_ptr old_ptr = filc_ptr_create(sidecar, capability);
+    filc_check_deallocate(old_ptr, origin);
+
+    size_t old_size = filc_ptr_available(old_ptr);
+
+    FILC_CHECK(
+        !(old_size % new_type->size),
+        origin,
+        "Cannot reallocate ptr whose available isn't a multiple of new type size "
+        "(ptr = %s, available = %zu, new type = %s).",
+        filc_ptr_to_new_string(old_ptr), old_size, filc_type_to_new_string(new_type));
+    
+    size_t old_count = old_size / new_type->size;
+    filc_restrict(old_ptr, old_count, new_type, origin);
+
+    void* new_ptr = (void*)allocate(ref, count, 1).begin;
+    size_t new_size = count * new_type->size;
+
+    size_t copy_size = pas_min_uintptr(old_size, new_size);
+    filc_low_level_ptr_safe_memcpy(new_ptr, filc_ptr_ptr(old_ptr), copy_size);
+    filc_low_level_ptr_safe_bzero((char*)new_ptr + copy_size, new_size - copy_size);
+
+    deallocate(filc_ptr_ptr(old_ptr));
+
+    return new_ptr;
+}
+
+void* filc_reallocate_impl(pas_uint128 sidecar, pas_uint128 capability, pas_heap_ref* ref, size_t count,
+                           const filc_origin* origin)
 {
     PAS_TESTING_ASSERT(!ref->heap || ref->heap->config_kind == pas_heap_config_kind_filc);
-    PAS_TESTING_ASSERT(filc_type_is_normal((const filc_type*)ref->type));
-    return pas_try_reallocate_array_by_count(
-        ptr,
-        ref,
-        count,
-        FILC_HEAP_CONFIG,
-        filc_allocate_many_impl_for_realloc,
-        &filc_typed_runtime_config.base,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        typed_copy_and_zero_callback);
+    return reallocate_impl(sidecar, capability, ref, count, origin,
+                           filc_allocate_many_impl_by_count,
+                           filc_deallocate);
 }
 
 void filc_deallocate_yolo(const void* ptr)
@@ -1976,53 +2030,36 @@ void* filc_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size
     return result;
 }
 
-void* filc_hard_reallocate_int(void* ptr, size_t size, size_t count)
+void* filc_hard_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
+                                    const filc_origin* origin)
 {
-    size = get_size(size, count);
-    return pas_try_reallocate_intrinsic(
-        ptr,
-        &filc_hard_int_heap,
-        size,
-        FILC_HARD_HEAP_CONFIG,
-        filc_hard_allocate_int_impl_for_realloc,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        int_copy_and_zero_callback);
+    return reallocate_int_impl(sidecar, capability, size, count, 1, origin,
+                               filc_hard_allocate_int_impl_ptr,
+                               filc_hard_deallocate);
 }
 
-void* filc_hard_reallocate_int_with_alignment(void* ptr, size_t size, size_t count, size_t alignment)
+void* filc_hard_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
+                                                   size_t size, size_t count, size_t alignment,
+                                                   const filc_origin* origin)
 {
-    size = get_size(size, count);
-    return pas_try_reallocate_intrinsic_with_alignment(
-        ptr,
-        &filc_hard_int_heap,
-        size,
-        alignment,
-        FILC_HARD_HEAP_CONFIG,
-        filc_hard_allocate_int_impl_for_realloc_with_alignment,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        int_copy_and_zero_callback);
+    return reallocate_int_impl(sidecar, capability, size, count, alignment, origin,
+                               filc_hard_allocate_int_impl_ptr,
+                               filc_hard_deallocate);
 }
 
-void* filc_hard_reallocate(void* ptr, pas_heap_ref* ref, size_t count)
+void* filc_hard_reallocate(pas_uint128 sidecar, pas_uint128 capability, pas_heap_ref* ref, size_t count,
+                           const filc_origin* origin)
 {
     PAS_TESTING_ASSERT(!ref->heap || ref->heap->config_kind == pas_heap_config_kind_filc_hard);
-    PAS_TESTING_ASSERT(filc_type_is_normal((const filc_type*)ref->type));
-    return pas_try_reallocate_array_by_count(
-        ptr,
-        ref,
-        count,
-        FILC_HARD_HEAP_CONFIG,
-        filc_hard_allocate_many_impl_for_realloc,
-        &filc_hard_typed_runtime_config,
-        pas_reallocate_disallow_heap_teleport,
-        pas_reallocate_free_if_successful,
-        typed_copy_and_zero_callback);
+    return reallocate_impl(sidecar, capability, ref, count, origin,
+                           filc_hard_allocate_many_impl_by_count,
+                           filc_hard_deallocate);
 }
 
-void filc_hard_deallocate(void* ptr)
+void filc_hard_deallocate(const void* const_ptr)
 {
+    void* ptr = (void*)const_ptr;
+    
     if (!ptr)
         return;
     
@@ -3060,7 +3097,7 @@ void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
 }
 
 void filc_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
-                           void* new_upper, const filc_type* new_type, const filc_origin* origin)
+                         void* new_upper, const filc_type* new_type, const filc_origin* origin)
 {
     filc_ptr ptr;
     ptr = filc_ptr_create(sidecar, capability);
