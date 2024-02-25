@@ -5452,7 +5452,7 @@ struct musl_sockaddr_un {
                                                          sizeof(struct musl_sockaddr_un)))
 
 static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_addrlen,
-                               struct sockaddr** addr, unsigned* addrlen)
+                               struct sockaddr** addr, unsigned* addrlen, const filc_origin* origin)
 {
     static const bool verbose = false;
 
@@ -5497,8 +5497,12 @@ static bool from_musl_sockaddr(struct musl_sockaddr* musl_addr, unsigned musl_ad
             filc_allocate_utility(sizeof(struct sockaddr_un));
         pas_zero_memory(addr_un, sizeof(struct sockaddr_un));
         addr_un->sun_family = PF_LOCAL;
-        PAS_ASSERT(sizeof(addr_un->sun_path) == sizeof(musl_addr_un->sun_path));
-        memcpy(addr_un->sun_path, musl_addr_un->sun_path, sizeof(musl_addr_un->sun_path));
+        const char* sun_path = filc_check_and_get_new_str(
+            filc_ptr_forge_with_size(
+                musl_addr_un->sun_path, sizeof(musl_addr_un->sun_path), &filc_int_type),
+            origin);
+        snprintf(addr_un->sun_path, sizeof(addr_un->sun_path), "%s", sun_path);
+        filc_deallocate(sun_path);
         *addr = (struct sockaddr*)addr_un;
         *addrlen = sizeof(struct sockaddr_un);
         return true;
@@ -5635,7 +5639,7 @@ void pizlonated_f_zsys_bind(PIZLONATED_SIGNATURE)
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     struct sockaddr* addr;
     unsigned addrlen;
-    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen, &origin))
         goto einval;
 
     if (verbose)
@@ -5838,7 +5842,7 @@ void pizlonated_f_zsys_connect(PIZLONATED_SIGNATURE)
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     struct sockaddr* addr;
     unsigned addrlen;
-    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen, &origin))
         goto einval;
 
     filc_exit();
@@ -6102,7 +6106,7 @@ void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE)
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     struct sockaddr* addr;
     unsigned addrlen;
-    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
+    if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen, &origin))
         goto einval;
     filc_exit();
     ssize_t result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags, addr, addrlen);
