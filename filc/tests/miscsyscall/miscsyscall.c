@@ -155,7 +155,7 @@ int main(int argc, char** argv)
     ZASSERT(!timerval.it_interval.tv_usec);
     ZASSERT(!timerval.it_value.tv_sec);
     ZASSERT(!timerval.it_value.tv_usec);
-    
+
     zprintf("No worries.\n");
     return 0;
 }

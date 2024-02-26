@@ -3924,19 +3924,260 @@ static PAS_NEVER_INLINE void set_errno(int errno_value)
     set_musl_errno(to_musl_errno(errno_value));
 }
 
-struct musl_winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
+#define check_and_clear(passed_flags_ptr, passed_expected) ({ \
+        typeof(passed_flags_ptr) flags_ptr = (passed_flags_ptr); \
+        typeof(passed_expected) expected = (passed_expected); \
+        bool result; \
+        if ((*flags_ptr & expected) == expected) { \
+            *flags_ptr &= ~expected; \
+            result = true; \
+        } else \
+            result = false; \
+        result; \
+    })
+
+struct musl_termios {
+    unsigned c_iflag;
+    unsigned c_oflag;
+    unsigned c_cflag;
+    unsigned c_lflag;
+    unsigned char c_cc[32];
+    unsigned c_ispeed;
+    unsigned c_ospeed;
+};
+
+static unsigned to_musl_ciflag(unsigned iflag)
+{
+    unsigned result = 0;
+    if (check_and_clear(&iflag, IGNBRK))
+        result |= 01;
+    if (check_and_clear(&iflag, BRKINT))
+        result |= 02;
+    if (check_and_clear(&iflag, IGNPAR))
+        result |= 04;
+    if (check_and_clear(&iflag, PARMRK))
+        result |= 010;
+    if (check_and_clear(&iflag, INPCK))
+        result |= 020;
+    if (check_and_clear(&iflag, ISTRIP))
+        result |= 040;
+    if (check_and_clear(&iflag, INLCR))
+        result |= 0100;
+    if (check_and_clear(&iflag, IGNCR))
+        result |= 0200;
+    if (check_and_clear(&iflag, ICRNL))
+        result |= 0400;
+    if (check_and_clear(&iflag, IXON))
+        result |= 02000;
+    if (check_and_clear(&iflag, IXANY))
+        result |= 04000;
+    if (check_and_clear(&iflag, IXOFF))
+        result |= 010000;
+    if (check_and_clear(&iflag, IMAXBEL))
+        result |= 020000;
+    if (check_and_clear(&iflag, IUTF8))
+        result |= 040000;
+    PAS_ASSERT(!iflag);
+    return result;
+}
+
+static unsigned to_musl_coflag(unsigned oflag)
+{
+    unsigned result = 0;
+    if (check_and_clear(&oflag, OPOST))
+        result |= 01;
+    if (check_and_clear(&oflag, ONLCR))
+        result |= 04;
+    PAS_ASSERT(!oflag);
+    return result;
+}
+
+static unsigned to_musl_ccflag(unsigned cflag)
+{
+    unsigned result = 0;
+    switch (cflag & CSIZE) {
+    case CS5:
+        break;
+    case CS6:
+        result |= 020;
+        break;
+    case CS7:
+        result |= 040;
+        break;
+    case CS8:
+        result |= 060;
+        break;
+    default:
+        PAS_ASSERT(!"Should not be reached");
+    }
+    cflag &= ~CSIZE;
+    if (check_and_clear(&cflag, CSTOPB))
+        result |= 0100;
+    if (check_and_clear(&cflag, CREAD))
+        result |= 0200;
+    if (check_and_clear(&cflag, PARENB))
+        result |= 0400;
+    if (check_and_clear(&cflag, PARODD))
+        result |= 01000;
+    if (check_and_clear(&cflag, HUPCL))
+        result |= 02000;
+    if (check_and_clear(&cflag, CLOCAL))
+        result |= 04000;
+    PAS_ASSERT(!cflag);
+    return result;
+}
+
+static unsigned to_musl_clflag(unsigned lflag)
+{
+    unsigned result = 0;
+    if (check_and_clear(&lflag, ISIG))
+        result |= 01;
+    if (check_and_clear(&lflag, ICANON))
+        result |= 02;
+    if (check_and_clear(&lflag, ECHO))
+        result |= 010;
+    if (check_and_clear(&lflag, ECHOE))
+        result |= 020;
+    if (check_and_clear(&lflag, ECHOK))
+        result |= 040;
+    if (check_and_clear(&lflag, ECHONL))
+        result |= 0100;
+    if (check_and_clear(&lflag, NOFLSH))
+        result |= 0200;
+    if (check_and_clear(&lflag, TOSTOP))
+        result |= 0400;
+    if (check_and_clear(&lflag, ECHOCTL))
+        result |= 01000;
+    if (check_and_clear(&lflag, ECHOPRT))
+        result |= 02000;
+    if (check_and_clear(&lflag, ECHOKE))
+        result |= 04000;
+    if (check_and_clear(&lflag, FLUSHO))
+        result |= 010000;
+    if (check_and_clear(&lflag, PENDIN))
+        result |= 040000;
+    if (check_and_clear(&lflag, IEXTEN))
+        result |= 0100000;
+    if (check_and_clear(&lflag, EXTPROC))
+        result |= 0200000;
+    PAS_ASSERT(!lflag);
+    return result;
+}
+
+/* musl_cc is a 32-byte array. */
+static void to_musl_ccc(cc_t* cc, unsigned char* musl_cc)
+{
+    musl_cc[0] = cc[VINTR];
+    musl_cc[1] = cc[VQUIT];
+    musl_cc[2] = cc[VERASE];
+    musl_cc[3] = cc[VKILL];
+    musl_cc[4] = cc[VEOF];
+    musl_cc[5] = cc[VTIME];
+    musl_cc[6] = cc[VMIN];
+    musl_cc[7] = 0; /* VSWTC */
+    musl_cc[8] = cc[VSTART];
+    musl_cc[9] = cc[VSTOP];
+    musl_cc[10] = cc[VSUSP];
+    musl_cc[11] = cc[VEOL];
+    musl_cc[12] = cc[VREPRINT];
+    musl_cc[13] = cc[VDISCARD];
+    musl_cc[14] = cc[VWERASE];
+    musl_cc[15] = cc[VLNEXT];
+    musl_cc[16] = cc[VEOL2];
+}
+
+static unsigned to_musl_baud(speed_t baud)
+{
+    switch (baud) {
+    case B0:
+        return 0;
+    case B50:
+        return 01;
+    case B75:
+        return 02;
+    case B110:
+        return 03;
+    case B134:
+        return 04;
+    case B150:
+        return 05;
+    case B200:
+        return 06;
+    case B300:
+        return 07;
+    case B600:
+        return 010;
+    case B1200:
+        return 011;
+    case B1800:
+        return 012;
+    case B2400:
+        return 013;
+    case B4800:
+        return 014;
+    case B9600:
+        return 015;
+    case B19200:
+        return 016;
+    case B38400:
+        return 017;
+    case B57600:
+        return 010001;
+    case B115200:
+        return 010002;
+    case B230400:
+        return 010003;
+    default:
+        PAS_ASSERT(!"Should not be reached");
+        return 0;
+    }
+}
+
+static void to_musl_termios(struct termios* termios, struct musl_termios* musl_termios)
+{
+    musl_termios->c_iflag = to_musl_ciflag(termios->c_iflag);
+    musl_termios->c_oflag = to_musl_coflag(termios->c_oflag);
+    musl_termios->c_cflag = to_musl_ccflag(termios->c_cflag);
+    musl_termios->c_lflag = to_musl_clflag(termios->c_lflag);
+    to_musl_ccc(termios->c_cc, musl_termios->c_cc);
+    musl_termios->c_ispeed = to_musl_baud(termios->c_ispeed);
+    musl_termios->c_ospeed = to_musl_baud(termios->c_ospeed);
+}
+
+struct musl_winsize {
+    unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
+};
 
 static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
 {
+    static const bool verbose = false;
+    
     static filc_origin origin = {
         .filename = __FILE__,
         .function = "zsys_ioctl_impl",
         .line = 0,
         .column = 0
     };
+
+    int my_errno;
+    
     // NOTE: This must use musl's ioctl numbers, and must treat the passed-in struct as having the
     // pizlonated musl layout.
     switch (request) {
+    case 0x5401: { // TCGETS
+        struct termios termios;
+        struct musl_termios* musl_termios;
+        filc_ptr musl_termios_ptr;
+        musl_termios_ptr = filc_ptr_get_next_ptr(&args, &origin);
+        filc_check_access_int(musl_termios_ptr, sizeof(struct musl_termios), &origin);
+        musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
+        filc_exit();
+        if (tcgetattr(fd, &termios) < 0)
+            goto error;
+        filc_enter();
+        to_musl_termios(&termios, musl_termios);
+        return 0;
+    }
     case 0x5413: { // TIOCGWINSZ
         filc_ptr musl_winsize_ptr;
         struct musl_winsize* musl_winsize;
@@ -3945,11 +4186,8 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         filc_exit();
-        if (ioctl(fd, TIOCGWINSZ, &winsize) < 0) {
-            filc_enter();
-            set_errno(errno);
-            return -1;
-        }
+        if (ioctl(fd, TIOCGWINSZ, &winsize) < 0)
+            goto error;
         filc_enter();
         musl_winsize->ws_row = winsize.ws_row;
         musl_winsize->ws_col = winsize.ws_col;
@@ -3958,9 +4196,17 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         return 0;
     }
     default:
+        if (verbose)
+            pas_log("Invalid ioctl request = %lu.\n", request);
         set_errno(EINVAL);
         return -1;
     }
+
+error:
+    my_errno = errno;
+    filc_enter();
+    set_errno(errno);
+    return -1;
 }
 
 void pizlonated_f_zsys_ioctl(PIZLONATED_SIGNATURE)
@@ -4247,15 +4493,6 @@ void pizlonated_f_zsys_getegid(PIZLONATED_SIGNATURE)
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
     *(unsigned*)filc_ptr_ptr(rets) = getegid();
-}
-
-static bool check_and_clear(int* flags, int expected)
-{
-    if ((*flags & expected) == expected) {
-        *flags &= ~expected;
-        return true;
-    }
-    return false;
 }
 
 static int from_musl_open_flags(int musl_flags)
