@@ -1294,6 +1294,7 @@ void pizlonated_f_zsys_kill(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_raise(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_dup(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_dup2(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_sigprocmask(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

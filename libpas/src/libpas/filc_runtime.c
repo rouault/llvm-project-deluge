@@ -4022,7 +4022,8 @@ static unsigned to_musl_coflag(unsigned oflag)
         result |= 01;
     if (check_and_clear(&oflag, ONLCR))
         result |= 04;
-    PAS_ASSERT(!oflag);
+    /* Maybe I should teach musl about OXTABS or pass it through? meh? */
+    PAS_ASSERT(!(oflag & ~OXTABS));
     return result;
 }
 
@@ -7075,7 +7076,7 @@ void pizlonated_f_zsys_pselect(PIZLONATED_SIGNATURE)
     if (filc_ptr_ptr(timeout_ptr))
         filc_check_access_int(timeout_ptr, sizeof(struct musl_timespec), &origin);
     if (filc_ptr_ptr(sigmask_ptr))
-        filc_check_access_int(timeout_ptr, sizeof(struct musl_sigset), &origin);
+        filc_check_access_int(sigmask_ptr, sizeof(struct musl_sigset), &origin);
     fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
     fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
     fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
@@ -7233,6 +7234,67 @@ void pizlonated_f_zsys_dup2(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(errno);
     *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_sigprocmask(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_sigprocmask",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int musl_how = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr musl_set_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_oldset_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    int how;
+    switch (musl_how) {
+    case 0:
+        how = SIG_BLOCK;
+        break;
+    case 1:
+        how = SIG_UNBLOCK;
+        break;
+    case 2:
+        how = SIG_SETMASK;
+        break;
+    default:
+        set_errno(EINVAL);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    sigset_t* set;
+    sigset_t* oldset;
+    if (filc_ptr_ptr(musl_set_ptr)) {
+        filc_check_access_int(musl_set_ptr, sizeof(struct musl_sigset), &origin);
+        set = alloca(sizeof(sigset_t));
+        from_musl_sigset((struct musl_sigset*)filc_ptr_ptr(musl_set_ptr), set);
+    } else
+        set = NULL;
+    if (filc_ptr_ptr(musl_oldset_ptr)) {
+        filc_check_access_int(musl_oldset_ptr, sizeof(struct musl_sigset), &origin);
+        oldset = alloca(sizeof(sigset_t));
+        pas_zero_memory(oldset, sizeof(sigset_t));
+    } else
+        oldset = NULL;
+    filc_exit();
+    int result = pthread_sigmask(how, set, oldset);
+    int my_errno = errno;
+    filc_enter();
+    PAS_ASSERT(result == -1 || !result);
+    if (result < 0) {
+        set_errno(my_errno);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    if (filc_ptr_ptr(musl_oldset_ptr)) {
+        PAS_ASSERT(oldset);
+        to_musl_sigset(oldset, (struct musl_sigset*)filc_ptr_ptr(musl_oldset_ptr));
+    }
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
