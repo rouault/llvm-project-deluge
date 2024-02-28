@@ -697,6 +697,7 @@ int zsys_getpeereid(int fd, unsigned* uid, unsigned* gid);
 int zsys_kill(int pid, int sig);
 int zsys_raise(int sig);
 int zsys_dup(int fd);
+int zsys_dup2(int oldfd, int newfd);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
