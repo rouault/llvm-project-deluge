@@ -5129,6 +5129,7 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
             arg_flock.l_type = F_UNLCK;
             break;
         default:
+            PIZLONATED_DELETE_ARGS();
             set_errno(EINVAL);
             *(int*)filc_ptr_ptr(rets) = -1;
             return;
@@ -5777,11 +5778,31 @@ static bool from_musl_so_optname(int musl_optname, int* result)
     case 7:
         *result = SO_SNDBUF;
         return true;
+    case 8:
+        *result = SO_RCVBUF;
+        return true;
     case 9:
         *result = SO_KEEPALIVE;
         return true;
+    case 15:
+        *result = SO_REUSEPORT;
+        return true;
     case 20:
         *result = SO_RCVTIMEO;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool from_musl_ip_optname(int musl_optname, int* result)
+{
+    switch (musl_optname) {
+    case 1:
+        *result = IP_TOS;
+        return true;
+    case 4:
+        *result = IP_OPTIONS;
         return true;
     default:
         return false;
@@ -5793,6 +5814,9 @@ static bool from_musl_ipv6_optname(int musl_optname, int* result)
     switch (musl_optname) {
     case 26:
         *result = IPV6_V6ONLY;
+        return true;
+    case 67:
+        *result = IPV6_TCLASS;
         return true;
     default:
         return false;
@@ -5849,6 +5873,8 @@ void pizlonated_f_zsys_setsockopt(PIZLONATED_SIGNATURE)
         case SO_REUSEADDR:
         case SO_KEEPALIVE:
         case SO_SNDBUF:
+        case SO_RCVBUF:
+        case SO_REUSEPORT:
             break;
         case SO_RCVTIMEO: {
             if (optlen < sizeof(struct musl_timeval))
@@ -5860,6 +5886,17 @@ void pizlonated_f_zsys_setsockopt(PIZLONATED_SIGNATURE)
             tv->tv_usec = musl_tv->tv_usec;
             break;
         }
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_IP:
+        if (!from_musl_ip_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case IP_TOS:
+        case IP_OPTIONS:
+            break;
         default:
             goto enoprotoopt;
         }
@@ -5881,6 +5918,7 @@ void pizlonated_f_zsys_setsockopt(PIZLONATED_SIGNATURE)
             goto enoprotoopt;
         switch (optname) {
         case IPV6_V6ONLY:
+        case IPV6_TCLASS:
             break;
         default:
             goto enoprotoopt;
@@ -6440,8 +6478,12 @@ void pizlonated_f_zsys_getsockopt(PIZLONATED_SIGNATURE)
         }
         switch (optname) {
         case SO_SNDBUF:
+        case SO_RCVBUF:
         case SO_ERROR:
         case SO_TYPE:
+        case SO_KEEPALIVE:
+        case SO_REUSEADDR:
+        case SO_REUSEPORT:
             break;
         case SO_RCVTIMEO:
             if (musl_optlen < sizeof(struct musl_timeval))
@@ -6452,6 +6494,40 @@ void pizlonated_f_zsys_getsockopt(PIZLONATED_SIGNATURE)
         default:
             if (verbose)
                 pas_log("default case proto\n");
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_IP:
+        if (!from_musl_ip_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case IP_TOS:
+        case IP_OPTIONS:
+            break;
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_TCP:
+        if (!from_musl_tcp_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case TCP_NODELAY:
+        case TCP_KEEPALIVE:
+        case TCP_KEEPINTVL:
+            break;
+        default:
+            goto enoprotoopt;
+        }
+        break;
+    case IPPROTO_IPV6:
+        if (!from_musl_ipv6_optname(musl_optname, &optname))
+            goto enoprotoopt;
+        switch (optname) {
+        case IPV6_V6ONLY:
+        case IPV6_TCLASS:
+            break;
+        default:
             goto enoprotoopt;
         }
         break;
@@ -6972,6 +7048,39 @@ void pizlonated_f_zsys_pselect(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_getpeereid(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getpeereid",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int fd = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr uid_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr gid_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(uid_ptr, sizeof(unsigned), &origin);
+    filc_check_access_int(gid_ptr, sizeof(unsigned), &origin);
+    filc_exit();
+    uid_t uid;
+    gid_t gid;
+    int result = getpeereid(fd, &uid, &gid);
+    int my_errno = errno;
+    filc_enter();
+    PAS_ASSERT(result == -1 || !result);
+    if (!result) {
+        *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
+        *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
+    } else {
+        set_errno(my_errno);
+        *(int*)filc_ptr_ptr(rets) = -1;
+    }
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

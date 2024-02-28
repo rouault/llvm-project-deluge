@@ -1289,6 +1289,7 @@ void pizlonated_f_zsys_getitimer(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_setitimer(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_pause(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_pselect(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getpeereid(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
