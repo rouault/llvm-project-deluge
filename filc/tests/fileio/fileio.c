@@ -94,6 +94,12 @@ int main(int argc, char** argv)
     
     ZASSERT(read(fds[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));
+
+    int dupfd = dup(fds[0]);
+    ZASSERT(dupfd > 2);
+    ZASSERT(write(fds[1], "world", strlen("world") + 1) == strlen("world") + 1);
+    ZASSERT(read(dupfd, buf, strlen("world") + 1) == strlen("world") + 1);
+    ZASSERT(!strcmp(buf, "world"));
     
     return 0;
 }

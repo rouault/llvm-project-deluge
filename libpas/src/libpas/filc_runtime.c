@@ -7190,6 +7190,28 @@ void pizlonated_f_zsys_raise(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+void pizlonated_f_zsys_dup(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_dup",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int fd = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int result = dup(fd);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
