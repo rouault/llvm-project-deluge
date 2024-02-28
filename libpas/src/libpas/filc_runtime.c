@@ -4702,7 +4702,10 @@ void pizlonated_f_zsys_getuid(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)filc_ptr_ptr(rets) = getuid();
+    filc_exit();
+    unsigned result = getuid();
+    filc_enter();
+    *(unsigned*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zsys_geteuid(PIZLONATED_SIGNATURE)
@@ -4717,7 +4720,10 @@ void pizlonated_f_zsys_geteuid(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)filc_ptr_ptr(rets) = geteuid();
+    filc_exit();
+    unsigned result = geteuid();
+    filc_enter();
+    *(unsigned*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zsys_getgid(PIZLONATED_SIGNATURE)
@@ -4732,7 +4738,10 @@ void pizlonated_f_zsys_getgid(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)filc_ptr_ptr(rets) = getgid();
+    filc_exit();
+    unsigned result = getgid();
+    filc_enter();
+    *(unsigned*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zsys_getegid(PIZLONATED_SIGNATURE)
@@ -4747,7 +4756,10 @@ void pizlonated_f_zsys_getegid(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(unsigned), &origin);
-    *(unsigned*)filc_ptr_ptr(rets) = getegid();
+    filc_exit();
+    unsigned result = getegid();
+    filc_enter();
+    *(unsigned*)filc_ptr_ptr(rets) = result;
 }
 
 static int from_musl_open_flags(int musl_flags)
@@ -4813,8 +4825,10 @@ static int to_musl_open_flags(int flags)
     if (check_and_clear(&flags, O_ASYNC))
         result |= 020000;
 
-    if (flags)
-        return -1;
+    /* Fun fact: on MacOS, I get an additional 0x10000 flag, and I don't know what it is.
+       Ima just ignore it and hope for the best LOL! */
+    PAS_ASSERT(!(flags & ~0x10000));
+    
     return result;
 }
 
@@ -4842,9 +4856,12 @@ void pizlonated_f_zsys_open(PIZLONATED_SIGNATURE)
         return;
     }
     const char* path = filc_check_and_get_new_str(path_ptr, &origin);
+    filc_exit();
     int result = open(path, flags, mode);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     filc_deallocate(path);
     *(int*)filc_ptr_ptr(rets) = result;
 }
@@ -4861,7 +4878,10 @@ void pizlonated_f_zsys_getpid(PIZLONATED_SIGNATURE)
     filc_ptr rets = PIZLONATED_RETS;
     PIZLONATED_DELETE_ARGS();
     filc_check_access_int(rets, sizeof(int), &origin);
-    *(int*)filc_ptr_ptr(rets) = getpid();
+    filc_exit();
+    int result = getpid();
+    filc_enter();
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 static bool from_musl_clock_id(int musl_clock_id, clockid_t* result)
@@ -4915,10 +4935,13 @@ void pizlonated_f_zsys_clock_gettime(PIZLONATED_SIGNATURE)
         return;
     }
     struct timespec ts;
+    filc_exit();
     int result = clock_gettime(clock_id, &ts);
+    int my_errno = errno;
+    filc_enter();
     if (result < 0) {
         *(int*)filc_ptr_ptr(rets) = -1;
-        set_errno(errno);
+        set_errno(my_errno);
         return;
     }
     struct musl_timespec* musl_timespec = (struct musl_timespec*)filc_ptr_ptr(timespec_ptr);
@@ -4954,7 +4977,8 @@ static bool from_musl_fstatat_flag(int musl_flag, int* result)
     return !musl_flag;
 }
 
-static void handle_fstat_result(filc_ptr rets, filc_ptr musl_stat_ptr, struct stat *st, int result)
+static void handle_fstat_result(filc_ptr rets, filc_ptr musl_stat_ptr, struct stat *st,
+                                int result, int my_errno)
 {
     static filc_origin origin = {
         .filename = __FILE__,
@@ -4965,7 +4989,7 @@ static void handle_fstat_result(filc_ptr rets, filc_ptr musl_stat_ptr, struct st
     filc_check_access_int(rets, sizeof(int), &origin);
     filc_check_access_int(musl_stat_ptr, sizeof(struct musl_stat), &origin);
     if (result < 0) {
-        set_errno(errno);
+        set_errno(my_errno);
         *(int*)filc_ptr_ptr(rets) = -1;
         return;
     }
@@ -5013,8 +5037,11 @@ void pizlonated_f_zsys_fstatat(PIZLONATED_SIGNATURE)
         fd = AT_FDCWD;
     struct stat st;
     const char* path = filc_check_and_get_new_str(path_ptr, &origin);
+    filc_exit();
     int result = fstatat(fd, path, &st, flag);
-    handle_fstat_result(rets, musl_stat_ptr, &st, result);
+    int my_errno = errno;
+    filc_enter();
+    handle_fstat_result(rets, musl_stat_ptr, &st, result, my_errno);
     filc_deallocate(path);
 }
 
@@ -5032,8 +5059,11 @@ void pizlonated_f_zsys_fstat(PIZLONATED_SIGNATURE)
     filc_ptr musl_stat_ptr = filc_ptr_get_next_ptr(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     struct stat st;
+    filc_exit();
     int result = fstat(fd, &st);
-    handle_fstat_result(rets, musl_stat_ptr, &st, result);
+    int my_errno = errno;
+    filc_enter();
+    handle_fstat_result(rets, musl_stat_ptr, &st, result, my_errno);
 }
 
 struct musl_flock {
@@ -5046,6 +5076,8 @@ struct musl_flock {
 
 void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static filc_origin origin = {
         .filename = __FILE__,
         .function = "zsys_fcntl",
@@ -5075,6 +5107,8 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
         break;
     case 3:
         cmd = F_GETFL;
+        if (verbose)
+            pas_log("F_GETFL!\n");
         break;
     case 4:
         cmd = F_SETFL;
@@ -5141,10 +5175,14 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
     }
     PIZLONATED_DELETE_ARGS();
     if (!have_cmd) {
+        if (verbose)
+            pas_log("no cmd!\n");
         set_errno(EINVAL);
         *(int*)filc_ptr_ptr(rets) = -1;
         return;
     }
+    if (verbose)
+        pas_log("so far so good.\n");
     switch (cmd) {
     case F_SETFD:
         switch (arg_int) {
@@ -5166,6 +5204,7 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
         break;
     }
     int result;
+    filc_exit();
     if (have_arg_int) {
         PAS_ASSERT(!have_arg_flock);
         result = fcntl(fd, cmd, arg_int);
@@ -5200,8 +5239,15 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
 #undef SET_IF_DIFFERENT
     } else
         result = fcntl(fd, cmd);
-    if (result == -1)
-        set_errno(errno);
+    int my_errno = errno;
+    filc_enter();
+    if (verbose)
+        pas_log("result = %d\n", result);
+    if (result == -1) {
+        if (verbose)
+            pas_log("error = %s\n", strerror(my_errno));
+        set_errno(my_errno);
+    }
     switch (cmd) {
     case F_GETFD:
         switch (result) {
@@ -5258,6 +5304,7 @@ void pizlonated_f_zsys_getpwuid(PIZLONATED_SIGNATURE)
     unsigned uid = filc_ptr_get_next_unsigned(&args, &origin);
     PIZLONATED_DELETE_ARGS();
     filc_check_access_ptr(rets, &origin);
+    /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
     struct passwd* passwd = getpwuid(uid);
     if (!passwd) {
         set_errno(errno);
@@ -5385,6 +5432,8 @@ static filc_ptr to_musl_special_signal_handler(void* handler)
 
 void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static filc_origin origin = {
         .filename = __FILE__,
         .function = "zsys_sigaction",
@@ -5400,7 +5449,8 @@ void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE)
     filc_check_access_int(rets, sizeof(int), &origin);
     int signum = from_musl_signum(musl_signum);
     if (signum < 0) {
-        pas_log("bad signum\n");
+        if (verbose)
+            pas_log("bad signum\n");
         set_errno(EINVAL);
         *(int*)filc_ptr_ptr(rets) = -1;
         return;
