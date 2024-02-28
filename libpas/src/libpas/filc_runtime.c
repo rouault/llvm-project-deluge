@@ -7133,6 +7133,63 @@ void pizlonated_f_zsys_getpeereid(PIZLONATED_SIGNATURE)
     }
 }
 
+void pizlonated_f_zsys_kill(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_kill",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int pid = filc_ptr_get_next_int(&args, &origin);
+    int musl_sig = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    int sig = from_musl_signum(musl_sig);
+    if (sig < 0) {
+        set_errno(EINVAL);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    filc_exit();
+    int result = kill(pid, sig);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_raise(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_raise",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int musl_sig = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    int sig = from_musl_signum(musl_sig);
+    if (sig < 0) {
+        set_errno(EINVAL);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    filc_exit();
+    int result = raise(sig);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
