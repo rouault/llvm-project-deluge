@@ -22,6 +22,7 @@
 #include "pas_try_allocate.h"
 #include "pas_try_allocate_array.h"
 #include "pas_try_allocate_intrinsic.h"
+#include "pas_uint64_hash_map.h"
 #include "pas_utils.h"
 #include <ctype.h>
 #include <termios.h>
@@ -41,6 +42,7 @@
 #include <sys/resource.h>
 #include <sys/utsname.h>
 #include <sys/time.h>
+#include <dirent.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -464,7 +466,7 @@ static void destroy_thread_if_appropriate(zthread* thread)
     }
 }
 
-static void zthread_destruct(void* zthread_arg)
+static void zthread_key_destruct(void* zthread_arg)
 {
     zthread* thread;
 
@@ -523,6 +525,51 @@ static pas_heap_ref musl_addrinfo_heap = {
     .allocator_index = 0
 };
 
+struct musl_dirent {
+    uint64_t d_ino;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[256];
+};
+
+typedef struct {
+    pas_lock lock;
+    DIR* dir;
+    uint64_t* musl_to_loc;
+    size_t musl_to_loc_size;
+    size_t musl_to_loc_capacity;
+    pas_uint64_hash_map loc_to_musl;
+    struct musl_dirent dirent; /* this gets vended to the user as an int capability. */
+} zdirstream;
+
+static void zdirstream_construct(zdirstream* dirstream)
+{
+    pas_lock_construct(&dirstream->lock);
+
+    /* This indicates that we're not actually constructed, so the hashtables are not in any kind
+       of state. */
+    dirstream->dir = NULL;
+}
+
+DEFINE_RUNTIME_CONFIG(zdirstream_runtime_config, zdirstream, zdirstream_construct);
+
+static const filc_type zdirstream_type = {
+    .index = FILC_DIRSTREAM_TYPE_INDEX,
+    .size = sizeof(zdirstream),
+    .alignment = alignof(zdirstream),
+    .num_words = 0,
+    .u = {
+        .runtime_config = &zdirstream_runtime_config
+    },
+    .word_types = { }
+};
+
+static pas_heap_ref zdirstream_heap = {
+    .type = (const pas_heap_type*)&zdirstream_type,
+    .heap = NULL,
+    .allocator_index = 0
+};
+
 /* These are currently leaked. This is fine, because it's super unlikely that someone will call
    sigaction in a loop.
    
@@ -555,6 +602,7 @@ static void initialize_impl(void)
     filc_type_array[FILC_MUSL_SIGACTION_TYPE_INDEX] = &musl_sigaction_type;
     filc_type_array[FILC_THREAD_TYPE_INDEX] = &zthread_type;
     filc_type_array[FILC_MUSL_ADDRINFO_TYPE_INDEX] = &musl_addrinfo_type;
+    filc_type_array[FILC_DIRSTREAM_TYPE_INDEX] = &zdirstream_type;
     
     pthread_key_create(&type_tables_key, type_tables_destroy);
     pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
@@ -564,7 +612,7 @@ static void initialize_impl(void)
     result->thread = pthread_self();
     result->is_running = true;
     PAS_ASSERT(!should_destroy_thread(result));
-    PAS_ASSERT(!pthread_key_create(&zthread_key, zthread_destruct));
+    PAS_ASSERT(!pthread_key_create(&zthread_key, zthread_key_destruct));
     PAS_ASSERT(!pthread_setspecific(zthread_key, result));
 
     is_initialized = true;
@@ -7351,6 +7399,301 @@ void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE)
     filc_enter();
     if (result < 0)
         set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+static void init_dirstream(zdirstream* dirstream, DIR* dir)
+{
+    /* FIXME: Whenever I add a GC, Ima have to be a hell of a lot more careful about safepoints and
+       locking. Probably, it'll mean exiting around lock acquisitions, or at least around the lock
+       acquisition slowpath. But who gives a shit for now! */
+    pas_lock_lock(&dirstream->lock);
+    PAS_ASSERT(!dirstream->dir);
+    dirstream->dir = dir;
+    dirstream->musl_to_loc_capacity = 10;
+    dirstream->musl_to_loc = filc_allocate_utility(sizeof(uint64_t) * dirstream->musl_to_loc_capacity);
+    dirstream->musl_to_loc_size = 0;
+    pas_lock_unlock(&dirstream->lock);
+}
+
+void pizlonated_f_zsys_opendir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_opendir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr name_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    const char* name = filc_check_and_get_new_str(name_ptr, &origin);
+    filc_exit();
+    DIR* dir = opendir(name);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(name);
+    if (!dir) {
+        set_errno(errno);
+        return;
+    }
+    zdirstream* dirstream = filc_allocate_opaque(&zdirstream_heap);
+    init_dirstream(dirstream, dir);
+    *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_byte(dirstream, &zdirstream_type);
+}
+
+void pizlonated_f_zsys_fdopendir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_fdopendir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int fd = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    filc_exit();
+    DIR* dir = fdopendir(fd);
+    int my_errno = errno;
+    filc_enter();
+    if (!dir) {
+        set_errno(errno);
+        return;
+    }
+    zdirstream* dirstream = filc_allocate_opaque(&zdirstream_heap);
+    init_dirstream(dirstream, dir);
+    *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_byte(dirstream, &zdirstream_type);
+}
+
+void pizlonated_f_zsys_closedir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_closedir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+
+    filc_exit();
+    int result = closedir(dirstream->dir);
+    int my_errno = errno;
+    filc_enter();
+
+    dirstream->dir = NULL;
+
+    pas_allocation_config allocation_config;
+    initialize_utility_allocation_config(&allocation_config);
+    filc_deallocate(dirstream->musl_to_loc);
+    pas_uint64_hash_map_destruct(&dirstream->loc_to_musl, &allocation_config);
+    pas_lock_unlock(&dirstream->lock);
+
+    filc_deallocate(dirstream);
+
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+static uint64_t to_musl_dirstream_loc(zdirstream* stream, uint64_t loc)
+{
+    pas_uint64_hash_map_add_result add_result;
+    pas_allocation_config allocation_config;
+
+    PAS_ASSERT(stream->loc_to_musl.table_size == stream->musl_to_loc_size);
+        
+    initialize_utility_allocation_config(&allocation_config);
+
+    add_result = pas_uint64_hash_map_add(&stream->loc_to_musl, loc, NULL, &allocation_config);
+    if (add_result.is_new_entry) {
+        PAS_ASSERT(stream->loc_to_musl.table_size == stream->musl_to_loc_size + 1);
+        add_result.entry->is_valid = true;
+        add_result.entry->key = loc;
+        add_result.entry->value = stream->musl_to_loc_size;
+
+        if (stream->musl_to_loc_size >= stream->musl_to_loc_capacity) {
+            PAS_ASSERT(stream->musl_to_loc_size == stream->musl_to_loc_capacity);
+
+            size_t new_capacity;
+            size_t total_size;
+            uint64_t* new_musl_to_loc;
+
+            PAS_ASSERT(!pas_mul_uintptr_overflow(stream->musl_to_loc_capacity, 2, &new_capacity));
+            PAS_ASSERT(!pas_mul_uintptr_overflow(new_capacity, sizeof(uint64_t), &total_size));
+
+            new_musl_to_loc = filc_allocate_utility(total_size);
+            memcpy(new_musl_to_loc, stream->musl_to_loc, sizeof(uint64_t) * stream->musl_to_loc_size);
+            filc_deallocate(stream->musl_to_loc);
+            stream->musl_to_loc = new_musl_to_loc;
+            stream->musl_to_loc_capacity = new_capacity;
+        }
+        PAS_ASSERT(stream->musl_to_loc_size < stream->musl_to_loc_capacity);
+
+        stream->musl_to_loc[stream->musl_to_loc_size++] = loc;
+    }
+
+    return add_result.entry->value;
+}
+
+void pizlonated_f_zsys_readdir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_readdir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+
+    filc_exit();
+    /* FIXME: Maybe we can break readdir in some disastrous way if we reenter via a signal and call it
+       again? */
+    struct dirent* result = readdir(dirstream->dir);
+    int my_errno = errno;
+    filc_enter();
+
+    if (result) {
+        struct musl_dirent* dirent = &dirstream->dirent;
+        dirent->d_ino = result->d_ino;
+        dirent->d_reclen = result->d_reclen;
+        dirent->d_type = result->d_type; /* Amazingly, these constants line up. */
+        snprintf(dirent->d_name, sizeof(dirent->d_name), "%s", result->d_name);
+        *(filc_ptr*)filc_ptr_ptr(rets) =
+            filc_ptr_forge_with_size(dirent, sizeof(struct musl_dirent), &filc_int_type);
+    }
+    pas_lock_unlock(&dirstream->lock);
+}
+
+void pizlonated_f_zsys_rewinddir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_rewinddir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+    
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+    filc_exit();
+    rewinddir(dirstream->dir);
+    filc_enter();
+    pas_lock_unlock(&dirstream->lock);
+}
+
+void pizlonated_f_zsys_seekdir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_seekdir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    long musl_loc = filc_ptr_get_next_long(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+    
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+    FILC_ASSERT((uint64_t)musl_loc < (uint64_t)dirstream->musl_to_loc_size, &origin);
+    long loc = dirstream->musl_to_loc[musl_loc];
+    
+    filc_exit();
+    seekdir(dirstream->dir, loc);
+    filc_enter();
+    pas_lock_unlock(&dirstream->lock);
+}
+
+void pizlonated_f_zsys_telldir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_telldir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(long), &origin);
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+    
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+    filc_exit();
+    long loc = telldir(dirstream->dir);
+    int my_errno = errno;
+    filc_enter();
+    if (loc < 0) {
+        pas_lock_unlock(&dirstream->lock);
+        set_errno(errno);
+        *(long*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    *(long*)filc_ptr_ptr(rets) = (long)to_musl_dirstream_loc(dirstream, loc);
+    pas_lock_unlock(&dirstream->lock);
+}
+
+void pizlonated_f_zsys_dirfd(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_dirfd",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr dirstream_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_opaque(dirstream_ptr, &zdirstream_type, &origin);
+    zdirstream* dirstream = (zdirstream*)filc_ptr_ptr(dirstream_ptr);
+    
+    pas_lock_lock(&dirstream->lock);
+    FILC_ASSERT(dirstream->dir, &origin);
+    filc_exit();
+    int result = dirfd(dirstream->dir);
+    int my_errno = errno;
+    filc_enter();
+    pas_lock_unlock(&dirstream->lock);
+    if (result < 0)
+        set_errno(errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 

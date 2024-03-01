@@ -258,7 +258,8 @@ extern unsigned filc_type_array_capacity;
 #define FILC_MUSL_SIGACTION_TYPE_INDEX       7u
 #define FILC_THREAD_TYPE_INDEX               8u
 #define FILC_MUSL_ADDRINFO_TYPE_INDEX        9u
-#define FILC_TYPE_ARRAY_INITIAL_SIZE         10u
+#define FILC_DIRSTREAM_TYPE_INDEX            10u
+#define FILC_TYPE_ARRAY_INITIAL_SIZE         11u
 #define FILC_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define FILC_TYPE_MAX_INDEX                  0x3fffffffu
 #define FILC_TYPE_INDEX_MASK                 0x3fffffffu
@@ -1297,6 +1298,14 @@ void pizlonated_f_zsys_dup2(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_sigprocmask(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_opendir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_fdopendir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_closedir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_readdir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_rewinddir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_seekdir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_telldir(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_dirfd(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

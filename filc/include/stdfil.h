@@ -644,7 +644,10 @@ void zscavenger_resume(void);
 
 /* These APIs are memory-safe, so you won't escape the filc by using them. But it's not clear to me to
    what extent I give a shit about maintaining compatible semantics for these calls. They're meant as a
-   replacement for musl's syscall layer, and they're very much tailored to my hacks to musl. */
+   replacement for musl's syscall layer, and they're very much tailored to my hacks to musl.
+
+   Not all of these are syscalls! POSIX systems have many system functions, like opendir and getaddrinfo,
+   that are not system calls but cannot be implemented portably any other way. */
 
 void zrun_deferred_global_ctors(void);
 
@@ -702,6 +705,14 @@ int zsys_sigprocmask(int how, const void* set, void* oldset); /* This is pthread
                                                                  errno and returns -1 on error. */
 void* zsys_getpwnam(const char* name);
 int zsys_setgroups(__SIZE_TYPE__ size, const unsigned* list);
+void* zsys_opendir(const char* name);
+void* zsys_fdopendir(int fd);
+int zsys_closedir(void* dirp);
+void* zsys_readdir(void* dirp);
+void zsys_rewinddir(void* dirp);
+void zsys_seekdir(void* dirp, long loc);
+long zsys_telldir(void* dirp);
+int zsys_dirfd(void* dirp);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

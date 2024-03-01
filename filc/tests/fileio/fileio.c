@@ -5,6 +5,8 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/select.h>
+#include <dirent.h>
+#include <stdbool.h>
 
 int main(int argc, char** argv)
 {
@@ -106,6 +108,34 @@ int main(int argc, char** argv)
     ZASSERT(write(fds[1], "witam", strlen("witam") + 1) == strlen("witam") + 1);
     ZASSERT(read(dupfd, buf, strlen("witam") + 1) == strlen("witam") + 1);
     ZASSERT(!strcmp(buf, "witam"));
+
+    DIR* dir = opendir("filc/tests/fileio");
+    ZASSERT(dir);
+    bool saw_fileio_c = false;
+    bool saw_fileio = false;
+    bool saw_manifest = false;
+    bool saw_test_txt = false;
+    for (;;) {
+        errno = 0;
+        struct dirent* de = readdir(dir);
+        if (!de) {
+            ZASSERT(!errno);
+            break;
+        }
+        if (!strcmp(de->d_name, "fileio.c"))
+            saw_fileio_c = true;
+        if (!strcmp(de->d_name, "fileio"))
+            saw_fileio = true;
+        if (!strcmp(de->d_name, "manifest"))
+            saw_manifest = true;
+        if (!strcmp(de->d_name, "test.txt"))
+            saw_test_txt = true;
+    }
+    ZASSERT(!closedir(dir));
+    ZASSERT(saw_fileio_c);
+    ZASSERT(saw_fileio);
+    ZASSERT(saw_manifest);
+    ZASSERT(saw_test_txt);
     
     return 0;
 }
