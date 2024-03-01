@@ -7297,6 +7297,32 @@ void pizlonated_f_zsys_sigprocmask(PIZLONATED_SIGNATURE)
     }
 }
 
+void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getpwnam",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr name_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    const char* name = filc_check_and_get_new_str(name_ptr, &origin);
+    /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
+    struct passwd* passwd = getpwnam(name);
+    filc_deallocate(name);
+    if (!passwd) {
+        set_errno(errno);
+        return;
+    }
+    struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
+    *(filc_ptr*)filc_ptr_ptr(rets) =
+        filc_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {

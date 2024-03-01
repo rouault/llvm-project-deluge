@@ -700,6 +700,7 @@ int zsys_dup(int fd);
 int zsys_dup2(int oldfd, int newfd);
 int zsys_sigprocmask(int how, const void* set, void* oldset); /* This is pthread_sigmask, but sets
                                                                  errno and returns -1 on error. */
+void* zsys_getpwnam(const char* name);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

@@ -110,6 +110,17 @@ int main(int argc, char** argv)
     ZASSERT(!strcmp(passwd->pw_dir, dir));
     ZASSERT(!strcmp(passwd->pw_shell, shell));
 
+    passwd = getpwnam(name);
+    ZASSERT(passwd);
+    ZASSERT(passwd == passwd2);
+    ZASSERT(!strcmp(passwd->pw_name, name));
+    ZASSERT(!strcmp(passwd->pw_passwd, passwdd));
+    ZASSERT(passwd->pw_uid == getuid());
+    ZASSERT(passwd->pw_gid == getgid());
+    ZASSERT(!strcmp(passwd->pw_gecos, gecos));
+    ZASSERT(!strcmp(passwd->pw_dir, dir));
+    ZASSERT(!strcmp(passwd->pw_shell, shell));
+
     ZASSERT(signal(SIGPIPE, SIG_IGN) == SIG_DFL);
 
     struct sigaction act;
