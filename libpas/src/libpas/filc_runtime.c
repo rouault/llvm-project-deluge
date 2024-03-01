@@ -2637,7 +2637,7 @@ pas_uint128 filc_update_capability(pas_uint128 sidecar, pas_uint128 capability, 
 }
 
 void filc_check_access_int_impl(pas_uint128 sidecar, pas_uint128 capability, uintptr_t bytes,
-                                  const filc_origin* origin)
+                                const filc_origin* origin)
 {
     filc_ptr ptr;
     /* NOTE: the compiler will never generate a zero-byte check, but the runtime may do it. There
@@ -7321,6 +7321,37 @@ void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE)
     struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
     *(filc_ptr*)filc_ptr_ptr(rets) =
         filc_ptr_forge(musl_passwd, musl_passwd, musl_passwd + 1, &musl_passwd_type);
+}
+
+void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_setgroups",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    size_t size = filc_ptr_get_next_size_t(&args, &origin);
+    filc_ptr list_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(unsigned), size, &total_size),
+        &origin,
+        "size argument too big, causes overflow; size = %zu.",
+        size);
+    filc_check_access_int(list_ptr, total_size, &origin);
+    filc_exit();
+    PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
+    int result = setgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
