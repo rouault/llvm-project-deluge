@@ -6827,8 +6827,10 @@ void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE)
     }
     unsigned addrlen = MAX_SOCKADDRLEN;
     struct sockaddr* addr = NULL;
-    if (filc_ptr_ptr(musl_addr_ptr))
+    if (filc_ptr_ptr(musl_addr_ptr)) {
         addr = (struct sockaddr*)alloca(addrlen);
+        pas_zero_memory(addr, addrlen);
+    }
     filc_exit();
     ssize_t result = recvfrom(
         sockfd, filc_ptr_ptr(buf_ptr), len, flags,
@@ -6837,8 +6839,7 @@ void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE)
     filc_enter();
     if (result < 0)
         set_errno(my_errno);
-
-    if (filc_ptr_ptr(musl_addrlen_ptr)) {
+    else if (filc_ptr_ptr(musl_addrlen_ptr)) {
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
         /* pass our own copy of musl_addrlen to avoid TOCTOU. */
         PAS_ASSERT(to_musl_sockaddr(addr, addrlen, musl_addr, &musl_addrlen));
@@ -7884,6 +7885,49 @@ void pizlonated_f_zsys_listen(PIZLONATED_SIGNATURE)
     filc_enter();
     if (result < 0)
         set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_accept(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_accept",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int sockfd = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr musl_addr_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_addrlen_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    unsigned musl_addrlen;
+    if (filc_ptr_ptr(musl_addrlen_ptr)) {
+        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), &origin);
+        musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
+        filc_check_access_int(musl_addr_ptr, musl_addrlen, &origin);
+    } else
+        musl_addrlen = 0;
+    unsigned addrlen = MAX_SOCKADDRLEN;
+    struct sockaddr* addr = NULL;
+    if (filc_ptr_ptr(musl_addr_ptr)) {
+        addr = (struct sockaddr*)alloca(addrlen);
+        pas_zero_memory(addr, addrlen);
+    }
+    filc_exit();
+    int result = accept(sockfd, addr, filc_ptr_ptr(musl_addrlen_ptr) ? &addrlen : NULL);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    else {
+        struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
+        /* pass our own copy of musl_addrlen to avoid TOCTOU. */
+        PAS_ASSERT(to_musl_sockaddr(addr, addrlen, musl_addr, &musl_addrlen));
+        *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr) = musl_addrlen;
+    }
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
