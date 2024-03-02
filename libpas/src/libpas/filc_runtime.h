@@ -882,10 +882,10 @@ void* filc_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t 
 
 void* filc_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
 void* filc_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
-                                              size_t alignment);
+                                            size_t alignment);
 void* filc_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
 void* filc_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
-                                          size_t count, size_t alignment);
+                                        size_t count, size_t alignment);
 
 /* This can allocate any type (ints or not), but it's considerably slower than the other allocation
    entrypoints. The compiler avoids this in most cases. */
@@ -1318,6 +1318,7 @@ void pizlonated_f_zsys_socketpair(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_setsid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_execve(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getppid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_chroot(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
