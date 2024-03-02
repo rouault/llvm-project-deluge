@@ -1309,6 +1309,7 @@ void pizlonated_f_zsys_closelog(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_openlog(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_setlogmask(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_syslog(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_chdir(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

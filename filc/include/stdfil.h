@@ -718,6 +718,7 @@ void zsys_openlog(const char* ident, int option, int facility);
 int zsys_setlogmask(int mask);
 void zsys_syslog(int priority, const char* msg); /* formatting is up to libc and thankfully musl's printf
                                                     always just supports %m! */
+int zsys_chdir(const char* path);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

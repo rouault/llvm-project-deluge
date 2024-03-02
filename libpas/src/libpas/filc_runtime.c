@@ -4510,7 +4510,7 @@ error:
     if (verbose)
         pas_log("failed ioctl: %s\n", strerror(my_errno));
     filc_enter();
-    set_errno(errno);
+    set_errno(my_errno);
     return -1;
 }
 
@@ -7208,7 +7208,7 @@ void pizlonated_f_zsys_kill(PIZLONATED_SIGNATURE)
     int my_errno = errno;
     filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -7236,7 +7236,7 @@ void pizlonated_f_zsys_raise(PIZLONATED_SIGNATURE)
     int my_errno = errno;
     filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -7258,7 +7258,7 @@ void pizlonated_f_zsys_dup(PIZLONATED_SIGNATURE)
     int my_errno = errno;
     filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -7281,7 +7281,7 @@ void pizlonated_f_zsys_dup2(PIZLONATED_SIGNATURE)
     int my_errno = errno;
     filc_enter();
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -7362,9 +7362,10 @@ void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE)
     const char* name = filc_check_and_get_new_str(name_ptr, &origin);
     /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
     struct passwd* passwd = getpwnam(name);
+    int my_errno = errno;
     filc_deallocate(name);
     if (!passwd) {
-        set_errno(errno);
+        set_errno(my_errno);
         return;
     }
     struct musl_passwd* musl_passwd = to_musl_passwd_threadlocal(passwd);
@@ -7437,7 +7438,7 @@ void pizlonated_f_zsys_opendir(PIZLONATED_SIGNATURE)
     filc_enter();
     filc_deallocate(name);
     if (!dir) {
-        set_errno(errno);
+        set_errno(my_errno);
         return;
     }
     zdirstream* dirstream = filc_allocate_opaque(&zdirstream_heap);
@@ -7463,7 +7464,7 @@ void pizlonated_f_zsys_fdopendir(PIZLONATED_SIGNATURE)
     int my_errno = errno;
     filc_enter();
     if (!dir) {
-        set_errno(errno);
+        set_errno(my_errno);
         return;
     }
     zdirstream* dirstream = filc_allocate_opaque(&zdirstream_heap);
@@ -7662,7 +7663,7 @@ void pizlonated_f_zsys_telldir(PIZLONATED_SIGNATURE)
     filc_enter();
     if (loc < 0) {
         pas_lock_unlock(&dirstream->lock);
-        set_errno(errno);
+        set_errno(my_errno);
         *(long*)filc_ptr_ptr(rets) = -1;
         return;
     }
@@ -7694,7 +7695,7 @@ void pizlonated_f_zsys_dirfd(PIZLONATED_SIGNATURE)
     filc_enter();
     pas_lock_unlock(&dirstream->lock);
     if (result < 0)
-        set_errno(errno);
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
@@ -7765,6 +7766,30 @@ void pizlonated_f_zsys_syslog(PIZLONATED_SIGNATURE)
     syslog(priority, "%s", msg);
     filc_enter();
     filc_deallocate(msg);
+}
+
+void pizlonated_f_zsys_chdir(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_chdir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr path_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* path = filc_check_and_get_new_str(path_ptr, &origin);
+    filc_exit();
+    int result = chdir(path);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(path);
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
