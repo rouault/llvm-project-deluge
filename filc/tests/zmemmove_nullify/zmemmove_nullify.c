@@ -13,13 +13,9 @@ struct bar {
     char* b;
 };
 
-int main()
+static void foo_bar(struct foo* f, struct bar* b,
+                    struct foo* f2, struct bar* b2)
 {
-    struct foo* f = zalloc(struct foo, 10);
-    struct bar* b = zalloc(struct bar, 13);
-    struct foo* f2 = zalloc(struct foo, 10);
-    struct bar* b2 = zalloc(struct bar, 13);
-
     size_t index;
     size_t index2;
     
@@ -149,6 +145,24 @@ int main()
             break;
         }
     }
+}
+
+int main()
+{
+    struct foo* f = zalloc(struct foo, 10);
+    struct bar* b = zalloc(struct bar, 13);
+    struct foo* f2 = zalloc(struct foo, 10);
+    struct bar* b2 = zalloc(struct bar, 13);
+
+    foo_bar(f, b, f2, b2);
+
+    zprintf("doing it again\n");
+    memset(f, 0, sizeof(struct foo) * 10);
+    memset(b, 0, sizeof(struct bar) * 13);
+    memset(f2, 0, sizeof(struct foo) * 10);
+    memset(b2, 0, sizeof(struct bar) * 13);
+    
+    foo_bar(f2, b2, f, b);
 
     char* buf = zalloc(char, 100);
     const char* str = "tam to tak tego tam";

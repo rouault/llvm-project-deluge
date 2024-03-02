@@ -49,7 +49,7 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
             *(void**)(dst + index) = (void*)0;
             __SIZE_TYPE__ index_in_ptr;
             for (index_in_ptr = sizeof(void*); index_in_ptr--;)
-                ZASSERT(index + index_in_ptr >= count || zisint(src + index + index_in_ptr));
+                ZASSERT(index + index_in_ptr >= count || zisintorptr(src + index + index_in_ptr));
             index += sizeof(void*) - 1;
         }
     } else {
