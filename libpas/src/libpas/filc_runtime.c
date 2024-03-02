@@ -8224,6 +8224,41 @@ void pizlonated_f_zsys_setregid(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+void pizlonated_f_zsys_nanosleep(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_nanosleep",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr musl_req_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_rem_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(musl_req_ptr, sizeof(struct musl_timespec), &origin);
+    if (filc_ptr_ptr(musl_rem_ptr))
+        filc_check_access_int(musl_rem_ptr, sizeof(struct musl_timespec), &origin);
+    struct timespec req;
+    struct timespec rem;
+    req.tv_sec = ((struct musl_timespec*)filc_ptr_ptr(musl_req_ptr))->tv_sec;
+    req.tv_nsec = ((struct musl_timespec*)filc_ptr_ptr(musl_req_ptr))->tv_nsec;
+    filc_exit();
+    int result = nanosleep(&req, &rem);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0) {
+        set_errno(my_errno);
+        if (my_errno == EINTR && filc_ptr_ptr(musl_rem_ptr)) {
+            ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_sec = rem.tv_sec;
+            ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_nsec = rem.tv_nsec;
+        }
+    }
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {

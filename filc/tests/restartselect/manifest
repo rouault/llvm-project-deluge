@@ -1,0 +1,4 @@
+return:
+  success
+output-includes:
+  "Returned r = -1, error = Interrupted system call"

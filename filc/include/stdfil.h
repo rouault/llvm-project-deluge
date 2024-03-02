@@ -735,6 +735,7 @@ int zsys_setreuid(unsigned ruid, unsigned euid);
 int zsys_setgid(unsigned gid);
 int zsys_setegid(unsigned gid);
 int zsys_setregid(unsigned rgid, unsigned egid);
+int zsys_nanosleep(const void* req, void* rem);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
