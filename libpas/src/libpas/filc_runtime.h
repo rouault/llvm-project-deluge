@@ -1315,6 +1315,7 @@ void pizlonated_f_zsys_waitpid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_listen(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_accept(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_socketpair(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setsid(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
