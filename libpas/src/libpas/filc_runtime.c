@@ -7990,6 +7990,82 @@ void pizlonated_f_zsys_setsid(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+static size_t length_of_null_terminated_ptr_array(filc_ptr array_ptr, const filc_origin* origin)
+{
+    size_t result = 0;
+    for (;; result++) {
+        filc_check_access_ptr(array_ptr, origin);
+        if (!filc_ptr_ptr(filc_ptr_load((filc_ptr*)filc_ptr_ptr(array_ptr))))
+            return result;
+        array_ptr = filc_ptr_with_offset(array_ptr, sizeof(filc_ptr));
+    }
+}
+
+void pizlonated_f_zsys_execve(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_execve",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr pathname_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr argv_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr envp_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* pathname = filc_check_and_get_new_str(pathname_ptr, &origin);
+    size_t argv_len = length_of_null_terminated_ptr_array(argv_ptr, &origin);
+    size_t envp_len = length_of_null_terminated_ptr_array(envp_ptr, &origin);
+    char** argv = (char**)filc_allocate_utility((argv_len + 1) * sizeof(char*));
+    char** envp = (char**)filc_allocate_utility((envp_len + 1) * sizeof(char*));
+    argv[argv_len] = NULL;
+    envp[envp_len] = NULL;
+    size_t index;
+    for (index = argv_len; index--;) {
+        argv[index] = (char*)filc_check_and_get_new_str(
+            filc_ptr_load((filc_ptr*)filc_ptr_ptr(argv_ptr) + index), &origin);
+    }
+    for (index = envp_len; index--;) {
+        envp[index] = (char*)filc_check_and_get_new_str(
+            filc_ptr_load((filc_ptr*)filc_ptr_ptr(envp_ptr) + index), &origin);
+    }
+    filc_exit();
+    int result = execve(pathname, argv, envp);
+    int my_errno = errno;
+    filc_enter();
+    PAS_ASSERT(result == -1);
+    set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = -1;
+    for (index = argv_len; index--;)
+        filc_deallocate(argv[index]);
+    for (index = envp_len; index--;)
+        filc_deallocate(envp[index]);
+    filc_deallocate(argv);
+    filc_deallocate(envp);
+    filc_deallocate(pathname);
+}
+
+void pizlonated_f_zsys_getppid(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getppid",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int result = getppid();
+    filc_enter();
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {

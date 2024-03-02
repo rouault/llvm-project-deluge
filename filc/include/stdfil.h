@@ -726,6 +726,8 @@ int zsys_listen(int sockfd, int backlog);
 int zsys_accept(int sockfd, void* addr, unsigned* addrlen);
 int zsys_socketpair(int domain, int type, int protocol, int* sv);
 int zsys_setsid(void);
+int zsys_execve(const char* pathname, char*const* argv, char*const* envp);
+int zsys_getppid(void);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

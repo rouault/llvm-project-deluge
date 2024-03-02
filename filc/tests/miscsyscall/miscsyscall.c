@@ -167,6 +167,9 @@ int main(int argc, char** argv)
     ZASSERT(!timerval.it_value.tv_sec);
     ZASSERT(!timerval.it_value.tv_usec);
 
+    ZASSERT(getppid());
+    ZASSERT(getppid() != getpid());
+
     zprintf("No worries.\n");
     return 0;
 }
