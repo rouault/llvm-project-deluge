@@ -1,0 +1,5 @@
+return:
+  success
+output-includes:
+  - "Pozdrowienia od rodzicow"
+  - "Pozdrowienia od dzieci"

@@ -44,6 +44,7 @@
 #include <sys/time.h>
 #include <dirent.h>
 #include <syslog.h>
+#include <sys/wait.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -7792,6 +7793,77 @@ void pizlonated_f_zsys_chdir(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+static bool have_threads = false;
+
+void pizlonated_f_zsys_fork(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_fork",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr rets = PIZLONATED_RETS;
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    FILC_ASSERT(!have_threads, &origin);
+    pas_scavenger_suspend();
+    filc_exit();
+    int result = fork();
+    int my_errno = errno;
+    filc_enter();
+    pas_scavenger_resume();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+static int to_musl_wait_status(int status)
+{
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status) << 8;
+    if (WIFSIGNALED(status))
+        return to_musl_signum(WTERMSIG(status)) | (WCOREDUMP(status) ? 0x80 : 0);
+    if (WIFSTOPPED(status))
+        return 0x7f | (to_musl_signum(WSTOPSIG(status)) << 8);
+    if (WIFCONTINUED(status))
+        return 0xffff;
+    PAS_ASSERT(!"Should not be reached");
+    return 0;
+}
+
+void pizlonated_f_zsys_waitpid(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_chdir",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int pid = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr status_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    int options = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int status;
+    int result = waitpid(pid, &status, options);
+    int my_errno = errno;
+    filc_enter();
+    *(int*)filc_ptr_ptr(rets) = result;
+    if (result < 0) {
+        PAS_ASSERT(result == -1);
+        set_errno(my_errno);
+        return;
+    }
+    if (filc_ptr_ptr(status_ptr)) {
+        filc_check_access_int(status_ptr, sizeof(int), &origin);
+        *(int*)filc_ptr_ptr(status_ptr) = to_musl_wait_status(status);
+    }
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
@@ -7907,6 +7979,7 @@ void pizlonated_f_zthread_create(PIZLONATED_SIGNATURE)
     filc_ptr callback_ptr = filc_ptr_get_next_ptr(&args, &origin);
     filc_ptr arg_ptr = filc_ptr_get_next_ptr(&args, &origin);
     PIZLONATED_DELETE_ARGS();
+    have_threads = true;
     filc_check_access_ptr(rets, &origin);
     filc_check_function_call(callback_ptr, &origin);
     zthread* thread = (zthread*)filc_allocate_opaque(&zthread_heap);

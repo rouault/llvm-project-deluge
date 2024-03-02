@@ -719,6 +719,9 @@ int zsys_setlogmask(int mask);
 void zsys_syslog(int priority, const char* msg); /* formatting is up to libc and thankfully musl's printf
                                                     always just supports %m! */
 int zsys_chdir(const char* path);
+int zsys_fork(void); /* This currently panics if threads had ever been created. But that's only because
+                        I haven't yet had to deal with a multithreaded forker. */
+int zsys_waitpid(int pid, int* status, int options);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
