@@ -722,6 +722,7 @@ int zsys_chdir(const char* path);
 int zsys_fork(void); /* This currently panics if threads had ever been created. But that's only because
                         I haven't yet had to deal with a multithreaded forker. */
 int zsys_waitpid(int pid, int* status, int options);
+int zsys_listen(int sockfd, int backlog);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

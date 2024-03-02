@@ -7836,7 +7836,7 @@ void pizlonated_f_zsys_waitpid(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
         .filename = __FILE__,
-        .function = "zsys_chdir",
+        .function = "zsys_waitpid",
         .line = 0,
         .column = 0
     };
@@ -7862,6 +7862,29 @@ void pizlonated_f_zsys_waitpid(PIZLONATED_SIGNATURE)
         filc_check_access_int(status_ptr, sizeof(int), &origin);
         *(int*)filc_ptr_ptr(status_ptr) = to_musl_wait_status(status);
     }
+}
+
+void pizlonated_f_zsys_listen(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_listen",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int sockfd = filc_ptr_get_next_int(&args, &origin);
+    int backlog = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int result = listen(sockfd, backlog);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
