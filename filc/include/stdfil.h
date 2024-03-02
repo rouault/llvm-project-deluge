@@ -729,6 +729,12 @@ int zsys_setsid(void);
 int zsys_execve(const char* pathname, char*const* argv, char*const* envp);
 int zsys_getppid(void);
 int zsys_chroot(const char* path);
+int zsys_setuid(unsigned uid);
+int zsys_seteuid(unsigned uid);
+int zsys_setreuid(unsigned ruid, unsigned euid);
+int zsys_setgid(unsigned gid);
+int zsys_setegid(unsigned gid);
+int zsys_setregid(unsigned rgid, unsigned egid);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

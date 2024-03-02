@@ -1319,6 +1319,12 @@ void pizlonated_f_zsys_setsid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_execve(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getppid(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_chroot(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setuid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_seteuid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setreuid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setgid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setegid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setregid(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
