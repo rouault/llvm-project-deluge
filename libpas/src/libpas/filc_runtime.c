@@ -7931,6 +7931,45 @@ void pizlonated_f_zsys_accept(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+void pizlonated_f_zsys_socketpair(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_socketpair",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int musl_domain = filc_ptr_get_next_int(&args, &origin);
+    int musl_type = filc_ptr_get_next_int(&args, &origin);
+    int protocol = filc_ptr_get_next_int(&args, &origin); /* these constants seem to align between
+                                                               Darwin and musl. */
+    filc_ptr sv_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(sv_ptr, sizeof(int) * 2, &origin);
+    int domain;
+    if (!from_musl_domain(musl_domain, &domain)) {
+        set_errno(EINVAL);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    int type;
+    if (!from_musl_socket_type(musl_type, &type)) {
+        set_errno(EINVAL);
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    filc_exit();
+    int result = socketpair(domain, type, protocol, (int*)filc_ptr_ptr(sv_ptr));
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {

@@ -7,6 +7,7 @@
 #include <sys/select.h>
 #include <dirent.h>
 #include <stdbool.h>
+#include <sys/socket.h>
 
 int main(int argc, char** argv)
 {
@@ -137,6 +138,12 @@ int main(int argc, char** argv)
     ZASSERT(saw_manifest);
     ZASSERT(saw_test_txt);
     
+    int socks[2];
+    ZASSERT(!socketpair(AF_UNIX, SOCK_STREAM, 0, socks));
+    ZASSERT(write(socks[1], "hello", strlen("hello") + 1) == strlen("hello") + 1);
+    ZASSERT(read(socks[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
+    ZASSERT(!strcmp(buf, "hello"));
+
     return 0;
 }
 
