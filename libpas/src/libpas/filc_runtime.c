@@ -43,6 +43,7 @@
 #include <sys/utsname.h>
 #include <sys/time.h>
 #include <dirent.h>
+#include <syslog.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -7695,6 +7696,75 @@ void pizlonated_f_zsys_dirfd(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(errno);
     *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_closelog(PIZLONATED_SIGNATURE)
+{
+    PIZLONATED_DELETE_ARGS();
+    filc_exit();
+    closelog();
+    filc_enter();
+}
+
+void pizlonated_f_zsys_openlog(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_openlog",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr ident_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    int option = filc_ptr_get_next_int(&args, &origin);
+    int facility = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    const char* ident = filc_check_and_get_new_str(ident_ptr, &origin);
+    filc_exit();
+    /* Amazingly, the option/facility constants all match up! */
+    openlog(ident, option, facility);
+    filc_enter();
+    filc_deallocate(ident);
+}
+
+void pizlonated_f_zsys_setlogmask(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_setlogmask",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int mask = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_exit();
+    int result = setlogmask(mask);
+    filc_enter();
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_syslog(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_syslog",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int priority = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr msg_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    const char* msg = filc_check_and_get_new_str(msg_ptr, &origin);
+    filc_exit();
+    syslog(priority, "%s", msg);
+    filc_enter();
+    filc_deallocate(msg);
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

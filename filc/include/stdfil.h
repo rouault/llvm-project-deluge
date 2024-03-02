@@ -713,6 +713,11 @@ void zsys_rewinddir(void* dirp);
 void zsys_seekdir(void* dirp, long loc);
 long zsys_telldir(void* dirp);
 int zsys_dirfd(void* dirp);
+void zsys_closelog(void);
+void zsys_openlog(const char* ident, int option, int facility);
+int zsys_setlogmask(int mask);
+void zsys_syslog(int priority, const char* msg); /* formatting is up to libc and thankfully musl's printf
+                                                    always just supports %m! */
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

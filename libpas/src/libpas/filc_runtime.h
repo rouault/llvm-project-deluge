@@ -1305,7 +1305,10 @@ void pizlonated_f_zsys_readdir(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_rewinddir(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_seekdir(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_telldir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_dirfd(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_closelog(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_openlog(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setlogmask(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_syslog(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
