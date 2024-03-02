@@ -2891,7 +2891,7 @@ void filc_low_level_ptr_safe_memmove(void* dst, void* src, size_t bytes)
 }
 
 void filc_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
-                        unsigned value, size_t count, const filc_origin* origin)
+                      unsigned value, size_t count, const filc_origin* origin)
 {
     static const bool verbose = false;
     filc_ptr ptr;
@@ -7449,6 +7449,8 @@ void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE)
 
 void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE)
 {
+    static const bool verbose = false;
+    
     static filc_origin origin = {
         .filename = __FILE__,
         .function = "zsys_setgroups",
@@ -7470,9 +7472,15 @@ void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE)
     filc_check_access_int(list_ptr, total_size, &origin);
     filc_exit();
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
+    if (verbose) {
+        pas_log("size = %zu\n", size);
+        pas_log("NGROUPS_MAX = %zu\n", (size_t)NGROUPS_MAX);
+    }
     int result = setgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
     int my_errno = errno;
     filc_enter();
+    if (verbose)
+        pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
         set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
@@ -8328,6 +8336,107 @@ void pizlonated_f_zsys_nanosleep(PIZLONATED_SIGNATURE)
             ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_nsec = rem.tv_nsec;
         }
     }
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_getgroups(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getgroups",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int size = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr list_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(unsigned), size, &total_size),
+        &origin,
+        "size argument too big, causes overflow; size = %d.",
+        size);
+    filc_check_access_int(list_ptr, total_size, &origin);
+    filc_exit();
+    PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
+    int result = getgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_getgrouplist(PIZLONATED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getgrouplist",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr user_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    unsigned group = filc_ptr_get_next_unsigned(&args, &origin);
+    filc_ptr groups_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr ngroups_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* user = filc_check_and_get_new_str(user_ptr, &origin);
+    filc_check_access_int(ngroups_ptr, sizeof(int), &origin);
+    int ngroups = *(int*)filc_ptr_ptr(ngroups_ptr);
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(unsigned), ngroups, &total_size),
+        &origin,
+        "ngroups argument too big, causes overflow; ngroups = %d.",
+        ngroups);
+    filc_check_access_int(groups_ptr, total_size, &origin);
+    filc_exit();
+    pas_log("ngroups = %d\n", ngroups);
+    int result = getgrouplist(user, group, (int*)filc_ptr_ptr(groups_ptr), &ngroups);
+    pas_log("ngroups after = %d\n", ngroups);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(user);
+    if (verbose)
+        pas_log("result = %d, error = %s\n", result, strerror(my_errno));
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(ngroups_ptr) = ngroups;
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_initgroups(PIZLONATED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_initgroups",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr user_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    unsigned gid = filc_ptr_get_next_unsigned(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* user = filc_check_and_get_new_str(user_ptr, &origin);
+    filc_exit();
+    int result = initgroups(user, gid);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(user);
+    if (result < 0)
+        set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
 }
 

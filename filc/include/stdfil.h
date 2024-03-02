@@ -782,6 +782,9 @@ int zsys_setgid(unsigned gid);
 int zsys_setegid(unsigned gid);
 int zsys_setregid(unsigned rgid, unsigned egid);
 int zsys_nanosleep(const void* req, void* rem);
+int zsys_getgroups(int size, unsigned* list);
+int zsys_getgrouplist(const char* user, unsigned group, unsigned* groups, int* ngroups);
+int zsys_initgroups(const char* user, unsigned gid);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
