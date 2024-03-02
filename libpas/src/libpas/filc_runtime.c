@@ -2280,6 +2280,105 @@ void pizlonated_f_zgettype(PIZLONATED_SIGNATURE)
         filc_ptr_forge_byte((void*)filc_ptr_type(ptr), &filc_type_type);
 }
 
+static void check_access_common_maybe_opaque(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
+{
+    if (PAS_ENABLE_TESTING)
+        filc_validate_ptr(ptr, origin);
+
+    /* This check is not strictly necessary, but I like the error message. */
+    FILC_CHECK(
+        filc_ptr_lower(ptr),
+        origin,
+        "cannot access pointer with null lower (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+    
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
+        origin,
+        "cannot access pointer with ptr < lower (ptr = %s).", 
+        filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
+        origin,
+        "cannot access pointer with ptr >= upper (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        bytes <= (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
+        origin,
+        "cannot access %zu bytes when upper - ptr = %zu (ptr = %s).",
+        bytes, (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
+        filc_ptr_to_new_string(ptr));
+        
+    FILC_CHECK(
+        filc_ptr_type(ptr),
+        origin,
+        "cannot access ptr with invalid type (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+}
+
+void pizlonated_f_zisint(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zisint",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(bool), &origin);
+    check_access_common_maybe_opaque(ptr, 1, &origin);
+    const filc_type* type = filc_ptr_type(ptr);
+    if (!type->num_words) {
+        *(bool*)filc_ptr_ptr(rets) = false;
+        return;
+    }
+    uintptr_t offset = filc_ptr_offset(ptr);
+    uintptr_t word_type_index = offset / FILC_WORD_SIZE;
+    *(bool*)filc_ptr_ptr(rets) = filc_type_get_word_type(type, word_type_index) == FILC_WORD_TYPE_INT;
+}
+
+void pizlonated_f_zptrphase(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zptrphase",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    check_access_common_maybe_opaque(ptr, 1, &origin);
+    const filc_type* type = filc_ptr_type(ptr);
+    if (!type->num_words) {
+        *(int*)filc_ptr_ptr(rets) = -1;
+        return;
+    }
+    uintptr_t offset = filc_ptr_offset(ptr);
+    uintptr_t word_type_index = offset / FILC_WORD_SIZE;
+    uintptr_t offset_in_word = offset % FILC_WORD_SIZE;
+    int result;
+    switch (filc_type_get_word_type(type, word_type_index)) {
+    case FILC_WORD_TYPE_PTR_SIDECAR:
+        result = offset_in_word;
+        break;
+    case FILC_WORD_TYPE_PTR_CAPABILITY:
+        result = offset_in_word + FILC_WORD_SIZE;
+        break;
+    default:
+        result = -1;
+        break;
+    }
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zslicetype(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
@@ -2412,7 +2511,7 @@ filc_ptr filc_ptr_forge(void* ptr, void* lower, void* upper, const filc_type* ty
         result.sidecar = 0;
     } else {
         unsigned capability_type_index;
-        unsigned type_index;
+        unsigned sidecar_type_index;
         void* sidecar_lower_or_upper;
         void* sidecar_ptr_or_upper;
         void* capability_upper;
@@ -2423,26 +2522,34 @@ filc_ptr filc_ptr_forge(void* ptr, void* lower, void* upper, const filc_type* ty
         if (verbose)
             pas_log("type = %p, index = %u\n", type, type->index);
         PAS_TESTING_ASSERT(filc_type_lookup(type->index) == type);
-        type_index = type->index;
+        sidecar_type_index = type->index;
         if (ptr >= lower && ptr <= upper) {
-            if (ptr == lower)
-                capability_kind = filc_capability_at_lower;
-            else
-                capability_kind = filc_capability_in_array;
             sidecar_kind = filc_sidecar_lower;
-            capability_type_index = type_index;
+            capability_type_index = sidecar_type_index;
             sidecar_lower_or_upper = lower;
             sidecar_ptr_or_upper = ptr;
             capability_upper = upper;
-            if (type->num_words && type->u.trailing_array && ptr != lower) {
-                if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
-                    capability_type_index = type->u.trailing_array->index;
-                else {
-                    PAS_TESTING_ASSERT(ptr > lower && (char*)ptr - (char*)lower < (ptrdiff_t)type->size);
-                    capability_kind = filc_capability_flex_base;
-                    sidecar_kind = filc_sidecar_flex_upper;
-                    sidecar_lower_or_upper = upper;
-                    capability_upper = (char*)lower + type->size;
+            if (ptr == lower) {
+                capability_kind = filc_capability_at_lower;
+                /* If we're at_lower, then the sidecar is ignored. But it's safer to clear it, because
+                   that reduces the set of things to worry about in pointer borking. */
+                sidecar_ptr_or_upper = 0;
+                sidecar_lower_or_upper = 0;
+                sidecar_type_index = 0;
+                sidecar_kind = (filc_sidecar_kind)0;
+            } else {
+                capability_kind = filc_capability_in_array;
+                if (type->num_words && type->u.trailing_array) {
+                    if (ptr < lower || (char*)ptr - (char*)lower >= (ptrdiff_t)type->size)
+                        capability_type_index = type->u.trailing_array->index;
+                    else {
+                        PAS_TESTING_ASSERT(ptr > lower);
+                        PAS_TESTING_ASSERT((char*)ptr - (char*)lower < (ptrdiff_t)type->size);
+                        capability_kind = filc_capability_flex_base;
+                        sidecar_kind = filc_sidecar_flex_upper;
+                        sidecar_lower_or_upper = upper;
+                        capability_upper = (char*)lower + type->size;
+                    }
                 }
             }
         } else {
@@ -2461,7 +2568,7 @@ filc_ptr filc_ptr_forge(void* ptr, void* lower, void* upper, const filc_type* ty
         result.sidecar =
             (pas_uint128)((uintptr_t)sidecar_ptr_or_upper & PAS_ADDRESS_MASK) |
             ((pas_uint128)((uintptr_t)sidecar_lower_or_upper & PAS_ADDRESS_MASK) << (pas_uint128)48) |
-            ((pas_uint128)type_index << (pas_uint128)96) |
+            ((pas_uint128)sidecar_type_index << (pas_uint128)96) |
             ((pas_uint128)sidecar_kind << (pas_uint128)126);
     }
     PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
@@ -2481,44 +2588,6 @@ filc_ptr filc_ptr_forge(void* ptr, void* lower, void* upper, const filc_type* ty
 void* filc_ptr_ptr_impl(pas_uint128 sidecar, pas_uint128 capability)
 {
     return filc_ptr_ptr(filc_ptr_create(sidecar, capability));
-}
-
-static void check_access_common_maybe_opaque(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
-{
-    if (PAS_ENABLE_TESTING)
-        filc_validate_ptr(ptr, origin);
-
-    /* This check is not strictly necessary, but I like the error message. */
-    FILC_CHECK(
-        filc_ptr_lower(ptr),
-        origin,
-        "cannot access pointer with null lower (ptr = %s).",
-        filc_ptr_to_new_string(ptr));
-    
-    FILC_CHECK(
-        filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
-        origin,
-        "cannot access pointer with ptr < lower (ptr = %s).", 
-        filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
-        origin,
-        "cannot access pointer with ptr >= upper (ptr = %s).",
-        filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        bytes <= (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
-        origin,
-        "cannot access %zu bytes when upper - ptr = %zu (ptr = %s).",
-        bytes, (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
-        filc_ptr_to_new_string(ptr));
-        
-    FILC_CHECK(
-        filc_ptr_type(ptr),
-        origin,
-        "cannot access ptr with invalid type (ptr = %s).",
-        filc_ptr_to_new_string(ptr));
 }
 
 static void check_access_common(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
@@ -2920,6 +2989,8 @@ static type_overlap_result check_type_overlap(filc_ptr dst, filc_ptr src,
     uintptr_t first_src_word_type_index;
     type_overlap_result result;
 
+    PAS_TESTING_ASSERT(count);
+
     dst_type = filc_ptr_type(dst);
     src_type = filc_ptr_type(src);
 
@@ -3151,12 +3222,13 @@ void filc_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
 {
     filc_ptr ptr;
     ptr = filc_ptr_create(sidecar, capability);
-    if (!filc_ptr_lower(ptr) && !filc_ptr_ptr(ptr) && !new_upper)
-        return;
-    check_access_common(ptr, (char*)new_upper - (char*)filc_ptr_ptr(ptr), origin);
     FILC_CHECK(new_type, origin, "cannot restrict to NULL type");
+    size_t count = (char*)new_upper - (char*)filc_ptr_ptr(ptr);
+    if (!count)
+        return;
+    check_access_common(ptr, count, origin);
     check_type_overlap(filc_ptr_forge(filc_ptr_ptr(ptr), filc_ptr_ptr(ptr), new_upper, new_type),
-                       ptr, (char*)new_upper - (char*)filc_ptr_ptr(ptr), origin);
+                       ptr, count, origin);
 }
 
 const char* filc_check_and_get_new_str(filc_ptr str, const filc_origin* origin)

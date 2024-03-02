@@ -5,6 +5,82 @@ _Bool zinbounds(void* ptr)
     return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
 }
 
+_Bool zvalinbounds(void* ptr, __SIZE_TYPE__ size)
+{
+    if (!size)
+        return 1;
+    return zinbounds(ptr) && zinbounds((char*)ptr + size - 1);
+}
+
+_Bool zisptr(void* ptr)
+{
+    return zptrphase(ptr) != -1;
+}
+
+_Bool zisintorptr(void* ptr)
+{
+    return zisint(ptr) || zisptr(ptr);
+}
+
+void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
+{
+    char* dst = (char*)dst_ptr;
+    char* src = (char*)src_ptr;
+
+    __SIZE_TYPE__ index;
+
+    if (dst < src) {
+        for (index = 0; index < count; ++index) {
+            if (zisint(dst + index)) {
+                if (zisint(src + index)) {
+                    dst[index] = src[index];
+                    continue;
+                }
+                ZASSERT(zptrphase(src + index) != -1);
+                dst[index] = 0;
+                continue;
+            }
+            ZASSERT(!zptrphase(dst + index));
+            if (!zptrphase(src + index) && count - index >= sizeof(void*)) {
+                *(void**)(dst + index) = *(void**)(src + index);
+                index += sizeof(void*) - 1;
+                continue;
+            }
+            *(void**)(dst + index) = (void*)0;
+            __SIZE_TYPE__ index_in_ptr;
+            for (index_in_ptr = sizeof(void*); index_in_ptr--;)
+                ZASSERT(index + index_in_ptr >= count || zisint(src + index + index_in_ptr));
+            index += sizeof(void*) - 1;
+        }
+    } else {
+        for (index = count; index--;) {
+            if (zisint(dst + index)) {
+                if (zisint(src + index)) {
+                    dst[index] = src[index];
+                    continue;
+                }
+                ZASSERT(zptrphase(src + index) != -1);
+                dst[index] = 0;
+                continue;
+            }
+            ZASSERT(zptrphase(dst + index) == sizeof(void*) - 1);
+            if (zptrphase(src + index) == sizeof(void*) - 1 && index >= sizeof(void*) - 1) {
+                *(void**)(dst + index - sizeof(void*) + 1) = *(void**)(src + index - sizeof(void*) + 1);
+                index -= sizeof(void*) - 1;
+                continue;
+            }
+            *(void**)(dst + index - sizeof(void*) + 1) = (void*)0;
+            __SIZE_TYPE__ index_in_ptr;
+            for (index_in_ptr = sizeof(void*); index_in_ptr--;)
+                ZASSERT(index_in_ptr > index || zisintorptr(src + index - index_in_ptr));
+            if (index < sizeof(void*) - 1)
+                index = 0;
+            else
+                index -= sizeof(void*) - 1;
+        }
+    }
+}
+
 void* zalloc_like(void* obj)
 {
     /* FIXME: This doesn't work right for flexes, but probably only because zalloc_with_type doesn't

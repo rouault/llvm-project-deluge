@@ -2,6 +2,40 @@
 #include <string.h>
 #include <stdio.h>
 
+struct foo;
+struct bar;
+typedef struct foo foo;
+typedef struct bar bar;
+
+struct foo {
+    int x;
+    char* y;
+};
+
+struct bar {
+    foo* f;
+    double d;
+};
+
+static void setindex(bar* b, size_t index)
+{
+    zprintf("setindex at %zu\n", index);
+    ZASSERT(!b[index].f);
+    ZASSERT(!b[index].d);
+    b[index].f = zalloc(foo, 1);
+    b[index].f->x = index;
+    b[index].f->y = zasprintf("%zu", index);
+    b[index].d = (double)index * 6.66;
+}
+
+static void checkindex(bar* b, size_t index)
+{
+    ZASSERT(b[index].f);
+    ZASSERT((size_t)b[index].f->x == index);
+    ZASSERT(!strcmp(b[index].f->y, zasprintf("%zu", index)));
+    ZASSERT(b[index].d == (double)index * 6.66);
+}
+
 int main()
 {
     char* buf = strdup("hello");
@@ -16,6 +50,47 @@ int main()
     ZASSERT(!strcmp(buf3, "gjd"));
     strcpy(buf3, "Hello, world!\n");
     printf("%s", buf3);
+
+    char* buf4 = zrealloc(zrestrict(buf3, char, 0), char, 6);
+    sprintf(buf4, "Witaj");
+    printf("%s\n", buf4);
+
+    bar* b = zalloc(bar, 5);
+    size_t index;
+    for (index = 5; index--;)
+        setindex(b, index);
+    for (index = 5; index--;)
+        checkindex(b, index);
+
+    zprintf("Got this far.\n");
+
+    bar* b2 = zrealloc(b, bar, 10);
+    for (index = 5; index--;)
+        checkindex(b2, index);
+    for (index = 10; index-->5;)
+        setindex(b2, index);
+    for (index = 10; index--;)
+        checkindex(b2, index);
+
+    zprintf("Past that part.\n");
+
+    bar* b3 = zrealloc(zrestrict(b2, bar, 3), bar, 6);
+    for (index = 3; index--;)
+        checkindex(b3, index);
+    for (index = 6; index-->3;)
+        setindex(b3, index);
+    for (index = 6; index--;)
+        checkindex(b3, index);
+
+    zprintf("Almost done.\n");
+
+    bar* b4 = zrealloc(zrestrict(b3, bar, 0), bar, 6);
+    zprintf("Here.\n");
+    for (index = 6; index--;)
+        setindex(b4, index);
+    for (index = 6; index--;)
+        checkindex(b4, index);
+
     return 0;
 }
 

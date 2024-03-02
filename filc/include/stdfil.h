@@ -302,6 +302,52 @@ ztype* zgettype(void* ptr);
    cannot be "accessed" regardless of type (can only be called if in bounds). */
 _Bool zinbounds(void* ptr);
 
+/* Tells if a value of the given size is in bounds of the pointer. */
+_Bool zvalinbounds(void* ptr, __SIZE_TYPE__ size);
+
+/* Returns true if the pointer points at an integer byte.
+   
+   If this returns false, then the pointer may point to a pointer, or to opaque memory, or to any other
+   type when we add more types.
+ 
+   Pointer must be in bounds, else your process dies. */
+_Bool zisint(void* ptr);
+
+/* Returns the pointer phase of the pointer.
+   
+   - 0 means this points to the base of a pointer.
+   
+   - 1..31 (inclusive) means you're pointing into the middle of a pointer; so, you subtract that many
+     bytes from your pointer, then you'll be able to dereference it.
+   
+   - -1 means that this does not point to a pointer at all. This means it could mean that it's an int
+     or it could mean opaque memory. (Or any other type when we add more types.)
+     
+   Pointer must be in bounds, else your process dies. */
+int zptrphase(void* ptr);
+
+/* Returns true if the pointer points at any kind of pointer memory. Equivalent to
+   isptrphase(p) != -1. */
+_Bool zisptr(void* ptr);
+
+/* Returns true if the pointer points at pointers or integers.
+ 
+   New types, as well as opaque memory, will return false. */
+_Bool zisintorptr(void* ptr);
+
+/* The pointer-nullifying memmove.
+   
+   This memmove will kill your process if anything goes out of bounds.
+   
+   But on pointer mismatches (i.e. destination thought something was a pointer but the corresponding
+   source byte was an int, or vice-versa, or both source and destination has a pointer but at a
+   different phase), the destination's pointer or int is zeroed.
+   
+   For example, if you call this to copy pointers to ints, those ints will become zero.
+   
+   Or if you call this to copy ints to pointers, those pointers will become zero. */
+void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
+
 /* Given a type and a range, returns a type that describes that range. Note that it's valid to ask
    for a range bigger than the type. It's also valid for this to return a type whose size is smaller
    than the range, if we can optimize repetitions (for example, InP1P2P3P4 is the same as

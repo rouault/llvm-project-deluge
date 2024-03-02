@@ -105,6 +105,7 @@ void pas_panic(const char* format, ...)
         va_start(arg_list, format);
         pas_vlog(format, arg_list);
 
+        //for (;;) pas_compiler_fence();
         pas_crash_with_info_impl((uint64_t)format, 0, 0, 0, 0, 0, 0);
     }
     __builtin_trap();

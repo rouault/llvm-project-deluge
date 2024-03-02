@@ -992,6 +992,8 @@ void pizlonated_f_zhard_getallocsize(PIZLONATED_SIGNATURE);
 void pizlonated_f_zgetlower(PIZLONATED_SIGNATURE);
 void pizlonated_f_zgetupper(PIZLONATED_SIGNATURE);
 void pizlonated_f_zgettype(PIZLONATED_SIGNATURE);
+void pizlonated_f_zisint(PIZLONATED_SIGNATURE);
+void pizlonated_f_zptrphase(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zslicetype(PIZLONATED_SIGNATURE);
 void pizlonated_f_zgettypeslice(PIZLONATED_SIGNATURE);
