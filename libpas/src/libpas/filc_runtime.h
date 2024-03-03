@@ -1331,6 +1331,8 @@ void pizlonated_f_zsys_nanosleep(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getgroups(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getgrouplist(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_openpty(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

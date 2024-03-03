@@ -45,6 +45,7 @@
 #include <dirent.h>
 #include <syslog.h>
 #include <sys/wait.h>
+#include <util.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -4489,6 +4490,22 @@ struct musl_winsize {
     unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
 };
 
+static void to_musl_winsize(struct winsize* winsize, struct musl_winsize* musl_winsize)
+{
+    musl_winsize->ws_row = winsize->ws_row;
+    musl_winsize->ws_col = winsize->ws_col;
+    musl_winsize->ws_xpixel = winsize->ws_xpixel;
+    musl_winsize->ws_ypixel = winsize->ws_ypixel;
+}
+
+static void from_musl_winsize(struct musl_winsize* musl_winsize, struct winsize* winsize)
+{
+    winsize->ws_row = musl_winsize->ws_row;
+    winsize->ws_col = musl_winsize->ws_col;
+    winsize->ws_xpixel = musl_winsize->ws_xpixel;
+    winsize->ws_ypixel = musl_winsize->ws_ypixel;
+}
+
 static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
 {
     static const bool verbose = false;
@@ -4554,6 +4571,17 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         filc_enter();
         return 0;
     }
+    case 0x540E: /* TIOCSCTTY */ {
+        filc_ptr arg_ptr = filc_ptr_get_next_ptr(&args, &origin);
+        if (filc_ptr_ptr(arg_ptr))
+            filc_check_access_int(arg_ptr, sizeof(int), &origin);
+        filc_exit();
+        int result = ioctl(fd, TIOCSCTTY, filc_ptr_ptr(arg_ptr));
+        if (result < 0)
+            goto error;
+        filc_enter();
+        return result;
+    }
     case 0x5413: /* TIOCGWINSZ */ {
         filc_ptr musl_winsize_ptr;
         struct musl_winsize* musl_winsize;
@@ -4562,14 +4590,35 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         filc_exit();
-        if (ioctl(fd, TIOCGWINSZ, &winsize) < 0)
+        int result = ioctl(fd, TIOCGWINSZ, &winsize);
+        if (result < 0)
             goto error;
         filc_enter();
-        musl_winsize->ws_row = winsize.ws_row;
-        musl_winsize->ws_col = winsize.ws_col;
-        musl_winsize->ws_xpixel = winsize.ws_xpixel;
-        musl_winsize->ws_ypixel = winsize.ws_ypixel;
-        return 0;
+        to_musl_winsize(&winsize, musl_winsize);
+        return result;
+    }
+    case 0x5414: /* TIOCSWINSZ */ {
+        filc_ptr musl_winsize_ptr;
+        struct musl_winsize* musl_winsize;
+        struct winsize winsize;
+        musl_winsize_ptr = filc_ptr_get_next_ptr(&args, &origin);
+        filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), &origin);
+        musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
+        from_musl_winsize(musl_winsize, &winsize);
+        filc_exit();
+        int result = ioctl(fd, TIOCSWINSZ, &winsize);
+        if (result < 0)
+            goto error;
+        filc_enter();
+        return result;
+    }
+    case 0x5422: /* TIOCNOTTY */ {
+        filc_exit();
+        int result = ioctl(fd, TIOCNOTTY, NULL);
+        if (result < 0)
+            goto error;
+        filc_enter();
+        return result;
     }
     default:
         if (verbose)
@@ -8465,6 +8514,73 @@ void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(my_errno);
     *(long*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_openpty(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_openpty",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr masterfd_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr slavefd_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr name_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_term_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_win_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(masterfd_ptr, sizeof(int), &origin);
+    filc_check_access_int(slavefd_ptr, sizeof(int), &origin);
+    FILC_ASSERT(!filc_ptr_ptr(name_ptr), &origin);
+    struct termios* term = NULL;
+    if (filc_ptr_ptr(musl_term_ptr)) {
+        filc_check_access_int(musl_term_ptr, sizeof(struct musl_termios), &origin);
+        term = alloca(sizeof(struct termios));
+        from_musl_termios((struct musl_termios*)filc_ptr_ptr(musl_term_ptr), term);
+    }
+    struct winsize* win = NULL;
+    if (filc_ptr_ptr(musl_win_ptr)) {
+        filc_check_access_int(musl_win_ptr, sizeof(struct musl_winsize), &origin);
+        win = alloca(sizeof(struct winsize));
+        from_musl_winsize((struct musl_winsize*)filc_ptr_ptr(musl_win_ptr), win);
+    }
+    filc_exit();
+    int result = openpty((int*)filc_ptr_ptr(masterfd_ptr), (int*)filc_ptr_ptr(slavefd_ptr),
+                         NULL, term, win);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_ttyname_r",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int fd = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr buf_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    size_t buflen = filc_ptr_get_next_size_t(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    filc_check_access_int(buf_ptr, buflen, &origin);
+    filc_exit();
+    int result = ttyname_r(fd, (char*)filc_ptr_ptr(buf_ptr), buflen);
+    int my_errno = errno;
+    filc_enter();
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
