@@ -13,6 +13,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
+#include <grp.h>
 
 int main(int argc, char** argv)
 {
@@ -169,6 +170,11 @@ int main(int argc, char** argv)
 
     ZASSERT(getppid());
     ZASSERT(getppid() != getpid());
+
+    struct group* group = getgrnam("tty");
+    ZASSERT(group);
+    ZASSERT(!strcmp(group->gr_name, "tty"));
+    ZASSERT(group->gr_gid);
 
     zprintf("No worries.\n");
     return 0;

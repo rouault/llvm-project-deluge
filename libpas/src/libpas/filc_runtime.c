@@ -46,6 +46,7 @@
 #include <syslog.h>
 #include <sys/wait.h>
 #include <util.h>
+#include <grp.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -211,6 +212,56 @@ static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
     filc_low_level_ptr_safe_bzero(musl_passwd, sizeof(struct musl_passwd));
 }
 
+struct musl_group {
+    filc_ptr gr_name;
+    filc_ptr gr_passwd;
+    unsigned gr_gid;
+    filc_ptr gr_mem;
+};
+
+static const filc_type musl_group_type = {
+    .index = FILC_MUSL_GROUP_TYPE_INDEX,
+    .size = sizeof(struct musl_group),
+    .alignment = alignof(struct musl_group),
+    .num_words = sizeof(struct musl_group) / FILC_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        FILC_WORD_TYPES_PTR, /* gr_name */
+        FILC_WORD_TYPES_PTR, /* gr_passwd */
+        FILC_WORD_TYPE_INT, /* gr_gid */
+        FILC_WORD_TYPES_PTR /* gr_mem */
+    }
+};
+
+static void musl_group_free_guts(struct musl_group* musl_group)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "musl_group_free_guts",
+        .line = 0,
+        .column = 0
+    };
+    
+    filc_deallocate_safe(filc_ptr_load(&musl_group->gr_name));
+    filc_deallocate_safe(filc_ptr_load(&musl_group->gr_passwd));
+
+    filc_ptr mem = filc_ptr_load(&musl_group->gr_mem);
+    if (filc_ptr_ptr(mem)) {
+        for (filc_ptr current = mem; ; current = filc_ptr_with_offset(current, sizeof(filc_ptr))) {
+            filc_check_access_ptr(current, &origin);
+            filc_ptr ptr = filc_ptr_load((filc_ptr*)filc_ptr_ptr(current));
+            if (!filc_ptr_ptr(ptr))
+                break;
+            filc_deallocate_safe(ptr);
+        }
+        filc_deallocate_safe(mem);
+    }
+    
+    filc_low_level_ptr_safe_bzero(musl_group, sizeof(struct musl_group));
+}
+
 struct musl_sigset {
     unsigned long bits[128 / sizeof(long)];
 };
@@ -363,6 +414,7 @@ typedef struct {
     filc_cat_table cat_table;
 
     struct musl_passwd musl_passwd;
+    struct musl_group musl_group;
 } zthread;
 
 static unsigned zthread_next_id = 1;
@@ -423,6 +475,7 @@ static void initialize_thread(zthread* thread)
     filc_slice_table_construct(&thread->slice_table);
     filc_cat_table_construct(&thread->cat_table);
     filc_low_level_ptr_safe_bzero(&thread->musl_passwd, sizeof(struct musl_passwd));
+    filc_low_level_ptr_safe_bzero(&thread->musl_group, sizeof(struct musl_group));
 }
 
 static bool should_destroy_thread(zthread* thread)
@@ -448,6 +501,7 @@ static void destroy_thread_if_appropriate(zthread* thread)
         filc_cat_table_destruct(&thread->cat_table, &utility_allocation_config);
 
         musl_passwd_free_guts(&thread->musl_passwd);
+        musl_group_free_guts(&thread->musl_group);
         
         filc_deallocate_yolo(thread);
     }
@@ -590,6 +644,7 @@ static void initialize_impl(void)
     filc_type_array[FILC_THREAD_TYPE_INDEX] = &zthread_type;
     filc_type_array[FILC_MUSL_ADDRINFO_TYPE_INDEX] = &musl_addrinfo_type;
     filc_type_array[FILC_DIRSTREAM_TYPE_INDEX] = &zdirstream_type;
+    filc_type_array[FILC_MUSL_GROUP_TYPE_INDEX] = &musl_group_type;
     
     zthread* result = (zthread*)filc_allocate_opaque(&zthread_heap);
     PAS_ASSERT(!result->thread);
@@ -5415,7 +5470,6 @@ static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
 {
     struct musl_passwd* result = &get_thread()->musl_passwd;
     musl_passwd_free_guts(result);
-    filc_low_level_ptr_safe_bzero(result, sizeof(struct musl_passwd));
 
     filc_ptr_store(&result->pw_name, filc_strdup(passwd->pw_name));
     filc_ptr_store(&result->pw_passwd, filc_strdup(passwd->pw_passwd));
@@ -8545,6 +8599,58 @@ void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
+}
+
+static struct musl_group* to_musl_group_threadlocal(struct group* group)
+{
+    struct musl_group* result = &get_thread()->musl_group;
+    musl_group_free_guts(result);
+
+    filc_ptr_store(&result->gr_name, filc_strdup(group->gr_name));
+    filc_ptr_store(&result->gr_passwd, filc_strdup(group->gr_passwd));
+    result->gr_gid = group->gr_gid;
+    
+    if (group->gr_mem) {
+        size_t size = 0;
+        while (group->gr_mem[size++]);
+
+        filc_ptr* musl_mem = filc_allocate_many(filc_get_heap(&filc_one_ptr_type), size);
+        size_t index;
+        for (index = 0; index < size; ++index)
+            filc_ptr_store(musl_mem + index, filc_strdup(group->gr_mem[index]));
+        filc_ptr_store(
+            &result->gr_mem,
+            filc_ptr_forge_with_size(musl_mem, size * sizeof(filc_ptr), &filc_one_ptr_type));
+    }
+    
+    return result;
+}
+
+void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getgrnam",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr name_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    const char* name = filc_check_and_get_new_str(name_ptr, &origin);
+    /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
+    struct group* group = getgrnam(name);
+    int my_errno = errno;
+    filc_deallocate(name);
+    if (!group) {
+        set_errno(my_errno);
+        return;
+    }
+    struct musl_group* musl_group = to_musl_group_threadlocal(group);
+    *(filc_ptr*)filc_ptr_ptr(rets) =
+        filc_ptr_forge(musl_group, musl_group, musl_group + 1, &musl_group_type);
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

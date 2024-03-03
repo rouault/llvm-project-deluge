@@ -788,6 +788,7 @@ int zsys_initgroups(const char* user, unsigned gid);
 long zsys_readlink(const char* path, char* buf, __SIZE_TYPE__ bufsize);
 int zsys_openpty(int* masterfd, int* slavefd, char* name, const void* term, const void* win);
 int zsys_ttyname_r(int fd, char* buf, __SIZE_TYPE__ buflen);
+void* zsys_getgrnam(const char* name);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

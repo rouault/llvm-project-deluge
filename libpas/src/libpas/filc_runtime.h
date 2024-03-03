@@ -259,7 +259,8 @@ extern unsigned filc_type_array_capacity;
 #define FILC_THREAD_TYPE_INDEX               8u
 #define FILC_MUSL_ADDRINFO_TYPE_INDEX        9u
 #define FILC_DIRSTREAM_TYPE_INDEX            10u
-#define FILC_TYPE_ARRAY_INITIAL_SIZE         11u
+#define FILC_MUSL_GROUP_TYPE_INDEX           11u
+#define FILC_TYPE_ARRAY_INITIAL_SIZE         12u
 #define FILC_TYPE_ARRAY_INITIAL_CAPACITY     100u
 #define FILC_TYPE_MAX_INDEX                  0x3fffffffu
 #define FILC_TYPE_INDEX_MASK                 0x3fffffffu
@@ -1333,6 +1334,7 @@ void pizlonated_f_zsys_getgrouplist(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_openpty(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
