@@ -1335,6 +1335,8 @@ void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_openpty(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_chown(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_chmod(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

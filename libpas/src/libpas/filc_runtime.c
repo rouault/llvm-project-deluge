@@ -8653,6 +8653,57 @@ void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE)
         filc_ptr_forge(musl_group, musl_group, musl_group + 1, &musl_group_type);
 }
 
+void pizlonated_f_zsys_chown(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_chown",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr pathname_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    unsigned owner = filc_ptr_get_next_unsigned(&args, &origin);
+    unsigned group = filc_ptr_get_next_unsigned(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* pathname = filc_check_and_get_new_str(pathname_ptr, &origin);
+    filc_exit();
+    int result = chown(pathname, owner, group);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(pathname);
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_chmod(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_chmod",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr pathname_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    unsigned mode = filc_ptr_get_next_unsigned(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* pathname = filc_check_and_get_new_str(pathname_ptr, &origin);
+    filc_exit();
+    int result = chmod(pathname, mode);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(pathname);
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
