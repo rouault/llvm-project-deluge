@@ -173,29 +173,6 @@ static void initialize_int_allocation_config(pas_allocation_config* allocation_c
     allocation_config->arg = NULL;
 }
 
-typedef struct {
-    filc_slice_table slice_table;
-    filc_cat_table cat_table;
-} type_tables;
-
-static pthread_key_t type_tables_key;
-
-static void type_tables_destroy(void* value)
-{
-    type_tables* tables;
-    pas_allocation_config allocation_config;
-
-    tables = (type_tables*)value;
-
-    if (!tables)
-        return;
-
-    initialize_utility_allocation_config(&allocation_config);
-    filc_slice_table_destruct(&tables->slice_table, &allocation_config);
-    filc_cat_table_destruct(&tables->cat_table, &allocation_config);
-    filc_deallocate_yolo(tables);
-}
-
 struct musl_passwd {
     filc_ptr pw_name;
     filc_ptr pw_passwd;
@@ -224,12 +201,6 @@ static const filc_type musl_passwd_type = {
     }
 };
 
-static pas_heap_ref musl_passwd_heap = {
-    .type = (const pas_heap_type*)&musl_passwd_type,
-    .heap = NULL,
-    .allocator_index = 0
-};
-
 static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
 {
     filc_deallocate_safe(filc_ptr_load(&musl_passwd->pw_name));
@@ -237,16 +208,8 @@ static void musl_passwd_free_guts(struct musl_passwd* musl_passwd)
     filc_deallocate_safe(filc_ptr_load(&musl_passwd->pw_gecos));
     filc_deallocate_safe(filc_ptr_load(&musl_passwd->pw_dir));
     filc_deallocate_safe(filc_ptr_load(&musl_passwd->pw_shell));
+    filc_low_level_ptr_safe_bzero(musl_passwd, sizeof(struct musl_passwd));
 }
-
-static void musl_passwd_threadlocal_destructor(void* ptr)
-{
-    struct musl_passwd* musl_passwd = (struct musl_passwd*)ptr;
-    musl_passwd_free_guts(musl_passwd);
-    filc_deallocate_yolo(musl_passwd);
-}
-
-static pthread_key_t musl_passwd_threadlocal_key;
 
 struct musl_sigset {
     unsigned long bits[128 / sizeof(long)];
@@ -395,6 +358,11 @@ typedef struct {
     bool have_deferred_signals;
     uint64_t num_deferred_signals[MAX_MUSL_SIGNUM + 1];
     bool in_filc;
+
+    filc_slice_table slice_table;
+    filc_cat_table cat_table;
+
+    struct musl_passwd musl_passwd;
 } zthread;
 
 static unsigned zthread_next_id = 1;
@@ -450,6 +418,13 @@ static pas_heap_ref zthread_heap = {
     .allocator_index = 0
 };
 
+static void initialize_thread(zthread* thread)
+{
+    filc_slice_table_construct(&thread->slice_table);
+    filc_cat_table_construct(&thread->cat_table);
+    filc_low_level_ptr_safe_bzero(&thread->musl_passwd, sizeof(struct musl_passwd));
+}
+
 static bool should_destroy_thread(zthread* thread)
 {
     return !thread->is_running && !thread->is_joining && !thread->thread;
@@ -458,6 +433,9 @@ static bool should_destroy_thread(zthread* thread)
 static void destroy_thread_if_appropriate(zthread* thread)
 {
     if (should_destroy_thread(thread)) {
+        pas_allocation_config utility_allocation_config;
+        initialize_utility_allocation_config(&utility_allocation_config);
+        
         PAS_ASSERT(!thread->thread);
         PAS_ASSERT(!thread->is_running);
         PAS_ASSERT(!thread->is_joining);
@@ -465,6 +443,12 @@ static void destroy_thread_if_appropriate(zthread* thread)
         filc_ptr_store(&thread->arg_ptr, filc_ptr_forge_invalid(NULL));
         filc_ptr_store(&thread->result_ptr, filc_ptr_forge_invalid(NULL));
         filc_ptr_store(&thread->cookie_ptr, filc_ptr_forge_invalid(NULL));
+
+        filc_slice_table_destruct(&thread->slice_table, &utility_allocation_config);
+        filc_cat_table_destruct(&thread->cat_table, &utility_allocation_config);
+
+        musl_passwd_free_guts(&thread->musl_passwd);
+        
         filc_deallocate_yolo(thread);
     }
 }
@@ -607,14 +591,12 @@ static void initialize_impl(void)
     filc_type_array[FILC_MUSL_ADDRINFO_TYPE_INDEX] = &musl_addrinfo_type;
     filc_type_array[FILC_DIRSTREAM_TYPE_INDEX] = &zdirstream_type;
     
-    pthread_key_create(&type_tables_key, type_tables_destroy);
-    pthread_key_create(&musl_passwd_threadlocal_key, musl_passwd_threadlocal_destructor);
-    
     zthread* result = (zthread*)filc_allocate_opaque(&zthread_heap);
     PAS_ASSERT(!result->thread);
     result->thread = pthread_self();
     result->is_running = true;
     PAS_ASSERT(!should_destroy_thread(result));
+    initialize_thread(result);
     PAS_ASSERT(!pthread_key_create(&zthread_key, zthread_key_destruct));
     PAS_ASSERT(!pthread_setspecific(zthread_key, result));
 
@@ -1169,19 +1151,6 @@ char* filc_type_to_new_string(const filc_type* type)
     return type_to_new_string_impl(type, &allocation_config);
 }
 
-static type_tables* get_type_tables(void)
-{
-    type_tables* result;
-    result = pthread_getspecific(type_tables_key);
-    if (!result) {
-        result = filc_allocate_utility(sizeof(type_tables));
-        filc_slice_table_construct(&result->slice_table);
-        filc_cat_table_construct(&result->cat_table);
-        pthread_setspecific(type_tables_key, result);
-    }
-    return result;
-}
-
 static void check_int_slice_range(const filc_type* type, pas_range range,
                                   const filc_origin* origin)
 {
@@ -1248,7 +1217,7 @@ const filc_type* filc_type_slice(const filc_type* type, pas_range range, const f
 
     PAS_TESTING_ASSERT(!(pas_range_size(range) % FILC_WORD_SIZE));
 
-    table = &get_type_tables()->slice_table;
+    table = &get_thread()->slice_table;
     key.base_type = type;
     key.range = range;
     entry = filc_slice_table_find(table, key);
@@ -1342,7 +1311,7 @@ const filc_type* filc_type_cat(const filc_type* a, size_t a_size,
         b_size = pas_round_up_to_power_of_2(b_size, FILC_WORD_SIZE);
     }
 
-    table = &get_type_tables()->cat_table;
+    table = &get_thread()->cat_table;
     key.a = a;
     key.a_size = a_size;
     key.b = b;
@@ -5444,13 +5413,8 @@ void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE)
 
 static struct musl_passwd* to_musl_passwd_threadlocal(struct passwd* passwd)
 {
-    struct musl_passwd* result = (struct musl_passwd*)pthread_getspecific(musl_passwd_threadlocal_key);
-    if (result)
-        musl_passwd_free_guts(result);
-    else {
-        result = filc_allocate_one(&musl_passwd_heap);
-        pthread_setspecific(musl_passwd_threadlocal_key, result);
-    }
+    struct musl_passwd* result = &get_thread()->musl_passwd;
+    musl_passwd_free_guts(result);
     filc_low_level_ptr_safe_bzero(result, sizeof(struct musl_passwd));
 
     filc_ptr_store(&result->pw_name, filc_strdup(passwd->pw_name));
@@ -8715,6 +8679,7 @@ void pizlonated_f_zthread_create(PIZLONATED_SIGNATURE)
     thread->callback = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
     filc_ptr_store(&thread->arg_ptr, arg_ptr);
     thread->is_running = true;
+    initialize_thread(thread);
     filc_exit();
     int result = pthread_create(&thread->thread, NULL, start_thread, thread);
     filc_enter();
