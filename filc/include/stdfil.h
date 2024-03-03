@@ -785,6 +785,7 @@ int zsys_nanosleep(const void* req, void* rem);
 int zsys_getgroups(int size, unsigned* list);
 int zsys_getgrouplist(const char* user, unsigned group, unsigned* groups, int* ngroups);
 int zsys_initgroups(const char* user, unsigned gid);
+long zsys_readlink(const char* path, char* buf, __SIZE_TYPE__ bufsize);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

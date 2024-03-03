@@ -8440,6 +8440,33 @@ void pizlonated_f_zsys_initgroups(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_initgroups",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr path_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr buf_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    size_t bufsize = filc_ptr_get_next_size_t(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(long), &origin);
+    const char* path = filc_check_and_get_new_str(path_ptr, &origin);
+    filc_check_access_int(buf_ptr, bufsize, &origin);
+    filc_exit();
+    long result = readlink(path, (char*)filc_ptr_ptr(buf_ptr), bufsize);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(path);
+    if (result < 0)
+        set_errno(my_errno);
+    *(long*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
