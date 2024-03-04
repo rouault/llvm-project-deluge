@@ -1337,6 +1337,14 @@ void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_chown(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_chmod(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_endutxent(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getutxent(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getutxid(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getutxline(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_pututxline(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_setutxent(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getlastlogx(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_getlastlogxbyname(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);

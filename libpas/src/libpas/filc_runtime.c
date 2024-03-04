@@ -47,6 +47,7 @@
 #include <sys/wait.h>
 #include <util.h>
 #include <grp.h>
+#include <utmpx.h>
 
 const filc_type_template filc_int_type_template = {
     .size = 1,
@@ -8702,6 +8703,383 @@ void pizlonated_f_zsys_chmod(PIZLONATED_SIGNATURE)
     if (result < 0)
         set_errno(my_errno);
     *(int*)filc_ptr_ptr(rets) = result;
+}
+
+/* If me or someone else decides to give a shit then maybe like this whole thing, and other things like it
+   in this file, would die in a fire.
+   
+   - We should probably just go all-in on Fil-C being a Linux thing.
+   
+   - In that case, it would be straightforward to sync up the structs between pizlonated code and legacy
+     code. Only structs that have pointers in them would require translation!
+   
+   - And code like login() would just be fully pizlonated because libutil would be fully pizlonated.
+   
+   - So much code in this file would die if we did that!
+   
+   Why am I not doing that? Because I'm on a roll getting shit to work and it's fun, so who cares. */
+struct musl_utmpx {
+    short ut_type;
+    short __ut_pad1;
+    int ut_pid;
+    char ut_line[32];
+    char ut_id[4];
+    char ut_user[32];
+    char ut_host[256];
+    struct {
+        short __e_termination;
+        short __e_exit;
+    } ut_exit;
+    int ut_session, __ut_pad2;
+    struct musl_timeval ut_tv;
+    unsigned ut_addr_v6[4];
+};
+
+static void from_musl_utmpx(struct musl_utmpx* musl_utmpx, struct utmpx* utmpx, const filc_origin* origin)
+{
+    /* Just a reminder about why this is how it must be:
+       
+       Fil-C is multithreaded and we do not have ownership concepts of any kind. We wouldn't even have
+       them if there was a GC.
+       
+       Therefore, if we have a pointer to a mutable data structure, then for all we know, so does some
+       other thread. And for all we know, it's writing to the data structure right now.
+       
+       So: if pizlonated code gives us a string, or a struct that has a string, then:
+       
+       - We must be paranoid about what it looks like right now. For all we know, there's no null
+         terminator.
+       
+       - We must be paranoid about what it will look like at every instant in time between now and
+         whenever we're done with it, and whenever any syscalls or system functions we pass that string
+         to are done with it.
+       
+       To make this super simple, we always clone out the string using filc_check_and_get_new_str. That
+       function is race-safe. It'll either return a new string that is null-terminated without having to
+       overrun the pointer's capability, or it will kill the shit out of the process.
+       
+       If you still don't get it, here's a race that we totally guard against:
+       
+       1. Two threads have access to the passed-in utmpx pointer.
+       
+       2. One thread calls login.
+       
+       3. Then we check that the ut_line string is null-terminated within the bounds (32 bytes, currently).
+       
+       4. Then we start to copy the ut_line string into our utmp.
+       
+       5. Then the other thread wakes up and overwrites the utmpx with a bunch of nonzeroes.
+       
+       6. Now our copy loop will overrun the end of the passed-in utmpx! Memory safety violation not
+          thwarted, if that happened!
+       
+       But it won't happen, because filc_check_and_get_new_str() is a thing and we remembered to call
+       it. That function will trap if it loses that race. If it wins the race, we get a null-terminated
+       string of the right length. */
+    const char* line = filc_check_and_get_new_str(
+        filc_ptr_forge_with_size(musl_utmpx->ut_line, sizeof(musl_utmpx->ut_line), &filc_int_type), origin);
+    const char* user = filc_check_and_get_new_str(
+        filc_ptr_forge_with_size(musl_utmpx->ut_user, sizeof(musl_utmpx->ut_user), &filc_int_type), origin);
+    const char* host = filc_check_and_get_new_str(
+        filc_ptr_forge_with_size(musl_utmpx->ut_host, sizeof(musl_utmpx->ut_host), &filc_int_type), origin);
+    pas_zero_memory(utmpx, sizeof(struct utmpx));
+    snprintf(utmpx->ut_line, sizeof(utmpx->ut_line), "%s", line);
+    snprintf(utmpx->ut_user, sizeof(utmpx->ut_user), "%s", user);
+    snprintf(utmpx->ut_host, sizeof(utmpx->ut_host), "%s", host);
+    PAS_ASSERT(sizeof(utmpx->ut_id) == sizeof(musl_utmpx->ut_id));
+    memcpy(utmpx->ut_id, musl_utmpx->ut_id, sizeof(musl_utmpx->ut_id));
+    utmpx->ut_tv.tv_sec = musl_utmpx->ut_tv.tv_sec;
+    utmpx->ut_tv.tv_usec = musl_utmpx->ut_tv.tv_usec;
+    utmpx->ut_pid = musl_utmpx->ut_pid;
+    switch (musl_utmpx->ut_type) {
+    case 0:
+        utmpx->ut_type = EMPTY;
+        break;
+    case 1:
+        utmpx->ut_type = RUN_LVL;
+        break;
+    case 2:
+        utmpx->ut_type = BOOT_TIME;
+        break;
+    case 3:
+        utmpx->ut_type = NEW_TIME;
+        break;
+    case 4:
+        utmpx->ut_type = OLD_TIME;
+        break;
+    case 5:
+        utmpx->ut_type = INIT_PROCESS;
+        break;
+    case 6:
+        utmpx->ut_type = LOGIN_PROCESS;
+        break;
+    case 7:
+        utmpx->ut_type = USER_PROCESS;
+        break;
+    case 8:
+        utmpx->ut_type = DEAD_PROCESS;
+        break;
+    default:
+        PAS_ASSERT(!"Unrecognized utmpx->ut_type");
+        break;
+    }
+    filc_deallocate(line);
+    filc_deallocate(user);
+    filc_deallocate(host);
+}
+
+static void to_musl_utmpx(struct utmpx* utmpx, struct musl_utmpx* musl_utmpx)
+{
+    pas_zero_memory(musl_utmpx, sizeof(struct musl_utmpx));
+    
+    /* I trust nothing and nobody!!! */
+    utmpx->ut_user[sizeof(utmpx->ut_user) - 1] = 0;
+    utmpx->ut_id[sizeof(utmpx->ut_id) - 1] = 0;
+    utmpx->ut_line[sizeof(utmpx->ut_line) - 1] = 0;
+    utmpx->ut_host[sizeof(utmpx->ut_host) - 1] = 0;
+
+    snprintf(musl_utmpx->ut_line, sizeof(musl_utmpx->ut_line), "%s", utmpx->ut_line);
+    snprintf(musl_utmpx->ut_user, sizeof(musl_utmpx->ut_user), "%s", utmpx->ut_user);
+    snprintf(musl_utmpx->ut_host, sizeof(musl_utmpx->ut_host), "%s", utmpx->ut_host);
+    snprintf(musl_utmpx->ut_id, sizeof(musl_utmpx->ut_id), "%s", utmpx->ut_id);
+    musl_utmpx->ut_tv.tv_sec = utmpx->ut_tv.tv_sec;
+    musl_utmpx->ut_tv.tv_usec = utmpx->ut_tv.tv_usec;
+    musl_utmpx->ut_pid = utmpx->ut_pid;
+    switch (utmpx->ut_type) {
+    case EMPTY:
+        musl_utmpx->ut_type = 0;
+        break;
+    case RUN_LVL:
+        musl_utmpx->ut_type = 1;
+        break;
+    case BOOT_TIME:
+        musl_utmpx->ut_type = 2;
+        break;
+    case NEW_TIME:
+        musl_utmpx->ut_type = 3;
+        break;
+    case OLD_TIME:
+        musl_utmpx->ut_type = 4;
+        break;
+    case INIT_PROCESS:
+        musl_utmpx->ut_type = 5;
+        break;
+    case LOGIN_PROCESS:
+        musl_utmpx->ut_type = 6;
+        break;
+    case USER_PROCESS:
+        musl_utmpx->ut_type = 7;
+        break;
+    case DEAD_PROCESS:
+        musl_utmpx->ut_type = 8;
+        break;
+    default:
+        PAS_ASSERT(!"Unrecognized utmpx->ut_type");
+        break;
+    }
+}
+
+/* We do memory-safe but thread-unsafe implementations of the utmpx API. That means: if you call it
+   from multiple threads, then your utmpx buffer will probably contain random garbage and then you'll
+   probably trap with a filx_panic. But you won't escape the type system.
+
+   To ensure that you can't escape, we wrap our end of the business in this global lock. */
+static pas_lock utmpx_lock = PAS_LOCK_INITIALIZER;
+static struct musl_utmpx musl_utmpx_for_results;
+
+static void handle_utmpx_result(filc_ptr rets, struct utmpx* utmpx)
+{
+    if (!utmpx) {
+        set_errno(errno);
+        *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_invalid(NULL);
+    } else {
+        to_musl_utmpx(utmpx, &musl_utmpx_for_results);
+        *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_with_size(
+            &musl_utmpx_for_results, sizeof(struct musl_utmpx), &filc_int_type);
+    }
+}
+
+void pizlonated_f_zsys_endutxent(PIZLONATED_SIGNATURE)
+{
+    PIZLONATED_DELETE_ARGS();
+    pas_lock_lock(&utmpx_lock);
+    endutxent();
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_getutxent(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getutxent",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr rets = PIZLONATED_RETS;
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    pas_lock_lock(&utmpx_lock);
+    handle_utmpx_result(rets, getutxent());
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_getutxid(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getutxid",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr musl_utmpx_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), &origin);
+    pas_lock_lock(&utmpx_lock);
+    struct utmpx utmpx_in;
+    from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in, &origin);
+    handle_utmpx_result(rets, getutxid(&utmpx_in));
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_getutxline(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getutxline",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr musl_utmpx_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), &origin);
+    pas_lock_lock(&utmpx_lock);
+    struct utmpx utmpx_in;
+    from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in, &origin);
+    handle_utmpx_result(rets, getutxline(&utmpx_in));
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_pututxline(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_pututxline",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr musl_utmpx_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), &origin);
+    pas_lock_lock(&utmpx_lock);
+    struct utmpx utmpx_in;
+    from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in, &origin);
+    struct utmpx* utmpx_out = pututxline(&utmpx_in);
+    if (utmpx_out == &utmpx_in)
+        *(filc_ptr*)filc_ptr_ptr(rets) = musl_utmpx_ptr;
+    else
+        handle_utmpx_result(rets, utmpx_out);
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_setutxent(PIZLONATED_SIGNATURE)
+{
+    PIZLONATED_DELETE_ARGS();
+    pas_lock_lock(&utmpx_lock);
+    setutxent();
+    pas_lock_unlock(&utmpx_lock);
+}
+
+struct musl_lastlogx {
+    struct musl_timeval ll_tv;
+    char ll_line[32];
+    char ll_host[256];
+};
+
+static void to_musl_lastlogx(struct lastlogx* lastlogx, struct musl_lastlogx* musl_lastlogx)
+{
+    musl_lastlogx->ll_tv.tv_sec = lastlogx->ll_tv.tv_sec;
+    musl_lastlogx->ll_tv.tv_usec = lastlogx->ll_tv.tv_usec;
+
+    lastlogx->ll_line[sizeof(lastlogx->ll_line) - 1] = 0;
+    lastlogx->ll_host[sizeof(lastlogx->ll_host) - 1] = 0;
+
+    snprintf(musl_lastlogx->ll_line, sizeof(musl_lastlogx->ll_line), "%s", lastlogx->ll_line);
+    snprintf(musl_lastlogx->ll_host, sizeof(musl_lastlogx->ll_host), "%s", lastlogx->ll_host);
+}
+
+static void handle_lastlogx_result(filc_ptr rets, filc_ptr musl_lastlogx_ptr, struct lastlogx* result)
+{
+    if (!result) {
+        set_errno(errno);
+        *(filc_ptr*)filc_ptr_ptr(rets) = filc_ptr_forge_invalid(NULL);
+        return;
+    }
+    
+    if (filc_ptr_ptr(musl_lastlogx_ptr)) {
+        to_musl_lastlogx(result, (struct musl_lastlogx*)filc_ptr_ptr(musl_lastlogx_ptr));
+        *(filc_ptr*)filc_ptr_ptr(rets) = musl_lastlogx_ptr;
+        return;
+    }
+
+    struct musl_lastlogx* musl_result = filc_allocate_int(sizeof(struct musl_lastlogx), 1);
+    to_musl_lastlogx(result, musl_result);
+    *(filc_ptr*)filc_ptr_ptr(rets) =
+        filc_ptr_forge_with_size(musl_result, sizeof(struct musl_lastlogx), &filc_int_type);
+}
+
+void pizlonated_f_zsys_getlastlogx(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getlastlogx",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    unsigned uid = filc_ptr_get_next_unsigned(&args, &origin);
+    filc_ptr musl_lastlogx_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    if (filc_ptr_ptr(musl_lastlogx_ptr))
+        filc_check_access_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), &origin);
+    pas_lock_lock(&utmpx_lock);
+    struct lastlogx lastlogx;
+    handle_lastlogx_result(rets, musl_lastlogx_ptr, getlastlogx(uid, &lastlogx));
+    pas_lock_unlock(&utmpx_lock);
+}
+
+void pizlonated_f_zsys_getlastlogxbyname(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_getlastlogxbyname",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr name_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr musl_lastlogx_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_ptr(rets, &origin);
+    const char* name = filc_check_and_get_new_str(name_ptr, &origin);
+    if (filc_ptr_ptr(musl_lastlogx_ptr))
+        filc_check_access_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), &origin);
+    pas_lock_lock(&utmpx_lock);
+    struct lastlogx lastlogx;
+    handle_lastlogx_result(rets, musl_lastlogx_ptr, getlastlogxbyname(name, &lastlogx));
+    pas_lock_unlock(&utmpx_lock);
+    filc_deallocate(name);
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

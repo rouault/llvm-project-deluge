@@ -791,6 +791,14 @@ int zsys_ttyname_r(int fd, char* buf, __SIZE_TYPE__ buflen);
 void* zsys_getgrnam(const char* name);
 int zsys_chown(const char* pathname, unsigned owner, unsigned group);
 int zsys_chmod(const char* pathname, unsigned mode);
+void zsys_endutxent(void);
+struct utmpx* zsys_getutxent(void);
+struct utmpx* zsys_getutxid(const void* utmpx);
+struct utmpx* zsys_getutxline(const void* utmpx);
+struct utmpx* zsys_pututxline(const void* utmpx);
+void zsys_setutxent(void);
+void* zsys_getlastlogx(unsigned uid, void* lastlogx);
+void* zsys_getlastlogxbyname(const char* name, void* lastlogx);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
