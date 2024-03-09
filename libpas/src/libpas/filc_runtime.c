@@ -612,6 +612,34 @@ static pas_heap_ref zdirstream_heap = {
     .allocator_index = 0
 };
 
+struct musl_msghdr {
+    filc_ptr msg_name;
+    unsigned msg_namelen;
+    filc_ptr msg_iov;
+    int msg_iovlen;
+    filc_ptr msg_control;
+    unsigned msg_controllen;
+    int msg_flags;
+};
+
+static const filc_type musl_msghdr_type = {
+    .index = FILC_MUSL_MSGHDR_TYPE_INDEX,
+    .size = sizeof(struct musl_msghdr),
+    .alignment = alignof(struct musl_msghdr),
+    .num_words = sizeof(struct musl_msghdr) / FILC_WORD_SIZE,
+    .u = {
+        .trailing_array = NULL
+    },
+    .word_types = {
+        FILC_WORD_TYPES_PTR, /* msg_name */
+        FILC_WORD_TYPE_INT, /* msg_namelen */
+        FILC_WORD_TYPES_PTR, /* msg_iov */
+        FILC_WORD_TYPE_INT, /* msg_iovlen */
+        FILC_WORD_TYPES_PTR, /* msg_control */
+        FILC_WORD_TYPE_INT /* msg_controllen, msg_flags */
+    }
+};
+
 /* These are currently leaked. This is fine, because it's super unlikely that someone will call
    sigaction in a loop.
    
@@ -646,6 +674,7 @@ static void initialize_impl(void)
     filc_type_array[FILC_MUSL_ADDRINFO_TYPE_INDEX] = &musl_addrinfo_type;
     filc_type_array[FILC_DIRSTREAM_TYPE_INDEX] = &zdirstream_type;
     filc_type_array[FILC_MUSL_GROUP_TYPE_INDEX] = &musl_group_type;
+    filc_type_array[FILC_MUSL_MSGHDR_TYPE_INDEX] = &musl_msghdr_type;
     
     zthread* result = (zthread*)filc_allocate_opaque(&zthread_heap);
     PAS_ASSERT(!result->thread);
@@ -6004,6 +6033,15 @@ static bool from_musl_socket_level(int musl_level, int* result)
     return true;
 }
 
+static bool to_musl_socket_level(int level, int* result)
+{
+    if (level == SOL_SOCKET)
+        *result = 1;
+    else
+        *result = level;
+    return true;
+}
+
 static bool from_musl_so_optname(int musl_optname, int* result)
 {
     switch (musl_optname) {
@@ -6889,6 +6927,30 @@ static bool from_musl_msg_flags(int musl_flags, int* result)
     return !musl_flags;
 }
 
+static bool to_musl_msg_flags(int flags, int* result)
+{
+    *result = 0;
+    if (check_and_clear(&flags, MSG_OOB))
+        *result |= 0x0001;
+    if (check_and_clear(&flags, MSG_PEEK))
+        *result |= 0x0002;
+    if (check_and_clear(&flags, MSG_DONTROUTE))
+        *result |= 0x0004;
+    if (check_and_clear(&flags, MSG_CTRUNC))
+        *result |= 0x0008;
+    if (check_and_clear(&flags, MSG_TRUNC))
+        *result |= 0x0020;
+    if (check_and_clear(&flags, MSG_DONTWAIT))
+        *result |= 0x0040;
+    if (check_and_clear(&flags, MSG_EOR))
+        *result |= 0x0080;
+    if (check_and_clear(&flags, MSG_WAITALL))
+        *result |= 0x0100;
+    if (check_and_clear(&flags, MSG_NOSIGNAL))
+        *result |= 0x4000;
+    return !flags;
+}
+
 void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
@@ -6930,7 +6992,7 @@ void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE)
 
 einval:
     set_errno(EINVAL);
-    *(int*)filc_ptr_ptr(rets) = -1;
+    *(ssize_t*)filc_ptr_ptr(rets) = -1;
 }
 
 void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE)
@@ -6962,7 +7024,7 @@ void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE)
     int flags;
     if (!from_musl_msg_flags(musl_flags, &flags)) {
         set_errno(EINVAL);
-        *(int*)filc_ptr_ptr(rets) = -1;
+        *(ssize_t*)filc_ptr_ptr(rets) = -1;
         return;
     }
     unsigned addrlen = MAX_SOCKADDRLEN;
@@ -9080,6 +9142,327 @@ void pizlonated_f_zsys_getlastlogxbyname(PIZLONATED_SIGNATURE)
     handle_lastlogx_result(rets, musl_lastlogx_ptr, getlastlogxbyname(name, &lastlogx));
     pas_lock_unlock(&utmpx_lock);
     filc_deallocate(name);
+}
+
+struct musl_cmsghdr {
+    unsigned cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+static void destroy_msghdr(struct msghdr* msghdr)
+{
+    filc_deallocate(msghdr->msg_name);
+    filc_deallocate(msghdr->msg_iov);
+    filc_deallocate(msghdr->msg_control);
+}
+
+static void from_musl_msghdr_base(struct musl_msghdr* musl_msghdr, struct msghdr* msghdr)
+{
+    pas_zero_memory(msghdr, sizeof(struct msghdr));
+
+    int iovlen = musl_msghdr->msg_iovlen;
+    msghdr->msg_iov = prepare_iovec(filc_ptr_load(&musl_msghdr->msg_iov), iovlen);
+    msghdr->msg_iovlen = iovlen;
+
+    msghdr->msg_flags = 0; /* This field is ignored so just zero-init it. */
+}
+
+static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct msghdr* msghdr,
+                                      const filc_origin* origin)
+{
+    static const bool verbose = false;
+
+    if (verbose)
+        pas_log("In from_musl_msghdr_for_send\n");
+    
+    from_musl_msghdr_base(musl_msghdr, msghdr);
+
+    unsigned msg_namelen = musl_msghdr->msg_namelen;
+    if (msg_namelen) {
+        filc_ptr msg_name = filc_ptr_load(&musl_msghdr->msg_name);
+        filc_check_access_int(msg_name, msg_namelen, origin);
+        if (!from_musl_sockaddr((struct musl_sockaddr*)filc_ptr_ptr(msg_name), msg_namelen,
+                                (struct sockaddr**)&msghdr->msg_name, &msghdr->msg_namelen, origin))
+            goto error;
+    }
+
+    unsigned musl_controllen = musl_msghdr->msg_controllen;
+    if (musl_controllen) {
+        filc_ptr musl_control = filc_ptr_load(&musl_msghdr->msg_control);
+        filc_check_access_int(musl_control, musl_controllen, origin);
+        unsigned offset = 0;
+        size_t cmsg_total_size = 0;
+        for (;;) {
+            unsigned offset_to_end;
+            FILC_ASSERT(!pas_add_uint32_overflow(offset, sizeof(struct musl_cmsghdr), &offset_to_end),
+                        origin);
+            if (offset_to_end > musl_controllen)
+                break;
+            struct musl_cmsghdr* cmsg = (struct musl_cmsghdr*)((char*)filc_ptr_ptr(musl_control) + offset);
+            unsigned cmsg_len = cmsg->cmsg_len;
+            FILC_ASSERT(!pas_add_uint32_overflow(offset, cmsg_len, &offset_to_end), origin);
+            FILC_ASSERT(offset_to_end <= musl_controllen, origin);
+            FILC_ASSERT(cmsg_len >= sizeof(struct musl_cmsghdr), origin);
+            unsigned payload_len = cmsg_len - sizeof(struct musl_cmsghdr);
+            FILC_ASSERT(!pas_add_uintptr_overflow(
+                            cmsg_total_size, CMSG_SPACE(payload_len), &cmsg_total_size),
+                        origin);
+            offset = pas_round_up_to_power_of_2(offset_to_end, sizeof(long));
+            FILC_ASSERT(offset >= offset_to_end, origin);
+            FILC_ASSERT(offset <= musl_controllen, origin);
+        }
+
+        FILC_ASSERT((unsigned)cmsg_total_size == cmsg_total_size, origin);
+
+        if (verbose)
+            pas_log("cmsg_total_size = %zu\n", cmsg_total_size);
+        
+        struct cmsghdr* control = filc_allocate_utility(cmsg_total_size);
+        msghdr->msg_control = control;
+        msghdr->msg_controllen = (unsigned)cmsg_total_size;
+
+        offset = 0;
+        struct cmsghdr* cmsg = CMSG_FIRSTHDR(msghdr);
+        PAS_ASSERT(cmsg);
+        for (;;) {
+            unsigned offset_to_end;
+            FILC_ASSERT(!pas_add_uint32_overflow(offset, sizeof(struct musl_cmsghdr), &offset_to_end),
+                        origin);
+            if (offset_to_end > musl_controllen)
+                break;
+            struct musl_cmsghdr* musl_cmsg =
+                (struct musl_cmsghdr*)((char*)filc_ptr_ptr(musl_control) + offset);
+            if (verbose)
+                pas_log("cmsg = %p, musl_cmsg = %p\n", cmsg, musl_cmsg);
+            unsigned musl_cmsg_len = musl_cmsg->cmsg_len;
+            /* Do all the checks again so we don't get TOCTOUd. */
+            FILC_ASSERT(!pas_add_uint32_overflow(offset, musl_cmsg_len, &offset_to_end), origin);
+            FILC_ASSERT(offset_to_end <= musl_controllen, origin);
+            FILC_ASSERT(musl_cmsg_len >= sizeof(struct musl_cmsghdr), origin);
+            unsigned payload_len = musl_cmsg_len - sizeof(struct musl_cmsghdr);
+            offset = pas_round_up_to_power_of_2(offset_to_end, sizeof(long));
+            FILC_ASSERT(offset >= offset_to_end, origin);
+            FILC_ASSERT(offset <= musl_controllen, origin);
+            switch (musl_cmsg->cmsg_type) {
+            case 0x01:
+                cmsg->cmsg_type = SCM_RIGHTS;
+                break;
+            default:
+                /* We don't support any cmsg other than SCM_RIGHTS right now. */
+                goto error;
+            }
+            if (!from_musl_socket_level(musl_cmsg->cmsg_level, &cmsg->cmsg_level))
+                goto error;
+            cmsg->cmsg_len = CMSG_LEN(payload_len);
+            memcpy(CMSG_DATA(cmsg), musl_cmsg + 1, payload_len);
+            cmsg = CMSG_NXTHDR(msghdr, cmsg);
+        }
+    }
+
+    if (verbose)
+        pas_log("from_musl_msghdr_for_send succeeded\n");
+
+    return true;
+error:
+    destroy_msghdr(msghdr);
+    return false;
+}
+
+static bool from_musl_msghdr_for_recv(struct musl_msghdr* musl_msghdr, struct msghdr* msghdr,
+                                      const filc_origin* origin)
+{
+    from_musl_msghdr_base(musl_msghdr, msghdr);
+
+    unsigned musl_namelen = musl_msghdr->msg_namelen;
+    if (musl_namelen) {
+        filc_check_access_int(filc_ptr_load(&musl_msghdr->msg_name), musl_namelen, origin);
+        msghdr->msg_namelen = MAX_SOCKADDRLEN;
+        msghdr->msg_name = filc_allocate_utility(MAX_SOCKADDRLEN);
+    }
+
+    unsigned musl_controllen = musl_msghdr->msg_controllen;
+    if (musl_controllen) {
+        /* This code relies on the fact that the amount of space that musl requires you to allocate for
+           control headers is always greater than the amount that MacOS requires. */
+        msghdr->msg_control = filc_allocate_utility(musl_controllen);
+        msghdr->msg_controllen = musl_controllen;
+    }
+    
+    return true;
+}
+
+static void to_musl_msghdr_for_recv(struct msghdr* msghdr, struct musl_msghdr* musl_msghdr,
+                                    const filc_origin* origin)
+{
+    if (msghdr->msg_namelen) {
+        unsigned musl_namelen = musl_msghdr->msg_namelen;
+        filc_ptr musl_name_ptr = filc_ptr_load(&musl_msghdr->msg_name);
+        filc_check_access_int(musl_name_ptr, musl_namelen, origin);
+        struct musl_sockaddr* musl_name = (struct musl_sockaddr*)filc_ptr_ptr(musl_name_ptr);
+        PAS_ASSERT(to_musl_sockaddr(msghdr->msg_name, msghdr->msg_namelen,
+                                    musl_name, &musl_namelen));
+        musl_msghdr->msg_namelen = musl_namelen;
+    }
+    
+    unsigned musl_controllen = musl_msghdr->msg_controllen;
+    filc_ptr musl_control = filc_ptr_load(&musl_msghdr->msg_control);
+    filc_check_access_int(musl_control, musl_controllen, origin);
+    char* musl_control_raw = (char*)filc_ptr_ptr(musl_control);
+    pas_zero_memory(musl_control_raw, musl_controllen);
+
+    PAS_ASSERT(to_musl_msg_flags(msghdr->msg_flags, &musl_msghdr->msg_flags));
+
+    unsigned controllen = msghdr->msg_controllen;
+    if (controllen) {
+        struct cmsghdr* cmsg;
+        unsigned needed_musl_len = 0;
+        for (cmsg = CMSG_FIRSTHDR(msghdr); cmsg; cmsg = CMSG_NXTHDR(msghdr, cmsg)) {
+            char* cmsg_end = (char*)cmsg + cmsg->cmsg_len;
+            char* cmsg_data = (char*)CMSG_DATA(cmsg);
+            PAS_ASSERT(cmsg_end >= cmsg_data);
+            unsigned payload_len = cmsg_end - cmsg_data;
+            unsigned aligned_payload_len = pas_round_up_to_power_of_2(payload_len, sizeof(long));
+            PAS_ASSERT(aligned_payload_len >= payload_len);
+            struct musl_cmsghdr musl_cmsghdr;
+            musl_cmsghdr.cmsg_len =
+                pas_round_up_to_power_of_2(sizeof(struct musl_cmsghdr), sizeof(size_t)) + payload_len;
+            PAS_ASSERT(to_musl_socket_level(cmsg->cmsg_level, &musl_cmsghdr.cmsg_level));
+            switch (cmsg->cmsg_type) {
+            case SCM_RIGHTS:
+                musl_cmsghdr.cmsg_type = 0x01;
+                break;
+            default:
+                PAS_ASSERT(!"Should not be reached");
+                break;
+            }
+            if (needed_musl_len <= musl_controllen) {
+                memcpy(musl_control_raw + needed_musl_len, &musl_cmsghdr,
+                       pas_min_uint32(musl_controllen - needed_musl_len, sizeof(struct musl_cmsghdr)));
+            }
+            PAS_ASSERT(!pas_add_uint32_overflow(
+                           needed_musl_len, sizeof(struct musl_cmsghdr), &needed_musl_len));
+            if (needed_musl_len <= musl_controllen) {
+                memcpy(musl_control_raw + needed_musl_len, cmsg_data,
+                       pas_min_uint32(musl_controllen - needed_musl_len, payload_len));
+            }
+            PAS_ASSERT(!pas_add_uint32_overflow(
+                           needed_musl_len, aligned_payload_len, &needed_musl_len));
+        }
+        if (needed_musl_len > musl_controllen)
+            musl_msghdr->msg_flags |= 0x0008; /* MSG_CTRUNC */
+    }
+}
+
+void pizlonated_f_zsys_sendmsg(PIZLONATED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    if (verbose)
+        pas_log("In sendmsg\n");
+    
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_sendmsg",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int sockfd = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr msg_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    int musl_flags = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(ssize_t), &origin);
+    filc_restrict(msg_ptr, 1, &musl_msghdr_type, &origin);
+    struct musl_msghdr* musl_msg = (struct musl_msghdr*)filc_ptr_ptr(msg_ptr);
+    int flags;
+    if (!from_musl_msg_flags(musl_flags, &flags))
+        goto einval;
+    struct msghdr msg;
+    if (!from_musl_msghdr_for_send(musl_msg, &msg, &origin))
+        goto einval;
+    if (verbose)
+        pas_log("Got this far\n");
+    filc_exit();
+    if (verbose)
+        pas_log("Actually doing sendmsg\n");
+    ssize_t result = sendmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("sendmsg result = %ld\n", (long)result);
+    filc_enter();
+    destroy_msghdr(&msg);
+    if (result < 0)
+        set_errno(errno);
+    *(ssize_t*)filc_ptr_ptr(rets) = result;
+    return;
+
+einval:
+    set_errno(EINVAL);
+    *(ssize_t*)filc_ptr_ptr(rets) = -1;
+}
+
+void pizlonated_f_zsys_recvmsg(PIZLONATED_SIGNATURE)
+{
+    static const bool verbose = false;
+    
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_recvmsg",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    int sockfd = filc_ptr_get_next_int(&args, &origin);
+    filc_ptr msg_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    int musl_flags = filc_ptr_get_next_int(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(ssize_t), &origin);
+    filc_restrict(msg_ptr, 1, &musl_msghdr_type, &origin);
+    struct musl_msghdr* musl_msg = (struct musl_msghdr*)filc_ptr_ptr(msg_ptr);
+    int flags;
+    if (verbose)
+        pas_log("doing recvmsg\n");
+    if (!from_musl_msg_flags(musl_flags, &flags)) {
+        if (verbose)
+            pas_log("Bad flags\n");
+        goto einval;
+    }
+    struct msghdr msg;
+    if (!from_musl_msghdr_for_recv(musl_msg, &msg, &origin)) {
+        if (verbose)
+            pas_log("Bad msghdr\n");
+        goto einval;
+    }
+    filc_exit();
+    if (verbose) {
+        pas_log("Actually doing recvmsg\n");
+        pas_log("msg.msg_iov = %p\n", msg.msg_iov);
+        pas_log("msg.msg_iovlen = %d\n", msg.msg_iovlen);
+        int index;
+        for (index = 0; index < msg.msg_iovlen; ++index)
+            pas_log("msg.msg_iov[%d].iov_len = %zu\n", index, msg.msg_iov[index].iov_len);
+    }
+    ssize_t result = recvmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("recvmsg result = %ld\n", (long)result);
+    filc_enter();
+    if (result < 0) {
+        if (verbose)
+            pas_log("recvmsg failed: %s\n", strerror(errno));
+        set_errno(my_errno);
+    } else
+        to_musl_msghdr_for_recv(&msg, musl_msg, &origin);
+    destroy_msghdr(&msg);
+    *(ssize_t*)filc_ptr_ptr(rets) = result;
+    return;
+
+einval:
+    set_errno(EINVAL);
+    *(ssize_t*)filc_ptr_ptr(rets) = -1;
 }
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)

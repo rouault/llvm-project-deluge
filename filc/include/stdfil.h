@@ -799,6 +799,8 @@ struct utmpx* zsys_pututxline(const void* utmpx);
 void zsys_setutxent(void);
 void* zsys_getlastlogx(unsigned uid, void* lastlogx);
 void* zsys_getlastlogxbyname(const char* name, void* lastlogx);
+long zsys_sendmsg(int sockfd, const void* msg, int flags);
+long zsys_recvmsg(int sockfd, void* msg, int flags);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */
