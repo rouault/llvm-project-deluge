@@ -25,6 +25,7 @@ static void child(int sockfd)
     msg.msg_controllen = sizeof(cmsgbuf.buf);
     cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    printf("cmsg->cmsg_len = %u\n", (unsigned)cmsg->cmsg_len);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     *(int*)CMSG_DATA(cmsg) = socks[0];
@@ -37,7 +38,7 @@ static void child(int sockfd)
     msg.msg_iov = &vec;
     msg.msg_iovlen = 1;
 
-    printf("About to sendmsg\n");
+    printf("About to sendmsg. Sending fd = %d using fd = %d\n", socks[0], sockfd);
 
     for (;;) {
         ssize_t send_result = sendmsg(sockfd, &msg, 0);

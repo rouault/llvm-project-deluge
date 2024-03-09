@@ -4572,6 +4572,7 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
     };
 
     int my_errno;
+    bool in_filc = true;
     
     // NOTE: This must use musl's ioctl numbers, and must treat the passed-in struct as having the
     // pizlonated musl layout.
@@ -4601,7 +4602,7 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
         musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         if (!from_musl_termios(musl_termios, &termios)) {
             errno = EINVAL;
-            goto error;
+            goto error_in_filc;
         }
         int optional_actions;
         switch (request) {
@@ -4682,10 +4683,13 @@ static int zsys_ioctl_impl(int fd, unsigned long request, filc_ptr args)
     }
 
 error:
+    in_filc = false;
+error_in_filc:
     my_errno = errno;
     if (verbose)
         pas_log("failed ioctl: %s\n", strerror(my_errno));
-    filc_enter();
+    if (!in_filc)
+        filc_enter();
     set_errno(my_errno);
     return -1;
 }
@@ -9204,7 +9208,10 @@ static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct ms
             FILC_ASSERT(!pas_add_uint32_overflow(offset, cmsg_len, &offset_to_end), origin);
             FILC_ASSERT(offset_to_end <= musl_controllen, origin);
             FILC_ASSERT(cmsg_len >= sizeof(struct musl_cmsghdr), origin);
-            unsigned payload_len = cmsg_len - sizeof(struct musl_cmsghdr);
+            FILC_ASSERT(cmsg_len >= pas_round_up_to_power_of_2(sizeof(struct musl_cmsghdr), sizeof(size_t)),
+                        origin);
+            unsigned payload_len = cmsg_len - pas_round_up_to_power_of_2(
+                sizeof(struct musl_cmsghdr), sizeof(size_t));
             FILC_ASSERT(!pas_add_uintptr_overflow(
                             cmsg_total_size, CMSG_SPACE(payload_len), &cmsg_total_size),
                         origin);
@@ -9219,6 +9226,7 @@ static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct ms
             pas_log("cmsg_total_size = %zu\n", cmsg_total_size);
         
         struct cmsghdr* control = filc_allocate_utility(cmsg_total_size);
+        pas_zero_memory(control, cmsg_total_size);
         msghdr->msg_control = control;
         msghdr->msg_controllen = (unsigned)cmsg_total_size;
 
@@ -9231,6 +9239,7 @@ static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct ms
                         origin);
             if (offset_to_end > musl_controllen)
                 break;
+            PAS_ASSERT(cmsg);
             struct musl_cmsghdr* musl_cmsg =
                 (struct musl_cmsghdr*)((char*)filc_ptr_ptr(musl_control) + offset);
             if (verbose)
@@ -9240,7 +9249,13 @@ static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct ms
             FILC_ASSERT(!pas_add_uint32_overflow(offset, musl_cmsg_len, &offset_to_end), origin);
             FILC_ASSERT(offset_to_end <= musl_controllen, origin);
             FILC_ASSERT(musl_cmsg_len >= sizeof(struct musl_cmsghdr), origin);
-            unsigned payload_len = musl_cmsg_len - sizeof(struct musl_cmsghdr);
+            FILC_ASSERT(musl_cmsg_len >= pas_round_up_to_power_of_2(
+                            sizeof(struct musl_cmsghdr), sizeof(size_t)),
+                        origin);
+            unsigned payload_len = musl_cmsg_len - pas_round_up_to_power_of_2(
+                sizeof(struct musl_cmsghdr), sizeof(size_t));
+            if (verbose)
+                pas_log("payload_len = %u\n", payload_len);
             offset = pas_round_up_to_power_of_2(offset_to_end, sizeof(long));
             FILC_ASSERT(offset >= offset_to_end, origin);
             FILC_ASSERT(offset <= musl_controllen, origin);
@@ -9256,6 +9271,13 @@ static bool from_musl_msghdr_for_send(struct musl_msghdr* musl_msghdr, struct ms
                 goto error;
             cmsg->cmsg_len = CMSG_LEN(payload_len);
             memcpy(CMSG_DATA(cmsg), musl_cmsg + 1, payload_len);
+            if (verbose) {
+                pas_log("sizeof(cmsghdr) = %zu\n", sizeof(struct cmsghdr));
+                pas_log("cmsg->cmsg_type = %d\n", cmsg->cmsg_type);
+                pas_log("cmsg->cmsg_level = %d\n", cmsg->cmsg_level);
+                pas_log("cmsg->cmsg_len = %u\n", (unsigned)cmsg->cmsg_len);
+                pas_log("cmsg data as int = %d\n", *(int*)CMSG_DATA(cmsg));
+            }
             cmsg = CMSG_NXTHDR(msghdr, cmsg);
         }
     }
