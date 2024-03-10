@@ -1348,6 +1348,8 @@ void pizlonated_f_zsys_getlastlogx(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_getlastlogxbyname(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_sendmsg(PIZLONATED_SIGNATURE);
 void pizlonated_f_zsys_recvmsg(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_fchmod(PIZLONATED_SIGNATURE);
+void pizlonated_f_zsys_rename(PIZLONATED_SIGNATURE);
 
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
 void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
