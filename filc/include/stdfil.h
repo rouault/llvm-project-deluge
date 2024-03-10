@@ -350,12 +350,12 @@ void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
 
 /* Given a type and a range, returns a type that describes that range. Note that it's valid to ask
    for a range bigger than the type. It's also valid for this to return a type whose size is smaller
-   than the range, if we can optimize repetitions (for example, InP1P2P3P4 is the same as
-   InP1P2P3P4InP1P2P3P4, so the algorithm could return either, unless the range is too small for
-   InP1P2P3P4InP1P2P3P4). That said, don't expect that this function will definitely do any such
-   optimizations. In particular, if the range is large, then this might (try to) allocate a
-   ginormous type. Since this never returns NULL, failure in those allocations gives you the
-   ultimate security mitigation (i.e. it kills the shit out of your program). */
+   than the range, if we can optimize repetitions (for example, iSC is the same as iSCiSC, so the
+   algorithm could return either, unless the range is too small for iSCiSC). That said, don't expect
+   that this function will definitely do any such optimizations. In particular, if the range is large,
+   then this might (try to) allocate a ginormous type. Since this never returns NULL, failure in those
+   allocations gives you the ultimate security mitigation (i.e. it kills the shit out of your
+   program). */
 ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
 
 /* Gets a type that describes the first bytes of memory starting at where ptr points.
@@ -792,10 +792,10 @@ void* zsys_getgrnam(const char* name);
 int zsys_chown(const char* pathname, unsigned owner, unsigned group);
 int zsys_chmod(const char* pathname, unsigned mode);
 void zsys_endutxent(void);
-struct utmpx* zsys_getutxent(void);
-struct utmpx* zsys_getutxid(const void* utmpx);
-struct utmpx* zsys_getutxline(const void* utmpx);
-struct utmpx* zsys_pututxline(const void* utmpx);
+void* zsys_getutxent(void);
+void* zsys_getutxid(const void* utmpx);
+void* zsys_getutxline(const void* utmpx);
+void* zsys_pututxline(const void* utmpx);
 void zsys_setutxent(void);
 void* zsys_getlastlogx(unsigned uid, void* lastlogx);
 void* zsys_getlastlogxbyname(const char* name, void* lastlogx);
