@@ -35,12 +35,17 @@ Fil-C introduces memory safety at the core of C:
   thwarted at runtime by Fil-C.
 
 Fil-C is already powerful enough to run a [memory-safe curl](https://github.com/pizlonator/deluded-curl-8.5.0)
+and a [memory-safe OpenSSH (both client and server)](https://github.com/pizlonator/deluded-openssh-portable)
 on top of a [memory-safe OpenSSL](https://github.com/pizlonator/deluded-openssl-3.2.0),
 [memory-safe zlib](https://github.com/pizlonator/deluded-zlib-1.3), and
 [memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
 me on my Apple Silicon Mac:
 
     pizfix/bin/curl https://www.google.com/
+
+as does this:
+
+    pizfix/bin/ssh user@some.server.com
 
 Where the `pizfix` is the Fil-C staging environment for *pizlonated* programs (programs that now
 successfully compile with Fil-C). The only unsafety in Fil-C is in libpizlo (the runtime library),
@@ -72,19 +77,22 @@ simply do:
     ./setup_gits.sh
     ./build_all.sh
 
-Note you should get a build error in ssh at the end, like this:
-
-    ./arch/aarch64/syscall_arch.h:21:2: __syscall1: filc_error: Cannot handle inline asm:   %8 = call i64 asm sideeffect "svc 0", "={x0},{x8},{x0},~{memory},~{cc}"(i64 %filc_load97, i64 %filc_load103) #4, !dbg !26, !srcloc !28
-    [13104] filc panic: thwarted a futile attempt to violate memory safety.
-    /bin/bash: line 1: 13104 Trace/BPT trap: 5       ./ssh-keygen -A
-
-This is because I've only started porting OpenSSH. If you get to this error, then it means you have
-a working Fil-C. Now you can try to download something with the pizlonated curl, like maybe:
+This will build memory-safe musl, zlib, OpenSSL, curl, and OpenSSH. Now you can try to download something
+with the pizlonated curl, like maybe:
 
     pizfix/bin/curl https://www.google.com/
 
-If this works, then congratulations! You just downloaded something over https using a memory-safe
-userland stack!
+Or fire up a memory-safe sshd:
+
+    sudo $PWD/pizfix/sbin/sshd -p 10022
+
+And then even connect to it:
+
+    pizfix/bin/ssh -p 10022 localhost
+
+You'll probably encounter bugs. For example, password auth is broken, so logging into your ssh server will
+only work if you have authorized_keys set up. That's mostly because of my hacks to get musl (a Linux libc)
+to work on Darwin.
 
 ### Using Fil-C
 
@@ -245,7 +253,7 @@ and then making it super fast.
 
 ### Growing the Corpus
 
-Fil-C can already run most of musl, zlib, OpenSSL, and curl. It's starting to run OpenSSH. My goal
+Fil-C can already run most of musl, zlib, OpenSSL, curl, and OpenSSH. My goal
 is to grow the corpus until I have a small UNIX-like userland that comprises only pizlonated
 programs.
 
@@ -254,9 +262,9 @@ Corpus growth should proceed as follows:
 - First get to at least 10 large, real-world C libaries or programs compiling with Fil-C. I don't
   consider zlib to be large, so it doesn't count. I don't consider musl to be part of the corpus,
   since I'm making lots of internal changes to it (and I'm willing to even completely rewrite it
-  if it makes adding more programs easier). I don't have confidence that OpenSSL and curl fully
-  work yet. So, right now, I'm somewhere between 0/10 and 2/10 on this goal, depending
-  on whether you believe that I got OpenSSL and curl to really work or not.
+  if it makes adding more programs easier). I don't have confidence that OpenSSL, curl, and OpenSSH
+  fully work yet. So, right now, I'm somewhere between 0/10 and 3/10 on this goal, depending
+  on whether you believe that I got OpenSSL/curl/OpenSSH to really work or not.
 
 - Then add C++ support and add at least 10 large, real-world C++ libraries or programs.
 
