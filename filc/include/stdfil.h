@@ -803,6 +803,8 @@ long zsys_sendmsg(int sockfd, const void* msg, int flags);
 long zsys_recvmsg(int sockfd, void* msg, int flags);
 int zsys_fchmod(int fd, unsigned mode);
 int zsys_rename(const char* oldname, const char* newname);
+int zsys_unlink(const char* path);
+int zsys_link(const char* oldname, const char* newname);
 
 /* Functions that return bool: they return true on success, false on error. All of these set errno
    on error. */

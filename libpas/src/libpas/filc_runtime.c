@@ -9537,6 +9537,57 @@ void pizlonated_f_zsys_rename(PIZLONATED_SIGNATURE)
     *(int*)filc_ptr_ptr(rets) = result;
 }
 
+void pizlonated_f_zsys_unlink(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_unlink",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr path_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* path = filc_check_and_get_new_str(path_ptr, &origin);
+    filc_exit();
+    int result = unlink(path);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(path);
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
+void pizlonated_f_zsys_link(PIZLONATED_SIGNATURE)
+{
+    static filc_origin origin = {
+        .filename = __FILE__,
+        .function = "zsys_link",
+        .line = 0,
+        .column = 0
+    };
+    filc_ptr args = PIZLONATED_ARGS;
+    filc_ptr rets = PIZLONATED_RETS;
+    filc_ptr oldname_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    filc_ptr newname_ptr = filc_ptr_get_next_ptr(&args, &origin);
+    PIZLONATED_DELETE_ARGS();
+    filc_check_access_int(rets, sizeof(int), &origin);
+    const char* oldname = filc_check_and_get_new_str(oldname_ptr, &origin);
+    const char* newname = filc_check_and_get_new_str(newname_ptr, &origin);
+    filc_exit();
+    int result = link(oldname, newname);
+    int my_errno = errno;
+    filc_enter();
+    filc_deallocate(oldname);
+    filc_deallocate(newname);
+    if (result < 0)
+        set_errno(my_errno);
+    *(int*)filc_ptr_ptr(rets) = result;
+}
+
 void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE)
 {
     static filc_origin origin = {
