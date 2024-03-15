@@ -348,6 +348,17 @@ static PAS_ALWAYS_INLINE bool pas_segregated_page_config_is_utility(
     return pas_segregated_page_config_kind_is_utility(config.kind);
 }
 
+static PAS_ALWAYS_INLINE bool pas_segregated_page_config_kind_is_verse(pas_segregated_page_config_kind kind)
+{
+    return kind == pas_segregated_page_config_kind_verse_small_segregated
+        || kind == pas_segregated_page_config_kind_verse_medium_segregated;
+}
+
+static PAS_ALWAYS_INLINE bool pas_segregated_page_config_is_verse(pas_segregated_page_config config)
+{
+    return pas_segregated_page_config_kind_is_verse(config.kind);
+}
+
 static PAS_ALWAYS_INLINE pas_lock_hold_mode
 pas_segregated_page_config_kind_heap_lock_hold_mode(pas_segregated_page_config_kind config_kind)
 {

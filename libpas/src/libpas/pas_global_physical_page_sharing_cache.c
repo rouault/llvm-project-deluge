@@ -43,34 +43,34 @@
 pas_simple_large_free_heap pas_global_physical_page_sharing_cache = PAS_SIMPLE_LARGE_FREE_HEAP_INITIALIZER;
 
 static pas_aligned_allocation_result global_physical_allocate_aligned(size_t size,
-                                                                      pas_alignment alignment,
-                                                                      void* arg)
+																	  pas_alignment alignment,
+																	  void* arg)
 {
-    pas_aligned_allocation_result result;
+	pas_aligned_allocation_result result;
 
+	PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
     PAS_ASSERT(!arg);
-    PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
 
-    result = pas_enumerable_page_malloc_try_allocate_without_deallocating_padding(size, alignment, pas_committed);
+	result = pas_enumerable_page_malloc_try_allocate_without_deallocating_padding(size, alignment, pas_committed);
 
-    if (!result.result)
-        return result;
+	if (!result.result)
+		return result;
 
     pas_physical_page_sharing_pool_take_later(pas_aligned_allocation_result_total_size(result));
 
-    PAS_ASSERT(result.zero_mode == pas_zero_mode_is_all_zero);
+	PAS_ASSERT(result.zero_mode == pas_zero_mode_is_all_zero);
 
-    pas_large_sharing_pool_boot_free(
-        pas_range_create((uintptr_t)result.left_padding, (uintptr_t)result.right_padding + result.right_padding_size),
-        pas_physical_memory_is_locked_by_virtual_range_common_lock,
-        pas_may_mmap);
+	pas_large_sharing_pool_boot_free(
+		pas_range_create((uintptr_t)result.left_padding, (uintptr_t)result.right_padding + result.right_padding_size),
+		pas_physical_memory_is_locked_by_virtual_range_common_lock,
+		pas_may_mmap);
 
-    return result;
+	return result;
 }
 
 static void initialize_config(pas_large_free_heap_config* config)
 {
-    PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
+	PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
     config->type_size = 1;
     config->min_alignment = 1;
     config->aligned_allocator = global_physical_allocate_aligned;
@@ -82,102 +82,102 @@ static void initialize_config(pas_large_free_heap_config* config)
 pas_allocation_result pas_global_physical_page_sharing_cache_try_allocate_with_alignment(
     size_t size, pas_alignment alignment, const char* name)
 {
-    pas_allocation_result result;
+	pas_allocation_result result;
     pas_large_free_heap_config config;
 
-    pas_heap_lock_assert_held();
+	pas_heap_lock_assert_held();
 	
-    if (pas_reservation_commit_mode == pas_committed) {
-        result = pas_reservation_free_heap_try_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
-        if (!result.did_succeed)
-            return result;
+	if (pas_reservation_commit_mode == pas_committed) {
+		result = pas_reservation_free_heap_try_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
+		if (!result.did_succeed)
+			return result;
 
-        pas_physical_page_sharing_pool_take_later(size);
+		pas_physical_page_sharing_pool_take_later(size);
 		
-        pas_large_sharing_pool_boot_free(
-            pas_range_create(result.begin, result.begin + size),
-            pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            pas_may_mmap);
+		pas_large_sharing_pool_boot_free(
+			pas_range_create(result.begin, result.begin + size),
+			pas_physical_memory_is_locked_by_virtual_range_common_lock,
+			pas_may_mmap);
 
-        return result;
-    }
+		return result;
+	}
 
-    PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
+	PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
 
-    initialize_config(&config);
-    result = pas_simple_large_free_heap_try_allocate(&pas_global_physical_page_sharing_cache, size, alignment, &config);
-    if (!result.did_succeed)
-        return result;
+	initialize_config(&config);
+	result = pas_simple_large_free_heap_try_allocate(&pas_global_physical_page_sharing_cache, size, alignment, &config);
+	if (!result.did_succeed)
+		return result;
 
-    pas_large_sharing_pool_testing_assert_booted_and_free(
-        pas_range_create(result.begin, result.begin + size),
-        pas_physical_memory_is_locked_by_virtual_range_common_lock,
-        pas_may_mmap);
+	pas_large_sharing_pool_testing_assert_booted_and_free(
+		pas_range_create(result.begin, result.begin + size),
+		pas_physical_memory_is_locked_by_virtual_range_common_lock,
+		pas_may_mmap);
 
-    pas_did_allocate((void*)result.begin, size, pas_global_physical_page_sharing_cache_kind, name, pas_delegate_allocation);
+	pas_did_allocate((void*)result.begin, size, pas_global_physical_page_sharing_cache_kind, name, pas_delegate_allocation);
 
-    return result;
+	return result;
 }
 
 pas_allocation_result pas_global_physical_page_sharing_cache_allocate_with_alignment(
     size_t size, pas_alignment alignment, const char* name)
 {
-    pas_allocation_result result;
-    result = pas_global_physical_page_sharing_cache_try_allocate_with_alignment(size, alignment, name);
-    PAS_ASSERT(result.did_succeed);
-    PAS_ASSERT(result.begin);
-    return result;
+	pas_allocation_result result;
+	result = pas_global_physical_page_sharing_cache_try_allocate_with_alignment(size, alignment, name);
+	PAS_ASSERT(result.did_succeed);
+	PAS_ASSERT(result.begin);
+	return result;
 }
 
 pas_allocation_result pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(
-    size_t size, pas_alignment alignment, const char* name, pas_physical_memory_transaction* transaction)
+	size_t size, pas_alignment alignment, const char* name, pas_physical_memory_transaction* transaction)
 {
-    pas_allocation_result result;
+	pas_allocation_result result;
     pas_large_free_heap_config config;
 	
-    if (pas_reservation_commit_mode == pas_committed)
-        return pas_reservation_free_heap_try_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
+	if (pas_reservation_commit_mode == pas_committed)
+		return pas_reservation_free_heap_try_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
 
-    PAS_ASSERT(transaction);
+	PAS_ASSERT(transaction);
 
-    initialize_config(&config);
-    result = pas_simple_large_free_heap_try_allocate(&pas_global_physical_page_sharing_cache, size, alignment, &config);
-    if (!result.did_succeed)
-        return result;
+	initialize_config(&config);
+	result = pas_simple_large_free_heap_try_allocate(&pas_global_physical_page_sharing_cache, size, alignment, &config);
+	if (!result.did_succeed)
+		return result;
 
-    pas_large_sharing_pool_testing_assert_booted_and_free(
-        pas_range_create(result.begin, result.begin + size),
-        pas_physical_memory_is_locked_by_virtual_range_common_lock,
-        pas_may_mmap);
+	pas_large_sharing_pool_testing_assert_booted_and_free(
+		pas_range_create(result.begin, result.begin + size),
+		pas_physical_memory_is_locked_by_virtual_range_common_lock,
+		pas_may_mmap);
 
-    if (!pas_large_sharing_pool_allocate_and_commit(
-            pas_range_create(result.begin, result.begin + size),
-            transaction, pas_physical_memory_is_locked_by_virtual_range_common_lock, pas_may_mmap)) {
-        PAS_ASSERT(pas_physical_memory_transaction_is_aborting(transaction));
-        pas_simple_large_free_heap_deallocate(
-            &pas_global_physical_page_sharing_cache, result.begin, result.begin + size, result.zero_mode, &config);
-        return pas_allocation_result_create_failure();
-    }
+	if (!pas_large_sharing_pool_allocate_and_commit(
+			pas_range_create(result.begin, result.begin + size),
+			transaction, pas_physical_memory_is_locked_by_virtual_range_common_lock, pas_may_mmap)) {
+		PAS_ASSERT(pas_physical_memory_transaction_is_aborting(transaction));
+		pas_simple_large_free_heap_deallocate(
+			&pas_global_physical_page_sharing_cache, result.begin, result.begin + size, result.zero_mode, &config);
+		return pas_allocation_result_create_failure();
+	}
 
-    pas_did_allocate((void*)result.begin, size, pas_global_physical_page_sharing_cache_kind, name, pas_delegate_allocation);
+	pas_did_allocate((void*)result.begin, size, pas_global_physical_page_sharing_cache_kind, name, pas_delegate_allocation);
 
-    return result;
+	return result;
 }
 
 pas_allocation_result pas_global_physical_page_sharing_cache_allocate_committed_with_alignment(
-    size_t size, pas_alignment alignment, const char* name, pas_physical_memory_transaction* transaction)
+	size_t size, pas_alignment alignment, const char* name, pas_physical_memory_transaction* transaction)
 {
-    pas_allocation_result result;
+	pas_allocation_result result;
 
-    if (pas_reservation_commit_mode == pas_committed)
-        return pas_reservation_free_heap_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
+	if (pas_reservation_commit_mode == pas_committed)
+		return pas_reservation_free_heap_allocate_with_alignment(size, alignment, name, pas_delegate_allocation);
 
-    result = pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(size, alignment, name, transaction);
-    if (pas_physical_memory_transaction_is_aborting(transaction))
-        PAS_ASSERT(!result.did_succeed);
-    else
-        PAS_ASSERT(result.did_succeed);
-    return result;
+	result = pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(size, alignment, name, transaction);
+	if (pas_physical_memory_transaction_is_aborting(transaction))
+		PAS_ASSERT(!result.did_succeed);
+	else
+		PAS_ASSERT(result.did_succeed);
+	return result;
 }
 
 pas_allocation_result pas_global_physical_page_sharing_cache_provider(
@@ -186,20 +186,20 @@ pas_allocation_result pas_global_physical_page_sharing_cache_provider(
     const char* name,
     pas_heap* heap,
     pas_physical_memory_transaction* transaction,
-    pas_primordial_page_state desired_state,
+	pas_primordial_page_state desired_state,
     void *arg)
 {
-    PAS_UNUSED_PARAM(heap);
-    PAS_ASSERT(!arg);
-    switch (desired_state) {
-    case pas_primordial_page_is_shared:
-        return pas_global_physical_page_sharing_cache_try_allocate_with_alignment(size, alignment, name);
-    case pas_primordial_page_is_committed:
-        return pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(size, alignment, name, transaction);
-    default:
-        PAS_ASSERT(!"Should not be reached");
-        return pas_allocation_result_create_failure();
-    }
+	PAS_UNUSED_PARAM(heap);
+	PAS_ASSERT(!arg);
+	switch (desired_state) {
+	case pas_primordial_page_is_shared:
+		return pas_global_physical_page_sharing_cache_try_allocate_with_alignment(size, alignment, name);
+	case pas_primordial_page_is_committed:
+		return pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(size, alignment, name, transaction);
+	default:
+		PAS_ASSERT(!"Should not be reached");
+		return pas_allocation_result_create_failure();
+	}
 }
 
 #endif /* LIBPAS_ENABLED */

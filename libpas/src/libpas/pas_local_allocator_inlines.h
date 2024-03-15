@@ -49,6 +49,10 @@
 #include "pas_segregated_view_allocator_inlines.h"
 #include "pas_thread_local_cache.h"
 #include "pas_thread_local_cache_node.h"
+#include "ue_include/verse_heap_config_ue.h"
+#include "verse_heap.h"
+#include "verse_heap_config.h"
+#include "verse_heap_object_set_inlines.h"
 #include <inttypes.h>
 
 PAS_BEGIN_EXTERN_C;
@@ -126,6 +130,7 @@ static inline void pas_local_allocator_set_up_bump(pas_local_allocator* allocato
 
 typedef struct {
     bool need_slow_granules;
+    bool need_slow_black;
     unsigned free;
     unsigned object_size;
     pas_page_granule_use_count* use_counts;
@@ -133,6 +138,7 @@ typedef struct {
     uintptr_t shift;
     uintptr_t page_size;
     uintptr_t granule_size;
+    unsigned* mark_bits_base;
 } pas_local_allocator_scan_bits_individually_data;
 
 static PAS_ALWAYS_INLINE unsigned pas_local_allocator_scan_bits_individually_bits_source(
@@ -155,13 +161,19 @@ static PAS_ALWAYS_INLINE bool pas_local_allocator_scan_bits_individually_bit_cal
 
     data = (pas_local_allocator_scan_bits_individually_data*)arg;
 
-    PAS_ASSERT(data->need_slow_granules);
+    PAS_ASSERT(data->need_slow_granules || data->need_slow_black);
 
     offset = data->base_offset + (index.index << data->shift);
 
     if (data->need_slow_granules) {
         pas_page_granule_increment_uses_for_range(
             data->use_counts, offset, offset + data->object_size, data->page_size, data->granule_size);
+    }
+
+    if (data->need_slow_black) {
+        /* There are some cases where we know that we don't have to do a CAS. For example, if we know that the
+           entire mark bit word is being set. */
+        pas_bitvector_set_atomic(data->mark_bits_base, offset >> VERSE_HEAP_MIN_ALIGN_SHIFT, true);
     }
 
     return true;
@@ -175,12 +187,15 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits_
     pas_full_alloc_bits full_alloc_bits,
     pas_segregated_page_config page_config,
     pas_local_allocator_scan_bits_individually_data* data,
+    verse_heap_black_allocation_mode black_mode,
     unsigned* num_denullified_words)
 {
     static const bool verbose = false;
     
+    unsigned* mark_bits_base;
     size_t index;
     unsigned* alloc_bits;
+    bool need_fast_black;
 
 #if PAS_LOCAL_ALLOCATOR_MEASURE_REFILL_EFFICIENCY
     unsigned num_total_objects;
@@ -191,7 +206,19 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits_
 #endif /* PAS_LOCAL_ALLOCATOR_MEASURE_REFILL_EFFICIENCY */
 
     alloc_bits = page->alloc_bits;
+    need_fast_black = false;
+    mark_bits_base = NULL;
 
+    if (black_mode) {
+        mark_bits_base = verse_heap_mark_bits_base_for_boundary((void*)page_boundary);
+        if (page_config.base.min_align_shift == VERSE_HEAP_MIN_ALIGN_SHIFT)
+            need_fast_black = true;
+        else {
+            data->mark_bits_base = mark_bits_base;
+            data->need_slow_black = true;
+        }
+    }
+    
     for (index = full_alloc_bits.word_index_begin; index < full_alloc_bits.word_index_end; ++index) {
         unsigned full;
         unsigned alloc;
@@ -211,10 +238,28 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits_
         
         pas_compiler_fence();
 
+        if (need_fast_black && free) {
+            if (free == full) {
+                mark_bits_base[index] = free;
+                pas_store_store_fence();
+            } else {
+                for (;;) {
+                    unsigned old_mark_bits;
+                    unsigned new_mark_bits;
+
+                    old_mark_bits = mark_bits_base[index];
+                    new_mark_bits = old_mark_bits | free;
+
+                    if (pas_compare_and_swap_uint32_weak(mark_bits_base + index, old_mark_bits, new_mark_bits))
+                        break;
+                }
+            }
+        }
+
         if (view_kind == pas_segregated_partial_view_kind && !alloc && full)
             (*num_denullified_words)++;
 
-        if (data->need_slow_granules) {
+        if (data->need_slow_granules || data->need_slow_black) {
             data->free = free;
             data->base_offset = pas_page_base_object_offset_from_page_boundary_at_index(
                 (unsigned)PAS_BITVECTOR_BIT_INDEX(index), page_config.base);
@@ -237,7 +282,12 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits_
             pas_race_test_hook_local_allocator_scan_bits_to_set_up_free_bits_loop_after_allocate_black,
             allocator, page_boundary, page_config.base.page_config_ptr);
 
-        /* FIXME: In exclusive mode, this could just be alloc_bits[index] = full. But that probably doesn't matter. */
+        /* Must set the alloc_bits after setting mark bits! This ensures that stuff allocated during the allocation
+           cycle always appears black, since the mark bit will be set *before* the object is recognized as being an
+           actual object. Setting the alloc bit is what "makes" the this memory be an object, but by then, it's
+           already marked, but not on any worklist (i.e. black).
+
+           FIXME: In exclusive mode, this could just be alloc_bits[index] = full. But that probably doesn't matter. */
         alloc_bits[index] = alloc | full;
 
         if (verbose) {
@@ -291,6 +341,8 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits(
     data.shift = page_config.base.min_align_shift;
     data.page_size = page_config.base.page_size;
     data.granule_size = page_config.base.granule_size;
+    data.mark_bits_base = NULL;
+    data.need_slow_black = false;
     data.need_slow_granules = false;
 
     if (verbose) {
@@ -333,9 +385,17 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits(
 
     pas_compiler_fence();
 
-    pas_local_allocator_scan_bits_to_set_up_free_bits_loop(
-        allocator, page, page_boundary, view_kind, full_alloc_bits, page_config, &data,
-        &num_denullified_words);
+    if (pas_segregated_page_config_is_verse(page_config) &&
+        verse_heap_page_header_should_allocate_black(
+            verse_heap_page_header_for_boundary((void*)page_boundary, page_config.variant))) {
+        pas_local_allocator_scan_bits_to_set_up_free_bits_loop(
+            allocator, page, page_boundary, view_kind, full_alloc_bits, page_config, &data,
+            verse_heap_allocate_black, &num_denullified_words);
+    } else {
+        pas_local_allocator_scan_bits_to_set_up_free_bits_loop(
+            allocator, page, page_boundary, view_kind, full_alloc_bits, page_config, &data,
+            verse_heap_do_not_allocate_black, &num_denullified_words);
+    }
 
     if (page_config.use_reversed_current_word) {
         PAS_ASSERT(page_config.variant == pas_small_segregated_page_config_variant);
@@ -358,11 +418,16 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits(
     switch (view_kind) {
     case pas_segregated_exclusive_view_kind: {
         uintptr_t full_num_non_empty_words_or_live_bytes = pas_segregated_size_directory_data_ptr_load_non_null(&directory->data)->full_num_non_empty_words_or_live_bytes;
+        if (pas_segregated_page_config_is_verse(page_config)) {
+            verse_heap_notify_allocation(
+                full_num_non_empty_words_or_live_bytes - page->emptiness.num_non_empty_words_or_live_bytes);
+        }
         page->emptiness.num_non_empty_words_or_live_bytes = full_num_non_empty_words_or_live_bytes;
         break;
     }
         
     case pas_segregated_partial_view_kind:
+        PAS_ASSERT(!pas_segregated_page_config_is_verse(page_config));
         page->emptiness.num_non_empty_words_or_live_bytes += num_denullified_words;
         break;
         
@@ -390,6 +455,98 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
     PAS_ASSERT(view_kind == pas_segregated_exclusive_view_kind
                || view_kind == pas_segregated_partial_view_kind);
 
+    if (pas_segregated_page_config_is_verse(page_config)) {
+        verse_heap_iteration_state iteration_state;
+		pas_segregated_exclusive_view* exclusive_view;
+        PAS_ASSERT(view_kind == pas_segregated_exclusive_view_kind);
+
+		exclusive_view = (pas_segregated_exclusive_view*)view;
+
+        if (verbose)
+            pas_log("Considering verse iteration.\n");
+        
+        /* Iterating over a view just as we're about to start allocating in it ensures that we never try to
+           iterate over objects that haven't been fully constructed. This includes:
+           
+           - Objects that are in a local allocator cache. Objects can only be in that state in pages that
+             have alrady been iterated.
+             
+           - Objects that have been allocated but haven't been constructed. Iteration starts with a soft
+             handshake so the only objects that could be in that state would have been allocated since start
+             of iteration. So, they would have been allocated in pages that iterated before that object was
+             allocated. */
+        iteration_state = verse_heap_get_iteration_state();
+
+        if (verbose) {
+            pas_log("iteration_state.version = %" PRIu64 "\n", iteration_state.version);
+            pas_log("iteration_state.set_being_iterated = %p\n", iteration_state.set_being_iterated);
+            pas_log("set contains heap = %d\n",
+                    verse_heap_object_set_contains_heap(
+                        iteration_state.set_being_iterated, directory->heap->runtime_config));
+            pas_log("page header version = %" PRIu64 "\n",
+                    verse_heap_page_header_for_boundary((void*)page_boundary, page_config.variant)->version);
+        }
+        
+        if (iteration_state.version &&
+            verse_heap_object_set_contains_heap(
+                iteration_state.set_being_iterated,
+                directory->heap->runtime_config) &&
+			verse_heap_page_header_for_segregated_page(page)->version != iteration_state.version) {
+			pas_thread_local_cache* cache;
+			unsigned* alloc_bits_copy;
+
+			cache = pas_thread_local_cache_try_get();
+			
+			PAS_TESTING_ASSERT(cache);
+			pas_thread_local_cache_testing_assert_owns_allocator(cache, allocator);
+			PAS_TESTING_ASSERT(page->lock_ptr == &exclusive_view->ownership_lock);
+			PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
+
+			/* We do something a bit crazy but totally legal: we allocate using bmalloc while in the verse allocator slow path. Even crazier,
+			   we read the alloc_bits without holding the lock.
+			
+			   We need to drop the lock to call into bmalloc, since we hold a page lock and bmalloc may want the heap lock.
+			
+			   We can read the alloc bits without holding the lock because only three things could possibly change them:
+			   - Sweep (clears bits)
+			   - Allocator stop (clears bits)
+			   - Allocation (sets bits)
+			
+			   Sweeping cannot happen because heap state says we're iterating, and we never sweep and iterate at the same time. Allocator stop
+			   cannot happen because this allocator is still in use. Allocation cannot happen because this page is ineligible. */
+
+			verse_heap_page_header_for_segregated_page(page)->is_stashing_alloc_bits = true;
+			
+			pas_lock_unlock(&exclusive_view->ownership_lock);
+			alloc_bits_copy = (unsigned*)bmalloc_allocate(PAS_BITVECTOR_NUM_BYTES(page_config.num_alloc_bits));
+			memcpy(alloc_bits_copy, page->alloc_bits, PAS_BITVECTOR_NUM_BYTES(page_config.num_alloc_bits));
+			pas_lock_lock(&exclusive_view->ownership_lock);
+
+			verse_heap_page_header_for_segregated_page(page)->is_stashing_alloc_bits = false;
+			
+			PAS_TESTING_ASSERT(page->lock_ptr == &exclusive_view->ownership_lock);
+			PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
+			PAS_TESTING_ASSERT(pas_memory_is_equal(alloc_bits_copy, page->alloc_bits, PAS_BITVECTOR_NUM_BYTES(page_config.num_alloc_bits)));
+
+			if (verse_heap_page_header_handle_iteration(
+					verse_heap_page_header_for_segregated_page(page),
+					iteration_state.version)) {
+				PAS_ASSERT(!verse_heap_page_header_for_segregated_page(page)->stashed_alloc_bits);
+				PAS_ASSERT(alloc_bits_copy);
+				verse_heap_page_header_for_segregated_page(page)->stashed_alloc_bits = alloc_bits_copy;
+			} else {
+				pas_lock_unlock(&exclusive_view->ownership_lock);
+				bmalloc_deallocate(alloc_bits_copy);
+				pas_lock_lock(&exclusive_view->ownership_lock);
+				
+				PAS_TESTING_ASSERT(page->lock_ptr == &exclusive_view->ownership_lock);
+				PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
+			}
+
+			pas_thread_local_cache_update_after_possible_realloc(&cache, (void**)&allocator);
+        }
+    }
+    
     allocator->payload_end = 0;
     allocator->remaining = 0;
 
@@ -421,6 +578,7 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
     }
 
     PAS_ASSERT(!pas_segregated_page_config_is_utility(page_config));
+    PAS_ASSERT(!pas_segregated_page_config_is_verse(page_config));
 
     partial_view_as_view = pas_segregated_partial_view_as_view((pas_segregated_partial_view*)view);
     
@@ -446,6 +604,32 @@ pas_local_allocator_make_bump(
     PAS_ASSERT(page_config.base.is_enabled);
     
     pas_local_allocator_set_up_bump(allocator, page_boundary, begin, end);
+}
+
+typedef struct {
+    unsigned* full_alloc_bits;
+    unsigned* mark_bits_base;
+    pas_segregated_page_config config;
+} pas_local_allocator_set_full_mark_bits_data;
+
+static PAS_ALWAYS_INLINE unsigned pas_local_allocator_set_full_mark_bits_source(size_t word_index, void* arg)
+{
+    pas_local_allocator_set_full_mark_bits_data* data;
+    data = (pas_local_allocator_set_full_mark_bits_data*)arg;
+    return data->full_alloc_bits[word_index];
+}
+
+static PAS_ALWAYS_INLINE bool pas_local_allocator_set_full_mark_bits_callback(pas_found_bit_index index, void* arg)
+{
+    pas_local_allocator_set_full_mark_bits_data* data;
+    data = (pas_local_allocator_set_full_mark_bits_data*)arg;
+
+    PAS_ASSERT(data->config.base.min_align_shift >= VERSE_HEAP_MIN_ALIGN_SHIFT);
+
+    pas_bitvector_set(
+        data->mark_bits_base, index.index << (data->config.base.min_align_shift - VERSE_HEAP_MIN_ALIGN_SHIFT), true);
+
+    return true;
 }
 
 static PAS_ALWAYS_INLINE void
@@ -483,6 +667,77 @@ pas_local_allocator_prepare_to_allocate(
         if (verbose)
             pas_log("Refilling with bump.\n");
 
+        if (pas_segregated_page_config_is_verse(page_config)) {
+            uint64_t iteration_version;
+            verse_heap_chunk_map_entry* entry_ptr;
+
+			iteration_version = verse_heap_current_iteration_state.version;
+            if (iteration_version)
+				verse_heap_page_header_handle_iteration(verse_heap_page_header_for_segregated_page(page), iteration_version);
+			PAS_ASSERT(!verse_heap_page_header_for_segregated_page(page)->stashed_alloc_bits);
+
+            /* The GC needs to know when a page becomes nonempty. So long as a page is empty, we exclude it
+               from the chunk map. As soon as we might start to allocate in it, we need to tell the chunk map
+               about it.
+
+               Note that if we're currently marking then this can happen in any order relative to setting the
+               mark bits. Either way, the page header still reports no live objects. */
+            entry_ptr = verse_heap_get_chunk_map_entry_ptr(page_boundary);
+            switch (page_config.variant) {
+            case pas_small_segregated_page_config_variant: {
+                for (;;) {
+                    verse_heap_chunk_map_entry old_entry;
+                    unsigned bitvector;
+                    verse_heap_chunk_map_entry new_entry;
+                    
+                    verse_heap_chunk_map_entry_copy_atomically(&old_entry, entry_ptr);
+                    if (verse_heap_chunk_map_entry_is_empty(old_entry))
+                        bitvector = 0;
+                    else
+                        bitvector = verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(old_entry);
+                    pas_bitvector_set_in_one_word(
+                        &bitvector,
+                        pas_modulo_power_of_2(page_boundary, VERSE_HEAP_CHUNK_SIZE)
+                        / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE,
+                        true);
+                    new_entry = verse_heap_chunk_map_entry_create_small_segregated(bitvector);
+                    
+                    if (verse_heap_chunk_map_entry_weak_cas_atomically(entry_ptr, old_entry, new_entry)) {
+                        if (verbose) {
+                            pas_log("Set small entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
+                                    page, (void*)page_boundary, entry_ptr);
+                            verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
+                            pas_log(", new_entry = ");
+                            verse_heap_chunk_map_entry_dump(new_entry, &pas_log_stream.base);
+                            pas_log("\n");
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+            case pas_medium_segregated_page_config_variant: {
+                verse_heap_chunk_map_entry old_entry;
+                verse_heap_chunk_map_entry entry;
+                old_entry = *entry_ptr;
+				PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(old_entry));
+				PAS_ASSERT(&verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry)->segregated == page);
+				PAS_ASSERT(verse_heap_chunk_map_entry_medium_segregated_empty_mode(old_entry) == pas_is_empty);
+				entry = verse_heap_chunk_map_entry_create_medium_segregated(
+					verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry), pas_is_not_empty);
+                if (verbose) {
+                    pas_log("Setting medium entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
+                            page, (void*)page_boundary, entry_ptr);
+                    verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
+                    pas_log(", new_entry = ");
+                    verse_heap_chunk_map_entry_dump(entry, &pas_log_stream.base);
+                    pas_log("\n");
+                }
+                verse_heap_chunk_map_entry_copy_atomically(entry_ptr, &entry);
+                break;
+            } }
+        }
+    
         if (page_config.base.page_size > page_config.base.granule_size)
             pas_segregated_exclusive_view_install_full_use_counts((pas_segregated_exclusive_view*)view);
 
@@ -493,6 +748,8 @@ pas_local_allocator_prepare_to_allocate(
 
         full_num_non_empty_words_or_live_bytes = data->full_num_non_empty_words_or_live_bytes;
         page->emptiness.num_non_empty_words_or_live_bytes = full_num_non_empty_words_or_live_bytes;
+        if (pas_segregated_page_config_is_verse(page_config))
+            verse_heap_notify_allocation(full_num_non_empty_words_or_live_bytes);
 
         pas_local_allocator_make_bump(
             allocator, page_boundary, payload_begin, payload_end, page_config);
@@ -500,6 +757,29 @@ pas_local_allocator_prepare_to_allocate(
         pas_compiler_fence();
 
         full_alloc_bits = pas_compact_tagged_unsigned_ptr_load_non_null(&data->full_alloc_bits);
+
+        if (pas_segregated_page_config_is_verse(page_config)
+            && verse_heap_page_header_should_allocate_black(
+                verse_heap_page_header_for_boundary((void*)page_boundary, page_config.variant))) {
+            unsigned* mark_bits_base;
+            mark_bits_base = verse_heap_mark_bits_base_for_boundary((void*)page_boundary);
+            if (page_config.base.min_align_shift == VERSE_HEAP_MIN_ALIGN_SHIFT)
+                memcpy(mark_bits_base, full_alloc_bits, pas_segregated_page_config_num_alloc_bytes(page_config));
+            else {
+                pas_local_allocator_set_full_mark_bits_data inner_data;
+                bool result;
+                inner_data.full_alloc_bits = full_alloc_bits;
+                inner_data.mark_bits_base = mark_bits_base;
+                inner_data.config = page_config;
+                result = pas_bitvector_for_each_set_bit(
+                    pas_local_allocator_set_full_mark_bits_source,
+                    0, pas_segregated_page_config_num_alloc_words(page_config),
+                    pas_local_allocator_set_full_mark_bits_callback,
+                    &inner_data);
+                PAS_ASSERT(result);
+            }
+            pas_store_store_fence();
+        }
 
         pas_race_test_hook(
             pas_race_test_hook_local_allocator_prepare_to_allocate_bump_case_after_allocate_black, allocator, view);
@@ -561,6 +841,7 @@ pas_local_allocator_set_up_primordial_bump(
     PAS_ASSERT(page_config.base.is_enabled);
 
     PAS_ASSERT(!pas_segregated_page_config_is_utility(page_config));
+    PAS_ASSERT(!pas_segregated_page_config_is_verse(page_config));
 
     page_boundary = allocator->page_ish;
     object_size = allocator->object_size;
@@ -845,19 +1126,19 @@ pas_local_allocator_bless_primordial_partial_view_before_stopping(
     PAS_ASSERT((uint8_t)alloc_bits_offset == alloc_bits_offset);
     view->alloc_bits_offset = (uint8_t)alloc_bits_offset;
     
-    alloc_bits = (unsigned*)pas_immortal_heap_allocate_with_manual_alignment(
-        alloc_bits_size * sizeof(unsigned),
-        sizeof(unsigned),
-        "pas_segregated_partial_view/alloc_bits",
-        pas_object_allocation) - alloc_bits_offset;
+	alloc_bits = (unsigned*)pas_immortal_heap_allocate_with_manual_alignment(
+		alloc_bits_size * sizeof(unsigned),
+		sizeof(unsigned),
+		"pas_segregated_partial_view/alloc_bits",
+		pas_object_allocation) - alloc_bits_offset;
     
     memcpy(alloc_bits + alloc_bits_offset,
            bits + alloc_bits_offset,
            alloc_bits_size * sizeof(unsigned));
 
     pas_store_store_fence();
-    
-    view->alloc_bits = alloc_bits;
+
+	view->alloc_bits = alloc_bits;
 }
 
 static PAS_ALWAYS_INLINE pas_allocation_result
@@ -1293,6 +1574,9 @@ pas_local_allocator_return_memory_to_page_for_role(
 
     PAS_ASSERT(page_config.base.is_enabled);
 
+    if (pas_segregated_page_config_is_verse(page_config))
+        PAS_ASSERT(role == pas_segregated_page_exclusive_role);
+    
     if (!pas_segregated_page_config_is_utility(page_config))
         pas_lock_assert_held(page->lock_ptr);
 
@@ -1302,7 +1586,10 @@ pas_local_allocator_return_memory_to_page_for_role(
                 pas_local_allocator_config_kind_get_string(allocator->config_kind));
     }
 
-    num_live_bytes_before = 0; /* Do the compiler's job for it. */
+    if (pas_segregated_page_config_is_verse(page_config))
+        num_live_bytes_before = page->emptiness.num_non_empty_words_or_live_bytes;
+    else
+        num_live_bytes_before = 0; /* Do the compiler's job for it. */
 
     if (pas_local_allocator_config_kind_is_primordial_partial(allocator->config_kind)) {
         PAS_ASSERT(!pas_segregated_page_config_is_utility(page_config));
@@ -1356,6 +1643,28 @@ pas_local_allocator_return_memory_to_page_for_role(
             full_alloc_bits.word_index_begin, full_alloc_bits.word_index_end,
             pas_local_allocator_return_memory_to_page_set_bit_callback,
             &data);
+    }
+
+    if (pas_segregated_page_config_is_verse(page_config)) {
+        uintptr_t num_live_bytes_after;
+
+        num_live_bytes_after = page->emptiness.num_non_empty_words_or_live_bytes;
+
+        PAS_ASSERT(num_live_bytes_before >= num_live_bytes_after);
+        verse_heap_notify_deallocation(num_live_bytes_before - num_live_bytes_after);
+
+        /* Why can't we just unmark the objects now? Because conservative marking support strongly relies on the
+           monotonicity of marking. See comment above verse_heap_find_allocated_object_start in verse_heap_inlines.h.
+           In short, if we unmarked an object, then conservative marking might encounter a race where it thinks that
+           a not-allocated object is really allocated and then grey it (mark it and put it on a worklist). Marking
+           monotonicity ensures that not-allocated objects may at worst appear live-and-black, which causes marking
+           to ignore them.
+
+           So, instead of unmarking, we rely on the fact that sweep could just clear all mark bits, even ones for
+           dead objects. Setting this bit requests that it do that. Only the medium sweep has to do it, since the
+           optimized small sweep just so happens to clear mark bits for dead objects as a byproduct of how it uses
+           bitvector simd. */
+        verse_heap_page_header_for_segregated_page(page)->may_have_set_mark_bits_for_dead_objects = true;
     }
 }
 

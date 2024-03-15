@@ -87,10 +87,10 @@ pas_try_allocate_for_reallocate_and_copy(
            different units. But that should not matter:
         
            - We only care about the old size, not the old count. We get a
-           size from the allocator.
+             size from the allocator.
         
            - We end up computing the new size using the new count and the
-           new heap.
+             new heap.
         
            Then we take the min of those two. No big deal if the old count
            and new count had different units. */

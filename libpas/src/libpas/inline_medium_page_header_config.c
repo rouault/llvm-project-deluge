@@ -53,78 +53,78 @@ pas_heap_runtime_config inline_medium_page_header_runtime_config = {
 
 pas_page_base* inline_medium_page_header_config_header_for_boundary_remote(pas_enumerator* enumerator, void* boundary)
 {
-    PAS_UNUSED_PARAM(enumerator);
-    return (pas_page_base*)boundary;
+	PAS_UNUSED_PARAM(enumerator);
+	return (pas_page_base*)boundary;
 }
 
 void* inline_medium_page_header_config_allocate_page(pas_segregated_heap* heap, pas_physical_memory_transaction* transaction, pas_segregated_page_role role)
 {
+	PAS_ASSERT(role == pas_segregated_page_exclusive_role);
     PAS_UNUSED_PARAM(heap);
-    PAS_ASSERT(role == pas_segregated_page_exclusive_role);
-    return (void*)pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(
-        INLINE_MEDIUM_PAGE_HEADER_PAGE_SIZE, pas_alignment_create_traditional(INLINE_MEDIUM_PAGE_HEADER_PAGE_SIZE),
-        "inline_medium_page_header_config/page", transaction).begin;
+	return (void*)pas_global_physical_page_sharing_cache_try_allocate_committed_with_alignment(
+		INLINE_MEDIUM_PAGE_HEADER_PAGE_SIZE, pas_alignment_create_traditional(INLINE_MEDIUM_PAGE_HEADER_PAGE_SIZE),
+		"inline_medium_page_header_config/page", transaction).begin;
 }
 
 pas_page_base* inline_medium_page_header_config_create_page_header(void* boundary, pas_page_kind kind, pas_lock_hold_mode heap_lock_hold_mode)
 {
-    PAS_ASSERT(kind == pas_small_exclusive_segregated_page_kind);
-    PAS_UNUSED_PARAM(heap_lock_hold_mode);
-    return (pas_page_base*)boundary;
+	PAS_ASSERT(kind == pas_small_exclusive_segregated_page_kind);
+	PAS_UNUSED_PARAM(heap_lock_hold_mode);
+	return (pas_page_base*)boundary;
 }
 
 void inline_medium_page_header_config_destroy_page_header(pas_page_base* page, pas_lock_hold_mode heap_lock_hold_mode)
 {
-    PAS_UNUSED_PARAM(heap_lock_hold_mode);
-    PAS_UNUSED_PARAM(page);
+	PAS_UNUSED_PARAM(heap_lock_hold_mode);
+	PAS_UNUSED_PARAM(page);
 }
 
 pas_segregated_shared_page_directory* inline_medium_page_header_config_shared_page_directory_selector(
-    pas_segregated_heap* heap, pas_segregated_size_directory* directory)
+	pas_segregated_heap* heap, pas_segregated_size_directory* directory)
 {
-    PAS_ASSERT(!"Should not be reached");
-    PAS_UNUSED_PARAM(heap);
-    PAS_UNUSED_PARAM(directory);
-    return NULL;
+	PAS_ASSERT(!"Should not be reached");
+	PAS_UNUSED_PARAM(heap);
+	PAS_UNUSED_PARAM(directory);
+	return NULL;
 }
 
 pas_aligned_allocation_result inline_medium_page_header_config_aligned_allocator(
-    size_t size, pas_alignment alignment, pas_large_heap* large_heap, const pas_heap_config* config)
+	size_t size, pas_alignment alignment, pas_large_heap* large_heap, const pas_heap_config* config)
 {
-    pas_aligned_allocation_result result;
-    PAS_UNUSED_PARAM(size);
-    PAS_UNUSED_PARAM(alignment);
-    PAS_UNUSED_PARAM(large_heap);
-    PAS_UNUSED_PARAM(config);
-    pas_zero_memory(&result, sizeof(result));
-    return result;
+	pas_aligned_allocation_result result;
+	PAS_UNUSED_PARAM(size);
+	PAS_UNUSED_PARAM(alignment);
+	PAS_UNUSED_PARAM(large_heap);
+	PAS_UNUSED_PARAM(config);
+	pas_zero_memory(&result, sizeof(result));
+	return result;
 }
 
 bool inline_medium_page_header_config_for_each_shared_page_directory(
-    pas_segregated_heap* heap, bool (*callback)(pas_segregated_shared_page_directory* directory, void* arg), void* arg)
+	pas_segregated_heap* heap, bool (*callback)(pas_segregated_shared_page_directory* directory, void* arg), void* arg)
 {
-    PAS_UNUSED_PARAM(heap);
-    PAS_UNUSED_PARAM(callback);
-    PAS_UNUSED_PARAM(arg);
-    return true;
+	PAS_UNUSED_PARAM(heap);
+	PAS_UNUSED_PARAM(callback);
+	PAS_UNUSED_PARAM(arg);
+	return true;
 }
 
 bool inline_medium_page_header_config_for_each_shared_page_directory_remote(
-    pas_enumerator* enumerator, pas_segregated_heap* heap,
-    bool (*callback)(pas_enumerator* enumerator, pas_segregated_shared_page_directory* directory, void* arg), void* arg)
+	pas_enumerator* enumerator, pas_segregated_heap* heap,
+	bool (*callback)(pas_enumerator* enumerator, pas_segregated_shared_page_directory* directory, void* arg), void* arg)
 {
-    PAS_UNUSED_PARAM(enumerator);
-    PAS_UNUSED_PARAM(heap);
-    PAS_UNUSED_PARAM(callback);
-    PAS_UNUSED_PARAM(arg);
-    return true;
+	PAS_UNUSED_PARAM(enumerator);
+	PAS_UNUSED_PARAM(heap);
+	PAS_UNUSED_PARAM(callback);
+	PAS_UNUSED_PARAM(arg);
+	return true;
 }
 
 void inline_medium_page_header_config_dump_shared_page_directory_arg(pas_stream* stream, pas_segregated_shared_page_directory* directory)
 {
-    PAS_UNUSED_PARAM(stream);
-    PAS_UNUSED_PARAM(directory);
-    PAS_ASSERT(!"Should not be reached");
+	PAS_UNUSED_PARAM(stream);
+	PAS_UNUSED_PARAM(directory);
+	PAS_ASSERT(!"Should not be reached");
 }
 
 PAS_SEGREGATED_PAGE_CONFIG_SPECIALIZATION_DEFINITIONS(inline_medium_page_header_page_config, INLINE_MEDIUM_PAGE_HEADER_CONFIG.small_segregated_config);

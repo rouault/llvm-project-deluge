@@ -1084,13 +1084,13 @@ void pas_status_reporter_dump_expendable_memories(pas_stream* stream)
 
 static void dump_previous_range(pas_stream* stream, pas_range range, size_t index, pas_commit_mode previous_commit_mode, size_t previous_index)
 {
-    pas_stream_printf(
+	pas_stream_printf(
         stream,
-        "        %p...%p: %s (%zu bytes)\n",
-        (char*)range.begin + (previous_index << pas_page_malloc_alignment_shift()),
-        (char*)range.begin + (index << pas_page_malloc_alignment_shift()),
-        pas_commit_mode_get_string(previous_commit_mode),
-        (index - previous_index) << pas_page_malloc_alignment_shift());
+		"        %p...%p: %s (%zu bytes)\n",
+		(char*)range.begin + (previous_index << pas_page_malloc_alignment_shift()),
+		(char*)range.begin + (index << pas_page_malloc_alignment_shift()),
+		pas_commit_mode_get_string(previous_commit_mode),
+		(index - previous_index) << pas_page_malloc_alignment_shift());
 }
 
 static void dump_range_state(pas_stream* stream, pas_range range)

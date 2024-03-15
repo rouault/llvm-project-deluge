@@ -39,7 +39,12 @@
 #include "pas_segregated_shared_handle.h"
 #include "pas_segregated_shared_handle_inlines.h"
 #include "pas_thread_local_cache_node.h"
+#include "verse_heap.h"
 #include <inttypes.h>
+
+/* FIXME: This cannot currently include verse headers because verse_heap_config.h depends on
+   pas_heap_config_utils.h, which in turn depends on pas_segregated_page_inlines.h. That's weird, but
+   it *just barely* doesn't matter right now. */
 
 PAS_BEGIN_EXTERN_C;
 
@@ -313,6 +318,11 @@ pas_segregated_page_switch_lock_and_rebias_while_ineligible(
         return;
     }
 
+    if (pas_segregated_page_config_is_verse(page_config)) {
+        pas_segregated_page_switch_lock(page, held_lock, page_config);
+        return;
+    }
+
     pas_segregated_page_switch_lock_and_rebias_while_ineligible_impl(
         page, held_lock, cache_node);
 }
@@ -333,8 +343,97 @@ static PAS_ALWAYS_INLINE void pas_segregated_page_note_partial_emptiness(pas_seg
     pas_segregated_page_note_emptiness_impl(page, pas_note_emptiness_keep_num_non_empty_words);
 }
 
-static PAS_ALWAYS_INLINE void pas_segregated_page_note_full_emptiness(pas_segregated_page* page)
+static PAS_ALWAYS_INLINE void pas_segregated_page_note_full_emptiness(pas_segregated_page* page,
+                                                                      pas_segregated_page_config page_config)
 {
+    static const bool verbose = false;
+    
+    if (pas_segregated_page_config_is_verse(page_config)) {
+		/* If the page became empty and we hadn't cleared the client data then something is wrong. It's up to
+		   the GC to clear client datas from pages with no marked objects after marking and before sweeping.
+		
+		   The way that this usually happens is that the client data is a map from object to stuff, and the GC
+		   will prune the map based on liveness before sweep. If the map is empty, it gets deleted. asserts
+		   that it must get deleted. */
+		PAS_ASSERT(!verse_heap_page_header_for_segregated_page(page)->client_data);
+		
+        /* GC needs to know that this page might now get scavenged, so that we don't attempt to do live
+           object lookups in it.
+
+           Here's a fun almost-problem: what if this happens from return_memory_to_page during a collection,
+           and then the page gets scavenged?
+
+           That would be a huge problem! Except it cannot happen:
+           1) return_memory_to_page can only happen after we have started an allocator.
+           2) The only paths to starting an allocator are paths that inevitably allocate one object.
+           3) Objects can only be freed during sweeping.
+           4) Sweeping happens during the part of collection where we no longer do find_allocated_object_start.
+
+           Therefore, if we return_memory_to_page during the part of collection where this matters, then we
+           will have allocated (2) but not yet freed (3) at least one object, so the page cannot become empty!
+
+           FIXME: Maybe assert that we will not hit this path during the part of the cycle where this matters
+           (i.e. marking)?
+
+           FIXME: pas_segregated_exclusive_view_note_emptiness doesn't do anything if is_in_use_for_allocation.
+           Is it a problem that we don't check is_in_use_for_allocation here? Probably not... */
+        
+        verse_heap_chunk_map_entry* entry_ptr;
+        uintptr_t boundary;
+
+        boundary = (uintptr_t)verse_heap_boundary_for_segregated_page(page, page_config.variant);
+        entry_ptr = verse_heap_get_chunk_map_entry_ptr(boundary);
+        switch (page_config.variant) {
+        case pas_small_segregated_page_config_variant: {
+            for (;;) {
+                verse_heap_chunk_map_entry old_entry;
+                unsigned bitvector;
+                verse_heap_chunk_map_entry new_entry;
+                
+                verse_heap_chunk_map_entry_copy_atomically(&old_entry, entry_ptr);
+                bitvector = verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(old_entry);
+                pas_bitvector_set_in_one_word(
+                    &bitvector,
+                    pas_modulo_power_of_2(boundary, VERSE_HEAP_CHUNK_SIZE)
+                    / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE,
+                    false);
+                new_entry = verse_heap_chunk_map_entry_create_small_segregated(bitvector);
+                
+                if (verse_heap_chunk_map_entry_weak_cas_atomically(entry_ptr, old_entry, new_entry)) {
+                    if (verbose) {
+                        pas_log("Cleared small entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
+                                page, (void*)boundary, entry_ptr);
+                        verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
+                        pas_log(", new_entry = ");
+                        verse_heap_chunk_map_entry_dump(new_entry, &pas_log_stream.base);
+                        pas_log("\n");
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case pas_medium_segregated_page_config_variant: {
+            verse_heap_chunk_map_entry old_entry;
+            verse_heap_chunk_map_entry entry;
+			old_entry = *entry_ptr;
+			PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(old_entry));
+			PAS_ASSERT(&verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry)->segregated == page);
+			PAS_ASSERT(verse_heap_chunk_map_entry_medium_segregated_empty_mode(old_entry) == pas_is_not_empty);
+			entry = verse_heap_chunk_map_entry_create_medium_segregated(
+				verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry), pas_is_empty);
+            if (verbose) {
+                pas_log("Clearing medium entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
+                        page, (void*)boundary, entry_ptr);
+                verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
+                pas_log(", new_entry = ");
+                verse_heap_chunk_map_entry_dump(entry, &pas_log_stream.base);
+                pas_log("\n");
+            }
+            verse_heap_chunk_map_entry_copy_atomically(entry_ptr, &entry);
+            break;
+        } }
+    }
     pas_segregated_page_note_emptiness_impl(page, pas_note_emptiness_clear_num_non_empty_words);
 }
 
@@ -504,16 +603,31 @@ pas_segregated_page_deallocate_with_page(pas_segregated_page* page,
             pas_segregated_page_note_partial_emptiness(page);
     }
 
-    if (!new_word) {
-        PAS_TESTING_ASSERT(page->emptiness.num_non_empty_words_or_live_bytes);
-        uintptr_t num_non_empty_words = page->emptiness.num_non_empty_words_or_live_bytes;
-        if (!--num_non_empty_words) {
-            /* This has to happen last since it effectively unlocks the lock. That's due to
-               the things that happen in switch_lock_and_try_to_take_bias. Specifically, its
-               reliance on the fully_empty bit. */
-            pas_segregated_page_note_full_emptiness(page);
-        } else
-            page->emptiness.num_non_empty_words_or_live_bytes = num_non_empty_words;
+    /* We support this path for Verse because it's how we handle pas_local_allocator_stop and because
+       we use this for the generic case of sweep. */
+    if (pas_segregated_page_config_is_verse(page_config)) {
+        uintptr_t num_live_bytes;
+        uintptr_t object_size;
+        num_live_bytes = page->emptiness.num_non_empty_words_or_live_bytes;
+        object_size = page->object_size;
+        PAS_TESTING_ASSERT(num_live_bytes >= object_size);
+        num_live_bytes -= object_size;
+        if (!num_live_bytes)
+            pas_segregated_page_note_full_emptiness(page, page_config);
+        else
+            page->emptiness.num_non_empty_words_or_live_bytes = num_live_bytes;
+    } else {
+        if (!new_word) {
+            PAS_TESTING_ASSERT(page->emptiness.num_non_empty_words_or_live_bytes);
+            uintptr_t num_non_empty_words = page->emptiness.num_non_empty_words_or_live_bytes;
+            if (!--num_non_empty_words) {
+                /* This has to happen last since it effectively unlocks the lock. That's due to
+                   the things that happen in switch_lock_and_try_to_take_bias. Specifically, its
+                   reliance on the fully_empty bit. */
+                pas_segregated_page_note_full_emptiness(page, page_config);
+            } else
+                page->emptiness.num_non_empty_words_or_live_bytes = num_non_empty_words;
+        }
     }
 }
 

@@ -37,6 +37,7 @@
 #include "pas_segregated_page_inlines.h"
 #include "pas_thread_local_cache.h"
 #include "pas_utils.h"
+#include "verse_heap_config.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -156,6 +157,8 @@ static PAS_ALWAYS_INLINE bool pas_try_deallocate_impl(pas_thread_local_cache* th
 {
     uintptr_t begin;
     pas_fast_megapage_kind megapage_kind;
+
+    PAS_ASSERT(!pas_heap_config_is_verse(config));
 
     begin = (uintptr_t)ptr;
     

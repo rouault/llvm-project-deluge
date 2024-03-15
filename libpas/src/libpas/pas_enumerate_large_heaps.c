@@ -124,6 +124,8 @@ bool pas_enumerate_large_heaps(pas_enumerator* enumerator)
     record_span(enumerator, span);
 
     if (enumerator->record_object) {
+        /* FIXME: To make this work with the verse heap, we need to enumerate the chunk map. */
+        
         if (!enumerate_large_map(enumerator))
             return false;
     }

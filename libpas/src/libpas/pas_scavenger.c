@@ -45,6 +45,7 @@
 #include "pas_status_reporter.h"
 #include "pas_thread_local_cache.h"
 #include "pas_utility_heap.h"
+#include "verse_heap_mark_bits_page_commit_controller.h"
 #include <stdio.h>
 #ifndef _WIN32
 #include <unistd.h>
@@ -254,6 +255,7 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
         pas_heap_lock_unlock();
 
         should_go_again |= pas_immortal_heap_scavenge_periodic();
+		should_go_again |= verse_heap_mark_bits_page_commit_controller_scavenge_periodic();
         
         completion_callback = pas_scavenger_completion_callback;
         if (completion_callback)
@@ -510,6 +512,11 @@ size_t pas_scavenger_decommit_immortal_heap(void)
     return pas_immortal_heap_decommit();
 }
 
+bool pas_scavenger_decommit_verse_heap_mark_bits(void)
+{
+	return verse_heap_mark_bits_page_commit_controller_decommit_if_possible();
+}
+
 size_t pas_scavenger_decommit_free_memory(void)
 {
     pas_page_sharing_pool_scavenge_result result;
@@ -527,6 +534,7 @@ void pas_scavenger_decommit_everything(void)
     pas_scavenger_decommit_free_memory();
     pas_scavenger_decommit_bootstrap_free_heap();
     pas_scavenger_decommit_immortal_heap();
+	pas_scavenger_decommit_verse_heap_mark_bits();
 }
 
 void pas_scavenger_run_synchronously_now(void)
@@ -569,15 +577,18 @@ void pas_scavenger_perform_synchronous_operation(
     case pas_scavenger_decommit_immortal_heap_kind:
         pas_scavenger_decommit_immortal_heap();
         return;
+	case pas_scavenger_decommit_verse_heap_mark_bits_kind:
+		pas_scavenger_decommit_verse_heap_mark_bits();
+		return;
     case pas_scavenger_decommit_free_memory_kind:
         pas_scavenger_decommit_free_memory();
         return;
     case pas_scavenger_decommit_everything_kind:
         pas_scavenger_decommit_everything();
         return;
-    case pas_scavenger_do_everything_except_remote_tlcs_kind:
-        pas_scavenger_do_everything_except_remote_tlcs();
-        return;
+	case pas_scavenger_do_everything_except_remote_tlcs_kind:
+		pas_scavenger_do_everything_except_remote_tlcs();
+		return;
     case pas_scavenger_run_synchronously_now_kind:
         pas_scavenger_run_synchronously_now();
         return;
