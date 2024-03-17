@@ -75,8 +75,10 @@ static PAS_ALWAYS_INLINE verse_heap_page_header* verse_heap_page_header_for_segr
 static PAS_ALWAYS_INLINE verse_heap_page_header* verse_heap_page_header_for_boundary(
     void* boundary, pas_segregated_page_config_variant variant)
 {
-    if (variant == pas_medium_segregated_page_config_variant)
-        return &verse_heap_chunk_map_entry_medium_segregated_header_object(verse_heap_get_chunk_map_entry((uintptr_t)boundary))->verse;
+    if (variant == pas_medium_segregated_page_config_variant) {
+        return &verse_heap_chunk_map_entry_header_medium_segregated_header_object(
+            verse_heap_get_chunk_map_entry_header((uintptr_t)boundary))->verse;
+    }
     return (verse_heap_page_header*)boundary;
 }
 
@@ -207,7 +209,9 @@ PAS_API extern const unsigned verse_heap_config_medium_segregated_non_committabl
         .exclusive_payload_size = VERSE_HEAP_ ## variant_uppercase ## _SEGREGATED_PAYLOAD_SIZE, \
         .shared_logging_mode = pas_segregated_deallocation_no_logging_mode, \
         .exclusive_logging_mode = pas_segregated_deallocation_no_logging_mode, \
-        .use_reversed_current_word = PAS_ARM64, \
+        .use_reversed_current_word = \
+            (pas_ ## variant_lowercase ## _segregated_page_config_variant \
+             == pas_small_segregated_page_config_variant ? PAS_ARM64 : false), \
         .check_deallocation = false, \
         .enable_empty_word_eligibility_optimization_for_shared = false, \
         .enable_empty_word_eligibility_optimization_for_exclusive = false, \

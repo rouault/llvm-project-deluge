@@ -50,11 +50,14 @@
 #define PAS_MARGE_PAGE_DEFAULT_SHIFT     22
 #define PAS_MARGE_PAGE_DEFAULT_SIZE      ((size_t)1 << PAS_MARGE_PAGE_DEFAULT_SHIFT)
 
-#if PAS_ARM64 || PAS_PLATFORM(PLAYSTATION)
-#define PAS_GRANULE_DEFAULT_SHIFT        14
+#if (defined(__arm64__) && defined(__APPLE__)) || defined(__SCE__)
+#define PAS_SYSTEM_PAGE_SIZE_SHIFT       14u
 #else
-#define PAS_GRANULE_DEFAULT_SHIFT        12
+#define PAS_SYSTEM_PAGE_SIZE_SHIFT       12u
 #endif
+#define PAS_SYSTEM_PAGE_SIZE             ((size_t)1 << PAS_SYSTEM_PAGE_SIZE_SHIFT)
+
+#define PAS_GRANULE_DEFAULT_SHIFT        PAS_SYSTEM_PAGE_SIZE_SHIFT
 #define PAS_GRANULE_DEFAULT_SIZE         ((size_t)1 << PAS_GRANULE_DEFAULT_SHIFT)
 
 #define PAS_FAST_MEGAPAGE_SHIFT          24

@@ -4,7 +4,6 @@
 #define VERSE_HEAP_CHUNK_MAP_H
 
 #include "pas_utils.h"
-#include "ue_include/verse_heap_config_ue.h"
 #include "verse_heap_chunk_map_entry.h"
 
 #if PAS_ENABLE_VERSE
@@ -27,25 +26,23 @@ PAS_API extern verse_heap_chunk_map_entry* verse_heap_first_level_chunk_map[
 
 /* Check the chunk map entry for a chunk; if we know nothing about a chunk then we will return an empty
    chunk map entry. */
-static PAS_ALWAYS_INLINE verse_heap_chunk_map_entry verse_heap_get_chunk_map_entry(uintptr_t address)
+static PAS_ALWAYS_INLINE verse_heap_chunk_map_entry_header
+verse_heap_get_chunk_map_entry_header(uintptr_t address)
 {
     verse_heap_chunk_map_entry* second_level;
-    verse_heap_chunk_map_entry result;
 
     if (address > PAS_MAX_ADDRESS)
-        return verse_heap_chunk_map_entry_create_empty();
+        return verse_heap_chunk_map_entry_header_create_empty();
 
     /* FIXME: Do we need the mask here? */
     second_level = verse_heap_first_level_chunk_map[
         (address >> VERSE_HEAP_CHUNK_MAP_FIRST_LEVEL_SHIFT) & VERSE_HEAP_CHUNK_MAP_FIRST_LEVEL_MASK];
     if (!second_level)
-        return verse_heap_chunk_map_entry_create_empty();
+        return verse_heap_chunk_map_entry_header_create_empty();
 
-    verse_heap_chunk_map_entry_copy_atomically(
-        &result,
+    return verse_heap_chunk_map_entry_load_header(
         second_level + ((address >> VERSE_HEAP_CHUNK_MAP_SECOND_LEVEL_SHIFT)
                         & VERSE_HEAP_CHUNK_MAP_SECOND_LEVEL_MASK));
-    return result;
 }
 
 /* Get a pointer to a chunk map entry. This assumes that the chunk map entry must exist. It may crash or

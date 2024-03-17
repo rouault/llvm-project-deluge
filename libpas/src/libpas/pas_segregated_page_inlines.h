@@ -385,52 +385,47 @@ static PAS_ALWAYS_INLINE void pas_segregated_page_note_full_emptiness(pas_segreg
         entry_ptr = verse_heap_get_chunk_map_entry_ptr(boundary);
         switch (page_config.variant) {
         case pas_small_segregated_page_config_variant: {
-            for (;;) {
-                verse_heap_chunk_map_entry old_entry;
-                unsigned bitvector;
-                verse_heap_chunk_map_entry new_entry;
-                
-                verse_heap_chunk_map_entry_copy_atomically(&old_entry, entry_ptr);
-                bitvector = verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(old_entry);
-                pas_bitvector_set_in_one_word(
-                    &bitvector,
-                    pas_modulo_power_of_2(boundary, VERSE_HEAP_CHUNK_SIZE)
-                    / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE,
-                    false);
-                new_entry = verse_heap_chunk_map_entry_create_small_segregated(bitvector);
-                
-                if (verse_heap_chunk_map_entry_weak_cas_atomically(entry_ptr, old_entry, new_entry)) {
-                    if (verbose) {
-                        pas_log("Cleared small entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
-                                page, (void*)boundary, entry_ptr);
-                        verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
-                        pas_log(", new_entry = ");
-                        verse_heap_chunk_map_entry_dump(new_entry, &pas_log_stream.base);
-                        pas_log("\n");
-                    }
-                    break;
-                }
+            size_t index;
+            bool result;
+            PAS_ASSERT(verse_heap_chunk_map_entry_header_is_small_segregated(
+                           verse_heap_chunk_map_entry_load_header(entry_ptr)));
+            index = pas_modulo_power_of_2(boundary, VERSE_HEAP_CHUNK_SIZE)
+                / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE;
+            PAS_ASSERT(index);
+            PAS_ASSERT(index < VERSE_HEAP_SMALL_SEGREGATED_PAGES_PER_CHUNK);
+            result = pas_bitvector_set_atomic(
+                verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(entry_ptr),
+                index, false);
+            PAS_ASSERT(result);
+            if (verbose) {
+                pas_log("Cleared small entry for page = %p, boundary = %p, entry_ptr = %p, new entry = ",
+                        page, (void*)boundary, entry_ptr);
+                verse_heap_chunk_map_entry_dump(*entry_ptr, &pas_log_stream.base);
+                pas_log("\n");
             }
             break;
         }
         case pas_medium_segregated_page_config_variant: {
-            verse_heap_chunk_map_entry old_entry;
-            verse_heap_chunk_map_entry entry;
-			old_entry = *entry_ptr;
-			PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(old_entry));
-			PAS_ASSERT(&verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry)->segregated == page);
-			PAS_ASSERT(verse_heap_chunk_map_entry_medium_segregated_empty_mode(old_entry) == pas_is_not_empty);
-			entry = verse_heap_chunk_map_entry_create_medium_segregated(
-				verse_heap_chunk_map_entry_medium_segregated_header_object(old_entry), pas_is_empty);
+            verse_heap_chunk_map_entry_header old_header;
+            verse_heap_chunk_map_entry_header new_header;
+			old_header = verse_heap_chunk_map_entry_load_header(entry_ptr);
+			PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(old_header));
+			PAS_ASSERT(&verse_heap_chunk_map_entry_header_medium_segregated_header_object(
+                           old_header)->segregated == page);
+			PAS_ASSERT(verse_heap_chunk_map_entry_header_medium_segregated_empty_mode(old_header)
+                       == pas_is_not_empty);
+			new_header = verse_heap_chunk_map_entry_header_create_medium_segregated(
+				verse_heap_chunk_map_entry_header_medium_segregated_header_object(old_header),
+                pas_is_empty);
             if (verbose) {
-                pas_log("Clearing medium entry for page = %p, boundary = %p, entry_ptr = %p, old_entry = ",
+                pas_log("Clearing medium entry for page = %p, boundary = %p, entry_ptr = %p, old_header = ",
                         page, (void*)boundary, entry_ptr);
-                verse_heap_chunk_map_entry_dump(old_entry, &pas_log_stream.base);
-                pas_log(", new_entry = ");
-                verse_heap_chunk_map_entry_dump(entry, &pas_log_stream.base);
+                verse_heap_chunk_map_entry_header_dump(old_header, &pas_log_stream.base);
+                pas_log(", new_header = ");
+                verse_heap_chunk_map_entry_header_dump(new_header, &pas_log_stream.base);
                 pas_log("\n");
             }
-            verse_heap_chunk_map_entry_copy_atomically(entry_ptr, &entry);
+            verse_heap_chunk_map_entry_store_header(entry_ptr, new_header);
             break;
         } }
     }

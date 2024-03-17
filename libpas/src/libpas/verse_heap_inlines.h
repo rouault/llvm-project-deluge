@@ -76,27 +76,30 @@ static PAS_ALWAYS_INLINE uintptr_t verse_heap_find_allocated_object_start_inline
 {
     static const bool verbose = false;
     
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
     verse_heap_large_entry* large_entry;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
     if (verbose) {
-        pas_log("chunk_map_entry = ");
-        verse_heap_chunk_map_entry_dump(chunk_map_entry, &pas_log_stream.base);
+        pas_log("entry_header = ");
+        verse_heap_chunk_map_entry_header_dump(entry_header, &pas_log_stream.base);
         pas_log("\n");
     }
 
-    if (verse_heap_chunk_map_entry_is_empty(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_empty(entry_header))
         return 0;
 
-    if (PAS_LIKELY(verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry))) {
-        unsigned bitvector;
+    if (PAS_LIKELY(verse_heap_chunk_map_entry_header_is_small_segregated(entry_header))) {
+        unsigned* bitvector;
         size_t index;
 
-        bitvector = verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(chunk_map_entry);
+        bitvector = verse_heap_chunk_map_entry_small_segregated_ownership_bitvector(
+            verse_heap_get_chunk_map_entry_ptr(inner_ptr));
 
-        index = pas_modulo_power_of_2(inner_ptr, VERSE_HEAP_CHUNK_SIZE) / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE;
+        index = pas_modulo_power_of_2(inner_ptr, VERSE_HEAP_CHUNK_SIZE)
+            / VERSE_HEAP_SMALL_SEGREGATED_PAGE_SIZE;
+        PAS_TESTING_ASSERT(index < VERSE_HEAP_SMALL_SEGREGATED_PAGES_PER_CHUNK);
 
         if (verbose)
             pas_log("index = %zu\n", index);
@@ -104,7 +107,7 @@ static PAS_ALWAYS_INLINE uintptr_t verse_heap_find_allocated_object_start_inline
         if (!index)
             return 0;
         
-        if (!pas_bitvector_get_from_one_word(&bitvector, index))
+        if (!pas_bitvector_get(bitvector, index))
             return 0;
 
         if (verbose)
@@ -114,24 +117,24 @@ static PAS_ALWAYS_INLINE uintptr_t verse_heap_find_allocated_object_start_inline
             inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config, pas_segregated_page_exclusive_role);
     }
 
-    if (verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry)) {
-		if (verse_heap_chunk_map_entry_medium_segregated_empty_mode(chunk_map_entry) == pas_is_empty) {
-			/* This means that the page might be decommitted at any time. The scavenger runs concurrently to marking,
-			   including conservative marking! */
+    if (verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header)) {
+		if (verse_heap_chunk_map_entry_header_medium_segregated_empty_mode(entry_header) == pas_is_empty) {
+			/* This means that the page might be decommitted at any time. The scavenger runs concurrently
+               to marking, including conservative marking! */
 			return 0;
 		}
         return pas_segregated_page_try_find_allocated_object_start_with_page(
-            &verse_heap_chunk_map_entry_medium_segregated_header_object(chunk_map_entry)->segregated,
+            &verse_heap_chunk_map_entry_header_medium_segregated_header_object(entry_header)->segregated,
 			inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config, pas_segregated_page_exclusive_role);
     }
 
-    PAS_TESTING_ASSERT(verse_heap_chunk_map_entry_is_large(chunk_map_entry));
+    PAS_TESTING_ASSERT(verse_heap_chunk_map_entry_header_is_large(entry_header));
     
     /* NOTE: This handles allocation races correctly, but not deallocation races. Fortunately,
        we only deallocate during times when we aren't marking, and we only try to find the allocated
        object start during marking. */
     
-    large_entry = verse_heap_chunk_map_entry_large_entry(chunk_map_entry);
+    large_entry = verse_heap_chunk_map_entry_header_large_entry(entry_header);
     if (inner_ptr < large_entry->begin)
         return 0;
     if (inner_ptr >= large_entry->end)
@@ -141,22 +144,24 @@ static PAS_ALWAYS_INLINE uintptr_t verse_heap_find_allocated_object_start_inline
 
 static PAS_ALWAYS_INLINE pas_heap* verse_heap_get_heap_inline(uintptr_t inner_ptr)
 {
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
     pas_segregated_page* page;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
-    if (verse_heap_chunk_map_entry_is_empty(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_empty(entry_header))
         return NULL;
 
-    if (verse_heap_chunk_map_entry_is_large(chunk_map_entry))
-        return verse_heap_chunk_map_entry_large_entry(chunk_map_entry)->heap;
+    if (verse_heap_chunk_map_entry_header_is_large(entry_header))
+        return verse_heap_chunk_map_entry_header_large_entry(entry_header)->heap;
 
-    if (verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry))
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
-    else {
-        PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry));
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
+    if (verse_heap_chunk_map_entry_header_is_small_segregated(entry_header)) {
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
+    } else {
+        PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
     }
 
     return pas_heap_for_segregated_heap(pas_segregated_view_get_size_directory(page->owner)->heap);
@@ -164,25 +169,27 @@ static PAS_ALWAYS_INLINE pas_heap* verse_heap_get_heap_inline(uintptr_t inner_pt
 
 static PAS_ALWAYS_INLINE size_t verse_heap_get_allocation_size_inline(uintptr_t inner_ptr)
 {
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
     pas_segregated_page* page;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
-    if (verse_heap_chunk_map_entry_is_empty(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_empty(entry_header))
         return 0;
 
-    if (verse_heap_chunk_map_entry_is_large(chunk_map_entry)) {
+    if (verse_heap_chunk_map_entry_header_is_large(entry_header)) {
         verse_heap_large_entry* large_entry;
-        large_entry = verse_heap_chunk_map_entry_large_entry(chunk_map_entry);
+        large_entry = verse_heap_chunk_map_entry_header_large_entry(entry_header);
         return large_entry->end - large_entry->begin;
     }
 
-    if (verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry))
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
-    else {
-        PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry));
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
+    if (verse_heap_chunk_map_entry_header_is_small_segregated(entry_header)) {
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
+    } else {
+        PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
     }
 
     return page->object_size;
@@ -190,21 +197,24 @@ static PAS_ALWAYS_INLINE size_t verse_heap_get_allocation_size_inline(uintptr_t 
 
 static PAS_ALWAYS_INLINE pas_segregated_page* verse_heap_get_segregated_page(uintptr_t inner_ptr)
 {
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
-    if (verse_heap_chunk_map_entry_is_empty(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_empty(entry_header))
         return NULL;
 
-    if (verse_heap_chunk_map_entry_is_large(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_large(entry_header))
         return NULL;
 
-    if (verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry))
-        return pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
+    if (verse_heap_chunk_map_entry_header_is_small_segregated(entry_header)) {
+        return pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
+    }
     
-    PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry));
-    return pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
+    PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
+    return pas_segregated_page_for_address_and_page_config(
+        inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
 }
 
 static PAS_ALWAYS_INLINE pas_segregated_view verse_heap_get_segregated_view(uintptr_t inner_ptr)
@@ -217,40 +227,42 @@ static PAS_ALWAYS_INLINE pas_segregated_view verse_heap_get_segregated_view(uint
 
 static PAS_ALWAYS_INLINE pas_object_kind verse_heap_get_object_kind(uintptr_t inner_ptr)
 {
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
-    if (verse_heap_chunk_map_entry_is_empty(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_empty(entry_header))
         return pas_not_an_object_kind;
 
-    if (verse_heap_chunk_map_entry_is_large(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_large(entry_header))
         return pas_large_object_kind;
 
-    if (verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry))
+    if (verse_heap_chunk_map_entry_header_is_small_segregated(entry_header))
         return pas_small_segregated_object_kind;
     
-    PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry));
+    PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
     return pas_medium_segregated_object_kind;
 }
 
 static PAS_ALWAYS_INLINE verse_heap_page_header* verse_heap_get_page_header_inline(uintptr_t inner_ptr)
 {
-    verse_heap_chunk_map_entry chunk_map_entry;
+    verse_heap_chunk_map_entry_header entry_header;
 	pas_segregated_page* page;
 
-    chunk_map_entry = verse_heap_get_chunk_map_entry(inner_ptr);
+    entry_header = verse_heap_get_chunk_map_entry_header(inner_ptr);
 
-	PAS_TESTING_ASSERT(!verse_heap_chunk_map_entry_is_empty(chunk_map_entry));
+	PAS_TESTING_ASSERT(!verse_heap_chunk_map_entry_header_is_empty(entry_header));
 
-    if (PAS_LIKELY(verse_heap_chunk_map_entry_is_small_segregated(chunk_map_entry)))
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
-    else {
-		if (verse_heap_chunk_map_entry_is_large(chunk_map_entry))
+    if (PAS_LIKELY(verse_heap_chunk_map_entry_header_is_small_segregated(entry_header))) {
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.small_segregated_config);
+    } else {
+		if (verse_heap_chunk_map_entry_header_is_large(entry_header))
 			return &verse_heap_large_objects_header;
 
-        PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(chunk_map_entry));
-        page = pas_segregated_page_for_address_and_page_config(inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
+        PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
+        page = pas_segregated_page_for_address_and_page_config(
+            inner_ptr, VERSE_HEAP_CONFIG.medium_segregated_config);
     }
 
 	return verse_heap_page_header_for_segregated_page(page);

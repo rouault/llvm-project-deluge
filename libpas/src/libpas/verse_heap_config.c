@@ -18,6 +18,7 @@
 
 #if PAS_ENABLE_VERSE
 
+/* This happens to be right for both page sizes. */
 const unsigned verse_heap_config_medium_segregated_non_committable_granule_bitvector[4] = { 1, 0, 0, 0 };
 
 const pas_heap_config verse_heap_config = VERSE_HEAP_CONFIG;
@@ -54,8 +55,10 @@ pas_page_base* verse_heap_create_page_base(
 	
 	header_object->boundary = (uintptr_t)boundary;
 	entry_ptr = verse_heap_get_chunk_map_entry_ptr((uintptr_t)boundary);
-	PAS_ASSERT(verse_heap_chunk_map_entry_is_empty(*entry_ptr));
-	*entry_ptr = verse_heap_chunk_map_entry_create_medium_segregated(header_object, pas_is_empty);
+	PAS_ASSERT(verse_heap_chunk_map_entry_header_is_empty(
+                   verse_heap_chunk_map_entry_load_header(entry_ptr)));
+    verse_heap_chunk_map_entry_store_header(
+        entry_ptr, verse_heap_chunk_map_entry_header_create_medium_segregated(header_object, pas_is_empty));
 	
 	return &header_object->segregated.base;
 }
@@ -65,6 +68,7 @@ void verse_heap_destroy_page_base(pas_page_base* page, pas_lock_hold_mode heap_l
 	verse_heap_medium_page_header_object* header_object;
 	pas_page_kind kind;
 	verse_heap_chunk_map_entry* entry_ptr;
+    verse_heap_chunk_map_entry_header entry_header;
 	
 	kind = pas_page_base_get_kind(page);
     PAS_ASSERT(kind == pas_small_exclusive_segregated_page_kind
@@ -76,10 +80,13 @@ void verse_heap_destroy_page_base(pas_page_base* page, pas_lock_hold_mode heap_l
 	header_object = (verse_heap_medium_page_header_object*)((uintptr_t)page - PAS_OFFSETOF(verse_heap_medium_page_header_object, segregated));
 
 	entry_ptr = verse_heap_get_chunk_map_entry_ptr(header_object->boundary);
-	PAS_ASSERT(verse_heap_chunk_map_entry_is_medium_segregated(*entry_ptr));
-	PAS_ASSERT(verse_heap_chunk_map_entry_medium_segregated_header_object(*entry_ptr) == header_object);
-	PAS_ASSERT(verse_heap_chunk_map_entry_medium_segregated_empty_mode(*entry_ptr) == pas_is_empty);
-	*entry_ptr = verse_heap_chunk_map_entry_create_empty();
+    entry_header = verse_heap_chunk_map_entry_load_header(entry_ptr);
+	PAS_ASSERT(verse_heap_chunk_map_entry_header_is_medium_segregated(entry_header));
+	PAS_ASSERT(verse_heap_chunk_map_entry_header_medium_segregated_header_object(entry_header)
+               == header_object);
+	PAS_ASSERT(verse_heap_chunk_map_entry_header_medium_segregated_empty_mode(entry_header)
+               == pas_is_empty);
+    verse_heap_chunk_map_entry_store_header(entry_ptr, verse_heap_chunk_map_entry_header_create_empty());
 	
 	pas_heap_lock_lock_conditionally(heap_lock_hold_mode);
 	verse_heap_medium_page_header_object_destroy(header_object);
@@ -191,10 +198,17 @@ pas_segregated_shared_page_directory* verse_heap_segregated_shared_page_director
 
 void verse_heap_config_activate(void)
 {
+    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE == pas_page_malloc_alignment());
+    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE == PAS_SYSTEM_PAGE_SIZE);
+    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE_SHIFT == pas_page_malloc_alignment_shift());
+    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE_SHIFT == PAS_SYSTEM_PAGE_SIZE_SHIFT);
+    PAS_ASSERT(PAS_COMPACT_TAGGED_PTR_SIZE <= 4);
+    
     /* Make sure that the bmalloc heap config initializes before we do anything else, since that
        one will want to be designated.
 	
-       We rely on bmalloc internally in the verse heap implementation, so that's another good reason to do it. */
+       We rely on bmalloc internally in the verse heap implementation, so that's another good reason to
+       do it. */
     pas_heap_config_activate(&bmalloc_heap_config);
 }
 

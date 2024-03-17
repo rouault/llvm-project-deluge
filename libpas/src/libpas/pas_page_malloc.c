@@ -55,14 +55,6 @@ size_t pas_page_malloc_cached_alignment_shift;
 bool pas_page_malloc_decommit_zero_fill = false;
 #endif /* PAS_OS(DARWIN) */
 
-#if PAS_OS(DARWIN)
-#define PAS_VM_TAG VM_MAKE_TAG(VM_MEMORY_TCMALLOC)
-#elif PAS_PLATFORM(PLAYSTATION) && defined(VM_MAKE_TAG)
-#define PAS_VM_TAG VM_MAKE_TAG(VM_TYPE_USER1)
-#else
-#define PAS_VM_TAG -1
-#endif
-
 #if PAS_OS(LINUX)
 #define PAS_NORESERVE MAP_NORESERVE
 #else
@@ -84,6 +76,7 @@ PAS_NEVER_INLINE size_t pas_page_malloc_alignment_slow(void)
     PAS_ASSERT(result > 0);
     PAS_ASSERT(result >= 4096);
     PAS_ASSERT(pas_is_power_of_2(result));
+    PAS_ASSERT(result <= PAS_SYSTEM_PAGE_SIZE);
     return result;
 }
 
@@ -93,6 +86,7 @@ PAS_NEVER_INLINE size_t pas_page_malloc_alignment_shift_slow(void)
 
     result = pas_log2(pas_page_malloc_alignment());
     PAS_ASSERT(((size_t)1 << result) == pas_page_malloc_alignment());
+    PAS_ASSERT(result <= PAS_SYSTEM_PAGE_SIZE_SHIFT);
 
     return result;
 }
@@ -148,7 +142,7 @@ pas_page_malloc_try_allocate_without_deallocating_padding(
     }
 #else /* _WIN32 -> so !_WIN32 */
     mmap_result = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, PAS_VM_TAG, 0);
+                       MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
     if (mmap_result == MAP_FAILED) {
         errno = 0; /* Clear the error so that we don't leak errno in those
                       cases where we handle the allocation failure
@@ -221,7 +215,7 @@ void pas_page_malloc_zero_fill(void* base, size_t size)
                       size,
                       PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANON | MAP_FIXED | PAS_NORESERVE,
-                      PAS_VM_TAG,
+                      -1,
                       0);
     PAS_ASSERT(result_ptr == base);
 #endif
@@ -255,11 +249,18 @@ bool pas_page_malloc_lock(void* base, size_t size)
 #ifndef _WIN32
 static void posix_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capability)
 {
+    static const bool verbose = false;
+
+    if (verbose)
+        pas_log("posix_decommit(%p, %zu, %s)\n", ptr, size, pas_mmap_capability_get_string(mmap_capability));
 #if PAS_OS(DARWIN)
     if (pas_page_malloc_decommit_zero_fill && mmap_capability)
         pas_page_malloc_zero_fill(ptr, size);
-    else
+    else {
+        if (verbose)
+            pas_log("Going down Darwin madvise path.\n");
         PAS_SYSCALL(madvise(ptr, size, MADV_FREE_REUSABLE));
+    }
 #elif defined(MADV_FREE)
     PAS_SYSCALL(madvise(ptr, size, MADV_FREE));
 #else

@@ -396,6 +396,7 @@ void addTSDTests();
 void addThingyAndUtilityHeapAllocationTests();
 void addTryFindAllocatedObjectStartTests();
 void addUtilsTests();
+void addVerseHeapTests();
 void addViewCacheTests();
 
 void testSucceeded()
@@ -838,6 +839,9 @@ int main(int argc, char** argv)
     pas_segregated_page_config_do_validate = true;
 #endif
 
+    // Run the Verse tests because they are currently the most interesting.
+    ADD_SUITE(VerseHeap);
+    
     // Run the Thingy tests second because they catch the most bugs.
     ADD_SUITE(ThingyAndUtilityHeapAllocation);
 
