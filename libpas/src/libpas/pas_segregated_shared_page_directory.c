@@ -224,6 +224,7 @@ take_last_empty_consider_view(
        cannot really tell if a page can be taken. */
 
     pas_segregated_directory* directory;
+    pas_segregated_shared_page_directory* shared_directory;
     pas_segregated_directory_bit_reference bit_reference;
     size_t shared_view_index;
     take_last_empty_data* data;
@@ -244,6 +245,7 @@ take_last_empty_consider_view(
     unsigned is_in_use_for_allocation_count;
 
     directory = config->directory;
+    shared_directory = (pas_segregated_shared_page_directory*)directory;
     bit_reference = config->bit_reference;
     shared_view_index = config->index;
 
@@ -428,7 +430,7 @@ take_last_empty_consider_view(
         pas_page_malloc_decommit(
             pas_segregated_page_boundary(page, page_config),
             page_config.base.page_size,
-            page_config.base.heap_config_ptr->mmap_capability);
+            shared_directory->mmap_capability);
         page_config.base.destroy_page_header(&page->base, pas_lock_is_held);
         decommit_log->total += page_config.base.page_size;
         goto return_taken_partial_views_after_decommit;

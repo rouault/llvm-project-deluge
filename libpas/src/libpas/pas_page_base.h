@@ -28,6 +28,7 @@
 #define PAS_PAGE_BASE_H
 
 #include "pas_free_range_kind.h"
+#include "pas_mmap_capability.h"
 #include "pas_page_base_config.h"
 #include "pas_page_config_kind.h"
 #include "pas_page_kind.h"
@@ -184,7 +185,8 @@ PAS_API void pas_page_base_add_free_range(pas_page_base* page,
                                           pas_free_range_kind kind);
 
 PAS_API void pas_page_base_commit_with_boundary(void* boundary,
-												const pas_page_base_config* config);
+                                                const pas_page_base_config* config,
+                                                pas_mmap_capability mmap_capability);
 
 PAS_END_EXTERN_C;
 

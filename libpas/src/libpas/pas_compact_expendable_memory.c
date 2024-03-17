@@ -56,7 +56,8 @@ void* pas_compact_expendable_memory_allocate(size_t size,
         PAS_ASSERT(new_memory_result.did_succeed);
         PAS_ASSERT(new_memory_result.begin);
 
-        pas_reservation_commit((void*)new_memory_result.begin, PAS_COMPACT_EXPENDABLE_MEMORY_PAYLOAD_SIZE);
+        pas_reservation_commit((void*)new_memory_result.begin, PAS_COMPACT_EXPENDABLE_MEMORY_PAYLOAD_SIZE,
+                               pas_may_mmap);
         
         pas_compact_expendable_memory_payload = (void*)new_memory_result.begin;
         pas_expendable_memory_construct(&pas_compact_expendable_memory_header.header,

@@ -52,7 +52,7 @@ static void allocate_new_large_expendable_memory(void)
     PAS_ASSERT(new_memory_result.begin);
     new_memory = (pas_large_expendable_memory*)new_memory_result.begin;
 
-    pas_reservation_commit(new_memory, PAS_LARGE_EXPENDABLE_MEMORY_TOTAL_SIZE);
+    pas_reservation_commit(new_memory, PAS_LARGE_EXPENDABLE_MEMORY_TOTAL_SIZE, pas_may_mmap);
 
     new_memory->next = pas_large_expendable_memory_head;
     pas_expendable_memory_construct(&new_memory->header, PAS_LARGE_EXPENDABLE_MEMORY_PAYLOAD_SIZE);

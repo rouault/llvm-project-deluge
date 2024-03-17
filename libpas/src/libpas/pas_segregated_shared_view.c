@@ -172,7 +172,8 @@ pas_segregated_shared_handle* pas_segregated_shared_view_commit_page(
         pas_heap_lock_unlock_conditionally(
             pas_segregated_page_config_heap_lock_hold_mode(page_config));
 
-		pas_page_base_commit_with_boundary(handle->page_boundary, &page_config_ptr->base);
+		pas_page_base_commit_with_boundary(handle->page_boundary, &page_config_ptr->base,
+                                           shared_page_directory->mmap_capability);
         page_config.base.create_page_header(
             handle->page_boundary,
             pas_page_kind_for_segregated_variant_and_role(

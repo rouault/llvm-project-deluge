@@ -31,7 +31,8 @@ pas_heap_runtime_config filc_hard_int_runtime_config = {
     .max_segregated_object_size = 0,
     .max_bitfit_object_size = UINT_MAX,
     .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
-    .initialize_fresh_memory = NULL
+    .initialize_fresh_memory = NULL,
+    .mmap_capability = pas_mmap_hard
 };
 
 pas_heap_runtime_config filc_hard_typed_runtime_config = {
@@ -45,7 +46,8 @@ pas_heap_runtime_config filc_hard_typed_runtime_config = {
     .max_segregated_object_size = UINT_MAX,
     .max_bitfit_object_size = 0,
     .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
-    .initialize_fresh_memory = NULL
+    .initialize_fresh_memory = NULL,
+    .mmap_capability = pas_mmap_hard
 };
 
 pas_heap_runtime_config filc_hard_flex_runtime_config = {
@@ -59,12 +61,13 @@ pas_heap_runtime_config filc_hard_flex_runtime_config = {
     .max_segregated_object_size = UINT_MAX,
     .max_bitfit_object_size = 0,
     .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
-    .initialize_fresh_memory = NULL
+    .initialize_fresh_memory = NULL,
+    .mmap_capability = pas_mmap_hard
 };
 
 pas_segregated_shared_page_directory filc_hard_shared_page_directory =
     PAS_SEGREGATED_SHARED_PAGE_DIRECTORY_INITIALIZER(
-        FILC_HARD_HEAP_CONFIG.small_segregated_config, pas_share_pages, NULL);
+        FILC_HARD_HEAP_CONFIG.small_segregated_config, pas_share_pages, NULL, pas_mmap_hard);
 
 filc_hard_heap_config_root_data filc_hard_root_data = {
     .small_page_header_table = &filc_hard_page_header_table,
@@ -106,14 +109,9 @@ static void* allocate_page(pas_segregated_heap* heap, pas_physical_memory_transa
                                         PAS_SMALL_PAGE_DEFAULT_SIZE);
 
     pas_reservation_commit((void*)(result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE),
-                           PAS_SMALL_PAGE_DEFAULT_SIZE);
+                           PAS_SMALL_PAGE_DEFAULT_SIZE,
+                           pas_mmap_hard);
 
-    lock_result = pas_page_malloc_lock((void*)(result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE),
-                                       PAS_SMALL_PAGE_DEFAULT_SIZE);
-    PAS_ASSERT(lock_result); /* FIXME: We could handle this, but it would require returning memory to the
-                                sharing cache, which would require implementing another function, and I
-                                don't feel like it right now. */
-    
     return (void*)(result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE);
 }
 
@@ -213,12 +211,8 @@ pas_aligned_allocation_result filc_hard_aligned_allocator(
                                                 + actual_alignment + actual_payload_size),
                                         actual_alignment);
 
-    pas_reservation_commit((void*)(allocation_result.begin + actual_alignment), actual_payload_size);
-    lock_result = pas_page_malloc_lock((void*)(allocation_result.begin + PAS_SMALL_PAGE_DEFAULT_SIZE),
-                                       actual_payload_size);
-    PAS_ASSERT(lock_result); /* FIXME: We could handle this, but it would require returning memory to the
-                                sharing cache, which would require implementing another function, and I
-                                don't feel like it right now. */
+    pas_reservation_commit((void*)(allocation_result.begin + actual_alignment), actual_payload_size,
+                           pas_mmap_hard);
 
     pas_large_sharing_pool_boot_free(
         pas_range_create(allocation_result.begin + actual_alignment,

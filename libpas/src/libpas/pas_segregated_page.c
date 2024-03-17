@@ -393,7 +393,7 @@ bool pas_segregated_page_take_empty_granules(
 
     pas_free_granules_decommit_after_locking_range(
         &free_granules, &page->base, decommit_log, commit_lock_for(page),
-        &page_config_ptr->base, heap_lock_hold_mode);
+        &page_config_ptr->base, heap_lock_hold_mode, pas_segregated_view_mmap_capability(owner));
     
     return true;
 }
@@ -430,7 +430,7 @@ bool pas_segregated_page_take_physically(
         base,
         base + page_config.base.page_size,
         commit_lock_for(page),
-        page_config.base.heap_config_ptr->mmap_capability);
+        pas_segregated_view_mmap_capability(page->owner));
     
     return pas_deferred_decommit_log_add_maybe_locked(
         decommit_log, range, range_locked_mode, heap_lock_hold_mode);
@@ -510,7 +510,7 @@ void pas_segregated_page_commit_fully(
             pas_lock_lock(commit_lock);
         pas_compiler_fence();
 
-        pas_commit_span_construct(&commit_span, page_config.base.heap_config_ptr->mmap_capability);
+        pas_commit_span_construct(&commit_span, pas_segregated_view_mmap_capability(page->owner));
 
         for (granule_index = 0; granule_index < num_granules; ++granule_index) {
             if (pas_page_base_config_granule_is_non_committable(page_config.base, granule_index)

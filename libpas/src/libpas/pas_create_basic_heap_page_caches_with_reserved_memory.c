@@ -49,7 +49,8 @@ pas_basic_heap_page_caches* pas_create_basic_heap_page_caches_with_reserved_memo
 
     pas_heap_lock_lock();
 
-    provider = pas_reserved_memory_provider_create(begin, end);
+    provider = pas_reserved_memory_provider_create(
+        begin, end, template_runtime_config->base.mmap_capability);
 
     caches = pas_immortal_heap_allocate(
         sizeof(pas_basic_heap_page_caches),
@@ -86,7 +87,8 @@ pas_basic_heap_page_caches* pas_create_basic_heap_page_caches_with_reserved_memo
             pas_basic_heap_page_caches_get_shared_page_directories(
                 template_runtime_config->page_caches,
                 segregated_variant)->log_shift,
-            pas_share_pages);
+            pas_share_pages,
+            template_runtime_config->base.mmap_capability);
     }
 
     pas_heap_lock_unlock();

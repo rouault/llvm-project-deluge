@@ -167,7 +167,6 @@ PAS_API extern const unsigned outline_non_committable_granules_config_non_commit
 		.aligned_allocator = outline_non_committable_granules_config_aligned_allocator, \
 		.aligned_allocator_talks_to_sharing_pool = false, \
 		.deallocator = NULL, \
-		.mmap_capability = pas_may_mmap, \
 		.root_data = NULL, \
 		.prepare_to_enumerate = NULL, \
 		.for_each_shared_page_directory = outline_non_committable_granules_config_for_each_shared_page_directory, \

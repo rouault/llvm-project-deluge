@@ -56,7 +56,7 @@ void* pas_utility_heap_allocate_page(
         pas_alignment_create_traditional(PAS_SMALL_PAGE_DEFAULT_SIZE),
         "pas_utility_heap/page",
         pas_delegate_allocation).begin;
-    pas_reservation_commit(result, PAS_SMALL_PAGE_DEFAULT_SIZE);
+    pas_reservation_commit(result, PAS_SMALL_PAGE_DEFAULT_SIZE, pas_may_mmap);
     return result;
 }
 

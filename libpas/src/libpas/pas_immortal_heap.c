@@ -126,7 +126,7 @@ void* pas_immortal_heap_allocate_with_manual_alignment(size_t size,
         PAS_ASSERT(allocation_result.result_size == allocation_size);
         PAS_ASSERT(!allocation_result.right_padding_size);
 
-        pas_reservation_commit(allocation_result.result, allocation_size);
+        pas_reservation_commit(allocation_result.result, allocation_size, pas_may_mmap);
         
         pas_immortal_heap_current = (uintptr_t)allocation_result.result;
         pas_immortal_heap_end = pas_immortal_heap_current + allocation_size;

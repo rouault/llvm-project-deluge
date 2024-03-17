@@ -29,6 +29,7 @@
 #include "pas_aligned_allocation_result.h"
 #include "pas_alignment.h"
 #include "pas_commit_mode.h"
+#include "pas_mmap_capability.h"
 #include "pas_primordial_page_state.h"
 
 PAS_BEGIN_EXTERN_C;
@@ -128,11 +129,14 @@ static inline bool pas_reservation_should_participate_in_sharing(void)
    If pas_reservation_commit_mode = pas_committed, then this does nothing. This means that this call does nothing on Darwin and Linux.
    
    If pas_reservation_commit_mode = pas_decommitted, then this commits using pas_page_malloc_commit. */
-PAS_API void pas_reservation_commit(void* base, size_t size);
+PAS_API void pas_reservation_commit(void* base, size_t size,
+                                    pas_mmap_capability mmap_capability);
 
 /* This only allows pas_decommitted as a desired state if pas_reservation_commit_mode is pas_decommitted, simply because we have no
    need for decommitting with this function, and it would be weird to do it. */
-PAS_API void pas_reservation_convert_to_state(void* base, size_t size, pas_primordial_page_state desired_state);
+PAS_API void pas_reservation_convert_to_state(void* base, size_t size,
+                                              pas_primordial_page_state desired_state,
+                                              pas_mmap_capability mmap_capability);
 
 PAS_END_EXTERN_C;
 

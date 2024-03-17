@@ -98,7 +98,7 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(outline_medium_page_header_config);
 		.get_type_size = pas_simple_type_as_heap_type_get_type_size, \
 		.get_type_alignment = pas_simple_type_as_heap_type_get_type_alignment, \
 		.dump_type = pas_simple_type_as_heap_type_dump, \
-                .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
+        .get_type_runtime_config = pas_heap_type_get_runtime_config_identity, \
 		.large_alignment = OUTLINE_MEDIUM_PAGE_HEADER_MIN_ALIGN, \
 		.small_segregated_config = { \
 		    .base = { \
@@ -165,7 +165,6 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(outline_medium_page_header_config);
 		.aligned_allocator = outline_medium_page_header_config_aligned_allocator, \
 		.aligned_allocator_talks_to_sharing_pool = false, \
 		.deallocator = NULL, \
-		.mmap_capability = pas_may_mmap, \
 		.root_data = NULL, \
 		.prepare_to_enumerate = NULL, \
 		.for_each_shared_page_directory = outline_medium_page_header_config_for_each_shared_page_directory, \

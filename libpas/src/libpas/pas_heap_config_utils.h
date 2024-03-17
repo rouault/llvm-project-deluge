@@ -347,7 +347,6 @@ typedef struct {
         .aligned_allocator = pas_heap_config_utils_allocate_aligned, \
         .aligned_allocator_talks_to_sharing_pool = true, \
         .deallocator = NULL, \
-        .mmap_capability = pas_may_mmap, \
         .root_data = &name ## _root_data, \
         .prepare_to_enumerate = name ## _prepare_to_enumerate, \
         .for_each_shared_page_directory = \

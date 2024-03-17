@@ -87,7 +87,9 @@ pas_segregated_shared_page_directory* pas_shared_page_directory_by_size_get(
             for (inner_index = num_directories; inner_index--;) {
                 data->directories[inner_index] = PAS_SEGREGATED_SHARED_PAGE_DIRECTORY_INITIALIZER(
                     *page_config, by_size->sharing_mode,
-                    (void*)(((size_t)1 << ((size_t)inner_index << log_shift)) << page_config->base.min_align_shift));
+                    (void*)(((size_t)1 << ((size_t)inner_index << log_shift))
+                            << page_config->base.min_align_shift),
+                    by_size->mmap_capability);
             }
 
             pas_fence();

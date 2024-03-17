@@ -114,6 +114,7 @@ pas_heap* verse_heap_create(size_t min_align, size_t size, size_t alignment)
     config->base.max_segregated_object_size = PAS_INTRINSIC_MAX_SEGREGATED_OBJECT_SIZE;
     config->base.max_bitfit_object_size = 0;
     config->base.view_cache_capacity_for_object_size = NULL;
+    config->base.mmap_capability = pas_may_mmap;
 
     if (!size) {
         config->heap_base = 0;
@@ -137,7 +138,8 @@ pas_heap* verse_heap_create(size_t min_align, size_t size, size_t alignment)
         config->heap_size = size;
         config->heap_alignment = alignment;
 		config->page_provider = pas_reserved_memory_provider_try_allocate;
-		config->page_provider_arg = pas_reserved_memory_provider_create(allocation_result.begin, allocation_result.begin + size);
+		config->page_provider_arg = pas_reserved_memory_provider_create(
+            allocation_result.begin, allocation_result.begin + size, config->base.mmap_capability);
     }
 
     pas_large_heap_physical_page_sharing_cache_construct(&config->large_cache, verse_heap_runtime_config_chunks_provider, config);
@@ -230,7 +232,8 @@ static pas_aligned_allocation_result large_heap_aligned_allocator(size_t size, p
     aligned_size = pas_round_up_to_power_of_2(size, alignment.alignment);
 
     allocation_result = pas_large_heap_physical_page_sharing_cache_try_allocate_with_alignment(
-        &runtime_config->large_cache, aligned_size, alignment, &verse_heap_config);
+        &runtime_config->large_cache, aligned_size, alignment, &verse_heap_config,
+        runtime_config->base.mmap_capability);
     if (!allocation_result.did_succeed)
         return result;
 
@@ -302,7 +305,7 @@ static pas_allocation_result try_allocate_large_in_transaction(
     if (!pas_large_sharing_pool_allocate_and_commit(
             pas_range_create(chunk_result.begin, chunk_result.begin + chunked_size),
             transaction, pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            VERSE_HEAP_CONFIG.mmap_capability)) {
+            heap->segregated_heap.runtime_config->mmap_capability)) {
         pas_fast_large_free_heap_deallocate(
             &heap->large_heap.u.free_heap, chunk_result.begin, chunk_result.begin + chunked_size, result.zero_mode,
             &config);
@@ -807,7 +810,8 @@ static bool sweep_large_filter_and_deallocate_callback(verse_heap_large_entry* e
 
     pas_large_sharing_pool_free(
         pas_range_create(chunk_begin, chunk_end),
-        pas_physical_memory_is_locked_by_virtual_range_common_lock, VERSE_HEAP_CONFIG.mmap_capability);
+        pas_physical_memory_is_locked_by_virtual_range_common_lock,
+        entry->heap->segregated_heap.runtime_config->mmap_capability);
 
     initialize_large_heap_config(entry->heap, &config);
 

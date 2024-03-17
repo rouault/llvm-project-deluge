@@ -43,6 +43,7 @@ struct pas_shared_page_directory_by_size {
        you set it after data is not NULL, then nothing happens. */
     unsigned log_shift;
     pas_page_sharing_mode sharing_mode;
+    pas_mmap_capability mmap_capability;
 
     pas_shared_page_directory_by_size_data* data;
 };
@@ -55,10 +56,11 @@ struct pas_shared_page_directory_by_size_data {
     pas_segregated_shared_page_directory directories[1];
 };
 
-#define PAS_SHARED_PAGE_DIRECTORY_BY_SIZE_INITIALIZER(passed_log_shift, passed_sharing_mode) \
+#define PAS_SHARED_PAGE_DIRECTORY_BY_SIZE_INITIALIZER(passed_log_shift, passed_sharing_mode, passed_mmap_capability) \
     ((pas_shared_page_directory_by_size){ \
          .log_shift = (passed_log_shift), \
          .sharing_mode = (passed_sharing_mode), \
+         .mmap_capability = (passed_mmap_capability), \
          .data = NULL \
      })
 

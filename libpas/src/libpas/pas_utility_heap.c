@@ -49,7 +49,8 @@ pas_heap_runtime_config pas_utility_heap_runtime_config = {
     .max_segregated_object_size = PAS_UTILITY_MAX_SEGREGATED_OBJECT_SIZE,
     .max_bitfit_object_size = PAS_UTILITY_MAX_BITFIT_OBJECT_SIZE,
     .view_cache_capacity_for_object_size = pas_heap_runtime_config_zero_view_cache_capacity,
-    .initialize_fresh_memory = NULL
+    .initialize_fresh_memory = NULL,
+    .mmap_capability = pas_may_mmap
 };
 
 pas_segregated_heap pas_utility_segregated_heap = {

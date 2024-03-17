@@ -174,7 +174,6 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(filc_hard_heap_config);
         .aligned_allocator = filc_hard_aligned_allocator, \
         .aligned_allocator_talks_to_sharing_pool = true, \
         .deallocator = NULL, \
-        .mmap_capability = pas_mmap_hard, \
         .root_data = &filc_hard_root_data, \
         .prepare_to_enumerate = filc_hard_prepare_to_enumerate, \
         .for_each_shared_page_directory = filc_hard_for_each_shared_page_directory, \

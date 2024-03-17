@@ -45,18 +45,20 @@ pas_aligned_allocation_result pas_reservation_try_allocate_without_deallocating_
     return pas_enumerable_page_malloc_try_allocate_without_deallocating_padding(size, alignment, pas_reservation_commit_mode);
 }
 
-void pas_reservation_commit(void* base, size_t size)
+void pas_reservation_commit(void* base, size_t size, pas_mmap_capability mmap_capability)
 {
     if (pas_reservation_should_participate_in_sharing())
-        pas_page_malloc_commit(base, size, pas_may_mmap);
+        pas_page_malloc_commit(base, size, mmap_capability);
 }
 
-void pas_reservation_convert_to_state(void* base, size_t size, pas_primordial_page_state desired_state)
+void pas_reservation_convert_to_state(void* base, size_t size,
+                                      pas_primordial_page_state desired_state,
+                                      pas_mmap_capability mmap_capability)
 {
 	pas_heap_lock_assert_held();
 	switch (desired_state) {
 	case pas_primordial_page_is_committed:
-		pas_reservation_commit(base, size);
+		pas_reservation_commit(base, size, mmap_capability);
 		return;
 	case pas_primordial_page_is_decommitted:
 		PAS_ASSERT(pas_reservation_commit_mode == pas_decommitted);
@@ -65,7 +67,7 @@ void pas_reservation_convert_to_state(void* base, size_t size, pas_primordial_pa
 		pas_large_sharing_pool_boot_reservation(
 			pas_range_create((uintptr_t)base, (uintptr_t)base + size),
 			pas_physical_memory_is_locked_by_virtual_range_common_lock,
-			pas_may_mmap);
+			mmap_capability);
 		return;
 	}
 	PAS_ASSERT(!"Should not be reached");

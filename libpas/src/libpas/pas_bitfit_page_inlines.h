@@ -28,12 +28,14 @@
 #define PAS_BITFIT_PAGE_INLINES_H
 
 #include "pas_bitfit_allocation_result.h"
+#include "pas_bitfit_directory.h"
 #include "pas_bitfit_page.h"
 #include "pas_bitfit_view.h"
 #include "pas_commit_span.h"
 #include "pas_heap_config.h"
 #include "pas_page_base_inlines.h"
 #include "pas_page_sharing_pool.h"
+#include "pas_segregated_heap.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -147,7 +149,10 @@ static PAS_ALWAYS_INLINE unsigned pas_bitfit_page_allocation_commit_granules_or_
         PAS_ASSERT(view->is_owned);
         pas_lock_assert_held(&view->commit_lock);
         
-        pas_commit_span_construct(&commit_span, page_config.base.heap_config_ptr->mmap_capability);
+        pas_commit_span_construct(
+            &commit_span,
+            pas_compact_bitfit_directory_ptr_load_non_null(
+                &view->directory)->heap->runtime_config->mmap_capability);
         
         for (granule_index = index_of_first_granule;
              granule_index <= index_of_last_granule;

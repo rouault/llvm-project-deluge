@@ -34,7 +34,7 @@ verse_heap_chunk_map_entry* verse_heap_initialize_chunk_map_entry_ptr(uintptr_t 
 			size, pas_alignment_create_traditional(sizeof(verse_heap_chunk_map_entry)), "verse_heap_chunk_map/second_level", pas_object_allocation);
         PAS_ASSERT(allocation_result.did_succeed);
         PAS_ASSERT(allocation_result.zero_mode == pas_zero_mode_is_all_zero);
-        pas_reservation_commit((void*)allocation_result.begin, size);
+        pas_reservation_commit((void*)allocation_result.begin, size, pas_may_mmap);
         *second_level_ptr = (verse_heap_chunk_map_entry*)allocation_result.begin;
     }
 

@@ -213,12 +213,13 @@ void pas_page_base_add_free_range(pas_page_base* page,
 }
 
 void pas_page_base_commit_with_boundary(void* boundary,
-                                        const pas_page_base_config* config)
+                                        const pas_page_base_config* config,
+                                        pas_mmap_capability mmap_capability)
 {
     pas_commit_span span;
     size_t granule_index;
 
-    pas_commit_span_construct(&span, config->heap_config_ptr->mmap_capability);
+    pas_commit_span_construct(&span, mmap_capability);
 
     for (granule_index = 0; granule_index < pas_page_base_config_num_granules(*config); ++granule_index) {
         if (pas_page_base_config_granule_is_committable(*config, granule_index)) {

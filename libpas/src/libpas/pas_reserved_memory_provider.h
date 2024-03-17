@@ -27,6 +27,7 @@
 #define PAS_RESERVED_MEMORY_PROVIDER_H
 
 #include "pas_heap_page_provider.h"
+#include "pas_mmap_capability.h"
 #include "pas_simple_large_free_heap.h"
 
 PAS_BEGIN_EXTERN_C;
@@ -36,14 +37,17 @@ typedef struct pas_reserved_memory_provider pas_reserved_memory_provider;
 
 struct pas_reserved_memory_provider {
     pas_simple_large_free_heap free_heap;
+    pas_mmap_capability mmap_capability;
 };
 
-PAS_API pas_reserved_memory_provider* pas_reserved_memory_provider_create(uintptr_t begin, uintptr_t end);
+PAS_API pas_reserved_memory_provider* pas_reserved_memory_provider_create(
+    uintptr_t begin, uintptr_t end, pas_mmap_capability mmap_capability);
 
 PAS_API void pas_reserved_memory_provider_construct(
     pas_reserved_memory_provider* provider,
     uintptr_t begin,
-    uintptr_t end);
+    uintptr_t end,
+    pas_mmap_capability mmap_capability);
 
 PAS_API pas_allocation_result pas_reserved_memory_provider_try_allocate(
     size_t size,

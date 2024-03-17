@@ -657,4 +657,26 @@ bool pas_segregated_view_is_empty(pas_segregated_view view)
     }
 }
 
+pas_mmap_capability pas_segregated_view_mmap_capability(pas_segregated_view view)
+{
+    switch (pas_segregated_view_get_kind(view)) {
+    case pas_segregated_exclusive_view_kind:
+    case pas_segregated_ineligible_exclusive_view_kind:
+        return pas_compact_segregated_size_directory_ptr_load_non_null(
+            &pas_segregated_view_get_exclusive(view)->directory)->heap->runtime_config->mmap_capability;
+    case pas_segregated_shared_handle_kind:
+        return pas_segregated_view_get_shared_handle(view)->directory->mmap_capability;
+    case pas_segregated_shared_view_kind:
+        PAS_ASSERT(!"Cannot get mmap_capability for shared views.");
+        return pas_may_mmap;
+    case pas_segregated_partial_view_kind:
+        return pas_compact_segregated_size_directory_ptr_load_non_null(
+            &pas_segregated_view_get_partial(view)->directory)->heap->runtime_config->mmap_capability;
+    case pas_segregated_size_directory_view_kind:
+        return pas_segregated_view_get_size_directory(view)->heap->runtime_config->mmap_capability;
+    }
+    PAS_ASSERT(!"Should not be reached");
+    return pas_may_mmap;
+}
+
 #endif /* LIBPAS_ENABLED */

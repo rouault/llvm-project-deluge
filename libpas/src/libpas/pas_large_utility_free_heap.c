@@ -83,7 +83,7 @@ static pas_aligned_allocation_result large_utility_aligned_allocator(size_t size
 
     PAS_ASSERT(allocation_result.zero_mode == pas_zero_mode_is_all_zero);
 
-    pas_reservation_commit((void*)allocation_result.begin, aligned_size);
+    pas_reservation_commit((void*)allocation_result.begin, aligned_size, pas_may_mmap);
 
     if (pas_large_utility_free_heap_talks_to_large_sharing_pool) {
         if (verbose) {

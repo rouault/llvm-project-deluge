@@ -167,7 +167,6 @@ PAS_HEAP_CONFIG_SPECIALIZATION_DECLARATIONS(inline_medium_page_header_config);
 		.aligned_allocator = inline_medium_page_header_config_aligned_allocator, \
 		.aligned_allocator_talks_to_sharing_pool = false, \
 		.deallocator = NULL, \
-		.mmap_capability = pas_may_mmap, \
 		.root_data = NULL, \
 		.prepare_to_enumerate = NULL, \
 		.for_each_shared_page_directory = inline_medium_page_header_config_for_each_shared_page_directory, \

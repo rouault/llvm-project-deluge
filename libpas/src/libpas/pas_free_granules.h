@@ -30,6 +30,7 @@
 #include "pas_bitvector.h"
 #include "pas_config.h"
 #include "pas_lock.h"
+#include "pas_mmap_capability.h"
 #include "pas_page_base_config.h"
 #include "pas_page_granule_use_count.h"
 
@@ -80,7 +81,8 @@ PAS_API void pas_free_granules_decommit_after_locking_range(pas_free_granules* f
                                                             pas_deferred_decommit_log* log,
                                                             pas_lock* commit_lock,
                                                             const pas_page_base_config* page_config,
-                                                            pas_lock_hold_mode heap_lock_hold_mode);
+                                                            pas_lock_hold_mode heap_lock_hold_mode,
+                                                            pas_mmap_capability mmap_capability);
 
 PAS_END_EXTERN_C;
 

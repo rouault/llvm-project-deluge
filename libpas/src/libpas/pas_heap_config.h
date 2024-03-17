@@ -39,7 +39,6 @@
 #include "pas_heap_config_kind.h"
 #include "pas_heap_ref.h"
 #include "pas_heap_ref_kind.h"
-#include "pas_mmap_capability.h"
 #include "pas_segregated_page_config.h"
 #include "pas_size_lookup_mode.h"
 #include "pas_utils.h"
@@ -181,18 +180,6 @@ struct pas_heap_config {
     pas_heap_config_aligned_allocator aligned_allocator;
     bool aligned_allocator_talks_to_sharing_pool; /* FIXME: Why isn't this a runtime_config thing? */
     pas_deallocator deallocator;
-
-    /* Tells if it's OK to call mmap on memory managed by this heap.
-	 
-	   FIXME: This conflates two different things:
-	   - Whether it's OK to change this page's memory protections. JIT heap doesn't want to allow this.
-	   - Whether it's OK for this page to fault when decommitted (i.e. Windows behavior).
-	
-	   So, it means that the JIT heap on Windows will not get the nice decommit behavior because it's claiming
-	   to not allow mmap. Except, JIT heap allows mmap on Windows but not on POSIX.
-	
-	   So weird! */
-    pas_mmap_capability mmap_capability;
 
     /* This points to things that are necessary for enumeration that are specific to the heap config. */
     void* root_data;

@@ -95,7 +95,7 @@ static pas_allocation_result allocate_committed_from_fresh(size_t size, pas_alig
     result = allocate_from_fresh(size, alignment);
 
     if (result.did_succeed)
-        pas_reservation_commit((void*)result.begin, size);
+        pas_reservation_commit((void*)result.begin, size, pas_may_not_mmap);
 
     return result;
 }
@@ -116,7 +116,7 @@ static pas_allocation_result page_provider(
         pas_large_sharing_pool_boot_reservation(
             pas_range_create(result.begin, result.begin + size),
             pas_physical_memory_is_locked_by_virtual_range_common_lock,
-            JIT_HEAP_CONFIG.mmap_capability);
+            pas_may_not_mmap);
     }
     return result;
 }
@@ -143,7 +143,8 @@ pas_heap_runtime_config jit_heap_runtime_config = {
     .max_segregated_object_size = 2000,
     .max_bitfit_object_size = UINT_MAX,
     .view_cache_capacity_for_object_size = pas_heap_runtime_config_aggressive_view_cache_capacity,
-    .initialize_fresh_memory = NULL
+    .initialize_fresh_memory = NULL,
+    .mmap_capability = pas_may_not_mmap
 };
 
 jit_heap_config_root_data jit_root_data = {
@@ -283,7 +284,7 @@ pas_aligned_allocation_result jit_aligned_allocator(
     aligned_size = pas_round_up_to_power_of_2(size, alignment.alignment);
 
     allocation_result = pas_large_heap_physical_page_sharing_cache_try_allocate_with_alignment(
-        &jit_large_fresh_memory_heap, aligned_size, alignment, config);
+        &jit_large_fresh_memory_heap, aligned_size, alignment, config, pas_may_not_mmap);
     if (!allocation_result.did_succeed)
         return result;
 

@@ -26,6 +26,7 @@
 #ifndef PAS_HEAP_RUNTIME_CONFIG_H
 #define PAS_HEAP_RUNTIME_CONFIG_H
 
+#include "pas_mmap_capability.h"
 #include "pas_page_sharing_mode.h"
 #include "pas_segregated_page_config_variant.h"
 #include "pas_utils.h"
@@ -54,6 +55,18 @@ struct pas_heap_runtime_config {
     /* It's OK to set these to UINT_MAX, in which case the maximum is decided by the heap_config. */
     unsigned max_segregated_object_size;
     unsigned max_bitfit_object_size;
+
+    /* Tells if it's OK to call mmap on memory managed by this heap.
+       
+       FIXME: This conflates two different things:
+       - Whether it's OK to change this page's memory protections. JIT heap doesn't want to allow this.
+       - Whether it's OK for this page to fault when decommitted (i.e. Windows behavior).
+       
+       So, it means that the JIT heap on Windows will not get the nice decommit behavior because it's
+       claiming to not allow mmap. Except, JIT heap allows mmap on Windows but not on POSIX.
+       
+       So weird! */
+    pas_mmap_capability mmap_capability;
 
     pas_heap_runtime_config_view_cache_capacity_for_object_size_callback view_cache_capacity_for_object_size;
 

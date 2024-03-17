@@ -38,14 +38,16 @@ struct pas_segregated_shared_page_directory {
     pas_segregated_directory base;
     pas_segregated_shared_page_directory* next;
     void* dump_arg;
+    pas_mmap_capability mmap_capability;
 };
 
-#define PAS_SEGREGATED_SHARED_PAGE_DIRECTORY_INITIALIZER(page_config, sharing_mode, passed_dump_arg) \
+#define PAS_SEGREGATED_SHARED_PAGE_DIRECTORY_INITIALIZER(page_config, sharing_mode, passed_dump_arg, passed_mmap_capability) \
     ((pas_segregated_shared_page_directory){ \
          .base = PAS_SEGREGATED_DIRECTORY_INITIALIZER( \
                      (page_config).kind, (sharing_mode), pas_segregated_shared_page_directory_kind), \
          .next = NULL, \
-         .dump_arg = (passed_dump_arg) \
+         .dump_arg = (passed_dump_arg), \
+         .mmap_capability = (passed_mmap_capability) \
      })
 
 extern PAS_API unsigned pas_segregated_shared_page_directory_probability_of_ineligibility;

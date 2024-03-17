@@ -43,6 +43,7 @@ pas_enumerable_range_list pas_large_heap_physical_page_sharing_cache_page_list;
 typedef struct {
     pas_large_heap_physical_page_sharing_cache* cache;
     const pas_heap_config* config;
+    pas_mmap_capability mmap_capability;
 } aligned_allocator_data;
 
 static pas_aligned_allocation_result large_aligned_allocator(size_t size,
@@ -93,7 +94,7 @@ static pas_aligned_allocation_result large_aligned_allocator(size_t size,
     pas_large_sharing_pool_testing_assert_booted_and_free(
         pas_range_create(allocation_result.begin, allocation_result.begin + aligned_size),
         pas_physical_memory_is_locked_by_virtual_range_common_lock,
-        data->config->mmap_capability);
+        data->mmap_capability);
     
     result.result = (void*)allocation_result.begin;
     result.result_size = size;
@@ -121,7 +122,8 @@ pas_large_heap_physical_page_sharing_cache_try_allocate_with_alignment(
     pas_large_heap_physical_page_sharing_cache* cache,
     size_t size,
     pas_alignment alignment,
-    const pas_heap_config* heap_config)
+    const pas_heap_config* heap_config,
+    pas_mmap_capability mmap_capability)
 {
     static const bool verbose = false;
     
@@ -130,6 +132,7 @@ pas_large_heap_physical_page_sharing_cache_try_allocate_with_alignment(
     
     data.cache = cache;
     data.config = heap_config;
+    data.mmap_capability = mmap_capability;
     
     config.type_size = 1;
     config.min_alignment = 1;

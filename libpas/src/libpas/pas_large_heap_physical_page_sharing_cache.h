@@ -29,6 +29,7 @@
 
 #include "pas_enumerable_range_list.h"
 #include "pas_global_physical_page_sharing_cache.h"
+#include "pas_mmap_capability.h"
 #include "pas_simple_large_free_heap.h"
 #include "pas_utils.h"
 
@@ -65,7 +66,8 @@ pas_large_heap_physical_page_sharing_cache_try_allocate_with_alignment(
     pas_large_heap_physical_page_sharing_cache* cache,
     size_t size,
     pas_alignment alignment,
-    const pas_heap_config* config);
+    const pas_heap_config* config,
+    pas_mmap_capability mmap_capability);
 
 PAS_END_EXTERN_C;
 

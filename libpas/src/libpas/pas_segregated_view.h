@@ -29,6 +29,7 @@
 #include "pas_heap_summary.h"
 #include "pas_lock.h"
 #include "pas_log.h"
+#include "pas_mmap_capability.h"
 #include "pas_range.h"
 #include "pas_segregated_page_config_kind.h"
 #include "pas_segregated_view_kind.h"
@@ -277,6 +278,8 @@ PAS_API pas_heap_summary pas_segregated_view_compute_summary(
 PAS_API bool pas_segregated_view_is_eligible(pas_segregated_view view);
 PAS_API bool pas_segregated_view_is_payload_empty(pas_segregated_view view);
 PAS_API bool pas_segregated_view_is_empty(pas_segregated_view view);
+
+PAS_API pas_mmap_capability pas_segregated_view_mmap_capability(pas_segregated_view view);
 
 PAS_END_EXTERN_C;
 

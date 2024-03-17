@@ -254,7 +254,6 @@ PAS_API extern const unsigned verse_heap_config_medium_segregated_non_committabl
         .aligned_allocator = verse_heap_config_aligned_allocator, \
         .aligned_allocator_talks_to_sharing_pool = true, \
         .deallocator = NULL, \
-        .mmap_capability = pas_may_mmap, \
         .root_data = NULL, \
         .prepare_to_enumerate = NULL, \
         .for_each_shared_page_directory = verse_heap_config_for_each_shared_page_directory, \

@@ -32,14 +32,15 @@
 #include "pas_immortal_heap.h"
 #include "pas_reservation.h"
 
-pas_reserved_memory_provider* pas_reserved_memory_provider_create(uintptr_t begin, uintptr_t end)
+pas_reserved_memory_provider* pas_reserved_memory_provider_create(uintptr_t begin, uintptr_t end,
+                                                                  pas_mmap_capability mmap_capability)
 {
     pas_reserved_memory_provider* result;
     result = pas_immortal_heap_allocate(
         sizeof(pas_reserved_memory_provider),
         "pas_reserved_memory_provider",
         pas_object_allocation);
-	pas_reserved_memory_provider_construct(result, begin, end);
+	pas_reserved_memory_provider_construct(result, begin, end, mmap_capability);
 	return result;
 }
 
@@ -66,13 +67,15 @@ static void initialize_config(pas_large_free_heap_config* config)
 void pas_reserved_memory_provider_construct(
     pas_reserved_memory_provider* provider,
     uintptr_t begin,
-    uintptr_t end)
+    uintptr_t end,
+    pas_mmap_capability mmap_capability)
 {
     pas_large_free_heap_config config;
 
     initialize_config(&config);
     
     pas_simple_large_free_heap_construct(&provider->free_heap);
+    provider->mmap_capability = mmap_capability;
 
     pas_simple_large_free_heap_deallocate(
         &provider->free_heap, begin, end, pas_zero_mode_is_all_zero, &config);
@@ -104,7 +107,7 @@ pas_allocation_result pas_reserved_memory_provider_try_allocate(
 	if (!result.did_succeed)
 		return result;
 
-	pas_reservation_convert_to_state((void*)result.begin, size, desired_state);
+	pas_reservation_convert_to_state((void*)result.begin, size, desired_state, provider->mmap_capability);
 
 	return result;
 }

@@ -183,7 +183,9 @@ pas_segregated_view_will_start_allocating(pas_segregated_view view,
                         num_locks_held);
                 }
 
-                pas_page_base_commit_with_boundary(exclusive->page_boundary, page_config.base.page_config_ptr);
+                pas_page_base_commit_with_boundary(exclusive->page_boundary,
+                                                   page_config.base.page_config_ptr,
+                                                   size_directory->heap->runtime_config->mmap_capability);
                 if (verbose) {
                     pas_log("Creating page header when committing exclusive page, view = %p, "
                             "boundary = %p.\n",
@@ -258,6 +260,9 @@ pas_segregated_view_will_start_allocating(pas_segregated_view view,
         heap = size_directory->heap;
         shared_page_directory = page_config.shared_page_directory_selector(heap, size_directory);
         heap_lock_hold_mode = pas_segregated_page_config_heap_lock_hold_mode(page_config);
+
+        PAS_ASSERT(size_directory->heap->runtime_config->mmap_capability
+                   == shared_page_directory->mmap_capability);
 
         shared_view = pas_compact_segregated_shared_view_ptr_load(&partial->shared_view);
         if (!shared_view) {
