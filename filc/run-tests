@@ -25,6 +25,10 @@ $testDirectory.each_entry {
     testName = entry.basename
     fullPath = $testDirectory + entry
     next unless fullPath.directory?
+    unless (fullPath + "manifest").exist?
+        puts "Skipping #{entry}, no manifest."
+        next
+    end
     manifest = YAML.load_file(fullPath + "manifest")
     expectedReturn = manifest["return"]
     raise unless expectedReturn == "success" or expectedReturn == "failure"
