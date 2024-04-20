@@ -50,7 +50,8 @@ Fil-C introduces memory safety at the core of C:
 Fil-C is already powerful enough to run a [memory-safe curl](https://github.com/pizlonator/deluded-curl-8.5.0)
 and a [memory-safe OpenSSH (both client and server)](https://github.com/pizlonator/deluded-openssh-portable)
 on top of a [memory-safe OpenSSL](https://github.com/pizlonator/deluded-openssl-3.2.0),
-[memory-safe zlib](https://github.com/pizlonator/deluded-zlib-1.3), and
+[memory-safe zlib](https://github.com/pizlonator/deluded-zlib-1.3),
+[memory-safe pcre](https://github.com/pizlonator/pizlonated-pcre-8.39) (which required no changes), and
 [memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
 me on my Apple Silicon Mac:
 
@@ -92,8 +93,8 @@ simply do:
     ./setup_gits.sh
     ./build_all.sh
 
-This will build memory-safe musl, zlib, OpenSSL, curl, and OpenSSH. Now you can try to download something
-with the pizlonated curl, like maybe:
+This will build memory-safe musl, zlib, OpenSSL, curl, OpenSSH, and pcre. Now you can try to download
+something with the pizlonated curl, like maybe:
 
     pizfix/bin/curl https://www.google.com/
 
@@ -204,18 +205,16 @@ and then making it super fast.
 
 ### Growing the Corpus
 
-Fil-C can already run most of musl, zlib, OpenSSL, curl, and OpenSSH. My goal
+Fil-C can already run most of musl, zlib, OpenSSL, curl, OpenSSH, and pcre. My goal
 is to grow the corpus until I have a small UNIX-like userland that comprises only pizlonated
 programs.
 
 Corpus growth should proceed as follows:
 
-- First get to at least 10 large, real-world C libaries or programs compiling with Fil-C. I don't
-  consider zlib to be large, so it doesn't count. I don't consider musl to be part of the corpus,
+- First get to at least 10 large, real-world C libaries or programs compiling with Fil-C.
+  I don't consider musl to be part of the corpus,
   since I'm making lots of internal changes to it (and I'm willing to even completely rewrite it
-  if it makes adding more programs easier). I don't have confidence that OpenSSL, curl, and OpenSSH
-  fully work yet. So, right now, I'm somewhere between 0/10 and 3/10 on this goal, depending
-  on whether you believe that I got OpenSSL/curl/OpenSSH to really work or not.
+  if it makes adding more programs easier). So, right now, I'm somewhere around and 5/10 on this goal.
 
 - Then add C++ support and add at least 10 large, real-world C++ libraries or programs.
 
