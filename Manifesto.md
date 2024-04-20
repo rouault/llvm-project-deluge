@@ -1,4 +1,4 @@
-# The Fil-C Manifesto: FUGC Yeah!
+# The Fil-C Memory Safety Manifesto: FUGC Yeah!
 
 (The previous version, which used isoheaps instead of  GC, is obsolete. If you want to read about it,
 [see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
