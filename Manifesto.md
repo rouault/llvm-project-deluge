@@ -343,7 +343,9 @@ The object format contains:
   special runtime-internal objects (like threads and signal handlers), as well as the free object
   state. Function pointers also leverage the flags.
 
-- 8-bit word type per 16-byte word in the object payload. The word type forms a lattice that starts
+- 8-bit word type per 16-byte word in the object payload. This forms an array that is 1/16th the size
+  of the allocation payload and allows inferring the types of the words in the allocation on the fly.
+  Each word type forms a lattice that starts
   with *unset* at the bottom, *int* and *ptr* in the middle, and *free* at the top. Accessing an
   *unset* word using an int access makes it *int*. Accessing an *unset* word using a ptr access makes
   it a *ptr*. Once the word type is not *unset*, it can never become *unset* again, so future accesses
