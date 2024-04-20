@@ -23,12 +23,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
  */
 
-/* I rewrote this code from C++ to C and removed the fairness hack and WordLock. */
+/* I rewrote this code from C++ to C and removed the fairness hack and WordLock. Then I added GC
+   support. */
 
 #include "pas_config.h"
 
 #if LIBPAS_ENABLED
 
+#include "bmalloc_heap.h"
 #include "filc_parking_lot.h"
 #include "filc_runtime.h"
 #include <stdlib.h>
@@ -56,6 +58,8 @@ struct thread_data {
     pas_system_condition condition;
     const void* address;
     thread_data* next_in_queue;
+    thread_data* next_thread;
+    thread_data* prev_thread;
 };
 
 enum dequeue_result {
@@ -69,7 +73,7 @@ typedef enum dequeue_result dequeue_result;
 struct bucket {
     thread_data* queue_head;
     thread_data* queue_tail;
-    pas_lock lock;
+    pas_system_mutex lock;
 };
 
 struct hashtable {
@@ -81,14 +85,14 @@ static void ptr_array_construct(ptr_array* array)
 {
     static const unsigned initial_capacity = 5;
     
-    array->array = filc_allocate_utility(sizeof(void*) * initial_capacity);
+    array->array = bmalloc_allocate(sizeof(void*) * initial_capacity);
     array->size = 0;
     array->capacity = initial_capacity;
 }
 
 static void ptr_array_destruct(ptr_array* array)
 {
-    filc_deallocate(array->array);
+    bmalloc_deallocate(array->array);
 }
 
 static void ptr_array_add(ptr_array* array, void* ptr)
@@ -100,10 +104,10 @@ static void ptr_array_add(ptr_array* array, void* ptr)
         PAS_ASSERT(array->size == array->capacity);
         PAS_ASSERT(!pas_mul_uint32_overflow(array->capacity, 2, &new_capacity));
 
-        new_array = filc_allocate_utility(sizeof(void*) * new_capacity);
+        new_array = bmalloc_allocate(sizeof(void*) * new_capacity);
         memcpy(new_array, array->array, sizeof(void*) * array->size);
 
-        filc_deallocate(array->array);
+        bmalloc_deallocate(array->array);
         array->array = new_array;
         array->capacity = new_capacity;
         PAS_ASSERT(array->size < array->capacity);
@@ -116,12 +120,12 @@ static void bucket_construct(bucket* bucket)
 {
     bucket->queue_head = NULL;
     bucket->queue_tail = NULL;
-    pas_lock_construct(&bucket->lock);
+    pas_system_mutex_construct(&bucket->lock);
 }
 
 static bucket* bucket_create(void)
 {
-    bucket* result = (bucket*)filc_allocate_utility(sizeof(bucket));
+    bucket* result = (bucket*)bmalloc_allocate(sizeof(bucket));
     if (verbose) {
         pas_log(PAS_SYSTEM_THREAD_ID_FORMAT ": creating bucket at %p\n",
                 pas_get_current_system_thread_id(), result);
@@ -132,7 +136,7 @@ static bucket* bucket_create(void)
 
 static void bucket_destroy(bucket* bucket)
 {
-    filc_deallocate(bucket);
+    bmalloc_deallocate(bucket);
 }
 
 static void bucket_enqueue(bucket* bucket, thread_data* data)
@@ -220,7 +224,7 @@ static hashtable* hashtable_create(unsigned size)
     PAS_ASSERT(!pas_mul_uintptr_overflow(size, sizeof(bucket*), &total_size));
     PAS_ASSERT(!pas_add_uintptr_overflow(total_size, PAS_OFFSETOF(hashtable, data), &total_size));
 
-    hashtable* result = (hashtable*)filc_allocate_utility(total_size);
+    hashtable* result = (hashtable*)bmalloc_allocate(total_size);
     result->size = size;
     pas_zero_memory(result->data, sizeof(bucket*) * size);
 
@@ -229,7 +233,7 @@ static hashtable* hashtable_create(unsigned size)
 
 static void hashtable_destroy(hashtable* table)
 {
-    filc_deallocate(table);
+    bmalloc_deallocate(table);
 }
 
 static hashtable* the_table;
@@ -265,7 +269,9 @@ static int compare_ptr(const void* a_ptr, const void* b_ptr)
     return 1;
 }
 
-static void lock_hashtable(ptr_array* buckets)
+/* We allow my_thread to be NULL in the case that we're using this for locking the parking lot, which is
+   a special operation done under stop-the-world. */
+static void lock_hashtable(filc_thread* my_thread, ptr_array* buckets)
 {
     for (;;) {
         PAS_ASSERT(!buckets->size);
@@ -296,16 +302,22 @@ static void lock_hashtable(ptr_array* buckets)
 
         PAS_ASSERT(buckets->size);
 
+        /* FIXME: This depends on libc too much, and it depends on malloc. Replace with something
+           else? Maybe minheap sort? Or add a pas sort function. Or use bubble sort. */
         qsort(buckets->array, buckets->size, sizeof(void*), compare_ptr);
 
-        for (index = 0; index < buckets->size; ++index)
-            pas_lock_lock(&((bucket*)buckets->array[index])->lock);
+        for (index = 0; index < buckets->size; ++index) {
+            if (my_thread)
+                filc_system_mutex_lock(my_thread, &((bucket*)buckets->array[index])->lock);
+            else
+                pas_system_mutex_lock(&((bucket*)buckets->array[index])->lock);
+        }
 
         if (the_table == table)
             return;
 
         for (index = buckets->size; index--;)
-            pas_lock_unlock(&((bucket*)buckets->array[index])->lock);
+            pas_system_mutex_unlock(&((bucket*)buckets->array[index])->lock);
         buckets->size = 0;
     }
 }
@@ -314,10 +326,10 @@ static void unlock_hashtable(ptr_array* buckets)
 {
     unsigned index;
     for (index = buckets->size; index--;)
-        pas_lock_unlock(&((bucket*)buckets->array[index])->lock);
+        pas_system_mutex_unlock(&((bucket*)buckets->array[index])->lock);
 }
 
-static void ensure_hashtable_size(unsigned num_threads)
+static void ensure_hashtable_size(filc_thread* my_thread, unsigned num_threads)
 {
     hashtable* old_table = the_table;
     if (old_table && (double)old_table->size / (double)num_threads >= max_load_factor) {
@@ -330,7 +342,7 @@ static void ensure_hashtable_size(unsigned num_threads)
 
     ptr_array buckets;
     ptr_array_construct(&buckets);
-    lock_hashtable(&buckets);
+    lock_hashtable(my_thread, &buckets);
 
     old_table = the_table;
     PAS_ASSERT(old_table);
@@ -407,14 +419,25 @@ static void ensure_hashtable_size(unsigned num_threads)
     ptr_array_destruct(&thread_datas);
 }
 
-static thread_data* thread_data_create(void)
+static pas_system_mutex thread_datas_lock;
+static thread_data* first_thread_data = NULL;
+
+static thread_data* thread_data_create(filc_thread* my_thread)
 {
-    thread_data* result = (thread_data*)filc_allocate_utility(sizeof(thread_data));
+    thread_data* result = (thread_data*)bmalloc_allocate(sizeof(thread_data));
     result->ref_count = 1;
     pas_system_mutex_construct(&result->lock);
     pas_system_condition_construct(&result->condition);
     result->address = NULL;
     result->next_in_queue = NULL;
+
+    pas_system_mutex_lock(&thread_datas_lock);
+    result->prev_thread = NULL;
+    result->next_thread = first_thread_data;
+    if (first_thread_data)
+        first_thread_data->prev_thread = result;
+    first_thread_data = result;
+    pas_system_mutex_unlock(&thread_datas_lock);
     
     unsigned current_num_threads;
     for (;;) {
@@ -424,7 +447,7 @@ static thread_data* thread_data_create(void)
             break;
     }
 
-    ensure_hashtable_size(current_num_threads);
+    ensure_hashtable_size(my_thread, current_num_threads);
 
     return result;
 }
@@ -432,9 +455,21 @@ static thread_data* thread_data_create(void)
 static void thread_data_destroy(thread_data* data)
 {
     PAS_ASSERT(!data->ref_count);
+
+    pas_system_mutex_lock(&thread_datas_lock);
+    if (data->prev_thread)
+        data->prev_thread->next_thread = data->next_thread;
+    else {
+        PAS_ASSERT(first_thread_data == data);
+        first_thread_data = data->next_thread;
+    }
+    if (data->next_thread)
+        data->next_thread->prev_thread = data->prev_thread;
+    pas_system_mutex_unlock(&thread_datas_lock);
+    
     pas_system_mutex_destruct(&data->lock);
     pas_system_condition_destruct(&data->condition);
-    filc_deallocate_yolo(data);
+    bmalloc_deallocate(data);
 
     for (;;) {
         unsigned old_num_threads = num_threads;
@@ -481,25 +516,27 @@ static void thread_data_key_destructor(void* arg)
     thread_data_deref(data);
 }
 
-static void initialize_thread_data_key(void)
+static void initialize_thread_data_globals(void)
 {
     PAS_ASSERT(!pthread_key_create(&thread_data_key, thread_data_key_destructor));
+    pas_system_mutex_construct(&thread_datas_lock);
 }
 
-static thread_data* my_thread_data(void)
+static thread_data* my_thread_data(filc_thread* my_thread)
 {
-    pas_system_once_run(&thread_data_key_once, initialize_thread_data_key);
+    pas_system_once_run(&thread_data_key_once, initialize_thread_data_globals);
 
     thread_data* data = (thread_data*)pthread_getspecific(thread_data_key);
     if (!data) {
-        data = thread_data_create();
+        data = thread_data_create(my_thread);
         pthread_setspecific(thread_data_key, data);
     }
     
     return data;
 }
 
-static bool enqueue(const void* address, thread_data* (*callback)(void* arg), void* arg)
+static bool enqueue(
+    filc_thread* my_thread, const void* address, thread_data* (*callback)(void* arg), void* arg)
 {
     unsigned hash = pas_hash_ptr(address);
 
@@ -525,9 +562,9 @@ static bool enqueue(const void* address, thread_data* (*callback)(void* arg), vo
                     pas_get_current_system_thread_id(), my_bucket, index, address, hash);
         }
         PAS_ASSERT(my_bucket);
-        pas_lock_lock(&my_bucket->lock);
+        filc_system_mutex_lock(my_thread, &my_bucket->lock);
         if (the_table != table) {
-            pas_lock_unlock(&my_bucket->lock);
+            pas_system_mutex_unlock(&my_bucket->lock);
             continue;
         }
 
@@ -542,7 +579,7 @@ static bool enqueue(const void* address, thread_data* (*callback)(void* arg), vo
             result = true;
         } else
             result = false;
-        pas_lock_unlock(&my_bucket->lock);
+        pas_system_mutex_unlock(&my_bucket->lock);
         return result;
     }
 }
@@ -554,7 +591,7 @@ enum bucket_mode {
 
 typedef enum bucket_mode bucket_mode;
 
-static bool dequeue(const void* address, bucket_mode mode,
+static bool dequeue(filc_thread* my_thread, const void* address, bucket_mode mode,
                     dequeue_result (*callback)(thread_data* data, void* arg),
                     void (*finish)(bool result, void* arg),
                     void* arg)
@@ -583,16 +620,16 @@ static bool dequeue(const void* address, bucket_mode mode,
             }
         }
         PAS_ASSERT(my_bucket);
-        pas_lock_lock(&my_bucket->lock);
+        filc_system_mutex_lock(my_thread, &my_bucket->lock);
         if (the_table != table) {
-            pas_lock_unlock(&my_bucket->lock);
+            pas_system_mutex_unlock(&my_bucket->lock);
             continue;
         }
 
         bucket_generic_dequeue(my_bucket, callback, arg);
         bool result = !!my_bucket->queue_head;
         finish(result, arg);
-        pas_lock_unlock(&my_bucket->lock);
+        pas_system_mutex_unlock(&my_bucket->lock);
         return result;
     }
 }
@@ -633,6 +670,7 @@ static void empty_finish_callback(bool result, void* arg)
 }
 
 bool filc_park_conditionally(
+    filc_thread* my_thread,
     const void* address,
     bool (*validate)(void* arg),
     void (*before_sleep)(void* arg),
@@ -644,24 +682,55 @@ bool filc_park_conditionally(
                 pas_get_current_system_thread_id());
     }
 
+    filc_increase_special_signal_deferral_depth(my_thread);
+
     park_data data;
     data.address = address;
     data.validate = validate;
     data.arg = arg;
         
-    data.me = my_thread_data();
-    /* Guard against someone calling park_conditionally recursively from before_sleep. */
+    data.me = my_thread_data(my_thread);
+    /* Guard against someone calling park_conditionally recursively from validate. */
     PAS_ASSERT(!data.me->address);
 
-    bool enqueue_result = enqueue(address, park_enqueue_callback, &data);
+    bool enqueue_result = enqueue(my_thread, address, park_enqueue_callback, &data);
 
-    if (!enqueue_result)
+    if (!enqueue_result) {
+        filc_decrease_special_signal_deferral_depth(my_thread);
         return false;
+    }
 
+    /* This is so wacky. I want parking lot waiting to be signal-safe. The way we achieve this is that
+       the parking lot's inner logic - including the callbacks - run with signals deferred (same thing
+       as if we blocked them using sigmask, but more efficient).
+       
+       But we cannot defer signals while we're waiting, since that would just be wrong. It's OK to expect
+       that the parking lot callbacks complete quickly enough that it's OK for a signal to be deferred
+       while they're running. It's not OK to expect that while the parking lot is actually waiting!
+       
+       So, we undefer signals before waiting.
+       
+       But that creates another problem: what if the signal handler that gets invoked in here ends up
+       calling back into the parking lot? In that case, we're already using our thread_data! To avoid
+       shitty situations, we clear the thread_data_key, which forces such recursive calls to create their
+       own thread_data. Then, after we're done waiting, we check if a recursive thread_data got created,
+       and if it did, then we delete it. And then we reinstate our thread_data.
+    
+       NOTE: It might be fugcing idiotic of me to make parking lot signal-safe. My hypothesis:
+       futex_wait has no reason not to work from a signal handler, provided you are careful enough, so
+       therefore, I should make park_conditionally also signal-safe. Obviously, if you use it to wait on
+       something that might be "held" by the thread the signal interrupted, then your code won't work.
+       But as a long-time POSIX hacker, I know that the published signal-safety allowlists are total
+       bullshit in the sense that there's a bunch of stuff you can do from signal handlers that isn't on
+       that list, and all you have to do to use it is read the OS's source code (which people totally
+       do, and so I have to assume the worst about programs I run on Fil-C). */
+    pthread_setspecific(thread_data_key, NULL);
+    filc_decrease_special_signal_deferral_depth(my_thread);
+    
     before_sleep(arg);
 
     bool did_get_dequeued;
-    filc_exit();
+    filc_exit(my_thread);
     pas_system_mutex_lock(&data.me->lock);
     while (data.me->address
            && pas_get_time_in_milliseconds_for_system_condition() < absolute_timeout_milliseconds) {
@@ -677,19 +746,31 @@ bool filc_park_conditionally(
     PAS_ASSERT(!data.me->address || data.me->address == address);
     did_get_dequeued = !data.me->address;
     pas_system_mutex_unlock(&data.me->lock);
-    filc_enter();
+    filc_enter(my_thread);
+
+    /* This is the last bit of signal shenanigans, referenced above. */
+    filc_increase_special_signal_deferral_depth(my_thread);
+    thread_data* inner_me = (thread_data*)pthread_getspecific(thread_data_key);
+    if (inner_me)
+        thread_data_deref(inner_me);
+    pthread_setspecific(thread_data_key, data.me);
 
     if (did_get_dequeued) {
         /* This is the normal case - we got dequeued by someone before the timer expired. */
+        filc_decrease_special_signal_deferral_depth(my_thread);
         return true;
     }
 
     data.did_dequeue = false;
-    dequeue(address, bucket_ignore_empty, park_dequeue_callback, empty_finish_callback, &data);
+    dequeue(my_thread, address, bucket_ignore_empty, park_dequeue_callback, empty_finish_callback, &data);
 
     PAS_ASSERT(!data.me->next_in_queue);
 
-    filc_exit();
+    /* Note that it's totally fine to do this next wait with signals still deferred, since this is just
+       to resolve a race with another thread. Basically, we know that we wanted to dequeue ourselves, but
+       we failed to dequeue ourselves, which means that some other thread is on a path of no return to
+       dequeueing us. Let them just finish that path. */
+    filc_exit(my_thread);
     pas_system_mutex_lock(&data.me->lock);
     if (!data.did_dequeue) {
         while (data.me->address)
@@ -697,8 +778,9 @@ bool filc_park_conditionally(
     }
     data.me->address = NULL;
     pas_system_mutex_unlock(&data.me->lock);
-    filc_enter();
+    filc_enter(my_thread);
 
+    filc_decrease_special_signal_deferral_depth(my_thread);
     return !data.did_dequeue;
 }
 
@@ -731,10 +813,13 @@ static void unpark_one_finish_callback(bool may_have_more_threads, void* arg)
 }
 
 void filc_unpark_one(
+    filc_thread* my_thread,
     const void* address,
     void (*callback)(filc_unpark_result result, void* arg),
     void* arg)
 {
+    filc_increase_special_signal_deferral_depth(my_thread);
+    
     unpark_one_data data;
     data.address = address;
     data.target = NULL;
@@ -742,24 +827,28 @@ void filc_unpark_one(
     data.arg = arg;
     data.did_call_finish = false;
 
-    dequeue(address, bucket_ensure_non_empty, unpark_one_dequeue_callback, unpark_one_finish_callback,
+    dequeue(my_thread, address, bucket_ensure_non_empty,
+            unpark_one_dequeue_callback, unpark_one_finish_callback,
             &data);
 
-    if (!data.target)
+    if (!data.target) {
+        filc_decrease_special_signal_deferral_depth(my_thread);
         return;
+    }
 
     PAS_ASSERT(data.target->address == address);
 
-    filc_exit();
+    filc_exit(my_thread);
     pas_system_mutex_lock(&data.target->lock);
     data.target->address = NULL;
     pas_system_mutex_unlock(&data.target->lock);
     pas_system_condition_broadcast(&data.target->condition);
-    filc_enter();
+    filc_enter(my_thread);
 
     /* Note that we could have just signaled a dead thread, if there was a timeout. That's fine
        since we're using refcounting. */
     thread_data_deref(data.target);
+    filc_decrease_special_signal_deferral_depth(my_thread);
 }
 
 typedef struct {
@@ -781,13 +870,15 @@ static dequeue_result unpark_dequeue_callback(thread_data* element, void* arg)
     return dequeue_remove_and_continue;
 }
 
-unsigned filc_unpark(const void* address, unsigned count)
+unsigned filc_unpark(filc_thread* my_thread, const void* address, unsigned count)
 {
+    filc_increase_special_signal_deferral_depth(my_thread);
+    
     unpark_data data;
     data.address = address;
     ptr_array_construct(&data.array);
     data.count = count;
-    dequeue(address, bucket_ignore_empty, unpark_dequeue_callback, empty_finish_callback, &data);
+    dequeue(my_thread, address, bucket_ignore_empty, unpark_dequeue_callback, empty_finish_callback, &data);
 
     PAS_ASSERT(data.array.size <= count);
 
@@ -795,18 +886,51 @@ unsigned filc_unpark(const void* address, unsigned count)
     for (index = data.array.size; index--;) {
         thread_data* target = (thread_data*)data.array.array[index];
         PAS_ASSERT(target->address == address);
-        filc_exit();
+        filc_exit(my_thread);
         pas_system_mutex_lock(&target->lock);
         target->address = NULL;
         pas_system_mutex_unlock(&target->lock);
         pas_system_condition_broadcast(&target->condition);
-        filc_enter();
+        filc_enter(my_thread);
         thread_data_deref(target);
     }
 
     unsigned result = data.array.size;
     ptr_array_destruct(&data.array);
+
+    filc_decrease_special_signal_deferral_depth(my_thread);
+    
     return result;
+}
+
+void* filc_parking_lot_lock(void)
+{
+    pas_system_mutex_lock(&thread_datas_lock);
+    
+    ptr_array* result = (ptr_array*)bmalloc_allocate(sizeof(ptr_array));
+    ptr_array_construct(result);
+    lock_hashtable(NULL, result);
+
+    thread_data* data;
+    for (data = first_thread_data; data; data = data->next_thread)
+        pas_system_mutex_lock(&data->lock);
+
+    return result;
+}
+
+void filc_parking_lot_unlock(void* cookie)
+{
+    ptr_array* array = (ptr_array*)cookie;
+
+    thread_data* data;
+    for (data = first_thread_data; data; data = data->next_thread)
+        pas_system_mutex_unlock(&data->lock);
+
+    unlock_hashtable(array);
+    ptr_array_destruct(array);
+    bmalloc_deallocate(array);
+
+    pas_system_mutex_unlock(&thread_datas_lock);
 }
 
 #endif /* LIBPAS_ENABLED */

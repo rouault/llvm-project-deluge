@@ -1,9 +1,12 @@
-# The Fil-C Manifesto: Garbage In, Memory Safety Out!
+# The Fil-C Manifesto: FUGC Yeah!
+
+(The previous version, which used isoheaps instead of  GC, is obsolete. If you want to read about it,
+[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
 
 The C programming language is wonderful. There is a ton of amazing code written in C. But C is
 an unsafe language. Simple logic errors may result in an attacker controlling where a pointer points
 and what is written into it, which leads to an easy path to exploitation. Lots of other languages
-(Rust, Java, Haskell, Verse, even JavaScript) don't have this problem!
+(Rust, Java, Haskell, even JavaScript) don't have this problem!
 
 But I love C. I grew up on it. It's such a joy for me to use! Therefore, in my spare time, I decided
 to make my own memory-safe C. This is a personal project and an expression of my love for C.
@@ -11,21 +14,31 @@ to make my own memory-safe C. This is a personal project and an expression of my
 Fil-C introduces memory safety at the core of C:
  
 - All pointers carry a *capability*, which tracks the bounds and type of the pointed-to memory. Fil-C
-  pointers are 32 bytes, require 16 byte alignment, and use a special encoding for bounds and type
-  that makes pointers safely and usefully atomic (using a novel algorithm called SideCap).
+  use a novel pointer encoding called *MonoCap*, which is a 16-byte atomic tuple of object pointer
+  and raw pointer. The *object* contains the lower and upper bounds and dynamic type information for
+  each 16 byte word in the payload. Accessing memory causes a bounds check and a type check. Type
+  checks do dynamic type inference but disallow ping-ponging (once a word becomes an integer, it cannot
+  become pointer, or vice-versa).
 
-- All allocations are *isoheaped*: to allocate, you must describe the type being allocated, and the
-  allocator will return a pointer to memory that had always been exactly that type. Use-after-free
-  does not lead to type confusion in Fil-C. Fil-C uses a modified version of
-  [libpas](https://github.com/WebKit/WebKit/blob/main/Source/bmalloc/libpas/Documentation.md) based
-  on the Unreal Engine version of libpas.
+- All allocations are *garbage collected* using
+  [FUGC](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/fugc.c) (Fil's
+  Unbelievable Garbage Collector). FUGC is a concurrent, real time, accurate garbage collector.
+  Threads are never suspended for GC. Freeing an object causes all word types to transition to *free*,
+  which prevents all future access. FUGC will redirect all object pointers to free objects to the free
+  singleton object, which ensures that freed objects are definitely collected on the next cycle.
+  Accessing a freed object before or after the next GC is guaranted to trap. Also, freeing objects is
+  optional.
 
-- The combination of SideCap and isoheaps means that pointer capabilities cannot be forged. Your
-  program may have logic errors (bad casts, bogus pointer arithmetic, races, bad frees, whatever)
+- The combination of MonoCaps and FUGC means that it's not necessary to instrument or change `malloc`
+  and `free` calls; the semantics are compatible with C. It's also not necessary to change unions and
+  the active union member rule only results in traps if it results in int-pointer confusion.
+
+- The combination of MonoCaps and FUGC means that pointer capabilities cannot be forged. Your
+  program may have logic errors (bad casts, bogus pointer arithmetic, races, bad frees, use-after-free,
+  whatever)
   but every pointer will remember the bounds and type of the thing it originated from. If you break
-  that pointer's rules by trying to access out-of-bounds, or read an int as a pointer or vice-versa,
-  Fil-C will thwart your program's further execution. And, once a piece of memory is chosen to be a
-  pointer by the allocator, it will always be one; ditto for integers.
+  that pointer's rules by trying to access out-of-bounds, or read an int as a pointer or vice-versa, or
+  access a freed object, Fil-C will thwart your program's further execution.
 
 - Fil-C's protections are designed to be comprehensive. There's no escape hatch short of [delightful
   hacks that also break all memory-safe languages](https://blog.yossarian.net/2021/03/16/totally_safe_transmute-line-by-line).
@@ -50,11 +63,13 @@ as does this:
 Where the `pizfix` is the Fil-C staging environment for *pizlonated* programs (programs that now
 successfully compile with Fil-C). The only unsafety in Fil-C is in libpizlo (the runtime library),
 which exposes all of the API that musl needs (low-level
-[syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#L3538),
+[syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#2901),
 which themselves perform comprehensive safety checking).
 
-On the other hand, Fil-C is quite slow. It's 200x slower than legacy C right now. I have not done any
-optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
+On the other hand, Fil-C is quite slow. It's ~50x slower than legacy C right now. I have not done any
+optimizations to it at all (though switching from
+[isoheaps](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md) to
+FUGC resulted in a ~4x speed-up). I am focusing entirely on correctness and ergonomics and converting as
 much code to it as I personally can in my spare time. It's important for Fil-C to be fast eventually,
 but it'll be easiest to make it fast once there is a large corpus of code that can run on it.
 
@@ -62,7 +77,7 @@ This document goes into the details of Fil-C and is organized as follows. First,
 use Fil-C. Then, I describe the Fil-C development plan, which explains my views on growing the set
 of things Fil-C can run and how to make it run fast. The section about making it run fast also delves
 into a lot of technical details about how Fil-C works. Then I conclude with a description of the
-SideCap 32-byte atomic pointer algorithm.
+FUGC and MonoCap algorithms.
 
 ## Using Fil-C
 
@@ -119,10 +134,12 @@ Let's quickly look at what happens with a broken program:
 
 Here's what happens when we compile and run this:
 
-    [pizlo@behemoth llvm-project-deluge] xcrun build/bin/clang -o bad bad.c -g -O
-    [pizlo@behemoth llvm-project-deluge] ./bad                                   
-    bad.c:4:37: main: cannot access pointer with ptr >= upper (ptr = 0x10d01416c,0x10d014144,0x10d014148,type{int}).
-    [13157] filc panic: thwarted a futile attempt to violate memory safety.
+    [pizlo@behemoth llvm-project-deluge] xcrun build/bin/clang -o bad bad.c -O -g
+    [pizlo@behemoth llvm-project-deluge] ./bad
+    filc safety error: cannot access pointer with ptr >= upper (ptr = 0x10a4104c8,0x10a4104a0,0x10a4104b0,_).
+        bad.c:4:41: main
+        <crt>: main
+    [62394] filc panic: thwarted a futile attempt to violate memory safety.
     zsh: trace trap  ./bad
 
 Fil-C thwarted this program's attempt to do something bad. Hooray!
@@ -140,75 +157,9 @@ that your linker will understand. Some caveats:
   uses assert() as its error checking for now, so you must compile llvm with assertions enabled (the
   build_all.sh script does this).
 
-Fil-C requires that some C code does change. In particular, Fil-C must know about the types of any
-allocations that contain pointers in them. It's fine to allocate primitive memory (like int arrays,
-strings, etc) using malloc. But for anything with pointers in it, you must use the `zalloc` API
-provided by [`<stdfil.h>`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/filc/include/stdfil.h).
-For example:
-
-    char** str_ptr = zalloc(char*, 1);
-
-Allocates enough memory to hold one `char*` and returns a pointer to it.
-
-Fil-C allocation functions trap if allocation fails and returns zero-initialized memory on success.
-
-You can free memory allocated by zalloc using the normal `free()` function. Freeing doesn't require
-knowing the type. Also, malloc is internally just a wrapper for `zalloc(char, count)`.
-
-Fil-C provides a rich API for memory allocation in `<stdfil.h>`. Some examples:
-
-- You can allocate aligned by saying `zaligned_alloc(type, alignment, count)`.
-
-- You can allocate *flexes* - objects with flexible array members, aka trailing arrays - using
-  `zalloc_flex(type, array_field, count)`.
-
-- You can reallocate with `zrealloc(old_ptr, type, count)`. You'll get a trap if you try to realloc
-  to the wrong type. If you use `zrealloc` to grow an allocation, then the added memory is
-  zero-initialized.
-
-- You can allocate in a heap suitable for crypto using `zhard_alloc(type, count)`. This heap is
-  mlocked and has other mitigations beyond what zalloc offers. It's also isoheaped, so the hard
-  heap is really a bunch of heaps (one heap per type).
-
-- You can reflectively build types at runtime using `zslicetype` and `zcattype` and then allocate
-  memory of that type using `zalloc_with_type`.
-
-- You can allocate memory that has exactly the same type as some pointer with `zalloc_like`.
-
-Almost all of the changes you will make to your C code to use Fil-C involve changing calls like:
-
-    malloc(sizeof(some_type))
-
-to:
-
-    zalloc(some_type, 1)
-
-and stuff like:
-
-    malloc(count * sizeof(some_type))
-
-to:
-
-    zalloc(some_type, count)
-
-In some cases, the Fil-C changes make things a lot clearer. Consider this flex allocation in C:
-
-    malloc(OFFSETOF(some_type, array_field) + sizeof(array_type) * count)
-
-This just becomes:
-
-    zalloc_flex(some_type, array_field, count)
-
-Note that `zalloc` and friends do overflow checking and will trap if that fails, so it's not
-possible to mess up by using a too-big count. Even if zalloc did no such checking, the capability
-returned by zalloc is guaranteed to match the amount of memory actually allocated - so if `count`
-is zero, then the resulting pointer will be inaccessible.
-
-Most of the changes I've had to make to zlib, OpenSSL, curl, and OpenSSH are about replacing calls
-to malloc/calloc/realloc to use zalloc/zalloc_flex/zrealloc instead. I believe that those changes
-could be abstracted behind C preprocessor macros to make the code still also compile with legacy C,
-but I have not done this for now; I just replaced the existing allocator calls with `<stdfil.h>`
-calls.
+Fil-C requires almost no changes to C code. Inline assembly is currently disallowed. Some configure
+script jank has to change. Other than that, I only had to make a couple one-line changes in OpenSSL
+and OpenSSH to get them to work.
 
 ## The Fil-C Development Plan
 
@@ -280,36 +231,31 @@ implemented in libpizlo. Eventually musl+libpizlo will know all the syscalls.
 
 ### Making Fil-C Fast
 
-The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 200x slower
+The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 50x slower
 than legacy C according to my tests (good old [Richards](https://www.cl.cam.ac.uk/~mr10/Bench.html),
-zlib's minigzip, and OpenSSL's `enc` command all seem to agree).
+zlib's minigzip, and OpenSSL's `enc` command are roughly in that ballpark).
 
 Why is it so slow? Answering this question also gives us a fun way to talk about Fil-C's technical
 details. So, this section will simultaneously explain how Fil-C works today and how it would work
 if I cared about performance. And I won't care about performance until I've got a corpus!
 
 First of all, performance is a deliberate non-goal of the current implementation. It's super hard
-to make a C compiler widen all pointers to 32 bytes, align them to 16 bytes, and then transform
+to make a C compiler widen all pointers to 16 bytes, align them to 16 bytes, handle accurate
+concurrent GC, and then transform
 all of the code in a way that allows zero unsafety through. It's hard to even reason about whether
 the chosen transformation strategy obeys the compiler's own laws let alone whether it's sound. To
 make it easy for me to feel confident that I was doing the right thing when writing the runtime
 and `llvm::FilPizlonatorPass`, I consistently went for implementation tactics that are dead simple
 to get right, reason about, and test. For example:
 
-- The runtime and compiler carry around SideCap pointers, which are awkward to encode and decode.
-  So whenever your program requires looking a pointer's value, lower bound, upper bound, or type,
-  or whenever your program requires creating a pointer with a new value or bounds/type, then it's
-  either calling functions that are big and gross, or it's executing inlined code that is totally
-  absurd. The compiler emits tons of calls, everywhere, even in cases of things you could emit
-  decent llvm IR for, just because it's simpler. An obvious optimization is to just use SideCaps
-  for pointers-at-rest in the heap and use a tuple of ptr,lower,upper,type for pointers-in-flight.
-  But using SideCaps everywhere was simpler, and that probably accounts for something like 10x
-  slowdown alone! And what an easy problem to fix, if I cared!
+- Every local variable is currently heap-allocated without even the dumbest escape analysis. This
+  is shockingly easy to fix and is likely to change the performance by an order of magnitude, if I
+  cared!
 
-- The Fil-C ABI currently has the caller isoheap-allocate a buffer in the heap to store the
+- The Fil-C ABI currently has the caller allocate a buffer in the heap to store the
   arguments. The callee deallocates the argument buffer. This makes dealing with `va_list` (and
   all of the ways it could be misused) super easy. But, it wouldn't be hard to change the ABI to
-  have the caller stack-allocate the buffer and then have the caller isoheap-allocate a clone if
+  have the caller stack-allocate the buffer and then have the caller heap-allocate a clone if
   it finds itself needing to `va_start`.
 
 - The code for doing checks on pointer access has almost no fast path optimizations and sometimes
@@ -328,18 +274,9 @@ to get right, reason about, and test. For example:
   they will have been surrounded by hella function calls. What fun it will be to fix this silly
   mistake!
 
-The plan to make Fil-C fast is to do the following seven things. The last of those seven - language
-changes - should happen after the first six have gained traction.
+The plan to make Fil-C fast is to do the following things.
 
-1. Switching to two pointer representations - pointers-in-flight and pointers-at-rest.
-   Pointers-at-rest have to use SideCap, because they might be raced on. Pointers-in-flight can
-   use a much more efficient tuple of ptr,lower,upper,type (which is semantically what SideCap
-   gives you, just via complex logic). This will require some nontrivial rewriting of
-   `llvm::FilPizlonatorPass`. It will require some refactoring in the runtime. This work will
-   lead to an entirely new performance baseline, since this is the majority of the overhead
-   right now. Once this is done, the rest of the optimizations in this list can proceed.
-
-2. Stack-allocate the argument buffer instead of heap-allocating it. This likely accounts for a
+1. Stack-allocate the argument buffer instead of heap-allocating it. This likely accounts for a
    good chunk of the current slowness.
 
 2. Grindy optimizations to `llvm::FilPizlonatorPass` and the runtime. There are many cases where
@@ -350,9 +287,11 @@ changes - should happen after the first six have gained traction.
    once there's a good corpus! It's going to involve typing more C code, but ought not be
    conceptually difficult.
 
-4. Create a `llvm::FilCTargetMachine` with opaque 32-byte/16-byte-aligned pointers so that we can
+3. Create a `llvm::FilCTargetMachine` with opaque 16-byte/16-byte-aligned pointers so that we can
    run LLVM optimizations before `llvm::FilPizlonatorPass`. Even if it's not possible to run the
-   entire pipeline before pizlonation, even just running mem2reg would be a huge perf boost. Most
+   entire pipeline before pizlonation, even just running mem2reg would be a huge perf boost, since
+   this would remove most of the local variable allocations. This is where the biggest win is
+   likely to happen! Most
    likely all of the really good optimizations that eliminate the majority of loads and stores
    will work fine on such a target machine. In this world, `llvm::FilPizlonatorPass` would take
    in a `llvm::Module` that is in Fil-C LLVM IR, and emits a new `llvm::Module` that is in the
@@ -360,11 +299,10 @@ changes - should happen after the first six have gained traction.
    been instrumented). Ideally, I'd do this so that LTO sees the Fil-C LLVM IR before pizlonation,
    so my pass can run over a maximal view of the program.
 
-5. Teach the rest of LLVM about those Fil-C runtime functions that can be optimized after the
-   `llvm::FilPizlonatorPass` runs. For example, LLVM could know about the semantics of Fil-C
-   "isostack" allocation, since it's similar enough to `alloca` combined with lifetime intrinsics.
+4. Teach the rest of LLVM about those Fil-C runtime functions that can be optimized after the
+   `llvm::FilPizlonatorPass` runs.
 
-6. Abstract interpretation! Fil-C makes it super practical to deploy points-to analysis, shape
+5. Abstract interpretation! Fil-C makes it super practical to deploy points-to analysis, shape
    analysis, and integer range analysis at scale for C code optimization, since Fil-C is already
    sound even without that analysis. Normally, making a sound static analysis for C means making
    a static analysis that proves that the program isn't just scribbling memory at random. This
@@ -383,114 +321,185 @@ changes - should happen after the first six have gained traction.
    trivial type and bounds, then we could possibly shrink that pointer's representation to just 64
    bits.
 
-7. Language changes. Once Fil-C reaches a new performance baseline thanks to the above
-   optimizations, we can introduce new pointer annotations to Fil-C to take performance even
-   further. These annotations would be totally memory-safe. Fil-C will *always* allow unannotated
-   pointers, and they will be wide SideCap pointers unless the compiler proves that they don't have
-   to be. Annotations will make pointers will make the pointer thinner and less capable. For
-   example, I might add a `zthin` annotation that requests that the pointer is 64-bit. Those
-   pointers would have to always point to the declared element type in C (so `Foo*zthin` can only
-   point at structural subtypes of `Foo`) and they will only point to a single object (pointer
-   arithmetic on them is sure to result in an out-of-bounds pointer that cannot be accessed). I
-   may add other annotations, like `zarray`, that requests a 128-bit pointer that just has a
-   pointer and a size. I'll add enough different pointer kinds to cover most of the use cases of
-   pointers, while keeping full SideCaps as the default. This will create the following situation
-   for Fil-C users: you can easily convert your code to Fil-C and you don't have to annotate your
-   pointers to get there. But if you want speed, then just profile your code and throw in some
-   pointer annotations in the hot spots.
+I believe that all of these things put together might bring Fil-C to 1.5x of legacy C perf.
 
-I believe that all seven of these things put together might bring Fil-C to 1.5x of legacy C perf.
+## MonoCap
 
-## SideCap
+Fil-C uses a pointer representation that is a 16-byte atomic tuple of `filc_object*` and `void*`.
+The raw pointer component can point anywhere as a result of pointer arithmetic. The object component
+points to the base of a GC-allocated *monotonic capability* object (hence the MonoCap name).
 
-To me, the most exciting thing about Fil-C is that even races on pointers cannot break memory
-safety. This works even though pointers are 32 bytes. Storing and loading SideCaps just requires
-128-bit atomic stores and loads, and the ordering can be relaxed. Compare-and-swapping SideCaps
-just requires one 128-bit compare-and-swap and one 128-bit atomic store. Pretty cool, right?
+It so happens that for most allocations, the payload (where the raw pointer can perform accesses
+without trapping) is the same allocation as the capability object. The payload is right after the
+capability object within that allocation.
 
-Let's go into how this works by first considering a couple options that don't work, but that give
-us the intuitions we need to get to SideCap.
+The object format contains:
 
-### Intuition One: Compress To 128 Bits
+- 64-bit lower bounds.
 
-If I was willing to restrict the address space of Fil-C to 32 bits, then I could compress the
-entire ptr,lower,upper,type combination to 128 bits, and that would be atomic.
+- 64-bit upper bounds.
 
-I don't want to do that! This would severely restrict the utility of Fil-C. But, interestingly,
-this is always an option for folks who want a faster Fil-C with a smaller address space.
+- 8-bit flags. This is used for supporting unusual situations, like globally allocated objects,
+  special runtime-internal objects (like threads and signal handlers), as well as the free object
+  state. Function pointers also leverage the flags.
 
-SideCaps support 48-bit address spaces. For boxed integers (the result of casing an int to a
-pointer), SideCaps support 64-bit integer values.
+- 8-bit word type per 16-byte word in the object payload. The word type forms a lattice that starts
+  with *unset* at the bottom, *int* and *ptr* in the middle, and *free* at the top. Accessing an
+  *unset* word using an int access makes it *int*. Accessing an *unset* word using a ptr access makes
+  it a *ptr*. Once the word type is not *unset*, it can never become *unset* again, so future accesses
+  must conform to the type you first picked. Once you `free()` the object, all word types become
+  *free*, and then all accesses trap. There are additional word types for special objects that used
+  by the runtime as well as function pointers.
 
-### Intuition Two: Forget The Lower Bound
+The monotonicity of word types is what enables MonoCap to support automatic inference of type for
+unions, `malloc` calls, and unusual things Real C Programmers (TM) do (like using a `char buf[100]`
+as the object payload by casting the `char*` to whatever).
 
-Say we didn't care about the lower bound. In that case, we could compress the pointer to
-48 bits, compress the upper bound to 48 bits, and compress the type to 32 bits. This fits in
-128 bits!
+When Fil-C dumps pointers in error messages, the word types are printed as follows:
 
-But it's not good enough. Losing the lower bound would mean that if you subtract from any
-pointer - even one stored to a local variable - then you'll immediately go out of bounds.
+- `_` means *unset*.
 
-### Intuition Three: Forget The Lower Bound On Races
+- `i` means *int*.
 
-Is it ever OK to forget the lower bound? Sure! Lots of C pointers point to the base of
-something. Pointers stored in heap data structures, shared across function call boundaries,
-and most pointers that you can create (either with `&`, pointer decay, or allocation) point
-at the lower bound already. Those pointers work fine with the no-lower-bound representation.
+- `P` means *ptr*.
 
-I believe that it's very unusual to race on a pointer that is subtracted from after load,
-since those pointers usually arise in local algorithms where the pointer is an iterator,
-rather than being stored into what the structured assembly programmer thinks of as their
-heap, let alone raced on.
+- `/` means *free*.
 
-This is the intuition behind SideCap: preserve lower and upper bounds if there is no race,
-but lose the lower bound if there is a race. So, SideCap is all about encoding the bounds,
-type, and pointer value in two atomic 128-bit words in such a way that we can always tell
-if they are mismatched and we always know which of them to rely on in that case.
+If you include [`<stdfil.h>`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/filc/include/stdfil.h),
+you can `zprintf()` with the `%P` format specifier to print the full Fil-C view of a pointer.
 
-SideCap pointers comprise:
+## Fil's Unbelievable Garbage Collector
 
-- The *sidecar*, which may be ignored if it doesn't match the capability.
-- The *capability*, which is authoritative.
+[FUGC](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/fugc.c)
+is a semi-novel algorithm. For those well-versed in concurrent GC design, it'll sound almost like
+old hat - but the sort of old hat you enjoy wearing.
 
-SideCap pointers can take the following kinds. Two bits are used to represent kind in both
-the capability and the sidecar. This leaves 30 bits for type and 2x48 bits for two pointer
-values.
+In GC mafia jargon, FUGC is a *concurrent on-the-fly grey-stack Dijkstra accurate non-moving* collector.
+Let's break that down:
 
-- Boxed integers. The type is zero in this case, and the lower 64 bits of the capability
-  stores an integer. The pointer is interpreted as having NULL bounds and invalid type.
-  These pointers cannot be accessed, but can be cast back to integer.
+- Concurrent: marking and sweeping happen on some thread, which can run on whatever core or be
+  scheduled by the OS however the OS wants. The *mutator* (i.e. your program and all of its threads)
+  can run in other threads, concurrently to the collector. (This is different from saying
+  that the collector is *parallel* - a parallel collector is one that runs marking and sweeping in
+  multiple threads; a parallel-but-not-concurrent collector will pause your program to do this. FUGC
+  is concurrent, meaning that it doesn't pause your program to do this.) The interaction between the
+  collector thread and mutator threads is mostly non-blocking (locking is only used on allocation slow
+  paths).
 
-- `at_lower` pointers, where `ptr == lower` already. These are encoded entirely in the
-  capability and the sidecar is always ignored.
+- On-the-fly: there is no global stop-the-world, but instead we use what some mafia members will call
+  "soft handshakes" while other made men will call "ragged safepoints". In the language of civilians,
+  this means that the GC may ask threads to do some work (like scan stack), but threads do this
+  asynchronously, on their own time, without waiting for the collector or other threads. The only "pause"
+  threads experience is the pollcheck callback, which does work bounded by that thread's stack
+  height. That "pause" is usually smaller than the slowest path you might take through a typical
+  `malloc` implementation.
 
-- `in_array` pointers, where `ptr > lower` and `ptr <= upper`. The capability stores the
-  pointer itself, the upper bounds, and the type. The sidecar stores the pointer itself,
-  the lower bounds, and the type. For any such pointer, if the pointer and type of the
-  sidecar and capability match, then we know that the lower bounds in the sidecar can be
-  matched with the upper bounds of the capability. This is ensured thanks to all
-  pointers originating from isoheaped allocations. Two pointers into the same allocation
-  claiming to be in-bounds and to have the same type must have bounds that are mixable.
-  If the sidecar doesn't match, the lower bound is inferred from ptr, upper, and type.
-  Because the type has a size, and the span must be a multiple of type size, Fil-C
-  usually infers a lower bound that is the base of the object.
+- Grey-stack: the collector assumes it must rescan thread stacks to fixpoint. That is, GC starts with
+  a soft handshake to scan stack, and then marks in a loop. If this
+  loop runs out of work, then FUGC does another soft handshake. If that reveals more objects, then
+  concurrent marking resumes. This prevents us from having a *load barrier* (no instrumentation runs
+  when loading a pointer from the heap into a local variable). Only a *store barrier* is
+  necessary, and that barrier is very simple. This fixpoint converges super quickly because all newly
+  allocated objects during GC are pre-marked.
 
-- `flex_base` pointers, where `ptr > lower` and the pointer is inside the base of a flex
-  object (an object with a trailing array). In this case, the capability stores the
-  upper bound of the flex base. The lower bound can be inferred from the upper bound and
-  type. The sidecar stores the true upper bound. Mismatched sidecar means you lose the
-  flex array's bound (so the flex array looks to be a zero-length array).
+- Dijkstra: storing a pointer field in an object that's in the heap or in a global variable while FUGC
+  is in its marking phase causes the newly pointed-to object to get marked. This is called a *Dijkstra
+  barrier* and it is a kind of *store barrier*. Due to the grey stack, there is no load barrier like
+  in the [classic Dijkstra collector](https://lamport.azurewebsites.net/pubs/garbage.pdf). The FUGC store
+  barrier uses a compare-and-swap with relaxed memory ordering on the slowest path (if the GC is running
+  and the object being stored was not already marked).
 
-- `oob` pointers, where `ptr < lower` or `ptr > upper`. In this case, the capability
-  stores just the pointer, and the sidecar stores lower,upper,type. This means that racing
-  on OOB pointers might result in an OOB pointer with some other OOB pointer's bounds and
-  type.
+- Accurate: the GC accurately (aka precisely, aka exactly) finds all pointers to objects, nothing more,
+  nothing less. `llvm::FilPizlonator` ensures that the runtime always knows where the root pointers are
+  on the stack and in globals. The Fil-C runtime has a clever API and Ruby code generator for tracking
+  pointers in low-level code that interacts with pizlonated code. All objects know where their outgoing
+  pointers are thanks to the word type array in MonoCaps.
 
-Forging a SideCap pointer requires picking the right kind based on where it is in its
-bounds. Decoding a SideCap pointer means checking its kind, checking if the sidecar is
-relevant, and then doing a bunch of bit fiddling.
+- Non-moving: the GC doesn't move objects. This makes concurrency easy to implement and avoids
+  a lot of synchronization between mutator and collector. However, FUGC will "move" pointers to free
+  objects (it will repoint the `filc_object*` component of the MonoCap to the free singleton so it
+  doesn't have to mark the freed allocation).
 
-Types are represented as 30-bit indices into a type table controlled by libpizlo.
+This makes FUGC an *advancing wavefront* garbage collector. Advancing wavefront means that the
+mutator cannot create new work for the collector by modifying the heap. Once an
+object is marked, it'll stay marked for that GC cycle. It's also an *incremental update* collector, since
+some objects that would have been live at the start of GC might get freed if they become free during the
+collection cycle.
+
+FUGC relies on *safepoints*, which comprise:
+
+- *Pollchecks* emitted by the compiler. The `llvm::FilPizlonator` emits pollchecks often enough that only a
+  bounded amount of progress is possible before a pollcheck happens. The fast path of a pollcheck is
+  just a load-and-branch. The slow path runs a *pollcheck callback*, which does work for FUGC.
+
+- Soft handshakes, which request that a pollcheck callback is run on all threads and then waits for
+  this to happen.
+
+- *Enter*/*exit* functionality. This is for allowing threads to block in syscalls or long-running
+  runtime functions without executing pollchecks. Threads that are in the *exited* state will have
+  pollcheck callbacks executed by the collector itself (when it does the soft handshake). The only
+  way for a Fil-C program to block is either by looping while entered (which means executing a
+  pollcheck at least once per loop iteration, often more) or by calling into the runtime and then
+  exiting.
+
+Safepointing is essential for supporting threading (Fil-C supports pthreads just fine) while avoiding
+a large class of race conditions. For example, safepointing means that it's safe to load a pointer from
+the heap and then use it; the GC cannot possibly delete that memory until the next pollcheck or exit.
+So, the compiler and runtime just have to ensure that the pointer becomes tracked for stack scanning at
+some point between when it's loaded and when the next pollcheck/exit happens, and only if the pointer is
+still live at that point.
+
+The safepointing functionality also supports *stop-the-world*, which is currently used to implement
+`fork(2)` and for debugging FUGC (if you set the `FUGC_STW` environment variable to `1` then the
+collector will stop the world and this is useful for triaging GC bugs; if the bug reproduces in STW
+then it means it's not due to issues with the store barrier). The safepoint infrastructure also allows
+safe signal delivery; Fil-C makes it possible to use signal handling in a practical way. Safepointing is
+a common feature of virtual machines that support multiple threads and accurate garbage collection,
+though usually, they are only used to stop the world rather than to request asynchronous activity from all
+threads. See [here](https://foojay.io/today/the-inner-workings-of-safepoints/) for a write-up about
+how OpenJDK does it. The Fil-C implementation is in [`filc_runtime.c`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c).
+
+Here's the basic flow of the FUGC collector loop:
+
+1. Wait for the GC trigger.
+2. Turn on the store barrier, then soft handshake with a no-op callback.
+3. Turn on black allocation (new objects get allocated marked), then soft handshake with a callback
+   that resets thread-local caches.
+4. Mark global roots.
+5. Soft handshake with a callback that requests stack scan and another reset of thread-local caches.
+   If all collector mark stacks are empty after this, go to step 7.
+6. Tracing: for each object in the mark stack, mark its outgoing references (which may grow the mark
+   stack). Do this until the mark stack is empty. Then go to step 5.
+7. Turn off the store barrier and prepare for sweeping, then soft handshake to reset thread-local
+   caches again.
+8. Perform the sweep. During the sweep, objects are allocated black if they happen to be allocated out
+   of not-yet-swept pages, or white if they are allocated out of alraedy-swept pages.
+9. Victory! Go back to step 1.
+
+If you're familiar with the literature, FUGC is sort of like the DLG (Doligez-Leroy-Gonthier) collector
+(published in [two](https://xavierleroy.org/publi/concurrent-gc.pdf)
+[papers](http://moscova.inria.fr/~doligez/publications/doligez-gonthier-popl-1994.pdf) because they
+had a serious bug in the first one), except it uses the Dijkstra barrier and a grey stack, which
+simplifies everything but isn't as academically pure (FUGC fixpoints, theirs doesn't). I first came
+up with the grey-stack Dijkstra approach when working on
+[Fiji VM](http://www.filpizlo.com/papers/pizlo-eurosys2010-fijivm.pdf)'s CMR and
+[Schism](http://www.filpizlo.com/papers/pizlo-pldi2010-schism.pdf) garbage collectors. The main
+advantage of FUGC over DLG is that it has a simpler (cheaper) store barrier and it's a slightly more
+intuitive algorithm. While the fixpoint seems like a disadvantage, in practice it converges after a few
+iterations.
+
+Additionally, FUGC relies on a sweeping algorithm based on bitvector SIMD. This makes sweeping insanely
+fast compared to marking. This is made thanks to the
+[Verse heap config](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/verse_heap.h)
+that I added to
+[libpas](https://github.com/WebKit/WebKit/blob/main/Source/bmalloc/libpas/Documentation.md). FUGC
+typically spends <5% of its time sweeping.
+
+FUGC can easily be made parallel. Sweeping is trivial to parallelize; I just haven't done it because
+I want to test it more and fix all the bugs I find before I do that. Marking is easy to paralellize
+using any of the usual parallel marking algorithms (though I am especially fond of the one I used in
+[Riptide](https://webkit.org/blog/7122/introducing-riptide-webkits-retreating-wavefront-concurrent-garbage-collector/),
+so I'll probably just do that when ready).
 
 ## Conclusion
 

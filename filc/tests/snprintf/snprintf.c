@@ -1117,7 +1117,7 @@ static void dopr_outch(char *buffer, size_t *currlen, size_t maxlen, char c)
 }
 
 static struct pr_chunk *new_chunk(void) {
-    struct pr_chunk *new_c = zalloc(struct pr_chunk, 1);
+    struct pr_chunk *new_c = zalloc(sizeof(struct pr_chunk));
 
 	if (!new_c)
 		return NULL;
@@ -1153,10 +1153,10 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 		max = chunk->num;
 
 		if (*list == NULL) {
-                    l = zalloc(struct pr_chunk_x, max);
+                    l = zalloc(sizeof(struct pr_chunk_x) * max);
                     pos = 0;
 		} else {
-                    l = zrealloc(*list, struct pr_chunk_x, max);
+                    l = zrealloc(*list, sizeof(struct pr_chunk_x) * max);
                     pos = max_num;
 		}
 		if (l == NULL) {
@@ -1177,9 +1177,9 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 	i = chunk->num - 1;
 	cnum = l[i].num + 1;
 	if (l[i].chunks == NULL) {
-            c = zalloc(struct pr_chunk *, cnum);
+            c = zalloc(sizeof(struct pr_chunk *) * cnum);
 	} else {
-            c = zrealloc(l[i].chunks, struct pr_chunk *, cnum);
+            c = zrealloc(l[i].chunks, sizeof(struct pr_chunk *) * cnum);
 	}
 	if (c == NULL) {
 		for (i = 0; i < max; i++) {
@@ -1252,7 +1252,7 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 	__builtin_va_end(ap2);
 	if (ret < 0) return ret;
 
-	(*ptr) = (char *)zalloc(char, ret+1);
+	(*ptr) = (char *)zalloc(ret+1);
 	if (!*ptr) return -1;
 
 	__builtin_va_copy(ap2, ap);
@@ -1425,7 +1425,7 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 #define BUFSZ 2048
 
 	buf1[0] = buf2[0] = '\0';
-	if ((buf3 = zalloc(char, BUFSZ)) == NULL) {
+	if ((buf3 = zalloc(BUFSZ)) == NULL) {
 		fail++;
 	} else {
 		num++;

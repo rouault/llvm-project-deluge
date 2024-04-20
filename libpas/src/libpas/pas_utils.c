@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2022 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -39,8 +39,10 @@
 #include <math.h>
 
 #ifndef _WIN32
+#include <signal.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <errno.h>
 #endif
 
 #if PAS_X86_64
@@ -104,6 +106,13 @@ void pas_panic(const char* format, ...)
         pas_log("[%d] filc panic: ", pas_getpid());
         va_start(arg_list, format);
         pas_vlog(format, arg_list);
+
+        if ((false)) {
+            sigset_t oldset;
+            pthread_sigmask(0, NULL, &oldset);
+            for (int sig = 1; sig < 32; ++sig)
+                pas_log("signal %d masked: %s\n", sig, sigismember(&oldset, sig) ? "yes" : "no");
+        }
 
         //for (;;) pas_compiler_fence();
         pas_crash_with_info_impl((uint64_t)format, 0, 0, 0, 0, 0, 0);
@@ -217,9 +226,20 @@ void pas_system_mutex_lock(pas_system_mutex* mutex)
     EnterCriticalSection(mutex);
 }
 
+bool pas_system_mutex_trylock(pas_system_mutex* mutex)
+{
+    return !!TryEnterCriticalSection(mutex);
+}
+
 void pas_system_mutex_unlock(pas_system_mutex* mutex)
 {
     LeaveCriticalSection(mutex);
+}
+
+void pas_system_mutex_assert_held(pas_system_mutex* mutex)
+{
+    /* Cannot assert this so long as we use CRITICAL_SECTION for the system mutex on Windows. */
+    PAS_UNUSED_PARAM(mutex);
 }
 
 void pas_system_mutex_destruct(pas_system_mutex* mutex)
@@ -310,9 +330,19 @@ void pas_system_mutex_lock(pas_system_mutex* mutex)
     pthread_mutex_lock(mutex);
 }
 
+bool pas_system_mutex_trylock(pas_system_mutex* mutex)
+{
+    return !pthread_mutex_trylock(mutex);
+}
+
 void pas_system_mutex_unlock(pas_system_mutex* mutex)
 {
     pthread_mutex_unlock(mutex);
+}
+
+void pas_system_mutex_assert_held(pas_system_mutex* mutex)
+{
+    PAS_ASSERT(pthread_mutex_trylock(mutex) == EBUSY);
 }
 
 void pas_system_mutex_destruct(pas_system_mutex* mutex)
@@ -391,5 +421,15 @@ void pas_system_once_run(pas_system_once* once, void (*callback)(void))
     pthread_once(once, callback);
 }
 #endif /* !_WIN32 */
+
+void pas_reasonably_fill_sigset(sigset_t* set)
+{
+    PAS_ASSERT(!sigfillset(set));
+    PAS_ASSERT(!sigdelset(set, SIGILL));
+    PAS_ASSERT(!sigdelset(set, SIGTRAP));
+    PAS_ASSERT(!sigdelset(set, SIGBUS));
+    PAS_ASSERT(!sigdelset(set, SIGSEGV));
+    PAS_ASSERT(!sigdelset(set, SIGFPE));
+}
 
 #endif /* LIBPAS_ENABLED */

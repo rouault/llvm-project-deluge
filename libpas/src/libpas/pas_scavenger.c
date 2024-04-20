@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019-2022 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -48,11 +48,11 @@
 #include "verse_heap_mark_bits_page_commit_controller.h"
 #include <stdio.h>
 #ifndef _WIN32
+#include <signal.h>
 #include <unistd.h>
 #endif
 
 static const bool verbose = false;
-static bool is_shut_down_enabled = true;
 
 bool pas_scavenger_is_enabled = true;
 bool pas_scavenger_eligibility_notification_has_been_deferred = false;
@@ -125,7 +125,11 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
 #if PAS_OS(DARWIN)
     qos_class_t configured_qos_class;
 #endif
-    
+
+    sigset_t fullset;
+    pas_reasonably_fill_sigset(&fullset);
+    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, NULL));
+
     PAS_UNUSED_PARAM(arg);
     
     PAS_ASSERT(pas_scavenger_current_state == pas_scavenger_state_polling);
@@ -181,7 +185,7 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
         should_go_again = false;
         
         if (verbose)
-            printf("Scavenger is running.\n");
+            pas_log("Scavenger is running.\n");
 
 #if PAS_LOCAL_ALLOCATOR_MEASURE_REFILL_EFFICIENCY
         pas_local_allocator_refill_efficiency_lock_lock();
@@ -271,7 +275,7 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
         time_in_milliseconds = pas_get_time_in_milliseconds_for_system_condition();
         
         if (verbose)
-            printf("Finished a round of scavenging at %.2lf.\n", time_in_milliseconds);
+            pas_log("Finished a round of scavenging at %.2lf.\n", time_in_milliseconds);
         
         /* By default we need to sleep for a short while and then try again. */
         absolute_timeout_in_milliseconds_for_period_sleep =
@@ -279,25 +283,25 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
 
         if (should_go_again) {
             if (verbose)
-                printf("Waiting for a period.\n");
+                pas_log("Waiting for a period.\n");
 
             /* This field is accessed a lot by other threads, so don't write to it if we don't
                have to. */
             if (pas_scavenger_current_state != pas_scavenger_state_polling)
                 pas_scavenger_current_state = pas_scavenger_state_polling;
-        } else if (PAS_LIKELY(is_shut_down_enabled)) {
+        } else {
             double absolute_timeout_in_milliseconds_for_deep_pre_sleep;
             
             if (pas_scavenger_current_state == pas_scavenger_state_polling) {
                 if (verbose)
-                    printf("Will consider deep sleep.\n");
+                    pas_log("Will consider deep sleep.\n");
                 
                 /* do one more round of polling but this time indicating that it's the last
                    chance. */
                 pas_scavenger_current_state = pas_scavenger_state_deep_sleep;
             } else {
                 if (verbose)
-                    printf("Considering deep sleep.\n");
+                    pas_log("Considering deep sleep.\n");
                 
                 PAS_ASSERT(pas_scavenger_current_state == pas_scavenger_state_deep_sleep);
                 
@@ -318,20 +322,18 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
             }
         }
         
-        if (PAS_LIKELY(is_shut_down_enabled)) {
-            while (pas_get_time_in_milliseconds_for_system_condition() < absolute_timeout_in_milliseconds_for_period_sleep
-                   && !pas_scavenger_should_suspend_count) {
-                pas_system_condition_timed_wait(
-                    &data->cond, &data->lock,
-                    absolute_timeout_in_milliseconds_for_period_sleep);
-            }
-
-            should_shut_down |= !!pas_scavenger_should_suspend_count;
-
-            if (should_shut_down) {
-                pas_scavenger_current_state = pas_scavenger_state_no_thread;
-                pas_system_condition_broadcast(&data->cond);
-            }
+        while (pas_get_time_in_milliseconds_for_system_condition() < absolute_timeout_in_milliseconds_for_period_sleep
+               && !pas_scavenger_should_suspend_count) {
+            pas_system_condition_timed_wait(
+                &data->cond, &data->lock,
+                absolute_timeout_in_milliseconds_for_period_sleep);
+        }
+        
+        should_shut_down |= !!pas_scavenger_should_suspend_count;
+        
+        if (should_shut_down) {
+            pas_scavenger_current_state = pas_scavenger_state_no_thread;
+            pas_system_condition_broadcast(&data->cond);
         }
 
         pas_system_mutex_unlock(&data->lock);
@@ -344,7 +346,7 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
                 shut_down_callback();
             
             if (verbose)
-                printf("Killing the scavenger.\n");
+                pas_log("Killing the scavenger.\n");
             return PAS_THREAD_RETURN_VALUE;
         }
     }
@@ -396,7 +398,7 @@ void pas_scavenger_notify_eligibility_if_needed(void)
         return;
     
     if (verbose)
-        printf("It's not polling so need to do something.\n");
+        pas_log("It's not polling so need to do something.\n");
     
     data = ensure_data_instance(pas_lock_is_not_held);
     pas_system_mutex_lock(&data->lock);
@@ -428,9 +430,16 @@ void pas_scavenger_suspend(void)
     
     pas_scavenger_should_suspend_count++;
     PAS_ASSERT(pas_scavenger_should_suspend_count);
+    pas_system_condition_broadcast(&data->cond);
+
+    if (verbose)
+        pas_log("suspending the scanveger.\n");
     
     while (pas_scavenger_current_state != pas_scavenger_state_no_thread)
         pas_system_condition_wait(&data->cond, &data->lock);
+
+    if (verbose)
+        pas_log("scanveger suspended.\n");
     
     pas_system_mutex_unlock(&data->lock);
 }
@@ -594,13 +603,6 @@ void pas_scavenger_perform_synchronous_operation(
         return;
     }
     PAS_ASSERT(!"Should not be reached");
-}
-
-void pas_scavenger_disable_shut_down(void)
-{
-    pas_scavenger_suspend();
-    is_shut_down_enabled = false;
-    pas_scavenger_resume();
 }
 
 #endif /* LIBPAS_ENABLED */

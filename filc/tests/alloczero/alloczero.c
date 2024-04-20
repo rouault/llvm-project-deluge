@@ -4,36 +4,33 @@
 static void test(size_t count, size_t size)
 {
     while (count--) {
-        char* p = zalloc(char, size);
+        char* p = zalloc(size);
         ZASSERT(p);
         ZASSERT(!*p);
         *p = 42;
         zfree(p);
-        ZASSERT(*p == 42);
     }
 }
 
 static void test_ptr(size_t count, size_t size)
 {
     while (count--) {
-        char** p = zalloc(char*, size);
+        char** p = zalloc(sizeof(char*));
         ZASSERT(p);
         ZASSERT(!*p);
         *p = "hello";
         zfree(p);
-        ZASSERT(*p == "hello");
     }
 }
 
 static void test_aligned(size_t count, size_t size, size_t alignment)
 {
     while (count--) {
-        char* p = zaligned_alloc(char, alignment, size);
+        char* p = zaligned_alloc(alignment, size);
         ZASSERT(p);
         ZASSERT(!*p);
         *p = 42;
         zfree(p);
-        ZASSERT(*p == 42);
     }
 }
 
@@ -46,12 +43,11 @@ struct foo {
 static void test_int_flex(size_t count, size_t length)
 {
     while (count--) {
-        struct foo* p = zalloc_flex(struct foo, c, length);
+        struct foo* p = zalloc(__builtin_offsetof(struct foo, c) + length);
         ZASSERT(p);
         ZASSERT(!p->a);
         p->a = 42;
         zfree(p);
-        ZASSERT(p->a == 42);
     }
 }
 
@@ -64,12 +60,11 @@ struct bar {
 static void test_ptr_flex(size_t count, size_t length)
 {
     while (count--) {
-        struct bar* p = zalloc_flex(struct bar, c, length);
+        struct bar* p = zalloc(__builtin_offsetof(struct bar, c) + length * sizeof(char*));
         ZASSERT(p);
         ZASSERT(!p->a);
         p->a = 42;
         zfree(p);
-        ZASSERT(p->a == 42);
     }
 }
 

@@ -1,8 +1,0 @@
-return:
-  failure
-output-includes:
-  - YAY
-  - filc panic
-output-excludes:
-  - "NO"
-

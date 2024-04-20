@@ -687,7 +687,7 @@ inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty, FilCMode DM) const {
   case Type::PointerTyID: {
     TypeSize Result = TypeSize::Fixed(getPointerSizeInBits(Ty->getPointerAddressSpace()));
     if (DM == BeforeFilC && Ty->getPointerAddressSpace() == 0)
-      Result *= 4;
+      Result *= 2;
     return Result;
   }
   case Type::ArrayTyID: {

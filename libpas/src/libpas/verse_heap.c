@@ -1,4 +1,27 @@
-/* Copyright Epic Games, Inc. All Rights Reserved. */
+/*
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ */
 
 #include "pas_config.h"
 
@@ -6,6 +29,7 @@
 
 #include "verse_heap.h"
 
+#include "filc_runtime.h"
 #include "pas_all_heaps.h"
 #include "pas_bootstrap_free_heap.h"
 #include "pas_heap_inlines.h"
@@ -435,9 +459,17 @@ void* verse_heap_try_allocate(pas_heap* heap, size_t size)
     return try_allocate_impl(heap, size, 1, pas_allocation_result_identity);
 }
 
+static PAS_ALWAYS_INLINE pas_allocation_result
+allocation_result_crash_on_error_for_filc(pas_allocation_result result)
+{
+    if (PAS_UNLIKELY(!result.did_succeed))
+        filc_safety_panic(NULL, "out of memory.");
+    return result;
+}
+
 void* verse_heap_allocate(pas_heap* heap, size_t size)
 {
-    return try_allocate_impl(heap, size, 1, pas_allocation_result_crash_on_error);
+    return try_allocate_impl(heap, size, 1, allocation_result_crash_on_error_for_filc);
 }
 
 void* verse_heap_try_allocate_with_alignment(pas_heap* heap, size_t size, size_t alignment)
@@ -447,7 +479,7 @@ void* verse_heap_try_allocate_with_alignment(pas_heap* heap, size_t size, size_t
 
 void* verse_heap_allocate_with_alignment(pas_heap* heap, size_t size, size_t alignment)
 {
-    return try_allocate_impl(heap, size, alignment, pas_allocation_result_crash_on_error);
+    return try_allocate_impl(heap, size, alignment, allocation_result_crash_on_error_for_filc);
 }
 
 void verse_heap_start_allocating_black_before_handshake(void)

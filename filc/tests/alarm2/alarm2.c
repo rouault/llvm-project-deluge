@@ -18,6 +18,7 @@ int main()
     signal(SIGALRM, handler);
     ualarm(1000, 0);
     while (!gotit) {
+        /* FIXME: This should use sigwait! */
         ZASSERT(pause() < 0);
         ZASSERT(errno == EINTR);
     }

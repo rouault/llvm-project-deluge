@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2022 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -157,7 +157,7 @@ PAS_API void pas_set_reallocation_did_fail_callback(
 #endif
 
 #define PAS_ROUND_UP_TO_POWER_OF_2(size, alignment) \
-    (((size) + (alignment) - 1) & ~(alignment - 1))
+    (((size) + (alignment) - 1) & ~((alignment) - 1))
 
 typedef __int128 pas_int128;
 typedef unsigned __int128 pas_uint128;
@@ -578,6 +578,66 @@ static inline bool pas_compare_and_swap_uint8_weak(uint8_t* ptr, uint8_t old_val
 #endif
 }
 
+static inline bool pas_compare_and_swap_uint8_weak_relaxed(uint8_t* ptr, uint8_t old_value, uint8_t new_value)
+{
+#if PAS_COMPILER(MSVC)
+    uint32_t* word_ptr;
+    size_t byte_offset;
+    size_t shift;
+    uint32_t old_word;
+    uint32_t new_word;
+    bool result;
+    word_ptr = (uint32_t*)pas_round_down_to_power_of_2((uintptr_t)ptr, sizeof(uint32_t));
+    byte_offset = pas_modulo_power_of_2((uintptr_t)ptr, sizeof(uint32_t));
+    shift = byte_offset * 8;
+
+    /* This is a weak CAS but we make sure that it fences even on the failure case! */
+    old_word = *word_ptr;
+    if (((old_word >> shift) & 0xFF) == old_value) {
+        uint32_t mask;
+        uint32_t shifted_value;
+        mask = ~(0xFF << shift);
+        shifted_value = (uint32_t)new_value << shift;
+        new_word = (old_word & mask) + shifted_value;
+        result = true;
+    } else {
+        new_word = old_word;
+        result = false;
+    }
+    
+    if (InterlockedCompareExchange((LONG volatile*)word_ptr, old_word, new_word) == old_word)
+        return result;
+    return false;
+#elif PAS_COMPILER(ARM64_ATOMICS_LL_SC)
+    uint32_t value = 0;
+    uint32_t cond = 0;
+    asm volatile (
+        "ldxrb %w[value], [%x[ptr]]\t\n"
+        "cmp %w[value], %w[old_value], uxtb\t\n"
+        "b.ne 1f\t\n"
+        "stlxrb %w[cond], %w[new_value], [%x[ptr]]\t\n"
+        "cbz %w[cond], 0f\t\n"
+        "b 2f\t\n"
+    "0:\t\n"
+        "mov %w[cond], #1\t\n"
+        "b 3f\t\n"
+    "1:\t\n"
+        "clrex\t\n"
+    "2:\t\n"
+        "mov %w[cond], wzr\t\n"
+    "3:\t\n"
+        /* outputs */  : [value]"=&r"(value), [cond]"=&r"(cond)
+        /* inputs  */  : [old_value]"r"((uint32_t)old_value), [new_value]"r"((uint32_t)new_value), [ptr]"r"(ptr)
+        /* clobbers */ : "cc", "memory"
+    );
+    return cond;
+#elif PAS_COMPILER(CLANG)
+    return __c11_atomic_compare_exchange_weak((_Atomic uint8_t*)ptr, &old_value, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#else
+    return __atomic_compare_exchange_n((uint8_t*)ptr, &old_value, new_value, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#endif
+}
+
 static inline uint8_t pas_compare_and_swap_uint8_strong(uint8_t* ptr, uint8_t old_value, uint8_t new_value)
 {
 #if PAS_COMPILER(MSVC)
@@ -702,6 +762,41 @@ static inline bool pas_compare_and_swap_uint32_weak(uint32_t* ptr, uint32_t old_
     return __c11_atomic_compare_exchange_weak((_Atomic uint32_t*)ptr, &old_value, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 #else
     return __atomic_compare_exchange_n((uint32_t*)ptr, &old_value, new_value, true, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+#endif
+}
+
+static inline bool pas_compare_and_swap_uint32_weak_relaxed(
+    uint32_t* ptr, uint32_t old_value, uint32_t new_value)
+{
+#if PAS_COMPILER(MSVC)
+    return InterlockedCompareExchange((LONG volatile*)(uintptr_t)ptr, old_value, new_value) == old_value;
+#elif PAS_COMPILER(ARM64_ATOMICS_LL_SC)
+    uint32_t value = 0;
+    uint32_t cond = 0;
+    asm volatile (
+        "ldxr %w[value], [%x[ptr]]\t\n"
+        "cmp %w[value], %w[old_value]\t\n"
+        "b.ne 1f\t\n"
+        "stlxr %w[cond], %w[new_value], [%x[ptr]]\t\n"
+        "cbz %w[cond], 0f\t\n"
+        "b 2f\t\n"
+    "0:\t\n"
+        "mov %w[cond], #1\t\n"
+        "b 3f\t\n"
+    "1:\t\n"
+        "clrex\t\n"
+    "2:\t\n"
+        "mov %w[cond], wzr\t\n"
+    "3:\t\n"
+        /* outputs */  : [value]"=&r"(value), [cond]"=&r"(cond)
+        /* inputs  */  : [old_value]"r"(old_value), [new_value]"r"(new_value), [ptr]"r"(ptr)
+        /* clobbers */ : "cc", "memory"
+    );
+    return cond;
+#elif PAS_COMPILER(CLANG)
+    return __c11_atomic_compare_exchange_weak((_Atomic uint32_t*)ptr, &old_value, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#else
+    return __atomic_compare_exchange_n((uint32_t*)ptr, &old_value, new_value, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 #endif
 }
 
@@ -1509,9 +1604,19 @@ static inline int pas_getpid(void) { return getpid(); }
 #endif /* _WIN32 -> so end of !_WIN32 */
 
 PAS_API double pas_get_time_in_milliseconds_for_system_condition(void);
+
+/* This is just the time in milliseconds using whatever clock. Don't use it for system condition
+   timeouts. */
+static inline double pas_get_time_in_milliseconds(void)
+{
+    return pas_get_time_in_milliseconds_for_system_condition();
+}
+
 PAS_API void pas_create_detached_thread(pas_thread_return_type (*thread_main)(void* arg), void* arg);
 PAS_API void pas_system_mutex_construct(pas_system_mutex* mutex);
 PAS_API void pas_system_mutex_lock(pas_system_mutex* mutex);
+PAS_API bool pas_system_mutex_trylock(pas_system_mutex* mutex);
+PAS_API void pas_system_mutex_assert_held(pas_system_mutex* mutex);
 PAS_API void pas_system_mutex_unlock(pas_system_mutex* mutex);
 PAS_API void pas_system_mutex_destruct(pas_system_mutex* mutex);
 PAS_API void pas_system_condition_construct(pas_system_condition* condition);
@@ -1530,6 +1635,8 @@ static inline bool pas_memory_is_equal(const void* a, const void* b, size_t size
     return !bcmp(a, b, size);
 #endif
 }
+
+PAS_API void pas_reasonably_fill_sigset(sigset_t* set);
 
 PAS_END_EXTERN_C;
 

@@ -4,3 +4,4 @@ output-includes:
   filc panic
 output-excludes:
   - "YAY"
+  - "NAY"

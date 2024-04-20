@@ -1,0 +1,533 @@
+#include "pas_config.h"
+
+#if LIBPAS_ENABLED
+
+#include "fugc.h"
+#include "pas_fd_stream.h"
+#include "verse_heap_mark_bits_page_commit_controller.h"
+#include <signal.h>
+
+#if PAS_ENABLE_FILC
+
+/* FUGC: Fil's Unbelievable Garbage Collector!
+   
+   This implements Phil's Concurrent Marking (aka on-the-fly grey-stack Dijkstra with a soft
+   handshake fixpoint) with verse_heap SIMD turbosweep based on libpas.
+   
+   It's a simple but effective algorithm. There is no stop-the-world unless we wanted to have such
+   a thing for debugging (i.e. if there's a GC bug, we might want to run this in stop-the-world
+   mode to triage if the bug has to do with concurrency or not). Also maybe someday we'll want to
+   add some thread stoppage for GC pacing (in case the mutator out-allocates us).
+   
+   It would be easy to make the collector loop parallel, but it isn't, yet.
+   
+   It would be possible to add a concurrent nursery GC, which would have the dual effect of reducing
+   floating garbage and increasing mutator throughput.
+   
+   It's a nonmoving GC, but it redirects ptrs to free objects to the free singleton, which enables
+   freed objects to definitely be freed. Except, it won't redirect ptrs from certain roots (like
+   ones coming from the stack).
+   
+   This GC can be suspended and resumed for the purposes of fork(). Suspension can happen while the
+   GC is active. That's made possible thanks to polling collector_suspend_requested and structuring
+   the GC loop as a state machine.
+
+   There are no destructors or weak references. No weak maps, either. This GC is just here so we
+   don't have to trust the C-hacking Cowboy (TM) when they call free(). But the fact that free()
+   flags the object for killage (because of the redirect-ptr-to-free-object thing) means that we
+   don't have to worry about GC-induced leaks in C programs that use free() like they would have if
+   they were written against a legacy malloc.
+
+   This code looks simple, but it totally isn't. It's relying on the filc_runtime and the
+   FilPizlonator pass to do a lot of heavy lifting for us. And it's relying on the excellent
+   verse_heap that I wrote for the Verse VM, which in turn relies on the excellent libpas malloc,
+   which I wrote for WebKit. */
+
+static pas_system_mutex collector_thread_state_lock;
+static pas_system_condition collector_thread_state_cond;
+static bool collector_thread_is_running = false;
+static bool collector_suspend_requested = false;
+
+static uint64_t completed_cycle;
+static uint64_t requested_cycle;
+
+static filc_object_array global_stack;
+static filc_object_array local_stack;
+static pas_lock global_stack_lock;
+
+static size_t sweep_size = SIZE_MAX;
+static size_t sweep_index = SIZE_MAX;
+
+static size_t live_bytes_at_start = SIZE_MAX;
+static size_t live_bytes_after_marking = SIZE_MAX;
+
+static size_t minimum_threshold;
+
+static double overall_start_time;
+static double sweep_start_time;
+static double overall_end_time;
+
+#define VERBOSE_HANDSHAKE_STACKS 6
+#define VERBOSE_HANDSHAKES 5
+#define VERBOSE_PHASES 4
+#define VERBOSE_BEGIN 3
+#define VERBOSE_BREAKDOWN 2
+#define VERBOSE_CYCLES 1
+
+static unsigned verbose;
+static bool should_stop_the_world;
+bool fugc_world_is_stopped;
+
+enum collector_state {
+    collector_waiting,
+    collector_marking,
+    collector_sweeping
+};
+
+typedef enum collector_state collector_state;
+
+static collector_state current_collector_state = collector_waiting;
+
+static const char* pollcheck_message_for_thread(filc_thread* thread)
+{
+    if (filc_get_my_thread() == thread)
+        return "by mutator";
+    PAS_ASSERT(!filc_get_my_thread());
+    return "by collector";
+}
+
+static pas_lock dump_handshake_lock = PAS_LOCK_INITIALIZER;
+
+static void dump_handshake(filc_thread* thread, const char* handshake_name)
+{
+    if (verbose >= VERBOSE_HANDSHAKES) {
+        if (verbose >= VERBOSE_HANDSHAKE_STACKS)
+            pas_lock_lock(&dump_handshake_lock);
+        pas_log("[%d] fugc: %s handshake with thread %u %s\n",
+                pas_getpid(), handshake_name, thread->tid, pollcheck_message_for_thread(thread));
+        if (verbose >= VERBOSE_HANDSHAKE_STACKS) {
+            filc_thread_dump_stack(thread, &pas_log_stream.base);
+            pas_lock_unlock(&dump_handshake_lock);
+        }
+    }
+}
+
+static void no_op_pollcheck_callback(filc_thread* thread, void* arg)
+{
+    PAS_ASSERT(thread);
+    PAS_ASSERT(!arg);
+    dump_handshake(thread, "no_op");
+}
+
+static void stop_allocators_pollcheck_callback(filc_thread* thread, void* arg)
+{
+    PAS_ASSERT(!arg);
+    dump_handshake(thread, "stop_allocators");
+    filc_thread_stop_allocators(thread);
+}
+
+static void marking_pollcheck_callback(filc_thread* thread, void* arg)
+{
+    PAS_ASSERT(!arg);
+    dump_handshake(thread, "marking");
+    filc_thread_stop_allocators(thread);
+    filc_thread_mark_roots(thread);
+    filc_thread_donate(thread);
+}
+
+static void sweep_pollcheck_callback(filc_thread* thread, void* arg)
+{
+    PAS_ASSERT(!arg);
+    dump_handshake(thread, "sweep");
+    filc_thread_stop_allocators(thread);
+    filc_thread_sweep_mark_stack(thread);
+}
+
+static void mark_outgoing_signal_handler_ptrs(filc_object_array* stack, filc_signal_handler* signal_handler)
+{
+    /* I guess that instead, we could just assert that this thing is global. But, like, whatever. */
+    fugc_mark_or_free(stack, &signal_handler->function_ptr);
+}
+
+static void mark_outgoing_thread_ptrs(filc_object_array* stack, filc_thread* thread)
+{
+    /* There's a bunch of other stuff that threads "point" to that is part of their roots, and we
+       mark those as part of marking thread roots. The things here are the ones that are treated
+       as normal outgoing object ptrs rather than roots. */
+    
+    fugc_mark_or_free(stack, &thread->arg_ptr);
+    fugc_mark_or_free(stack, &thread->cookie_ptr);
+    fugc_mark_or_free(stack, &thread->result_ptr);
+}
+
+static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* object)
+{
+    PAS_TESTING_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
+    filc_word_type word_type = object->word_types[0];
+    switch (word_type) {
+    case FILC_WORD_TYPE_FUNCTION:
+    case FILC_WORD_TYPE_DIRSTREAM:
+    case FILC_WORD_TYPE_FREE: /* dirstreams can be freed. */
+        break;
+    case FILC_WORD_TYPE_SIGNAL_HANDLER:
+        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+        mark_outgoing_signal_handler_ptrs(
+            stack, (filc_signal_handler*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+        break;
+    case FILC_WORD_TYPE_THREAD:
+        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+        mark_outgoing_thread_ptrs(stack, (filc_thread*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+        break;
+    default:
+        pas_log("Got a bad special ptr type: ");
+        filc_word_type_dump(word_type, &pas_log_stream.base);
+        pas_log("\n");
+        pas_log("Object: ");
+        filc_object_dump(object, &pas_log_stream.base);
+        pas_log("\n");
+        PAS_ASSERT(!"Bad special word type");
+        break;
+    }
+}
+
+static void mark_outgoing_ptrs(filc_object_array* stack, filc_object* object)
+{
+    PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
+    if ((object->flags & FILC_OBJECT_FLAG_SPECIAL)) {
+        mark_outgoing_special_ptrs(stack, object);
+        return;
+    }
+
+    filc_ptr* payload = (filc_ptr*)object->lower;
+    size_t index;
+    for (index = filc_object_num_words(object); index--;) {
+        if (filc_object_get_word_type(object, index) == FILC_WORD_TYPE_PTR)
+            fugc_mark_or_free(stack, payload + index);
+    }
+}
+
+static void wait_and_start_marking(void)
+{
+    PAS_ASSERT(!filc_is_marking);
+    PAS_ASSERT(current_collector_state == collector_waiting);
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+
+    if (verbose >= VERBOSE_PHASES) {
+        pas_log("[%d] fugc: waiting with threshold %zu bytes\n",
+                pas_getpid(), verse_heap_live_bytes_trigger_threshold);
+    }
+    
+    while (completed_cycle == requested_cycle
+           && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold) {
+        pas_system_mutex_lock(&collector_thread_state_lock);
+        PAS_ASSERT(completed_cycle <= requested_cycle);
+        while (completed_cycle == requested_cycle
+               && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold
+               && !collector_suspend_requested)
+            pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
+        pas_system_mutex_unlock(&collector_thread_state_lock);
+        
+        if (collector_suspend_requested)
+            return;
+        
+        PAS_ASSERT(completed_cycle <= requested_cycle);
+    }
+
+    if (verbose >= VERBOSE_CYCLES)
+        overall_start_time = pas_get_time_in_milliseconds();
+
+    if (should_stop_the_world) {
+        filc_stop_the_world();
+        fugc_world_is_stopped = true;
+    }
+    
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+    if (completed_cycle == requested_cycle)
+        requested_cycle++;
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+
+    PAS_ASSERT(live_bytes_at_start == SIZE_MAX);
+    live_bytes_at_start = verse_heap_live_bytes;
+
+    if (verbose >= VERBOSE_PHASES) {
+        pas_log("[%d] fugc: starting cycle %llu with %zu live bytes\n",
+                pas_getpid(), completed_cycle + 1, live_bytes_at_start);
+    } else if (verbose >= VERBOSE_BEGIN) {
+        pas_log("[%d] fugc: starting cycle %llu with %zu kb\n",
+                pas_getpid(), completed_cycle + 1, live_bytes_at_start / 1024);
+    }
+
+    verse_heap_mark_bits_page_commit_controller_lock();
+    filc_is_marking = true;
+    filc_soft_handshake(no_op_pollcheck_callback, NULL);
+    
+    verse_heap_start_allocating_black_before_handshake();
+    filc_soft_handshake(stop_allocators_pollcheck_callback, NULL);
+
+    filc_object_array_construct(&local_stack);
+    /* FIXME: You could imagine this being a place we can suspend. */
+    filc_mark_global_roots(&local_stack);
+
+    current_collector_state = collector_marking;
+}
+
+static void mark_and_start_sweeping(void)
+{
+    if (verbose >= VERBOSE_PHASES)
+        pas_log("[%d] fugc: marking\n", pas_getpid());
+
+    PAS_ASSERT(filc_is_marking);
+    PAS_ASSERT(current_collector_state == collector_marking);
+
+    for (;;) {
+        filc_soft_handshake(marking_pollcheck_callback, NULL);
+        
+        pas_lock_lock(&global_stack_lock);
+        filc_object_array_pop_all_from_and_push_to(&global_stack, &local_stack);
+        pas_lock_unlock(&global_stack_lock);
+        
+        if (!local_stack.num_objects)
+            break;
+        
+        filc_object* object;
+        while (!collector_suspend_requested && (object = filc_object_array_pop(&local_stack)))
+            mark_outgoing_ptrs(&local_stack, object);
+
+        if (collector_suspend_requested)
+            return;
+    }
+    
+    filc_is_marking = false;
+    
+    if (verbose >= VERBOSE_CYCLES)
+        sweep_start_time = pas_get_time_in_milliseconds();
+
+    PAS_ASSERT(live_bytes_after_marking == SIZE_MAX);
+    live_bytes_after_marking = verse_heap_live_bytes;
+    
+    verse_heap_start_sweep_before_handshake();
+    filc_soft_handshake(sweep_pollcheck_callback, NULL);
+    PAS_ASSERT(!global_stack.num_objects);
+    PAS_ASSERT(!local_stack.num_objects);
+    filc_object_array_reset(&global_stack);
+    filc_object_array_destruct(&local_stack);
+
+    PAS_ASSERT(sweep_size == SIZE_MAX);
+    sweep_size = verse_heap_start_sweep_after_handshake();
+    sweep_index = 0;
+
+    current_collector_state = collector_sweeping;
+}
+
+static void sweep_and_end(void)
+{
+    if (verbose >= VERBOSE_PHASES) {
+        pas_log("[%d] fugc: marking took %lf ms; sweeping\n",
+                pas_getpid(), sweep_start_time - overall_start_time);
+    }
+
+    PAS_ASSERT(!filc_is_marking);
+    PAS_ASSERT(current_collector_state == collector_sweeping);
+    
+    for (; sweep_index < sweep_size; sweep_index += 10) {
+        if (collector_suspend_requested)
+            return;
+        size_t next_sweep_index = pas_min_uintptr(sweep_index + 10, sweep_size);
+        verse_heap_sweep_range(sweep_index, next_sweep_index);
+    }
+
+    sweep_index = SIZE_MAX;
+    sweep_size = SIZE_MAX;
+    
+    verse_heap_end_sweep();
+    verse_heap_mark_bits_page_commit_controller_unlock();
+    
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    completed_cycle++;
+    /* It's unusual but possible that we sweep more bytes than we thought were live, because it's
+       possible for new objects to be allocated after we snapshot live bytes and then for those to
+       be swept. */
+    size_t surviving_bytes;
+    if (verse_heap_swept_bytes > live_bytes_at_start)
+        surviving_bytes = 0;
+    else
+        surviving_bytes = live_bytes_at_start - verse_heap_swept_bytes;
+    if (verbose >= VERBOSE_CYCLES) {
+        overall_end_time = pas_get_time_in_milliseconds();
+        if (verbose >= VERBOSE_PHASES) {
+            pas_log("[%d] fugc: sweeping took %lf ms; completed cycle %llu in %lf ms, swept %zu bytes, "
+                    "survived %zu bytes, have %zu live bytes\n",
+                    pas_getpid(), overall_end_time - sweep_start_time, completed_cycle,
+                    overall_end_time - overall_start_time,
+                    verse_heap_swept_bytes, surviving_bytes, verse_heap_live_bytes);
+        } else if (verbose >= VERBOSE_BREAKDOWN) {
+            pas_log("[%d] fugc: %zu kb -> %zu kb -> %zu kb + %zu kb (floated) in %.3lf ms "
+                    "(%.0lf%% marking)\n",
+                    pas_getpid(), live_bytes_at_start / 1024, live_bytes_after_marking / 1024,
+                    surviving_bytes / 1024,
+                    verse_heap_live_bytes > surviving_bytes
+                    ? (verse_heap_live_bytes - surviving_bytes) / 1024 : 0,
+                    overall_end_time - overall_start_time,
+                    100. * (sweep_start_time - overall_start_time)
+                    / (overall_end_time - overall_start_time));
+        } else {
+            pas_log("[%d] fugc: %zu kb -> %zu kb in %.3lf ms\n",
+                    pas_getpid(), live_bytes_at_start / 1024, surviving_bytes / 1024,
+                    overall_end_time - overall_start_time);
+        }
+    }
+    live_bytes_at_start = SIZE_MAX;
+    live_bytes_after_marking = SIZE_MAX;
+    size_t proposed_threshold = (size_t)(surviving_bytes * 1.5);
+    PAS_ASSERT(proposed_threshold >= surviving_bytes);
+    PAS_ASSERT(!surviving_bytes || proposed_threshold < surviving_bytes * 2);
+    verse_heap_live_bytes_trigger_threshold = pas_max_uintptr(proposed_threshold, minimum_threshold);
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+
+    if (should_stop_the_world) {
+        filc_resume_the_world();
+        fugc_world_is_stopped = false;
+    }
+
+    current_collector_state = collector_waiting;
+}
+
+static pas_thread_return_type collector_thread(void* arg)
+{
+    PAS_ASSERT(!arg);
+    
+    sigset_t fullset;
+    pas_reasonably_fill_sigset(&fullset);
+    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, NULL));
+
+    PAS_ASSERT(collector_thread_is_running);
+
+    while (!collector_suspend_requested) {
+        switch (current_collector_state) {
+        case collector_waiting:
+            wait_and_start_marking();
+            continue;
+        case collector_marking:
+            mark_and_start_sweeping();
+            continue;
+        case collector_sweeping:
+            sweep_and_end();
+            continue;
+        }
+        PAS_ASSERT(!"Invalid collector state");
+    }
+
+    pas_thread_local_cache_destroy(pas_lock_is_not_held);
+
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    collector_thread_is_running = false;
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+    
+    return PAS_THREAD_RETURN_VALUE;
+}
+
+static void trigger_callback(void)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+void fugc_initialize(void)
+{
+    pas_system_mutex_construct(&collector_thread_state_lock);
+    pas_system_condition_construct(&collector_thread_state_cond);
+    filc_object_array_construct(&global_stack);
+    pas_lock_construct(&global_stack_lock);
+
+    minimum_threshold = filc_get_size_env("FUGC_MIN_THRESHOLD", 1024 * 1024);
+    verse_heap_live_bytes_trigger_threshold = minimum_threshold;
+    verse_heap_live_bytes_trigger_callback = trigger_callback;
+
+    verbose = filc_get_unsigned_env("FUGC_VERBOSE", 0);
+    should_stop_the_world = filc_get_bool_env("FUGC_STW", false);
+
+    collector_thread_is_running = true;
+    
+    pas_create_detached_thread(collector_thread, NULL);
+}
+
+void fugc_suspend(void)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    PAS_ASSERT(collector_thread_is_running);
+    PAS_ASSERT(!collector_suspend_requested);
+    collector_suspend_requested = true;
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    while (collector_thread_is_running)
+        pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+void fugc_resume(void)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    PAS_ASSERT(!collector_thread_is_running);
+    PAS_ASSERT(collector_suspend_requested);
+    collector_suspend_requested = false;
+    collector_thread_is_running = true;
+    pas_create_detached_thread(collector_thread, NULL);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+void fugc_donate(filc_object_array* mark_stack)
+{
+    if (!mark_stack->num_objects)
+        return;
+    pas_lock_lock(&global_stack_lock);
+    PAS_ASSERT(filc_is_marking);
+    filc_object_array_pop_all_from_and_push_to(mark_stack, &global_stack);
+    pas_lock_unlock(&global_stack_lock);
+}
+
+static uint64_t request_impl(uint64_t offset)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+    if (requested_cycle + offset >= completed_cycle)
+        requested_cycle++;
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+    size_t result = requested_cycle;
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+    return result;
+}
+
+uint64_t fugc_request(void)
+{
+    return request_impl(0);
+}
+
+uint64_t fugc_request_fresh(void)
+{
+    return request_impl(1);
+}
+
+void fugc_wait(uint64_t cycle)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    while (completed_cycle < cycle)
+        pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+void fugc_dump_setup(void)
+{
+    pas_log("    fugc minimum threshold: %zu\n", minimum_threshold);
+    pas_log("    fugc verbose level: %u\n", verbose);
+    pas_log("    fugc should stop the world: %s\n", should_stop_the_world ? "yes" : "no");
+}
+
+#endif /* PAS_ENABLE_FILC */
+
+#endif /* LIBPAS_ENABLED */
+

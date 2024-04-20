@@ -2,9 +2,9 @@
 
 int main()
 {
-    char* a = zalloc(char, 1);
-    char* b = zalloc(char, 1);
-    zrealloc(a + (b - a), char, 0);
+    char* a = zalloc(sizeof(char));
+    char* b = zalloc(sizeof(char));
+    zrealloc(a + (b - a), 0);
     zprintf("oops\n");
     return 0;
 }

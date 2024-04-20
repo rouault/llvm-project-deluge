@@ -54,162 +54,17 @@ static constexpr size_t MinAlign = 16;
 static constexpr size_t WordSize = 16;
 
 // This has to match the FilC runtime.
-enum class FilCWordType {
-  OffLimits = 0,
-  Int = 1,
-  PtrSidecar = 2,
-  PtrCapability = 3
-};
+typedef uint8_t WordType;
 
-struct CoreFilCType {
-  size_t Size { 0 };
-  size_t Alignment { 0 };
-  std::vector<FilCWordType> WordTypes;
+static constexpr WordType WordTypeInt = 1;
+static constexpr WordType WordTypePtr = 2;
+static constexpr WordType WordTypeFunction = 4;
 
-  CoreFilCType() = default;
-  
-  CoreFilCType(size_t Size, size_t Alignment)
-    : Size(Size), Alignment(Alignment) {
-  }
-
-  bool isValid() const { return !!Size; }
-
-  bool operator==(const CoreFilCType& Other) const {
-    return Size == Other.Size && Alignment == Other.Alignment && WordTypes == Other.WordTypes;
-  }
-
-  size_t hash() const {
-    size_t Result = Size + Alignment * 3;
-    for (FilCWordType WordType : WordTypes) {
-      Result *= 7;
-      Result += static_cast<size_t>(WordType);
-    }
-    return Result;
-  }
-
-  bool canBeInt() const {
-    if (WordTypes.empty())
-      return false;
-    for (FilCWordType WT : WordTypes) {
-      if (WT != FilCWordType::Int)
-        return false;
-    }
-    return true;
-  }
-
-  void pad(size_t Alignment) {
-    if (Size % WordSize) {
-      assert(!WordTypes.empty());
-      assert(WordTypes.back() == FilCWordType::Int);
-    }
-    Size = (Size + Alignment - 1) / Alignment * Alignment;
-    addOffLimits();
-  }
-
-  // Append two types to each other. Does not work for special types like int or func. Returns the
-  // offset that the Other type was appended at.
-  size_t append(const CoreFilCType& Other) {
-    assert(!(Size % WordSize));
-    assert(!(Other.Size % WordSize));
-
-    Alignment = std::max(Alignment, Other.Alignment);
-
-    pad(Alignment);
-    size_t Result = Size;
-    WordTypes.insert(WordTypes.end(), Other.WordTypes.begin(), Other.WordTypes.end());
-    Size += Other.Size;
-    return Result;
-  }
-
-  void truncateOrPad(size_t NewSize) {
-    if (NewSize == Size)
-      return;
-    if (NewSize > Size) {
-      Size = NewSize;
-      addOffLimits();
-      return;
-    }
-    Size = NewSize;
-    while (WordTypes.size() > (Size + WordSize - 1) / WordSize)
-      WordTypes.pop_back();
-  }
-
-private:
-  void addOffLimits() {
-    while ((Size + WordSize - 1) / WordSize > WordTypes.size())
-      WordTypes.push_back(FilCWordType::OffLimits);
-  }
-};
-
-struct FilCType {
-  CoreFilCType Main;
-  CoreFilCType Trailing;
-
-  FilCType() = default;
-  
-  FilCType(size_t Size, size_t Alignment)
-    : Main(Size, Alignment) {
-  }
-
-  bool canBeInt() const { return Main.canBeInt() && (!Trailing.isValid() || Trailing.canBeInt()); }
-
-  bool operator==(const FilCType& Other) const {
-    return Main == Other.Main && Trailing == Other.Trailing;
-  }
-
-  size_t hash() const {
-    return Main.hash() + 11 * Trailing.hash();
-  }
-};
-
-} // anonymous namespace
-
-template<> struct std::hash<FilCType> {
-  size_t operator()(const FilCType& Key) const {
-    return Key.hash();
-  }
-};
-
-namespace {
-
-struct FilCTypeData {
-  FilCType Type;
-  Constant* TemplateRep { nullptr };
-};
-
-enum class ConstantPoolEntryKind {
-  Type,
-  Heap,
-  HardHeap
-};
-
-struct ConstantPoolEntry {
-  ConstantPoolEntryKind Kind;
-  FilCTypeData* DTD;
-
-  bool operator==(const ConstantPoolEntry& Other) const {
-    return Kind == Other.Kind && DTD == Other.DTD;
-  }
-
-  size_t hash() const {
-    size_t Result = static_cast<size_t>(Kind) * 666;
-    Result += reinterpret_cast<size_t>(DTD);
-    return Result;
-  }
-};
-
-} // anonymous namespace
-
-template<> struct std::hash<ConstantPoolEntry> {
-  size_t operator()(const ConstantPoolEntry& Key) const {
-    return Key.hash();
-  }
-};
-
-namespace {
+static constexpr uint8_t ObjectFlagReturnBuffer = 2;
+static constexpr uint8_t ObjectFlagSpecial = 4;
+static constexpr uint8_t ObjectFlagGlobal = 8;
 
 enum class ConstantKind {
-  Function,
   Global,
   Expr
 };
@@ -224,8 +79,8 @@ struct ConstantTarget {
 
   explicit operator bool() const { return !!Target; }
   
-  ConstantKind Kind { ConstantKind::Function };
-  GlobalValue* Target { nullptr }; // Getter for globals, function for functions, constexpr node for constexprs
+  ConstantKind Kind { ConstantKind::Global };
+  GlobalValue* Target { nullptr }; // Getter for globals (including functions), constexpr node for constexprs
 };
 
 struct ConstantRelocation {
@@ -238,13 +93,51 @@ struct ConstantRelocation {
   }
   
   size_t Offset { 0 };
-  ConstantKind Kind { ConstantKind::Function };
-  GlobalValue* Target { nullptr }; // Getter for globals, function for functions, constexpr node for constexprs
+  ConstantKind Kind { ConstantKind::Global };
+  GlobalValue* Target { nullptr }; // Getter for globals (including functions), constexpr node for constexprs
 };
 
 enum class ConstexprOpcode {
   AddPtrImmediate
 };
+
+enum class StoreKind {
+  Unbarriered,
+  Barriered
+};
+
+struct ValuePtr {
+  ValuePtr() { }
+
+  ValuePtr(Value* V, size_t PtrIndex)
+    : V(V), PtrIndex(PtrIndex) {
+  }
+
+  Value* V { nullptr };
+  size_t PtrIndex { 0 };
+
+  bool operator==(const ValuePtr& Other) const {
+    return V == Other.V && PtrIndex == Other.PtrIndex;
+  }
+
+  size_t hash() const {
+    return std::hash<Value*>()(V) + PtrIndex;
+  }
+};
+
+} // anonymous namespace
+
+template<> struct std::hash<ValuePtr> {
+  size_t operator()(const ValuePtr& Key) const {
+    return Key.hash();
+  }
+};
+
+namespace {
+
+static constexpr size_t ScratchObjectIndex = 0;
+static constexpr size_t MyArgsObjectIndex = 1;
+static constexpr size_t NumSpecialFrameObjects = 2;
 
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
@@ -252,7 +145,6 @@ class Pizlonator {
   LLVMContext& C;
   Module &M;
   DataLayout& DL;
-  ModuleAnalysisManager &MAM;
 
   unsigned PtrBits;
   Type* VoidTy;
@@ -264,7 +156,9 @@ class Pizlonator {
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
   StructType* OriginTy;
-  StructType* AllocaStackTy;
+  StructType* ObjectTy;
+  StructType* FrameTy;
+  StructType* ThreadTy;
   StructType* ConstantRelocationTy;
   StructType* ConstexprNodeTy;
   FunctionType* PizlonatedFuncTy;
@@ -274,78 +168,26 @@ class Pizlonator {
   Constant* LowWideNull;
   BitCastInst* Dummy;
 
-  // High-level functions available to the user.
-  Value* ZrestrictImpl;
-  Value* ZallocImpl;
-  Value* ZallocFlexImpl;
-  Value* ZalignedAllocImpl;
-  Value* ZreallocImpl;
-  Value* ZhardAllocImpl;
-  Value* ZhardAllocFlexImpl;
-  Value* ZhardAlignedAllocImpl;
-  Value* ZhardReallocImpl;
-  Value* ZtypeofImpl;
-
   // Low-level functions used by codegen.
   FunctionCallee Pollcheck;
-  FunctionCallee ValidateType;
-  FunctionCallee GetType;
-  FunctionCallee GetHeap;
-  FunctionCallee AllocateInt;
-  FunctionCallee AllocateIntWithAlignment;
-  FunctionCallee AllocateOne;
-  FunctionCallee AllocateMany;
-  FunctionCallee AllocateManyWithAlignment;
-  FunctionCallee AllocateIntFlex;
-  FunctionCallee AllocateIntFlexWithAlignment;
-  FunctionCallee AllocateFlex;
-  FunctionCallee AllocateUtility;
-  FunctionCallee ReallocateInt;
-  FunctionCallee ReallocateIntWithAlignment;
-  FunctionCallee Reallocate;
-  FunctionCallee Deallocate;
-  FunctionCallee GetHardHeap;
-  FunctionCallee HardAllocateInt;
-  FunctionCallee HardAllocateIntWithAlignment;
-  FunctionCallee HardAllocateOne;
-  FunctionCallee HardAllocateMany;
-  FunctionCallee HardAllocateManyWithAlignment;
-  FunctionCallee HardAllocateIntFlex;
-  FunctionCallee HardAllocateIntFlexWithAlignment;
-  FunctionCallee HardAllocateFlex;
-  FunctionCallee HardReallocateInt;
-  FunctionCallee HardReallocateIntWithAlignment;
-  FunctionCallee HardReallocate;
-  FunctionCallee LogAllocation;
-  FunctionCallee PtrPtr;
-  FunctionCallee UpdateSidecar;
-  FunctionCallee UpdateCapability;
-  FunctionCallee NewSidecar;
-  FunctionCallee NewCapability;
-  FunctionCallee CheckForge;
+  FunctionCallee StoreBarrier;
+  FunctionCallee GetNextBytesForVAArg;
+  FunctionCallee AllocateFunction;
+  FunctionCallee Allocate;
+  FunctionCallee AllocateWithAlignment;
   FunctionCallee CheckAccessInt;
   FunctionCallee CheckAccessPtr;
   FunctionCallee CheckAccessFunctionCall;
   FunctionCallee Memset;
-  FunctionCallee Memcpy;
   FunctionCallee Memmove;
-  FunctionCallee CheckRestrict;
-  FunctionCallee VAArgImpl;
   FunctionCallee GlobalInitializationContextCreate;
   FunctionCallee GlobalInitializationContextAdd;
   FunctionCallee GlobalInitializationContextDestroy;
-  FunctionCallee AllocaStackPush;
-  FunctionCallee AllocaStackRestore;
-  FunctionCallee AllocaStackDestroy;
   FunctionCallee ExecuteConstantRelocations;
   FunctionCallee DeferOrRunGlobalCtor;
+  FunctionCallee RunGlobalDtor;
   FunctionCallee Error;
   FunctionCallee RealMemset;
-
-  // Bonus functions generated by us.
-  FunctionCallee MakeConstantPool;
-
-  GlobalVariable* GlobalConstantPoolPtr;
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<DILocation*, GlobalVariable*> Origins;
@@ -354,28 +196,15 @@ class Pizlonator {
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
   std::vector<GlobalAlias*> Aliases;
-  std::vector<GlobalIFunc*> IFuncs;
   std::unordered_map<GlobalValue*, Type*> GlobalLowTypes;
   std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
   std::unordered_map<Type*, Type*> LoweredTypes;
 
-  std::unordered_map<Type*, FilCTypeData*> TypeMap;
-  std::unordered_map<FilCType, std::unique_ptr<FilCTypeData>> TypeDatas;
-  FilCTypeData Int;
-  FilCTypeData FunctionDTD;
-  FilCTypeData TypeDTD;
-  FilCTypeData Invalid;
-  Value* IntTypeRep;
-  Value* FunctionTypeRep;
-  Value* TypeTypeRep;
-
   std::unordered_map<GlobalValue*, Function*> GlobalToGetter;
   std::unordered_map<GlobalValue*, GlobalVariable*> GlobalToGlobal;
   std::unordered_set<Value*> Getters;
-
-  std::vector<ConstantPoolEntry> ConstantPoolEntries;
-  std::unordered_map<ConstantPoolEntry, size_t> ConstantPoolEntryIndex;
+  std::unordered_map<Function*, Function*> FunctionToHiddenFunction;
 
   std::string FunctionName;
   Function* OldF;
@@ -386,14 +215,8 @@ class Pizlonator {
   
   BasicBlock* FirstRealBlock;
 
-  BitCastInst* FutureIntFrame;
-  BitCastInst* FutureTypedFrame;
   BitCastInst* FutureReturnBuffer;
-  BitCastInst* FutureAllocaStack;
 
-  size_t IntFrameSize;
-  size_t IntFrameAlignment;
-  CoreFilCType TypedFrameType;
   BasicBlock* ReturnB;
   PHINode* ReturnPhi;
 
@@ -404,7 +227,11 @@ class Pizlonator {
                           arg. */
   std::vector<Value*> Args;
 
-  PHINode* LocalConstantPoolPtr;
+  Value* MyThread;
+
+  std::unordered_map<ValuePtr, size_t> FrameIndexMap;
+  size_t FrameSize;
+  Value* Frame;
 
   BitCastInst* makeDummy(Type* T) {
     return new BitCastInst(UndefValue::get(T), T, "dummy");
@@ -454,163 +281,6 @@ class Pizlonator {
       M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin");
     Origins[Impl] = Result;
     return Result;
-  }
-
-  void buildCoreTypeRecurse(CoreFilCType& CDT, Type* T) {
-    CDT.Alignment = std::max(CDT.Alignment, static_cast<size_t>(DL.getABITypeAlign(T).value()));
-
-    assert((CDT.Size + WordSize - 1) / WordSize == CDT.WordTypes.size());
-    if (CDT.Size % WordSize) {
-      assert(!CDT.WordTypes.empty());
-      assert(CDT.WordTypes.back() == FilCWordType::Int);
-    }
-
-    auto Fill = [&] () {
-      while ((CDT.Size + WordSize - 1) / WordSize > CDT.WordTypes.size())
-        CDT.WordTypes.push_back(FilCWordType::Int);
-    };
-
-    assert(T != LowRawPtrTy);
-    
-    if (T == LowWidePtrTy) {
-      CDT.Size += 32;
-      CDT.WordTypes.push_back(FilCWordType::PtrSidecar);
-      CDT.WordTypes.push_back(FilCWordType::PtrCapability);
-      return;
-    }
-
-    if (StructType* ST = dyn_cast<StructType>(T)) {
-      size_t SizeBefore = CDT.Size;
-      const StructLayout* SL = DL.getStructLayout(ST);
-      for (unsigned Index = 0; Index < ST->getNumElements(); ++Index) {
-        Type* InnerT = ST->getElementType(Index);
-        size_t ProposedSize = SizeBefore + SL->getElementOffset(Index);
-        assert(ProposedSize >= CDT.Size);
-        CDT.Size = ProposedSize;
-        Fill();
-        buildCoreTypeRecurse(CDT, InnerT);
-      }
-      size_t ProposedSize = SizeBefore + SL->getSizeInBytes();
-      assert(ProposedSize >= CDT.Size);
-      CDT.Size = ProposedSize;
-      Fill();
-      return;
-    }
-    
-    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
-      for (uint64_t Index = AT->getNumElements(); Index--;)
-        buildCoreTypeRecurse(CDT, AT->getElementType());
-      return;
-    }
-      
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
-        buildCoreTypeRecurse(CDT, VT->getElementType());
-      return;
-    }
-
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(T)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
-      return;
-    }
-
-    CDT.Size += DL.getTypeStoreSize(T);
-    while ((CDT.Size + WordSize - 1) / WordSize > CDT.WordTypes.size())
-      CDT.WordTypes.push_back(FilCWordType::Int);
-  }
-
-  void buildTypeRep(FilCTypeData& Data) {
-    FilCType& T = Data.Type;
-    
-    FilCTypeData* TrailingData = nullptr;
-    if (T.Trailing.isValid()) {
-      FilCType TrailingT;
-      TrailingT.Main = T.Trailing;
-      TrailingData = dataForType(TrailingT);
-    }
-
-    assert(T.Main.Size);
-    assert(T.Main.Alignment);
-    assert(!(T.Main.Size % T.Main.Alignment) || T.Trailing.isValid());
-    if (verbose) {
-      errs() << "T.Trailing.isValid() = " << T.Trailing.isValid() << "\n";
-      errs() << "T.Trailing.canBeInt() = " << T.Trailing.canBeInt() << "\n";
-    }
-    assert(!(T.Main.Size % WordSize) || (T.Trailing.isValid() && T.Trailing.canBeInt()));
-
-    std::vector<Constant*> Constants;
-    Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Size));
-    Constants.push_back(ConstantInt::get(IntPtrTy, T.Main.Alignment));
-    assert((T.Main.Size + WordSize - 1) / WordSize == T.Main.WordTypes.size());
-    if (TrailingData)
-      Constants.push_back(ConstantExpr::getPtrToInt(TrailingData->TemplateRep, IntPtrTy));
-    else
-      Constants.push_back(ConstantInt::get(IntPtrTy, 0));
-    uint64_t Word = 0;
-    size_t Shift = 0;
-    auto Flush = [&] () {
-      Constants.push_back(ConstantInt::get(IntPtrTy, Word));
-      Word = 0;
-      Shift = 0;
-    };
-    for (FilCWordType Type : T.Main.WordTypes) {
-      if (Shift >= PtrBits) {
-        assert(Shift == PtrBits);
-        Flush();
-      }
-      Word |= static_cast<uint64_t>(Type) << Shift;
-      Shift += 8;
-    }
-    if (Shift)
-      Flush();
-    ArrayType* AT = ArrayType::get(IntPtrTy, Constants.size());
-    Constant* CA = ConstantArray::get(AT, Constants);
-    // FIXME: At some point, we'll want to content-address these.
-    Data.TemplateRep =
-      new GlobalVariable(M, AT, true, GlobalValue::PrivateLinkage, CA, "filc_type_template");
-  }
-
-  FilCTypeData* dataForType(const FilCType& T) {
-    if (T.canBeInt())
-      return &Int;
-    
-    auto iter = TypeDatas.find(T);
-    if (iter != TypeDatas.end())
-      return iter->second.get();
-
-    std::unique_ptr<FilCTypeData> Data = std::make_unique<FilCTypeData>();
-    Data->Type = T;
-    buildTypeRep(*Data);
-
-    FilCTypeData* Result = Data.get();
-    TypeDatas.emplace(T, std::move(Data));
-    return Result;
-  }
-
-  FilCTypeData* dataForLowType(Type* T) {
-    auto iter = TypeMap.find(T);
-    if (iter != TypeMap.end())
-      return iter->second;
-
-    FilCTypeData* Data;
-    if (isa<FunctionType>(T))
-      Data = &FunctionDTD;
-    else if (!hasPtrsForCheck(T))
-      Data = &Int;
-    else {
-      FilCType DT;
-      // FilC types derived from llvm types never have a trailing component.
-      buildCoreTypeRecurse(DT.Main, T);
-      assert(DT.Main.Size == DL.getTypeStoreSize(T));
-      assert(!(DT.Main.Size % DT.Main.Alignment));
-
-      // FIXME: Find repetitions?
-      
-      Data = dataForType(DT);
-    }
-
-    TypeMap[T] = Data;
-    return Data;
   }
 
   Type* lowerTypeImpl(Type* T) {
@@ -687,83 +357,134 @@ class Pizlonator {
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  Value* sidecarPtr(Value* P, Instruction* InsertBefore) {
-    Instruction* SidecarPtr = GetElementPtrInst::Create(
-      LowWidePtrTy, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
-      "filc_sidecar_ptr", InsertBefore);
-    SidecarPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return SidecarPtr;
-  }
-
-  Value* capabilityPtr(Value* P, Instruction* InsertBefore) {
-    Instruction* CapabilityPtr = GetElementPtrInst::Create(
-      LowWidePtrTy, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-      "filc_capability_ptr", InsertBefore);
-    CapabilityPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return CapabilityPtr;
-  }
-
-  Value* loadPtrPart(
-    Value* P, bool isVolatile, Align A, AtomicOrdering AO, Instruction* InsertBefore) {
-    // FIXME: I probably only need Unordered, not Monotonic.
-    Instruction* Result = new LoadInst(
-      Int128Ty, P, "filc_load_ptr_part", isVolatile,
-      std::max(A, Align(WordSize)), getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO),
-      SyncScope::System, InsertBefore);
+  Value* ptrWord(Value* P, Instruction* InsertBefore) {
+    if (isa<ConstantAggregateZero>(P))
+      return ConstantInt::get(Int128Ty, 0);
+    Instruction* Result = ExtractValueInst::Create(Int128Ty, P, { 0 }, "filc_ptr_word", InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
   }
 
-  Value* loadPtrPart(Value* P, Instruction* InsertBefore) {
-    return loadPtrPart(P, false, Align(WordSize), AtomicOrdering::Monotonic, InsertBefore);
+  Value* ptrPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* IntResult = new TruncInst(ptrWord(P, InsertBefore), IntPtrTy, "filc_ptr_ptr_as_int",
+                                           InsertBefore);
+    IntResult->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
   }
 
-  Value* loadPtr(Value* P, bool isVolatile, Align A, AtomicOrdering AO, Instruction* InsertBefore) {
-    return createPtr(
-      loadPtrPart(sidecarPtr(P, InsertBefore), isVolatile, A, AO, InsertBefore),
-      loadPtrPart(capabilityPtr(P, InsertBefore), isVolatile, A, AO, InsertBefore),
+  Value* ptrObject(Value* P, Instruction* InsertBefore) {
+    Instruction* Shifted = BinaryOperator::Create(
+      Instruction::LShr, ptrWord(P, InsertBefore), ConstantInt::get(Int128Ty, 64), "filc_ptr_object_shift",
       InsertBefore);
+    Shifted->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* IntResult = new TruncInst(Shifted, IntPtrTy, "filc_ptr_object_trunc_as_int", InsertBefore);
+    IntResult->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* wordToPtr(Value* Word, Instruction* InsertBefore) {
+    Instruction* Result = InsertValueInst::Create(
+      UndefValue::get(LowWidePtrTy), Word, { 0 }, "filc_word_to_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* createPtr(Value* Object, Value* Ptr, Instruction* InsertBefore) {
+    Instruction* PtrAsInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertBefore);
+    PtrAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* ObjectAsInt = new PtrToIntInst(Object, IntPtrTy, "filc_object_as_int", InsertBefore);
+    ObjectAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* CastedPtr = new ZExtInst(PtrAsInt, Int128Ty, "filc_ptr_zext", InsertBefore);
+    CastedPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* CastedObject = new ZExtInst(ObjectAsInt, Int128Ty, "filc_object_zext", InsertBefore);
+    CastedObject->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* ShiftedObject = BinaryOperator::Create(
+      Instruction::Shl, CastedObject, ConstantInt::get(Int128Ty, 64), "filc_object_shifted", InsertBefore);
+    ShiftedObject->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Word = BinaryOperator::Create(
+      Instruction::Or, CastedPtr, ShiftedObject, "filc_ptr_word", InsertBefore);
+    Word->setDebugLoc(InsertBefore->getDebugLoc());
+    return wordToPtr(Word, InsertBefore);
+  }
+
+  Value* ptrWithPtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertBefore) {
+    return createPtr(ptrObject(LowWidePtr, InsertBefore), NewLowRawPtr, InsertBefore);
+  }
+
+  Value* objectLowerPtr(Value* Object, Instruction* InsertBefore) {
+    Instruction* LowerPtr = GetElementPtrInst::Create(
+      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+      "filc_object_lower_ptr", InsertBefore);
+    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return LowerPtr;
+  }
+
+  Value* objectUpperPtr(Value* Object, Instruction* InsertBefore) {
+    Instruction* LowerPtr = GetElementPtrInst::Create(
+      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+      "filc_object_upper_ptr", InsertBefore);
+    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return LowerPtr;
+  }
+
+  Value* objectFlagsPtr(Value* Object, Instruction* InsertBefore) {
+    Instruction* LowerPtr = GetElementPtrInst::Create(
+      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
+      "filc_object_flags_ptr", InsertBefore);
+    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return LowerPtr;
+  }
+
+  Value* objectLower(Value* Object, Instruction* InsertBefore) {
+    Instruction* Lower = new LoadInst(
+      LowRawPtrTy, objectLowerPtr(Object, InsertBefore), "filc_object_lower_load", InsertBefore);
+    Lower->setDebugLoc(InsertBefore->getDebugLoc());
+    return Lower;
+  }
+
+  Value* ptrWithObject(Value* Object, Instruction* InsertBefore) {
+    return createPtr(Object, objectLower(Object, InsertBefore), InsertBefore);
+  }
+
+  Value* badPtr(Value* P, Instruction* InsertBefore) {
+    return createPtr(LowRawNull, P, InsertBefore);
+  }
+
+  Value* loadPtr(
+    Value* P, bool isVolatile, Align A, AtomicOrdering AO, Instruction* InsertBefore) {
+    // FIXME: I probably only need Unordered, not Monotonic.
+    Instruction* Result = new LoadInst(
+      Int128Ty, P, "filc_load_ptr", isVolatile,
+      std::max(A, Align(WordSize)), getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO),
+      SyncScope::System, InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return wordToPtr(Result, InsertBefore);
   }
 
   Value* loadPtr(Value* P, Instruction* InsertBefore) {
     return loadPtr(P, false, Align(WordSize), AtomicOrdering::Monotonic, InsertBefore);
   }
-
-  Value* extractSidecar(Value* V, Instruction* InsertBefore) {
-    Instruction* Sidecar = ExtractValueInst::Create(Int128Ty, V, { 0 }, "filc_sidecar", InsertBefore);
-    Sidecar->setDebugLoc(InsertBefore->getDebugLoc());
-    return Sidecar;
-  }
-
-  Value* extractCapability(Value* V, Instruction* InsertBefore) {
-    Instruction* Capability = ExtractValueInst::Create(Int128Ty, V, { 1 }, "filc_sidecar", InsertBefore);
-    Capability->setDebugLoc(InsertBefore->getDebugLoc());
-    return Capability;
-  }
-
-  void storePtrPart(
-    Value* V, Value* P, bool isVolatile, Align A, AtomicOrdering AO, Instruction* InsertBefore) {
+  
+  void storePtr(
+    Value* V, Value* P, bool isVolatile, Align A, AtomicOrdering AO, StoreKind SK,
+    Instruction* InsertBefore) {
+    if (SK == StoreKind::Barriered) {
+      assert(MyThread);
+      CallInst::Create(StoreBarrier, { MyThread, ptrObject(V, InsertBefore) }, "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+    }
     (new StoreInst(
-      V, P, isVolatile, std::max(A, Align(WordSize)),
+      ptrWord(V, InsertBefore), P, isVolatile, std::max(A, Align(WordSize)),
       getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO), SyncScope::System, InsertBefore))
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void storePtrPart(Value* V, Value* P, Instruction* InsertBefore) {
-    storePtrPart(V, P, false, Align(WordSize), AtomicOrdering::Monotonic, InsertBefore);
-  }
-
-  // V = pointer value to store, P = pointer to store to.
-  void storePtr(Value* V, Value* P,
-                bool isVolatile, Align A, AtomicOrdering AO, Instruction* InsertBefore) {
-    storePtrPart(extractSidecar(V, InsertBefore), sidecarPtr(P, InsertBefore),
-                 isVolatile, A, AO, InsertBefore);
-    storePtrPart(extractCapability(V, InsertBefore), capabilityPtr(P, InsertBefore),
-                 isVolatile, A, AO, InsertBefore);
-  }
-
-  void storePtr(Value* V, Value* P, Instruction* InsertBefore) {
-    storePtr(V, P, false, Align(WordSize), AtomicOrdering::Monotonic, InsertBefore);
+  void storePtr(Value* V, Value* P, StoreKind SK, Instruction* InsertBefore) {
+    storePtr(V, P, false, Align(WordSize), AtomicOrdering::Monotonic, SK, InsertBefore);
   }
 
   // This happens to work just as well for high types and low types, and that's important.
@@ -811,7 +532,7 @@ class Pizlonator {
 
   void checkRecurse(Type *LowT, Value* HighP, Value *P, Instruction *InsertBefore) {
     if (!hasPtrsForCheck(LowT)) {
-      checkInt(reforgePtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), InsertBefore);
+      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), InsertBefore);
       return;
     }
     
@@ -828,7 +549,7 @@ class Pizlonator {
     assert(LowT != LowRawPtrTy);
 
     if (LowT == LowWidePtrTy) {
-      checkPtr(reforgePtr(HighP, P, InsertBefore), InsertBefore);
+      checkPtr(ptrWithPtr(HighP, P, InsertBefore), InsertBefore);
       return;
     }
 
@@ -873,29 +594,22 @@ class Pizlonator {
     llvm_unreachable("Should not get here.");
   }
 
-  Value* lowerPtr(Value *HighP, Instruction* InsertBefore) {
-    Instruction* Result = CallInst::Create(PtrPtr, { HighP }, "filc_getlowptr", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
   Value* prepareForAccess(Type *LowT, Value *HighP, Instruction *InsertBefore) {
-    Value* LowP = lowerPtr(HighP, InsertBefore);
+    Value* LowP = ptrPtr(HighP, InsertBefore);
     checkRecurse(LowT, HighP, LowP, InsertBefore);
     return LowP;
   }
 
-  Value* loadValueRecurse(Type* LowT, Value* HighP, Value* P,
-                          bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
-                          Instruction* InsertBefore) {
+  Value* loadValueRecurseAfterCheck(
+    Type* LowT, Value* HighP, Value* P,
+    bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
+    Instruction* InsertBefore) {
     A = std::min(DL.getABITypeAlign(LowT), A);
     
-    if (!hasPtrsForCheck(LowT)) {
-      checkInt(reforgePtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), InsertBefore);
+    if (!hasPtrsForCheck(LowT))
       return new LoadInst(LowT, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
-    }
     
     if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
       llvm_unreachable("shouldn't see function types in checkRecurse");
@@ -909,10 +623,8 @@ class Pizlonator {
 
     assert(LowT != LowRawPtrTy);
 
-    if (LowT == LowWidePtrTy) {
-      checkPtr(reforgePtr(HighP, P, InsertBefore), InsertBefore);
+    if (LowT == LowWidePtrTy)
       return loadPtr(P, isVolatile, A, AO, InsertBefore);
-    }
 
     assert(!isa<PointerType>(LowT));
 
@@ -966,327 +678,470 @@ class Pizlonator {
     return nullptr;
   }
 
-  Value* loadValueUncheckedRecurse(Type* LowT, Value* P,
-                                   bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
-                                   Instruction* InsertBefore) {
+  Value* loadValueRecurse(Type* LowT, Value* HighP, Value* P,
+                          bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
+                          Instruction* InsertBefore) {
+    // In the future, checks will exit or pollcheck, so we need to ensure that we do all of them before
+    // we do the actual load.
+    checkRecurse(LowT, HighP, P, InsertBefore);
+    return loadValueRecurseAfterCheck(LowT, HighP, P, isVolatile, A, AO, SS, InsertBefore);
+  }
+
+  void storeValueRecurseAfterCheck(
+    Type* LowT, Value* HighP, Value* V, Value* P,
+    bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, StoreKind SK,
+    Instruction* InsertBefore) {
     A = std::min(DL.getABITypeAlign(LowT), A);
     
-    if (!hasPtrsForCheck(LowT))
-      return new LoadInst(LowT, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
+    if (!hasPtrsForCheck(LowT)) {
+      new StoreInst(V, P, isVolatile, A, AO, SS, InsertBefore);
+      return;
+    }
     
     if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
       llvm_unreachable("shouldn't see function types in checkRecurse");
-      return nullptr;
+      return;
     }
 
     if (isa<TypedPointerType>(LowT)) {
       llvm_unreachable("Shouldn't ever see typed pointers");
-      return nullptr;
+      return;
     }
 
     assert(LowT != LowRawPtrTy);
 
-    if (LowT == LowWidePtrTy)
-      return loadPtr(P, isVolatile, A, AO, InsertBefore);
+    if (LowT == LowWidePtrTy) {
+      storePtr(V, P, isVolatile, A, AO, SK, InsertBefore);
+      return;
+    }
 
     assert(!isa<PointerType>(LowT));
 
     if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      Value* Result = UndefValue::get(ST);
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_struct", InsertBefore);
-        Value* V = loadValueUncheckedRecurse(InnerT, InnerP, isVolatile, A, AO, SS, InsertBefore);
-        Result = InsertValueInst::Create(Result, V, Index, "filc_insert_struct", InsertBefore);
+        Value* InnerV = ExtractValueInst::Create(
+          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
+        storeValueRecurse(InnerT, HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK, InsertBefore);
       }
-      return Result;
+      return;
     }
       
     if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      Value* Result = UndefValue::get(AT);
       assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
       for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
-        Value* V = loadValueUncheckedRecurse(
-          AT->getElementType(), InnerP, isVolatile, A, AO, SS, InsertBefore);
-        Result = InsertValueInst::Create(Result, V, Index, "filc_insert_array", InsertBefore);
+        Value* InnerV = ExtractValueInst::Create(
+          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
+        storeValueRecurse(AT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
+                          InsertBefore);
       }
-      return Result;
+      return;
     }
       
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      Value* Result = UndefValue::get(VT);
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
-        Value* V = loadValueUncheckedRecurse(
-          VT->getElementType(), InnerP, isVolatile, A, AO, SS, InsertBefore);
-        Result = InsertElementInst::Create(
-          Result, V, ConstantInt::get(IntPtrTy, Index), "filc_insert_vector", InsertBefore);
+        Value* InnerV = ExtractElementInst::Create(
+          V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
+        storeValueRecurse(VT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
+                          InsertBefore);
       }
-      return Result;
+      return;
     }
 
     if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
-      return nullptr;
+      return;
     }
 
     llvm_unreachable("Should not get here.");
-    return nullptr;
   }
 
   void storeValueRecurse(Type* LowT, Value* HighP, Value* V, Value* P,
-                         bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
+                         bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, StoreKind SK,
                          Instruction* InsertBefore) {
-    A = std::min(DL.getABITypeAlign(LowT), A);
-    
-    if (!hasPtrsForCheck(LowT)) {
-      checkInt(reforgePtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), InsertBefore);
-      new StoreInst(V, P, isVolatile, A, AO, SS, InsertBefore);
-      return;
-    }
-    
-    if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
-      llvm_unreachable("shouldn't see function types in checkRecurse");
-      return;
-    }
-
-    if (isa<TypedPointerType>(LowT)) {
-      llvm_unreachable("Shouldn't ever see typed pointers");
-      return;
-    }
-
-    assert(LowT != LowRawPtrTy);
-
-    if (LowT == LowWidePtrTy) {
-      checkPtr(reforgePtr(HighP, P, InsertBefore), InsertBefore);
-      storePtr(V, P, isVolatile, A, AO, InsertBefore);
-      return;
-    }
-
-    assert(!isa<PointerType>(LowT));
-
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      for (unsigned Index = ST->getNumElements(); Index--;) {
-        Type* InnerT = ST->getElementType(Index);
-        Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_struct", InsertBefore);
-        Value* InnerV = ExtractValueInst::Create(
-          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
-        storeValueRecurse(InnerT, HighP, InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-      
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
-      for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_array", InsertBefore);
-        Value* InnerV = ExtractValueInst::Create(
-          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
-        storeValueRecurse(AT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-      
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_vector", InsertBefore);
-        Value* InnerV = ExtractElementInst::Create(
-          V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
-        storeValueRecurse(VT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
-      return;
-    }
-
-    llvm_unreachable("Should not get here.");
+    checkRecurse(LowT, HighP, P, InsertBefore);
+    storeValueRecurseAfterCheck(LowT, HighP, V, P, isVolatile, A, AO, SS, SK, InsertBefore);
   }
 
-  void storeValueUncheckedRecurse(Type* LowT, Value* V, Value* P,
-                                  bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
-                                  Instruction* InsertBefore) {
-    A = std::min(DL.getABITypeAlign(LowT), A);
-    
-    if (!hasPtrsForCheck(LowT)) {
-      new StoreInst(V, P, isVolatile, A, AO, SS, InsertBefore);
-      return;
+  Value* allocateObject(Value* Size, size_t Alignment, Instruction* InsertBefore) {
+    Instruction* Result;
+    if (Alignment <= MinAlign) {
+      Result = CallInst::Create(
+        Allocate, { MyThread, Size }, "filc_allocate", InsertBefore);
+    } else {
+      Result = CallInst::Create(
+        AllocateWithAlignment,
+        { MyThread, Size, ConstantInt::get(IntPtrTy, Alignment) },
+        "filc_allocate", InsertBefore);
     }
-    
-    if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
-      llvm_unreachable("shouldn't see function types in checkRecurse");
-      return;
-    }
-
-    if (isa<TypedPointerType>(LowT)) {
-      llvm_unreachable("Shouldn't ever see typed pointers");
-      return;
-    }
-
-    assert(LowT != LowRawPtrTy);
-
-    if (LowT == LowWidePtrTy) {
-      storePtr(V, P, isVolatile, A, AO, InsertBefore);
-      return;
-    }
-
-    assert(!isa<PointerType>(LowT));
-
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      for (unsigned Index = ST->getNumElements(); Index--;) {
-        Type* InnerT = ST->getElementType(Index);
-        Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_struct", InsertBefore);
-        Value* InnerV = ExtractValueInst::Create(
-          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
-        storeValueUncheckedRecurse(InnerT, InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-      
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
-      for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_array", InsertBefore);
-        Value* InnerV = ExtractValueInst::Create(
-          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
-        storeValueUncheckedRecurse(
-          AT->getElementType(), InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-      
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_vector", InsertBefore);
-        Value* InnerV = ExtractElementInst::Create(
-          V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
-        storeValueUncheckedRecurse(
-          VT->getElementType(), InnerV, InnerP, isVolatile, A, AO, SS, InsertBefore);
-      }
-      return;
-    }
-
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
-      return;
-    }
-
-    llvm_unreachable("Should not get here.");
-    return;
-  }
-
-  Value* createPtr(Value* Sidecar, Value* Capability, Instruction* InsertBefore) {
-    Instruction* Result = InsertValueInst::Create(
-      UndefValue::get(LowWidePtrTy), Sidecar, { 0 }, "filc_new_capability_sidecar", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    Result = InsertValueInst::Create(
-      Result, Capability, { 1 }, "filc_new_capability_capability", InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
   }
 
-  Value* forgePtrWithTypeRepAndSize(
-    Value* Ptr, Value* Size, Value* TypeRep, Instruction* InsertionPoint) {
-    Instruction* Sidecar = CallInst::Create(
-      NewSidecar, { Ptr, Size, TypeRep }, "filc_new_sidecar", InsertionPoint);
-    Sidecar->setDebugLoc(InsertionPoint->getDebugLoc());
-    Instruction* Capability = CallInst::Create(
-      NewCapability, { Ptr, Size, TypeRep }, "filc_new_capability", InsertionPoint);
-    Capability->setDebugLoc(InsertionPoint->getDebugLoc());
-    return createPtr(Sidecar, Capability, InsertionPoint);
+  Value* allocate(Value* Size, size_t Alignment, Instruction* InsertBefore) {
+    return ptrWithObject(allocateObject(Size, Alignment, InsertBefore), InsertBefore);
   }
 
-  Value* forgePtrWithTypeRepAndCount(
-    Value* Ptr, Value* TypeRep, Type* LowT, Value* Count, Instruction* InsertionPoint) {
-    Instruction* Size = BinaryOperator::Create(
-      Instruction::Mul, Count, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowT)),
-      "filc_forge_size", InsertionPoint);
-    Size->setDebugLoc(InsertionPoint->getDebugLoc());
-    return forgePtrWithTypeRepAndSize(Ptr, Size, TypeRep, InsertionPoint);
+  size_t countPtrs(Type* T) {
+    assert(!isa<FunctionType>(T));
+    assert(!isa<TypedPointerType>(T));
+    assert(T != LowWidePtrTy);
+    assert(!isa<ScalableVectorType>(T));
+
+    if (isa<PointerType>(T))
+      return 1;
+
+    if (StructType* ST = dyn_cast<StructType>(T)) {
+      size_t Result = 0;
+      for (unsigned Index = ST->getNumElements(); Index--;)
+        Result += countPtrs(ST->getElementType(Index));
+      return Result;
+    }
+
+    if (ArrayType* AT = dyn_cast<ArrayType>(T))
+      return AT->getNumElements() * countPtrs(AT->getElementType());
+
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
+      return VT->getElementCount().getFixedValue() * countPtrs(VT->getElementType());
+
+    assert(!hasPtrsForCheck(T));
+    return 0;
   }
 
-  Value* forgePtrWithTypeRepAndUpper(
-    Value* Ptr, Value* Upper, Value* TypeRep, Instruction* InsertionPoint) {
-    Instruction* PtrAsInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertionPoint);
-    PtrAsInt->setDebugLoc(InsertionPoint->getDebugLoc());
-    Instruction* UpperAsInt = new PtrToIntInst(Upper, IntPtrTy, "filc_upper_as_int", InsertionPoint);
-    UpperAsInt->setDebugLoc(InsertionPoint->getDebugLoc());
-    Instruction* Size = BinaryOperator::Create(
-      Instruction::Sub, UpperAsInt, PtrAsInt, "filc_forge_size", InsertionPoint);
-    Size->setDebugLoc(InsertionPoint->getDebugLoc());
-    return forgePtrWithTypeRepAndSize(Ptr, Size, TypeRep, InsertionPoint);
+  void computeFrameIndexMap(std::vector<BasicBlock*> Blocks) {
+    FrameIndexMap.clear();
+    FrameSize = NumSpecialFrameObjects;
+
+    assert(!Blocks.empty());
+
+    auto LiveCast = [&] (Value* V) -> Value* {
+      if (isa<Instruction>(V))
+        return V;
+      if (isa<Argument>(V))
+        return V;
+      if (!isa<Constant>(V) && !isa<MetadataAsValue>(V) && !isa<InlineAsm>(V) && !isa<BasicBlock>(V)) {
+        errs() << "V = " << *V << "\n";
+        assert(isa<Constant>(V) || isa<MetadataAsValue>(V) || isa<InlineAsm>(V) || isa<BasicBlock>(V));
+      }
+      return nullptr;
+    };
+
+    std::unordered_map<BasicBlock*, std::unordered_set<Value*>> LiveAtTail;
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+
+      for (size_t BlockIndex = Blocks.size(); BlockIndex--;) {
+        BasicBlock* BB = Blocks[BlockIndex];
+        std::unordered_set<Value*> Live = LiveAtTail[BB];
+
+        for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
+          Instruction* I = &*It;
+          if (verbose)
+            errs() << "Liveness dealing with: " << *I << "\n";
+
+          Live.erase(I);
+          
+          if (PHINode* Phi = dyn_cast<PHINode>(I)) {
+            for (unsigned Index = Phi->getNumIncomingValues(); Index--;) {
+              Value* V = Phi->getIncomingValue(Index);
+              if (Value* LV = LiveCast(V)) {
+                BasicBlock* PBB = Phi->getIncomingBlock(Index);
+                Changed |= LiveAtTail[PBB].insert(LV).second;
+              }
+            }
+            continue;
+          }
+
+          for (Value* V : I->operand_values()) {
+            if (Value* LV = LiveCast(V))
+              Live.insert(LV);
+          }
+        }
+
+        // NOTE: We might be given IR with unreachable blocks. Those will have live-at-head. Like, whatever.
+        // But if it's the root block and it has live-at-head then what the fugc.
+        if (!BlockIndex) {
+          for (Value* V : Live)
+            assert(isa<Argument>(V));
+        }
+
+        for (BasicBlock* PBB : predecessors(BB)) {
+          for (Value* LV : Live)
+            Changed |= LiveAtTail[PBB].insert(LV).second;
+        }
+      }
+    }
+
+    std::unordered_map<ValuePtr, std::unordered_set<ValuePtr>> Interference;
+
+    for (size_t BlockIndex = Blocks.size(); BlockIndex--;) {
+      BasicBlock* BB = Blocks[BlockIndex];
+      std::unordered_set<Value*> Live = LiveAtTail[BB];
+      
+      for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
+        Instruction* I = &*It;
+        
+        Live.erase(I);
+
+        size_t NumIPtrs = countPtrs(I->getType());
+        if (NumIPtrs) {
+          for (Value* LV : Live) {
+            size_t NumVIPtrs = countPtrs(LV->getType());
+            for (size_t LVPtrIndex = NumVIPtrs; LVPtrIndex--;) {
+              for (size_t IPtrIndex = NumIPtrs; IPtrIndex--;) {
+                Interference[ValuePtr(I, IPtrIndex)].insert(ValuePtr(LV, LVPtrIndex));
+                Interference[ValuePtr(LV, LVPtrIndex)].insert(ValuePtr(I, IPtrIndex));
+              }
+            }
+          }
+        }
+
+        for (Value* V : I->operand_values()) {
+          if (Value* LV = LiveCast(V))
+            Live.insert(LV);
+        }
+      }
+    }
+
+    // The arguments interfere with one another.
+    for (Argument& A1 : OldF->args()) {
+      size_t NumA1Ptrs = countPtrs(A1.getType());
+      if (!NumA1Ptrs)
+        continue;
+      for (Argument& A2 : OldF->args()) {
+        size_t NumA2Ptrs = countPtrs(A2.getType());
+        for (size_t A2PtrIndex = NumA2Ptrs; A2PtrIndex--;) {
+          for (size_t A1PtrIndex = NumA1Ptrs; A1PtrIndex--;)
+            Interference[ValuePtr(&A1, A1PtrIndex)].insert(ValuePtr(&A2, A2PtrIndex));
+        }
+      }
+    }
+
+    // Make this deterministic by having a known order in which we process stuff.
+    std::vector<ValuePtr> Order;
+    for (Argument& A : OldF->args()) {
+      for (size_t PtrIndex = countPtrs(A.getType()); PtrIndex--;)
+        Order.push_back(ValuePtr(&A, PtrIndex));
+    }
+    for (BasicBlock* BB : Blocks) {
+      for (Instruction& I : *BB) {
+        for (size_t PtrIndex = countPtrs(I.getType()); PtrIndex--;)
+          Order.push_back(ValuePtr(&I, PtrIndex));
+      }
+    }
+
+    for (ValuePtr IP : Order) {
+      const std::unordered_set<ValuePtr>& Adjacency = Interference[IP];
+      for (size_t FrameIndex = NumSpecialFrameObjects; ; FrameIndex++) {
+        bool Ok = true;
+        for (ValuePtr AIP : Adjacency) {
+          if (FrameIndexMap.count(AIP) && FrameIndexMap[AIP] == FrameIndex) {
+            Ok = false;
+            break;
+          }
+        }
+        if (Ok) {
+          FrameIndexMap[IP] = FrameIndex;
+          FrameSize = std::max(FrameSize, FrameIndex + 1);
+          break;
+        }
+      }
+    }
   }
 
-  Value* forgePtrWithTypeRep(Value* Ptr, Value* TypeRep, Type* LowT, Instruction* InsertionPoint) {
-    size_t Size;
-    if (isa<FunctionType>(LowT))
-      Size = 1;
-    else
-      Size = DL.getTypeStoreSize(LowT);
-    return forgePtrWithTypeRepAndSize(Ptr, ConstantInt::get(IntPtrTy, Size), TypeRep, InsertionPoint);
+  void recordObjectAtIndex(Value* Object, size_t FrameIndex, Instruction* InsertBefore) {
+    assert(FrameIndex < FrameSize);
+    Instruction* ObjectsPtr = GetElementPtrInst::Create(
+      FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
+      "filc_frame_objects", InsertBefore);
+    ObjectsPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* ObjectPtr = GetElementPtrInst::Create(
+      LowRawPtrTy, ObjectsPtr, { ConstantInt::get(IntPtrTy, FrameIndex) }, "filc_frame_object",
+      InsertBefore);
+    ObjectPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    (new StoreInst(Object, ObjectPtr, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  // Why don't we have forgePtrWithTypeDataAndCount, which would allow you to "just" get the size
-  // from the FilCType? Because! That would be wrong!
-  //
-  // FilCType is a representation of a repeatable pattern of memory. LLVM types represent C types.
-  // So a C struct with a repeating pattern might be represented by a FilCType of smaller size.
+  void recordObjectsRecurse(
+    Value* ValueKey, Type* LowT, Value* V, size_t& PtrIndex, Instruction* InsertBefore) {
+    assert(!isa<FunctionType>(LowT));
+    assert(!isa<TypedPointerType>(LowT));
+    assert(!isa<ScalableVectorType>(LowT));
+    assert(!isa<PointerType>(LowT));
 
-  Value* forgePtrWithLowTypeAndSize(Value* Ptr, Value* Size, Type* LowT, Instruction* InsertionPoint) {
-    return forgePtrWithTypeRepAndSize(
-      Ptr, Size, getTypeRep(dataForLowType(LowT), InsertionPoint), InsertionPoint);
+    if (LowT == LowWidePtrTy) {
+      assert(FrameIndexMap.count(ValuePtr(ValueKey, PtrIndex)));
+      size_t FrameIndex = FrameIndexMap[ValuePtr(ValueKey, PtrIndex)];
+      assert(FrameIndex >= NumSpecialFrameObjects);
+      recordObjectAtIndex(ptrObject(V, InsertBefore), FrameIndex, InsertBefore);
+      PtrIndex++;
+      return;
+    }
+
+    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+      for (unsigned Index = ST->getNumElements(); Index--;) {
+        Type* InnerT = ST->getElementType(Index);
+        Value* InnerV = ExtractValueInst::Create(
+          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
+        recordObjectsRecurse(ValueKey, InnerT, InnerV, PtrIndex, InsertBefore);
+      }
+      return;
+    }
+      
+    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+      assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
+      for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
+        Value* InnerV = ExtractValueInst::Create(
+          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
+        recordObjectsRecurse(ValueKey, AT->getElementType(), InnerV, PtrIndex, InsertBefore);
+      }
+      return;
+    }
+      
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
+        Value* InnerV = ExtractElementInst::Create(
+          V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
+        recordObjectsRecurse(ValueKey, VT->getElementType(), InnerV, PtrIndex, InsertBefore);
+      }
+      return;
+    }
+
+    assert(!hasPtrsForCheck(LowT));
   }
 
-  Value* forgePtrWithLowTypeAndCount(
-    Value* Ptr, Type* LowT, Value* Count, Instruction* InsertionPoint) {
-    return forgePtrWithTypeRepAndCount(
-      Ptr, getTypeRep(dataForLowType(LowT), InsertionPoint), LowT, Count, InsertionPoint);
+  void recordObjects(Value* ValueKey, Type* LowT, Value* V, Instruction* InsertBefore) {
+    if (verbose)
+      errs() << "Recording objects for " << *ValueKey << ", LowT = " << *LowT << ", V = " << *V << "\n";
+    size_t PtrIndex = 0;
+    recordObjectsRecurse(ValueKey, LowT, V, PtrIndex, InsertBefore);
+    assert(PtrIndex == countPtrs(ValueKey->getType()));
   }
 
-  Value* forgePtrWithLowTypeAndUpper(
-    Value* Ptr, Value* Upper, Type* LowT, Instruction* InsertionPoint) {
-    return forgePtrWithTypeRepAndUpper(
-      Ptr, Upper, getTypeRep(dataForLowType(LowT), InsertionPoint), InsertionPoint);
+  void recordObjects(Value* V, Instruction* InsertBefore) {
+    recordObjects(V, lowerType(V->getType()), V, InsertBefore);
   }
 
-  Value* forgePtrWithLowType(Value* Ptr, Type* LowT, Instruction* InsertionPoint) {
-    return forgePtrWithTypeRep(
-      Ptr, getTypeRep(dataForLowType(LowT), InsertionPoint), LowT, InsertionPoint);
+  void buildWordTypesRecurse(Type* LowT, size_t& Size, std::vector<WordType>& WordTypes) {
+    assert((Size + WordSize - 1) / WordSize == WordTypes.size());
+    if (Size % WordSize) {
+      assert(!WordTypes.empty());
+      assert(WordTypes.back() == WordTypeInt);
+    }
+
+    auto Fill = [&] () {
+      while ((Size + WordSize - 1) / WordSize > WordTypes.size())
+        WordTypes.push_back(WordTypeInt);
+    };
+
+    assert(LowT != LowRawPtrTy);
+    
+    if (LowT == LowWidePtrTy) {
+      assert(!(Size % WordSize));
+      Size += WordSize;
+      WordTypes.push_back(WordTypePtr);
+      return;
+    }
+
+    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+      size_t SizeBefore = Size;
+      const StructLayout* SL = DL.getStructLayout(ST);
+      for (unsigned Index = 0; Index < ST->getNumElements(); ++Index) {
+        Type* InnerT = ST->getElementType(Index);
+        size_t ProposedSize = SizeBefore + SL->getElementOffset(Index);
+        assert(ProposedSize >= Size);
+        Size = ProposedSize;
+        Fill();
+        buildWordTypesRecurse(InnerT, Size, WordTypes);
+      }
+      size_t ProposedSize = SizeBefore + SL->getSizeInBytes();
+      assert(ProposedSize >= Size);
+      Size = ProposedSize;
+      Fill();
+      return;
+    }
+    
+    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+      for (uint64_t Index = AT->getNumElements(); Index--;)
+        buildWordTypesRecurse(AT->getElementType(), Size, WordTypes);
+      return;
+    }
+      
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
+        buildWordTypesRecurse(VT->getElementType(), Size, WordTypes);
+      return;
+    }
+
+    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
+      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
+      return;
+    }
+
+    Size += DL.getTypeStoreSize(LowT);
+    while ((Size + WordSize - 1) / WordSize > WordTypes.size())
+      WordTypes.push_back(WordTypeInt);
   }
 
-  Value* reforgePtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertionPoint) {
-    Instruction* Sidecar = CallInst::Create(
-      UpdateSidecar, { LowWidePtr, NewLowRawPtr }, "filc_update_sidecar", InsertionPoint);
-    Sidecar->setDebugLoc(InsertionPoint->getDebugLoc());
-    Instruction* Capability = CallInst::Create(
-      UpdateCapability, { LowWidePtr, NewLowRawPtr }, "filc_update_capability", InsertionPoint);
-    Capability->setDebugLoc(InsertionPoint->getDebugLoc());
-    return createPtr(Sidecar, Capability, InsertionPoint);
+  Constant* objectConstant(Constant* Lower, Constant* Upper, int8_t ObjectFlags,
+                           const std::vector<WordType>& WordTypes) {
+    StructType* ObjectTy = StructType::get(
+      C, { LowRawPtrTy, LowRawPtrTy, Int8Ty, ArrayType::get(Int8Ty, WordTypes.size()) });
+    return ConstantStruct::get(
+      ObjectTy,
+      { Lower, Upper, ConstantInt::get(Int8Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
   }
 
-  Value* forgeBadPtr(Value* Ptr, Instruction* InsertionPoint) {
-    return reforgePtr(LowWideNull, Ptr, InsertionPoint);
+  Constant* objectConstantForGlobal(GlobalValue* G) {
+    std::vector<WordType> WordTypes;
+    size_t ObjectSize;
+    int8_t ObjectFlags = ObjectFlagGlobal;
+    if (isa<Function>(G)) {
+      WordTypes.push_back(WordTypeFunction);
+      ObjectSize = WordSize;
+      ObjectFlags |= ObjectFlagSpecial;
+    } else {
+      size_t Size = 0;
+      Type* LowT = G->getValueType();
+      buildWordTypesRecurse(LowT, Size, WordTypes);
+      assert(Size == DL.getTypeStoreSize(LowT));
+      assert(!(Size % WordSize));
+      ObjectSize = Size;
+    }
+    assert(!(ObjectSize % WordSize));
+    return objectConstant(
+      G, ConstantExpr::getGetElementPtr(Int8Ty, G, ConstantInt::get(IntPtrTy, ObjectSize)),
+      ObjectFlags, WordTypes);
+  }
+
+  GlobalVariable* objectGlobalForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
+    Constant* NewObjectC = objectConstantForGlobal(G);
+    return new GlobalVariable(
+      M, NewObjectC->getType(), true, GlobalValue::InternalLinkage, NewObjectC,
+      "Jo_" + OriginalG->getName());
+  }
+
+  Constant* paddedConstant(Constant* C) {
+    Type* LowT = C->getType();
+    size_t TypeSize = DL.getTypeStoreSize(LowT);
+    if (!(TypeSize % WordSize))
+      return C;
+    size_t PaddingSize = WordSize - (TypeSize % WordSize);
+    if (verbose)
+      errs() << "TypeSize = " << TypeSize << ", PaddingSize = " << PaddingSize << "\n";
+    ArrayType* PaddingTy = ArrayType::get(Int8Ty, PaddingSize);
+    StructType* PaddedTy = StructType::get(this->C, { LowT, PaddingTy });
+    return ConstantStruct::get(PaddedTy, { C, ConstantAggregateZero::get(PaddingTy) });
   }
 
   enum class ResultMode {
@@ -1387,14 +1242,9 @@ class Pizlonator {
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
       assert(!Getters.count(G));
-      if (GlobalToGetter.count(G)) {
-        Function* Getter = GlobalToGetter[G];
-        return ConstantTarget(ConstantKind::Global, Getter);
-      }
-      Function* F = dyn_cast<Function>(G);
-      if (!F) 
-        F = cast<Function>(cast<GlobalAlias>(G)->getAliasee());
-      return ConstantTarget(ConstantKind::Function, F);
+      assert(GlobalToGetter.count(G));
+      Function* Getter = GlobalToGetter[G];
+      return ConstantTarget(ConstantKind::Global, Getter);
     }
 
     if (ConstantExpr* CE = dyn_cast<ConstantExpr>(C)) {
@@ -1479,7 +1329,8 @@ class Pizlonator {
     }
 
     assert(isa<ConstantExpr>(C));
-    errs() << "Failing to handle CE: " << *C << "\n";
+    if (verbose)
+      errs() << "Failing to handle CE: " << *C << "\n";
     return false;
   }
 
@@ -1509,21 +1360,16 @@ class Pizlonator {
 
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
-      Type* LowT = GlobalLowTypes[G];
       assert(!GlobalToGetter.count(nullptr));
       assert(!Getters.count(nullptr));
       assert(!Getters.count(G));
-      if (GlobalToGetter.count(G)) {
-        Function* Getter = GlobalToGetter[G];
-        assert(Getter);
-        Instruction* Result = CallInst::Create(
-          GlobalGetterTy, Getter, { InitializationContext }, "filc_call_getter", InsertBefore);
-        Result->setDebugLoc(InsertBefore->getDebugLoc());
-        return createPtr(ConstantInt::get(Int128Ty, 0), Result, InsertBefore);
-      }
-      assert(isa<Function>(G) ||
-             (isa<GlobalAlias>(G) && isa<Function>(cast<GlobalAlias>(G)->getAliasee())));
-      return forgePtrWithLowType(G, LowT, InsertBefore);
+      assert(GlobalToGetter.count(G));
+      Function* Getter = GlobalToGetter[G];
+      assert(Getter);
+      Instruction* Result = CallInst::Create(
+        GlobalGetterTy, Getter, { InitializationContext }, "filc_call_getter", InsertBefore);
+      Result->setDebugLoc(InsertBefore->getDebugLoc());
+      return Result;
     }
 
     if (isa<ConstantData>(C))
@@ -1605,66 +1451,6 @@ class Pizlonator {
     Dummy->replaceAllUsesWith(GetNewValue());
   }
 
-  Value* getFromConstantPool(ConstantPoolEntry GTE, Instruction* InsertBefore) {
-    auto iter = ConstantPoolEntryIndex.find(GTE);
-    size_t Index;
-    if (iter != ConstantPoolEntryIndex.end())
-      Index = iter->second;
-    else {
-      Index = ConstantPoolEntries.size();
-      ConstantPoolEntryIndex[GTE] = Index;
-      ConstantPoolEntries.push_back(GTE);
-    }
-    assert(LocalConstantPoolPtr);
-    Instruction* EntryPtr = GetElementPtrInst::Create(
-      LowRawPtrTy, LocalConstantPoolPtr, { ConstantInt::get(IntPtrTy, Index) },
-      "filc_constantpool_entry_ptr", InsertBefore);
-    assert(EntryPtr->getType()->isPointerTy());
-    EntryPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* Result = new LoadInst(
-      LowRawPtrTy, EntryPtr, "filc_constantpool_load", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* getTypeRepEasy(FilCTypeData* DTD) {
-    if (DTD == &Int)
-      return IntTypeRep;
-    if (DTD == &FunctionDTD)
-      return FunctionTypeRep;
-    if (DTD == &TypeDTD)
-      return TypeTypeRep;
-    if (DTD == &Invalid)
-      return LowRawNull;
-    return nullptr;
-  }
-
-  Value* getTypeRep(FilCTypeData* DTD, Instruction* InsertBefore) {
-    if (Value* TypeRep = getTypeRepEasy(DTD))
-      return TypeRep;
-    ConstantPoolEntry GTE;
-    GTE.Kind = ConstantPoolEntryKind::Type;
-    GTE.DTD = DTD;
-    return getFromConstantPool(GTE, InsertBefore);
-  }
-
-  Value* getTypeRepWithoutConstantPool(FilCTypeData* DTD, Instruction* InsertBefore) {
-    if (Value* TypeRep = getTypeRepEasy(DTD))
-      return TypeRep;
-    assert(DTD->TemplateRep);
-    Instruction* Result = CallInst::Create(GetType, { DTD->TemplateRep }, "filc_get_type", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* getHeap(FilCTypeData* DTD, Instruction* InsertBefore, ConstantPoolEntryKind Kind) {
-    assert(Kind == ConstantPoolEntryKind::Heap || Kind == ConstantPoolEntryKind::HardHeap);
-    ConstantPoolEntry GTE;
-    GTE.Kind = Kind;
-    GTE.DTD = DTD;
-    return getFromConstantPool(GTE, InsertBefore);
-  }
-
   void captureTypesIfNecessary(Instruction* I) {
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
       InstLowTypes[I] = lowerType(SI->getValueOperand()->getType());
@@ -1732,28 +1518,6 @@ class Pizlonator {
       if (verbose)
         errs() << "It's an intrinsic.\n";
       switch (II->getIntrinsicID()) {
-      case Intrinsic::memcpy:
-      case Intrinsic::memcpy_inline:
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
-        // OK, so it seems bad that we're treating memcpy and memcpy_inline the same. But it's fine.
-        // The intent of the inline variant is to cover the low-level programming case where you cannot
-        // call outside libraries, but you want to describe a memcpy. However, with FilC, we're always
-        // depending on the FilC runtime somehow, so it's OK to call into the FilC runtime's memcpy
-        // (or memset, or memmove).
-        //
-        // Also, for now, we just ignore the volatile bit, since the call to the FilC runtime is going
-        // to look volatile enough.
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
-          Instruction* CI = CallInst::Create(
-            Memcpy,
-            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
-              getOrigin(II->getDebugLoc()) });
-          ReplaceInstWithInst(II, CI);
-        }
-        return true;
       case Intrinsic::memset:
       case Intrinsic::memset_inline:
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
@@ -1762,11 +1526,13 @@ class Pizlonator {
         if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
           Instruction* CI = CallInst::Create(
             Memset,
-            { II->getArgOperand(0), castInt(II->getArgOperand(1), Int32Ty, II),
+            { MyThread, II->getArgOperand(0), castInt(II->getArgOperand(1), Int32Ty, II),
               makeIntPtr(II->getArgOperand(2), II), getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
         return true;
+      case Intrinsic::memcpy:
+      case Intrinsic::memcpy_inline:
       case Intrinsic::memmove:
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
@@ -1775,7 +1541,7 @@ class Pizlonator {
           assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
           Instruction* CI = CallInst::Create(
             Memmove,
-            { II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
+            { MyThread, II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
               getOrigin(II->getDebugLoc()) });
           ReplaceInstWithInst(II, CI);
         }
@@ -1783,18 +1549,13 @@ class Pizlonator {
 
       case Intrinsic::lifetime_start:
       case Intrinsic::lifetime_end:
-        // FIXME: We should use these to do more compact allocation of frames. And, if we decide that some
-        // allocas don't need to go into the frame, then those can just keep their existing lifetime
-        // annotations. Moreover, choosing which allocas don't escape will require analyzing lifetime
-        // annotations (since using an alloca before lifetime start or after lifetime end is an escape if
-        // we keep the lifetime annotations' meaning).
         II->eraseFromParent();
         return true;
 
       case Intrinsic::vastart:
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         checkPtr(II->getArgOperand(0), II);
-        storePtr(ArgBufferPtr, lowerPtr(II->getArgOperand(0), II), II);
+        storePtr(ArgBufferPtr, ptrPtr(II->getArgOperand(0), II), StoreKind::Barriered, II);
         II->eraseFromParent();
         return true;
         
@@ -1803,8 +1564,8 @@ class Pizlonator {
         lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
         checkPtr(II->getArgOperand(0), II);
         checkPtr(II->getArgOperand(1), II);
-        Value* Load = loadPtr(lowerPtr(II->getArgOperand(1), II), II);
-        storePtr(Load, lowerPtr(II->getArgOperand(0), II), II);
+        Value* Load = loadPtr(ptrPtr(II->getArgOperand(1), II), II);
+        storePtr(Load, ptrPtr(II->getArgOperand(0), II), StoreKind::Barriered, II);
         II->eraseFromParent();
         return true;
       }
@@ -1813,31 +1574,16 @@ class Pizlonator {
         II->eraseFromParent();
         return true;
 
-      case Intrinsic::stacksave: {
-        Instruction* SizePtr = GetElementPtrInst::Create(
-          AllocaStackTy, FutureAllocaStack,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-          "filc_alloca_stack_size_ptr", II);
-        SizePtr->setDebugLoc(II->getDebugLoc());
-        Instruction* Load = new LoadInst(IntPtrTy, SizePtr, "filc_alloca_stack_size", II);
-        Load->setDebugLoc(II->getDebugLoc());
-        Instruction* Cast = new IntToPtrInst(Load, LowRawPtrTy, "filc_alloca_stack_size_to_ptr", II);
-        Cast->setDebugLoc(II->getDebugLoc());
-        II->replaceAllUsesWith(forgeBadPtr(Cast, II));
+      case Intrinsic::stacksave:
+        // Stupidly, in earlyLower, we have to make sure we don't RAUW with a constant, because that
+        // would later confuse lowerConstant. WTF.
+        II->replaceAllUsesWith(badPtr(LowRawNull, II));
         II->eraseFromParent();
         return true;
-      }
 
-      case Intrinsic::stackrestore: {
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        Instruction* Cast = new PtrToIntInst(
-          lowerPtr(II->getArgOperand(0), II), IntPtrTy, "filc_alloca_stack_size", II);
-        Cast->setDebugLoc(II->getDebugLoc());
-        CallInst::Create(AllocaStackRestore, { FutureAllocaStack, Cast }, "", II)
-          ->setDebugLoc(II->getDebugLoc());
+      case Intrinsic::stackrestore:
         II->eraseFromParent();
         return true;
-      }
 
       default:
         if (!II->getCalledFunction()->doesNotAccessMemory()
@@ -1853,10 +1599,10 @@ class Pizlonator {
         for (Use& U : II->data_ops()) {
           lowerConstantOperand(U, I, LowRawNull);
           if (hasPtrsForCheck(U->getType()))
-            U = lowerPtr(U, II);
+            U = ptrPtr(U, II);
         }
         if (hasPtrsForCheck(II->getType()))
-          hackRAUW(II, [&] () { return forgeBadPtr(II, II->getNextNode()); });
+          hackRAUW(II, [&] () { return badPtr(II, II->getNextNode()); });
         return true;
       }
     }
@@ -1872,285 +1618,6 @@ class Pizlonator {
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
         if (shouldPassThrough(F))
           return true;
-      }
-      
-      if (CI->getCalledOperand() == ZrestrictImpl) {
-        if (verbose)
-          errs() << "Lowering restrict\n";
-        lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
-        lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        Value* TypeRep = getTypeRep(dataForLowType(LowT), CI);
-        Value* LowPtr = lowerPtr(CI->getOperand(0), CI);
-        Instruction* NewUpper = GetElementPtrInst::Create(
-          LowT, LowPtr, { CI->getArgOperandUse(2) }, "filc_NewUpper", CI);
-        NewUpper->setDebugLoc(CI->getDebugLoc());
-        CallInst::Create(
-          CheckRestrict, { CI->getOperand(0), NewUpper, TypeRep, getOrigin(CI->getDebugLoc()) }, "", CI)
-          ->setDebugLoc(CI->getDebugLoc());
-        CI->replaceAllUsesWith(forgePtrWithTypeRepAndUpper(LowPtr, NewUpper, TypeRep, CI));
-        CI->eraseFromParent();
-        return true;
-      }
-
-      bool isHard =
-        CI->getCalledOperand() == ZhardAllocImpl ||
-        CI->getCalledOperand() == ZhardAllocFlexImpl ||
-        CI->getCalledOperand() == ZhardAlignedAllocImpl ||
-        CI->getCalledOperand() == ZhardReallocImpl;
-
-      if (CI->getCalledOperand() == ZallocImpl || CI->getCalledOperand() == ZhardAllocImpl) {
-        if (verbose)
-          errs() << "Lowering alloc\n";
-        lowerConstantOperand(CI->getArgOperandUse(1), CI, LowRawNull);
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
-        Instruction* Alloc = nullptr;
-        
-        FilCTypeData *DTD = dataForLowType(LowT);
-        assert(DTD->Type.Main.Size);
-        if (!hasPtrsForCheck(HighT)) {
-          assert(DTD == &Int);
-          size_t Alignment = DL.getABITypeAlign(LowT).value();
-          size_t Size = DL.getTypeStoreSize(LowT);
-          if (Alignment > MinAlign) {
-            Alloc = CallInst::Create(
-              isHard ? HardAllocateIntWithAlignment : AllocateIntWithAlignment,
-              { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size),
-                ConstantInt::get(IntPtrTy, Alignment) },
-              "filc_alloc_int", CI);
-          } else {
-            Alloc = CallInst::Create(
-              isHard ? HardAllocateInt : AllocateInt,
-              { CI->getArgOperand(1), ConstantInt::get(IntPtrTy, Size) },
-              "filc_alloc_int", CI);
-          }
-        } else {
-          Value* Heap = getHeap(
-            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
-          if (Constant* C = dyn_cast<Constant>(CI->getArgOperand(1))) {
-            if (C->isOneValue()) {
-              Alloc = CallInst::Create(
-                isHard ? HardAllocateOne : AllocateOne,
-                { Heap }, "filc_alloc_one", CI);
-            }
-          }
-          if (!Alloc) {
-            Alloc = CallInst::Create(
-              isHard ? HardAllocateMany : AllocateMany,
-              { Heap, CI->getArgOperand(1) }, "filc_alloc_many", CI);
-          }
-        }
-        
-        Alloc->setDebugLoc(CI->getDebugLoc());
-        Value* Result = forgePtrWithTypeRepAndCount(
-          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(1), CI);
-        if (logAllocations) {
-          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
-            ->setDebugLoc(CI->getDebugLoc());
-        }
-        CI->replaceAllUsesWith(Result);
-        CI->eraseFromParent();
-        return true;
-      }
-
-      if (CI->getCalledOperand() == ZalignedAllocImpl || CI->getCalledOperand() == ZhardAlignedAllocImpl) {
-        if (verbose)
-          errs() << "Lowering alloc\n";
-        lowerConstantOperand(CI->getArgOperandUse(1), CI, LowRawNull);
-        lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
-        Instruction* Alloc;
-        
-        FilCTypeData *DTD = dataForLowType(LowT);
-        assert(DTD->Type.Main.Size);
-        Value* Count = CI->getArgOperand(2);
-        Value* PassedAlignment = CI->getArgOperand(1);
-        if (!hasPtrsForCheck(HighT)) {
-          assert(DTD == &Int);
-          size_t Alignment = DL.getABITypeAlign(LowT).value();
-          size_t Size = DL.getTypeStoreSize(LowT);
-          Value* TypeAlignment = ConstantInt::get(IntPtrTy, Alignment);
-          Instruction* Compare = new ICmpInst(
-            CI, ICmpInst::ICMP_ULT, PassedAlignment, TypeAlignment, "filc_aligned_alloc_compare");
-          Compare->setDebugLoc(CI->getDebugLoc());
-          Instruction* AlignmentValue = SelectInst::Create(
-            Compare, TypeAlignment, PassedAlignment, "filc_aligned_alloc_select", CI);
-          AlignmentValue->setDebugLoc(CI->getDebugLoc());
-          Alloc = CallInst::Create(
-            isHard ? HardAllocateIntWithAlignment : AllocateIntWithAlignment,
-            { Count, ConstantInt::get(IntPtrTy, Size), AlignmentValue },
-            "filc_alloc_int", CI);
-        } else {
-          Value* Heap = getHeap(
-            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
-          Alloc = CallInst::Create(
-            isHard ? HardAllocateManyWithAlignment : AllocateManyWithAlignment,
-            { Heap, Count, PassedAlignment }, "filc_alloc_many", CI);
-        }
-        
-        Alloc->setDebugLoc(CI->getDebugLoc());
-        Value* Result = forgePtrWithTypeRepAndCount(
-          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI);
-        if (logAllocations) {
-          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
-            ->setDebugLoc(CI->getDebugLoc());
-        }
-        CI->replaceAllUsesWith(Result);
-        CI->eraseFromParent();
-        return true;
-      }
-
-      if (CI->getCalledOperand() == ZreallocImpl || CI->getCalledOperand() == ZhardReallocImpl) {
-        if (verbose)
-          errs() << "Lowering realloc\n";
-        lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
-        lowerConstantOperand(CI->getArgOperandUse(2), CI, LowRawNull);
-        Value* OrigWidePtr = CI->getArgOperand(0);
-        
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(1))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
-        Instruction* Alloc = nullptr;
-        
-        FilCTypeData *DTD = dataForLowType(LowT);
-        assert(DTD->Type.Main.Size);
-        if (!hasPtrsForCheck(HighT)) {
-          assert(DTD == &Int);
-          size_t Alignment = DL.getABITypeAlign(LowT).value();
-          size_t Size = DL.getTypeStoreSize(LowT);
-          if (Alignment > MinAlign) {
-            Alloc = CallInst::Create(
-              isHard ? HardReallocateIntWithAlignment : ReallocateIntWithAlignment,
-              { OrigWidePtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
-                ConstantInt::get(IntPtrTy, Alignment), getOrigin(CI->getDebugLoc()) },
-              "filc_realloc_int", CI);
-          } else {
-            Alloc = CallInst::Create(
-              isHard ? HardReallocateInt : ReallocateInt,
-              { OrigWidePtr, CI->getArgOperand(2), ConstantInt::get(IntPtrTy, Size),
-                getOrigin(CI->getDebugLoc()) },
-              "filc_realloc_int", CI);
-          }
-        } else {
-          Value* Heap = getHeap(
-            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
-          Alloc = CallInst::Create(
-            isHard ? HardReallocate : Reallocate,
-            { OrigWidePtr, Heap, CI->getArgOperand(2), getOrigin(CI->getDebugLoc()) }, "filc_realloc", CI);
-        }
-        
-        Alloc->setDebugLoc(CI->getDebugLoc());
-        Value* Result = forgePtrWithTypeRepAndCount(
-          Alloc, getTypeRep(DTD, CI), LowT, CI->getArgOperand(2), CI);
-        if (logAllocations) {
-          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
-            ->setDebugLoc(CI->getDebugLoc());
-        }
-        CI->replaceAllUsesWith(Result);
-        CI->eraseFromParent();
-        return true;
-      }
-
-      if (CI->getCalledOperand() == ZallocFlexImpl || CI->getCalledOperand() == ZhardAllocFlexImpl) {
-        if (verbose)
-          errs() << "Lowering alloc_flex\n";
-        lowerConstantOperand(CI->getArgOperandUse(1), CI, LowRawNull);
-        lowerConstantOperand(CI->getArgOperandUse(3), CI, LowRawNull);
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        assert(hasPtrsForCheck(HighT) == hasPtrsForCheck(LowT));
-        Type* HighTrailingT = cast<AllocaInst>(CI->getArgOperand(2))->getAllocatedType();
-        Type* LowTrailingT = lowerType(HighTrailingT);
-        assert(hasPtrsForCheck(HighTrailingT) == hasPtrsForCheck(LowTrailingT));
-        Instruction* Alloc;
-        
-        FilCTypeData* BaseDTD = dataForLowType(LowT);
-        FilCTypeData* TrailingDTD = dataForLowType(LowTrailingT);
-        assert(BaseDTD->Type.Main.Size);
-        assert(TrailingDTD->Type.Main.Size);
-
-        FilCType FlexType = BaseDTD->Type;
-        FlexType.Main.truncateOrPad(
-          static_cast<size_t>(cast<ConstantInt>(CI->getArgOperand(1))->getZExtValue()));
-        assert(!FlexType.Trailing.isValid());
-        assert(!TrailingDTD->Type.Trailing.isValid());
-        if (verbose) {
-          errs() << "TrailingDTD->Type.Main.isValid() = " << TrailingDTD->Type.Main.isValid() << "\n";
-          errs() << "TrailingDTD->Type.Main.canBeInt() = " << TrailingDTD->Type.Main.canBeInt() << "\n";
-        }
-        FlexType.Trailing = TrailingDTD->Type.Main;
-        if (verbose) {
-          errs() << "FlexType.Trailing.isValid() = " << FlexType.Trailing.isValid() << "\n";
-          errs() << "FlexType.Trailing.canBeInt() = " << FlexType.Trailing.canBeInt() << "\n";
-        }
-        FlexType.Main.Alignment = std::max(FlexType.Main.Alignment, FlexType.Trailing.Alignment);
-
-        FilCTypeData* DTD;
-        if (FlexType.canBeInt())
-          DTD = &Int;
-        else
-          DTD = dataForType(FlexType); 
-        
-        size_t BaseSize = FlexType.Main.Size;
-        size_t ElementSize = DL.getTypeStoreSize(LowTrailingT);
-        Value* Count = CI->getArgOperand(3);
-        if (DTD == &Int) {
-          size_t Alignment = FlexType.Main.Alignment;
-          if (Alignment > MinAlign) {
-            Alloc = CallInst::Create(
-              isHard ? HardAllocateIntFlexWithAlignment : AllocateIntFlexWithAlignment,
-              { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize),
-                Count, ConstantInt::get(IntPtrTy, Alignment) },
-              "filc_alloc_int", CI);
-          } else {
-            Alloc = CallInst::Create(
-              isHard ? HardAllocateIntFlex : AllocateIntFlex,
-              { ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
-              "filc_alloc_int", CI);
-          }
-        } else {
-          Value* Heap = getHeap(
-            DTD, CI, isHard ? ConstantPoolEntryKind::HardHeap : ConstantPoolEntryKind::Heap);
-          Alloc = CallInst::Create(
-            isHard ? HardAllocateFlex : AllocateFlex,
-            { Heap, ConstantInt::get(IntPtrTy, BaseSize), ConstantInt::get(IntPtrTy, ElementSize), Count },
-            "filc_alloc_many", CI);
-        }
-        
-        Alloc->setDebugLoc(CI->getDebugLoc());
-        Instruction* ArraySize = BinaryOperator::Create(
-          Instruction::Mul, Count, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowTrailingT)),
-          "filc_alloc_array_size", CI);
-        ArraySize->setDebugLoc(CI->getDebugLoc());
-        Instruction* Size = BinaryOperator::Create(
-          Instruction::Add, ArraySize, ConstantInt::get(IntPtrTy, BaseSize),
-          "filc_alloc_size", CI);
-        Size->setDebugLoc(CI->getDebugLoc());
-        Value* Result = forgePtrWithTypeRepAndSize(Alloc, Size, getTypeRep(DTD, CI), CI);
-        if (logAllocations) {
-          CallInst::Create(LogAllocation, { Result, getOrigin(CI->getDebugLoc()) }, "", CI)
-            ->setDebugLoc(CI->getDebugLoc());
-        }
-        CI->replaceAllUsesWith(Result);
-        CI->eraseFromParent();
-        return true;
-      }
-
-      if (CI->getCalledOperand() == ZtypeofImpl) {
-        if (verbose)
-          errs() << "Lowering ztypeof\n";
-        Type* HighT = cast<AllocaInst>(CI->getArgOperand(0))->getAllocatedType();
-        Type* LowT = lowerType(HighT);
-        Value* TypeRep = getTypeRep(dataForLowType(LowT), CI);
-        CI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndSize(TypeRep, ConstantInt::get(IntPtrTy, 1), TypeTypeRep, CI));
-        CI->eraseFromParent();
-        return true;
       }
     }
     
@@ -2180,72 +1647,19 @@ class Pizlonator {
         // used as type hacks for stdfil API.
         return;
       }
+      
       Type* LowT = lowerType(AI->getAllocatedType());
-      FilCTypeData* DTD = dataForLowType(LowT);
-      assert(DTD->Type.Main.Size);
-      if (AI->getParent() != FirstRealBlock || AI->isArrayAllocation()) {
-        // This is the especially fun case of a dynamic alloca! We allocate something and then pool it
-        // until return.
-        Instruction* Alloc = nullptr;;
-        if (DTD == &Int) {
-          size_t Alignment = DL.getABITypeAlign(LowT).value();
-          size_t Size = DL.getTypeStoreSize(LowT);
-          if (Alignment > MinAlign) {
-            Alloc = CallInst::Create(
-              AllocateIntWithAlignment,
-              { AI->getArraySize(), ConstantInt::get(IntPtrTy, Size),
-                ConstantInt::get(IntPtrTy, Alignment) },
-              "filc_alloca_int", AI);
-          } else {
-            Alloc = CallInst::Create(
-              AllocateInt,
-              { AI->getArraySize(), ConstantInt::get(IntPtrTy, Size) },
-              "filc_alloca_int", AI);
-          }
-        } else {
-          Value* Heap = getHeap(DTD, AI, ConstantPoolEntryKind::Heap);
-          if (Constant* C = dyn_cast<Constant>(AI->getArraySize())) {
-            if (C->isOneValue())
-              Alloc = CallInst::Create(AllocateOne, { Heap }, "filc_alloca_one", AI);
-          }
-          if (!Alloc) {
-            Alloc = CallInst::Create(
-              AllocateMany, { Heap, AI->getArraySize() }, "filc_alloc_many", AI);
-          }
-        }
-        Alloc->setDebugLoc(AI->getDebugLoc());
-        CallInst::Create(
-          AllocaStackPush, { FutureAllocaStack, Alloc }, "", AI)->setDebugLoc(AI->getDebugLoc());
-        AI->replaceAllUsesWith(
-          forgePtrWithTypeRepAndCount(Alloc, getTypeRep(DTD, AI), LowT, AI->getArraySize(), AI));
-        AI->eraseFromParent();
-        return;
+      Value* Length = AI->getArraySize();
+      if (Length->getType() != IntPtrTy) {
+        Instruction* ZExt = new ZExtInst(Length, IntPtrTy, "filc_alloca_length_zext", AI);
+        ZExt->setDebugLoc(AI->getDebugLoc());
+        Length = ZExt;
       }
-      Value* Base;
-      size_t Offset;
-      if (!hasPtrsForCheck(LowT)) {
-        assert(DTD == &Int);
-        size_t Alignment = DL.getABITypeAlign(LowT).value();
-        size_t Size = DL.getTypeStoreSize(LowT);
-        Base = FutureIntFrame;
-        IntFrameSize = (IntFrameSize + Alignment - 1) / Alignment * Alignment;
-        IntFrameAlignment = std::max(IntFrameAlignment, Alignment);
-        Offset = IntFrameSize;
-        IntFrameSize += Size;
-        // libpas doesn't have the requirement that the size is already aligned, but there are perf
-        // benefits to doing so.
-        IntFrameSize = (IntFrameSize + IntFrameAlignment - 1) / IntFrameAlignment * IntFrameAlignment;
-      } else {
-        assert(!DTD->Type.Trailing.isValid());
-        Base = FutureTypedFrame;
-        Offset = TypedFrameType.append(DTD->Type.Main);
-      }
-      Instruction* EntryPtr = GetElementPtrInst::Create(
-        Int8Ty, Base, { ConstantInt::get(IntPtrTy, Offset) }, "filc_alloca_entry_ptr", AI);
-      EntryPtr->setDebugLoc(AI->getDebugLoc());
-      AI->replaceAllUsesWith(
-        forgePtrWithTypeRepAndCount(
-          EntryPtr, getTypeRep(DTD, AI), LowT, ConstantInt::get(IntPtrTy, 1), AI));
+      Instruction* Size = BinaryOperator::Create(
+        Instruction::Mul, Length, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowT)),
+        "filc_alloca_size", AI);
+      Size->setDebugLoc(AI->getDebugLoc());
+      AI->replaceAllUsesWith(allocate(Size, DL.getABITypeAlign(LowT).value(), AI));
       AI->eraseFromParent();
       return;
     }
@@ -2254,7 +1668,7 @@ class Pizlonator {
       Type *LowT = lowerType(LI->getType());
       Value* HighP = LI->getPointerOperand();
       Value* Result = loadValueRecurse(
-        LowT, HighP, lowerPtr(HighP, LI),
+        LowT, HighP, ptrPtr(HighP, LI),
         LI->isVolatile(), LI->getAlign(), LI->getOrdering(), LI->getSyncScopeID(),
         LI);
       LI->replaceAllUsesWith(Result);
@@ -2265,9 +1679,9 @@ class Pizlonator {
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
       Value* HighP = SI->getPointerOperand();
       storeValueRecurse(
-        InstLowTypes[SI], HighP, SI->getValueOperand(), lowerPtr(HighP, SI),
+        InstLowTypes[SI], HighP, SI->getValueOperand(), ptrPtr(HighP, SI),
         SI->isVolatile(), SI->getAlign(), SI->getOrdering(), SI->getSyncScopeID(),
-        SI);
+        StoreKind::Barriered, SI);
       SI->eraseFromParent();
       return;
     }
@@ -2281,39 +1695,6 @@ class Pizlonator {
       assert(!hasPtrsForCheck(InstLowTypes[AI]));
       Value* LowP = prepareForAccess(InstLowTypes[AI], AI->getPointerOperand(), AI);
       AI->getOperandUse(AtomicCmpXchgInst::getPointerOperandIndex()) = LowP;
-
-      // FIXME: This code is dead right now because clang never generates CAS on pointers.
-      if (hasPtrsForCheck(InstLowTypes[AI])) {
-        // We *only* allow CAS of pointers. Maybe at some point we might allow CASing structs that
-        // have exactly one pointer.
-        assert(InstLowTypes[AI] == LowWidePtrTy);
-        (new StoreInst(
-          ConstantInt::get(Int128Ty, 0), sidecarPtr(LowP, AI),
-          false, Align(WordSize), getMergedAtomicOrdering(AtomicOrdering::Monotonic,
-                                                          AI->getMergedOrdering()),
-          SyncScope::System, AI))
-          ->setDebugLoc(AI->getDebugLoc());
-        Instruction* CAS = new AtomicCmpXchgInst(
-          capabilityPtr(LowP, AI),
-          extractCapability(AI->getCompareOperand(), AI), extractCapability(AI->getNewValOperand(), AI),
-          Align(WordSize), AI->getSuccessOrdering(), AI->getFailureOrdering(), AI->getSyncScopeID());
-        CAS->setDebugLoc(AI->getDebugLoc());
-        Instruction* OldValue = ExtractValueInst::Create(
-          Int128Ty, CAS, { 0 }, "filc_cas_extract_old_value", AI);
-        OldValue->setDebugLoc(AI->getDebugLoc());
-        Instruction* DidSwap = ExtractValueInst::Create(
-          Int1Ty, CAS, { 1 }, "filc_cas_extract_did_swap", AI);
-        DidSwap->setDebugLoc(AI->getDebugLoc());
-        StructType* ST = StructType::get(C, { InstLowTypes[AI], Int1Ty });
-        Instruction* Result = InsertValueInst::Create(
-          UndefValue::get(ST), createPtr(ConstantInt::get(Int128Ty, 0), OldValue, AI), { 0 },
-          "filc_cas_insert_old_value", AI);
-        Result->setDebugLoc(AI->getDebugLoc());
-        Result = InsertValueInst::Create(Result, DidSwap, { 1 }, "filc_cas_insert_did_swap", AI);
-        Result->setDebugLoc(AI->getDebugLoc());
-        AI->replaceAllUsesWith(Result);
-        AI->eraseFromParent();
-      }
       return;
     }
 
@@ -2328,15 +1709,15 @@ class Pizlonator {
       GI->setSourceElementType(lowerType(GI->getSourceElementType()));
       GI->setResultElementType(lowerType(GI->getResultElementType()));
       Value* HighP = GI->getOperand(0);
-      GI->getOperandUse(0) = lowerPtr(HighP, GI);
-      hackRAUW(GI, [&] () { return reforgePtr(HighP, GI, GI->getNextNode()); });
+      GI->getOperandUse(0) = ptrPtr(HighP, GI);
+      hackRAUW(GI, [&] () { return ptrWithPtr(HighP, GI, GI->getNextNode()); });
       return;
     }
 
     if (ICmpInst* CI = dyn_cast<ICmpInst>(I)) {
       if (hasPtrsForCheck(CI->getOperand(0)->getType())) {
-        CI->getOperandUse(0) = lowerPtr(CI->getOperand(0), CI);
-        CI->getOperandUse(1) = lowerPtr(CI->getOperand(1), CI);
+        CI->getOperandUse(0) = ptrPtr(CI->getOperand(0), CI);
+        CI->getOperandUse(1) = ptrPtr(CI->getOperand(1), CI);
       }
       return;
     }
@@ -2393,69 +1774,43 @@ class Pizlonator {
       if (verbose)
         errs() << "Dealing with called operand: " << *CI->getCalledOperand() << "\n";
 
-      assert(CI->getCalledOperand() != ZrestrictImpl);
-      assert(CI->getCalledOperand() != ZallocImpl);
-      assert(CI->getCalledOperand() != ZallocFlexImpl);
-      assert(CI->getCalledOperand() != ZreallocImpl);
-      assert(CI->getCalledOperand() != ZalignedAllocImpl);
-      assert(CI->getCalledOperand() != ZhardAllocImpl);
-      assert(CI->getCalledOperand() != ZhardAllocFlexImpl);
-      assert(CI->getCalledOperand() != ZhardReallocImpl);
-      assert(CI->getCalledOperand() != ZhardAlignedAllocImpl);
-      assert(CI->getCalledOperand() != ZtypeofImpl);
+      if (Function* F = dyn_cast<Function>(CI->getCalledOperand()))
+        assert(!shouldPassThrough(F));
+
+      Instruction* OriginPtr = GetElementPtrInst::Create(
+        FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+        "filc_frame_origin_ptr", CI);
+      OriginPtr->setDebugLoc(CI->getDebugLoc());
+      (new StoreInst(getOrigin(CI->getDebugLoc()), OriginPtr, CI))->setDebugLoc(CI->getDebugLoc());
       
       CallInst::Create(
         CheckAccessFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
         ->setDebugLoc(CI->getDebugLoc());
 
+      Value* ArgBufferWidePtrValue;
       Value* ArgBufferRawPtrValue;
-      Value* ArgBufferUpperValue;
-      Value* ArgTypeRep;
 
       FunctionType *FT = CI->getFunctionType();
       
       if (CI->arg_size()) {
-        FilCType ArgType;
         std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
         std::vector<size_t> Offsets;
+        size_t Size = 0;
+        size_t Alignment = 1;
         for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
           Type* LowT = ArgTypes[Index];
-          ArgType.Main.pad(DL.getABITypeAlign(LowT).value());
-          Offsets.push_back(ArgType.Main.Size);
-          buildCoreTypeRecurse(ArgType.Main, LowT);
+          size_t ThisSize = DL.getTypeStoreSize(LowT);
+          size_t ThisAlignment = DL.getABITypeAlign(LowT).value();
+          Size = (Size + ThisAlignment - 1) / ThisAlignment * ThisAlignment;
+          Alignment = std::max(Alignment, ThisAlignment);
+          Offsets.push_back(Size);
+          Size += ThisSize;
         }
 
-        ArgType.Main.pad(ArgType.Main.Alignment);
-
-        FilCTypeData* ArgDTD;
-        Instruction* ArgBufferRawPtr;
-        if (ArgType.canBeInt()) {
-          ArgDTD = &Int;
-          if (ArgType.Main.Alignment > MinAlign) {
-            ArgBufferRawPtr = CallInst::Create(
-              AllocateIntWithAlignment,
-              { ConstantInt::get(IntPtrTy, ArgType.Main.Size),
-                ConstantInt::get(IntPtrTy, 1),
-                ConstantInt::get(IntPtrTy, ArgType.Main.Alignment) },
-              "filc_allocate_args", CI);
-          } else {
-            ArgBufferRawPtr = CallInst::Create(
-              AllocateInt,
-              { ConstantInt::get(IntPtrTy, ArgType.Main.Size), ConstantInt::get(IntPtrTy, 1) },
-              "filc_allocate_args", CI);
-          }
-        } else {
-          ArgDTD = dataForType(ArgType);
-          ArgBufferRawPtr = CallInst::Create(
-            AllocateOne, { getHeap(ArgDTD, CI, ConstantPoolEntryKind::Heap) }, "filc_allocate_args", CI);
-        }
-
-        ArgBufferRawPtr->setDebugLoc(CI->getDebugLoc());
-        Instruction* ArgBufferUpper = GetElementPtrInst::Create(
-          Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, ArgType.Main.Size) },
-          "filc_arg_buffer_upper", CI);
-        ArgBufferUpper->setDebugLoc(CI->getDebugLoc());
-
+        Value* ArgBufferObject = allocateObject(ConstantInt::get(IntPtrTy, Size), Alignment, CI);
+        recordObjectAtIndex(ArgBufferObject, ScratchObjectIndex, CI);
+        ArgBufferWidePtrValue = ptrWithObject(ArgBufferObject, CI);
+        ArgBufferRawPtrValue = ptrPtr(ArgBufferWidePtrValue, CI);
         assert(FT->getNumParams() <= CI->arg_size());
         assert(FT->getNumParams() == CI->arg_size() || FT->isVarArg());
         for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
@@ -2464,36 +1819,38 @@ class Pizlonator {
           assert(Arg->getType() == LowT || lowerType(Arg->getType()) == LowT);
           assert(Index < Offsets.size());
           Instruction* ArgSlotPtr = GetElementPtrInst::Create(
-            Int8Ty, ArgBufferRawPtr, { ConstantInt::get(IntPtrTy, Offsets[Index]) }, "filc_arg_slot", CI);
+            Int8Ty, ArgBufferRawPtrValue,
+            { ConstantInt::get(IntPtrTy, Offsets[Index]) }, "filc_arg_slot", CI);
           ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
-          storeValueUncheckedRecurse(
-            LowT, Arg, ArgSlotPtr, false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic,
-            SyncScope::System, CI);
+          storeValueRecurse(
+            LowT, ArgBufferWidePtrValue, Arg, ArgSlotPtr, false, DL.getABITypeAlign(LowT),
+            AtomicOrdering::NotAtomic, SyncScope::System, StoreKind::Barriered, CI);
         }
-        ArgBufferRawPtrValue = ArgBufferRawPtr;
-        ArgBufferUpperValue = ArgBufferUpper;
-        ArgTypeRep = getTypeRep(ArgDTD, CI);
       } else {
+        ArgBufferWidePtrValue = LowWideNull;
         ArgBufferRawPtrValue = LowRawNull;
-        ArgBufferUpperValue = LowRawNull;
-        ArgTypeRep = LowRawNull;
       }
 
       Type* LowRetT = lowerType(FT->getReturnType());
-      FilCTypeData* RetDTD;
-      size_t RetSize;
+      size_t RetPayloadSize;
       size_t RetAlign;
       if (LowRetT == VoidTy) {
-        RetDTD = &Int;
-        RetSize = 0;
+        RetPayloadSize = 0;
         RetAlign = 1;
       } else {
-        RetDTD = dataForLowType(LowRetT);
-        RetSize = DL.getTypeStoreSize(LowRetT);
+        RetPayloadSize = DL.getTypeStoreSize(LowRetT);
         RetAlign = DL.getABITypeAlign(LowRetT).value();
       }
-      if (RetDTD == &Int)
-        RetSize = std::max(static_cast<size_t>(16), RetSize);
+      if (!hasPtrsForCheck(LowRetT))
+        RetPayloadSize = std::max(static_cast<size_t>(16), RetPayloadSize);
+      RetAlign = std::max(WordSize, RetAlign);
+      RetPayloadSize = (RetPayloadSize + RetAlign - 1) / RetAlign * RetAlign;
+      assert(!(RetPayloadSize % WordSize));
+
+      size_t RetObjectSize = 17 + RetPayloadSize / WordSize;
+      size_t RetPayloadOffset = (RetObjectSize + RetAlign - 1) / RetAlign * RetAlign;
+      size_t RetSize = RetPayloadOffset + RetPayloadSize;
+      
       ReturnBufferSize = std::max(ReturnBufferSize, RetSize);
       ReturnBufferAlignment = std::max(ReturnBufferAlignment, static_cast<size_t>(RetAlign));
 
@@ -2503,22 +1860,36 @@ class Pizlonator {
           ConstantInt::get(Int1Ty, false) }, "", CI);
       ClearRetBuffer->setDebugLoc(CI->getDebugLoc());
 
+      Instruction* RetBufferPayload = GetElementPtrInst::Create(
+        Int8Ty, FutureReturnBuffer, { ConstantInt::get(IntPtrTy, RetPayloadOffset) },
+        "filc_return_payload", CI);
+      RetBufferPayload->setDebugLoc(CI->getDebugLoc());
+
       Instruction* RetBufferUpper = GetElementPtrInst::Create(
-        Int8Ty, FutureReturnBuffer, { ConstantInt::get(IntPtrTy, RetSize) }, "filc_return_upper", CI);
+        Int8Ty, RetBufferPayload, { ConstantInt::get(IntPtrTy, RetPayloadSize) },
+        "filc_return_upper", CI);
       RetBufferUpper->setDebugLoc(CI->getDebugLoc());
+
+      (new StoreInst(RetBufferPayload, objectLowerPtr(FutureReturnBuffer, CI), CI))
+        ->setDebugLoc(CI->getDebugLoc());
+      (new StoreInst(RetBufferUpper, objectUpperPtr(FutureReturnBuffer, CI), CI))
+        ->setDebugLoc(CI->getDebugLoc());
+      (new StoreInst(
+        ConstantInt::get(Int8Ty, ObjectFlagReturnBuffer), objectFlagsPtr(FutureReturnBuffer, CI), CI))
+        ->setDebugLoc(CI->getDebugLoc());
+
+      Value* RetPtr = createPtr(FutureReturnBuffer, RetBufferPayload, CI);
 
       assert(!CI->hasOperandBundles());
       CallInst::Create(
-        PizlonatedFuncTy, lowerPtr(CI->getCalledOperand(), CI),
-        { ArgBufferRawPtrValue, ArgBufferUpperValue, ArgTypeRep,
-          FutureReturnBuffer, RetBufferUpper, getTypeRep(RetDTD, CI) },
-        "", CI);
+        PizlonatedFuncTy, ptrPtr(CI->getCalledOperand(), CI),
+        { MyThread, ArgBufferWidePtrValue, RetPtr }, "", CI);
 
       if (LowRetT != VoidTy) {
-        // It's OK to load from the return buffer without breaking it down into atomics for pointers
-        // because the return buffer has these tight ABI/compiler-controlled ownership passing semantics.
-        // So, they're definitely thread-local.
-        CI->replaceAllUsesWith(new LoadInst(LowRetT, FutureReturnBuffer, "filc_result_load", CI));
+        CI->replaceAllUsesWith(
+          loadValueRecurse(
+            LowRetT, RetPtr, ptrPtr(RetPtr, CI), false, DL.getABITypeAlign(LowRetT),
+            AtomicOrdering::NotAtomic, SyncScope::System, CI));
       }
       CI->eraseFromParent();
       return;
@@ -2529,18 +1900,15 @@ class Pizlonator {
       Type* LowT = lowerType(T);
       size_t Size = DL.getTypeStoreSize(LowT);
       size_t Alignment = DL.getABITypeAlign(LowT).value();
-      FilCTypeData* DTD = dataForLowType(LowT);
-      assert(DTD->Type.Main.Size);
-      assert(!DTD->Type.Trailing.isValid());
-      assert(!(Size % DTD->Type.Main.Size));
       CallInst* Call = CallInst::Create(
-        VAArgImpl,
-        { VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size / DTD->Type.Main.Size),
-          ConstantInt::get(IntPtrTy, Alignment), getTypeRep(DTD, VI), getOrigin(VI->getDebugLoc()) },
+        GetNextBytesForVAArg,
+        { MyThread, VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size),
+          ConstantInt::get(IntPtrTy, Alignment), getOrigin(VI->getDebugLoc()) },
         "filc_va_arg", VI);
       Call->setDebugLoc(VI->getDebugLoc());
-      Value* Load = loadValueUncheckedRecurse(
-        LowT, Call, false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic, SyncScope::System, VI);
+      Value* Load = loadValueRecurse(
+        LowT, Call, ptrPtr(Call, VI), false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic,
+        SyncScope::System, VI);
       VI->replaceAllUsesWith(Load);
       VI->eraseFromParent();
       return;
@@ -2609,12 +1977,12 @@ class Pizlonator {
     }
 
     if (isa<IntToPtrInst>(I)) {
-      hackRAUW(I, [&] () { return forgeBadPtr(I, I->getNextNode()); });
+      hackRAUW(I, [&] () { return badPtr(I, I->getNextNode()); });
       return;
     }
 
     if (isa<PtrToIntInst>(I)) {
-      I->getOperandUse(0) = lowerPtr(I->getOperand(0), I);
+      I->getOperandUse(0) = ptrPtr(I->getOperand(0), I);
       return;
     }
 
@@ -2636,9 +2004,9 @@ class Pizlonator {
           I->replaceAllUsesWith(I->getOperand(0));
           I->eraseFromParent();
         } else
-          hackRAUW(I, [&] () { return forgeBadPtr(I, I->getNextNode()); });
+          hackRAUW(I, [&] () { return badPtr(I, I->getNextNode()); });
       } else if (hasPtrsForCheck(I->getOperand(0)->getType()))
-        I->getOperandUse(0) = lowerPtr(I->getOperand(0), I);
+        I->getOperandUse(0) = ptrPtr(I->getOperand(0), I);
       return;
     }
 
@@ -2696,8 +2064,8 @@ class Pizlonator {
   }
 
 public:
-  Pizlonator(Module &M, ModuleAnalysisManager &MAM)
-    : C(M.getContext()), M(M), DL(const_cast<DataLayout&>(M.getDataLayout())), MAM(MAM) {
+  Pizlonator(Module &M)
+    : C(M.getContext()), M(M), DL(const_cast<DataLayout&>(M.getDataLayout())) {
   }
 
   void run() {
@@ -2720,73 +2088,29 @@ public:
     assert(IntPtrTy == Type::getInt64Ty(C)); // FilC is 64-bit-only, for now.
     Int128Ty = Type::getInt128Ty(C);
     LowRawPtrTy = PointerType::get(C, TargetAS);
-    LowWidePtrTy = StructType::create({Int128Ty, Int128Ty}, "filc_wide_ptr");
+    LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
     OriginTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
-    AllocaStackTy = StructType::create({LowRawPtrTy, IntPtrTy, IntPtrTy}, "filc_alloca_bag");
+    ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int8Ty, Int8Ty}, "filc_object");
+    FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy}, "filc_frame");
+    ThreadTy = StructType::create({Int8Ty, LowRawPtrTy}, "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
       {IntPtrTy, Int32Ty, LowRawPtrTy}, "filc_constant_relocation");
     ConstexprNodeTy = StructType::create(
       { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy}, "filc_constexpr_node");
     // See PIZLONATED_SIGNATURE in filc_runtime.h.
     PizlonatedFuncTy = FunctionType::get(
-      VoidTy, { LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, false);
-    GlobalGetterTy = FunctionType::get(Int128Ty, { LowRawPtrTy }, false);
+      VoidTy, { LowRawPtrTy, LowWidePtrTy, LowWidePtrTy }, false);
+    GlobalGetterTy = FunctionType::get(LowWidePtrTy, { LowRawPtrTy }, false);
     CtorDtorTy = FunctionType::get(VoidTy, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
-    // Fuck the DSO!
+    // Fugc the DSO!
     if (GlobalVariable* DSO = M.getGlobalVariable("__dso_handle")) {
       assert(DSO->isDeclaration());
       DSO->replaceAllUsesWith(LowRawNull);
       DSO->eraseFromParent();
     }
     
-    ZrestrictImpl = M.getOrInsertFunction(
-      "zrestrict_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZallocImpl = M.getOrInsertFunction(
-      "zalloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZallocFlexImpl = M.getOrInsertFunction(
-      "zalloc_flex_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZalignedAllocImpl = M.getOrInsertFunction(
-      "zaligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
-    ZreallocImpl = M.getOrInsertFunction(
-      "zrealloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZhardAllocImpl = M.getOrInsertFunction(
-      "zhard_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZhardAllocFlexImpl = M.getOrInsertFunction(
-      "zhard_alloc_flex_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZhardAlignedAllocImpl = M.getOrInsertFunction(
-      "zhard_aligned_alloc_impl", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy).getCallee();
-    ZhardReallocImpl = M.getOrInsertFunction(
-      "zhard_realloc_impl", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy).getCallee();
-    ZtypeofImpl = M.getOrInsertFunction("ztypeof_impl", LowRawPtrTy, LowRawPtrTy).getCallee();
-
-    assert(cast<Function>(ZrestrictImpl)->isDeclaration());
-    assert(cast<Function>(ZallocImpl)->isDeclaration());
-    assert(cast<Function>(ZallocFlexImpl)->isDeclaration());
-    assert(cast<Function>(ZalignedAllocImpl)->isDeclaration());
-    assert(cast<Function>(ZreallocImpl)->isDeclaration());
-    assert(cast<Function>(ZhardAllocImpl)->isDeclaration());
-    assert(cast<Function>(ZhardAllocFlexImpl)->isDeclaration());
-    assert(cast<Function>(ZhardAlignedAllocImpl)->isDeclaration());
-    assert(cast<Function>(ZhardReallocImpl)->isDeclaration());
-    assert(cast<Function>(ZtypeofImpl)->isDeclaration());
-    
-    if (verbose) {
-      errs() << "zrestrict_impl = " << ZrestrictImpl << "\n";
-      errs() << "zalloc_impl = " << ZallocImpl << "\n";
-      errs() << "zalloc_flex_impl = " << ZallocFlexImpl << "\n";
-      errs() << "zaligned_lloc_impl = " << ZalignedAllocImpl << "\n";
-      errs() << "zrealloc_impl = " << ZreallocImpl << "\n";
-      errs() << "zhard_alloc_impl = " << ZhardAllocImpl << "\n";
-      errs() << "zhard_alloc_flex_impl = " << ZhardAllocFlexImpl << "\n";
-      errs() << "zhard_aligned_lloc_impl = " << ZhardAlignedAllocImpl << "\n";
-      errs() << "zhard_realloc_impl = " << ZhardReallocImpl << "\n";
-      errs() << "ztypeof_impl = " << ZtypeofImpl << "\n";
-    }
-
-    LocalConstantPoolPtr = nullptr;
-
     // Capture the set of things that need conversion, before we start adding functions and globals.
     auto CaptureType = [&] (GlobalValue* G) {
       GlobalHighTypes[G] = G->getValueType();
@@ -2814,98 +2138,63 @@ public:
       Aliases.push_back(&G);
       CaptureType(&G);
     }
-    for (GlobalIFunc &G : M.ifuncs()) {
-      IFuncs.push_back(&G);
-      CaptureType(&G);
-    }
+    if (!M.ifunc_empty())
+      llvm_unreachable("Don't handle ifuncs yet.");
 
-    Int.Type = FilCType(1, 1);
-    Int.Type.Main.WordTypes.push_back(FilCWordType::Int);
-    Int.TemplateRep = new GlobalVariable(
-      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr,
-      "filc_int_type_template");
-    IntTypeRep = new GlobalVariable(
-      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "filc_int_type");
-    FunctionDTD.Type = FilCType(0, 0);
-    FunctionTypeRep = new GlobalVariable(
-      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr,
-      "filc_function_type");
-    TypeDTD.Type = FilCType(0, 0);
-    TypeTypeRep = new GlobalVariable(
-      M, ArrayType::get(IntPtrTy, 4), true, GlobalVariable::ExternalLinkage, nullptr, "filc_type_type");
-    Invalid.Type = FilCType(0, 0);
-    
-    LowWideNull = ConstantStruct::get(
-      LowWidePtrTy, { ConstantInt::get(Int128Ty, 0), ConstantInt::get(Int128Ty, 0) });
+    LowWideNull = ConstantStruct::get(LowWidePtrTy, { ConstantInt::get(Int128Ty, 0) });
     if (verbose)
       errs() << "LowWideNull = " << *LowWideNull << "\n";
 
     Dummy = makeDummy(Int32Ty);
-    FutureIntFrame = makeDummy(LowRawPtrTy);
-    FutureTypedFrame = makeDummy(LowRawPtrTy);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
-    FutureAllocaStack = makeDummy(LowRawPtrTy);
 
-    Pollcheck = M.getOrInsertFunction("filc_pollcheck", VoidTy);
-    ValidateType = M.getOrInsertFunction("filc_validate_type", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    GetType = M.getOrInsertFunction("filc_get_type", LowRawPtrTy, LowRawPtrTy);
-    GetHeap = M.getOrInsertFunction("filc_get_heap", LowRawPtrTy, LowRawPtrTy);
-    AllocateInt = M.getOrInsertFunction("filc_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
-    AllocateIntWithAlignment = M.getOrInsertFunction("filc_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    AllocateOne = M.getOrInsertFunction("filc_allocate_one", LowRawPtrTy, LowRawPtrTy);
-    AllocateMany = M.getOrInsertFunction("filc_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    AllocateManyWithAlignment = M.getOrInsertFunction("filc_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    AllocateIntFlex = M.getOrInsertFunction("filc_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    AllocateIntFlexWithAlignment = M.getOrInsertFunction("filc_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    AllocateFlex = M.getOrInsertFunction("filc_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    AllocateUtility = M.getOrInsertFunction("filc_allocate_utility", LowRawPtrTy, IntPtrTy);
-    ReallocateInt = M.getOrInsertFunction("filc_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    ReallocateIntWithAlignment = M.getOrInsertFunction("filc_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    Reallocate = M.getOrInsertFunction("filc_reallocate_impl", LowRawPtrTy, LowWidePtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
-    Deallocate = M.getOrInsertFunction("filc_deallocate", VoidTy, LowRawPtrTy);
-    GetHardHeap = M.getOrInsertFunction("filc_get_hard_heap", LowRawPtrTy, LowRawPtrTy);
-    HardAllocateInt = M.getOrInsertFunction("filc_hard_allocate_int", LowRawPtrTy, IntPtrTy, IntPtrTy);
-    HardAllocateIntWithAlignment = M.getOrInsertFunction("filc_hard_allocate_int_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardAllocateOne = M.getOrInsertFunction("filc_hard_allocate_one", LowRawPtrTy, LowRawPtrTy);
-    HardAllocateMany = M.getOrInsertFunction("filc_hard_allocate_many", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    HardAllocateManyWithAlignment = M.getOrInsertFunction("filc_hard_allocate_many_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    HardAllocateIntFlex = M.getOrInsertFunction("filc_hard_allocate_int_flex", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardAllocateIntFlexWithAlignment = M.getOrInsertFunction("filc_hard_allocate_int_flex_with_alignment", LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardAllocateFlex = M.getOrInsertFunction("filc_hard_allocate_flex", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy, IntPtrTy);
-    HardReallocateInt = M.getOrInsertFunction("filc_hard_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    HardReallocateIntWithAlignment = M.getOrInsertFunction("filc_hard_reallocate_int_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    HardReallocate = M.getOrInsertFunction("filc_hard_reallocate_impl", LowRawPtrTy, LowWidePtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
-    LogAllocation = M.getOrInsertFunction("filc_log_allocation_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    PtrPtr = M.getOrInsertFunction("filc_ptr_ptr_impl", LowRawPtrTy, LowWidePtrTy);
-    UpdateSidecar = M.getOrInsertFunction("filc_update_sidecar", Int128Ty, LowWidePtrTy, LowRawPtrTy);
-    UpdateCapability = M.getOrInsertFunction("filc_update_capability", Int128Ty, LowWidePtrTy, LowRawPtrTy);
-    NewSidecar = M.getOrInsertFunction("filc_new_sidecar", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
-    NewCapability = M.getOrInsertFunction("filc_new_capability", Int128Ty, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
-    CheckForge = M.getOrInsertFunction("filc_check_forge", VoidTy, LowRawPtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
-    CheckAccessInt = M.getOrInsertFunction("filc_check_access_int_impl", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckAccessPtr = M.getOrInsertFunction("filc_check_access_ptr_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckAccessFunctionCall = M.getOrInsertFunction("filc_check_function_call_impl", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    Memset = M.getOrInsertFunction("filc_memset_impl", VoidTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
-    Memcpy = M.getOrInsertFunction("filc_memcpy_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    Memmove = M.getOrInsertFunction("filc_memmove_impl", VoidTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckRestrict = M.getOrInsertFunction("filc_check_restrict", VoidTy, LowWidePtrTy, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
-    VAArgImpl = M.getOrInsertFunction("filc_va_arg_impl", LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy, LowRawPtrTy);
+    Pollcheck = M.getOrInsertFunction("filc_pollcheck_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    StoreBarrier = M.getOrInsertFunction("filc_store_barrier_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+    Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    AllocateWithAlignment = M.getOrInsertFunction("filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    CheckAccessInt = M.getOrInsertFunction("filc_check_access_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckAccessPtr = M.getOrInsertFunction("filc_check_access_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckAccessFunctionCall = M.getOrInsertFunction("filc_check_function_call", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    Memset = M.getOrInsertFunction("filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
+    Memmove = M.getOrInsertFunction("filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     GlobalInitializationContextCreate = M.getOrInsertFunction("filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);
-    GlobalInitializationContextAdd = M.getOrInsertFunction("filc_global_initialization_context_add", Int1Ty, LowRawPtrTy, LowRawPtrTy, Int128Ty);
+    GlobalInitializationContextAdd = M.getOrInsertFunction("filc_global_initialization_context_add", Int1Ty, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     GlobalInitializationContextDestroy = M.getOrInsertFunction("filc_global_initialization_context_destroy", VoidTy, LowRawPtrTy);
-    AllocaStackPush = M.getOrInsertFunction("filc_alloca_stack_push", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    AllocaStackRestore = M.getOrInsertFunction(
-      "filc_alloca_stack_restore", VoidTy, LowRawPtrTy, IntPtrTy);
-    AllocaStackDestroy = M.getOrInsertFunction("filc_alloca_stack_destroy", VoidTy, LowRawPtrTy);
     ExecuteConstantRelocations = M.getOrInsertFunction("filc_execute_constant_relocations", VoidTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
     DeferOrRunGlobalCtor = M.getOrInsertFunction("filc_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
+    RunGlobalDtor = M.getOrInsertFunction("filc_run_global_dtor", VoidTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
-    MakeConstantPool = M.getOrInsertFunction("filc_make_constantpool", LowRawPtrTy);
 
-    GlobalConstantPoolPtr = new GlobalVariable(
-      M, LowRawPtrTy, false, GlobalValue::PrivateLinkage, LowRawNull, "filc_global_constantpool_ptr");
+    auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
+      GlobalHighTypes[NewG] = GlobalHighTypes[G];
+      GlobalLowTypes[NewG] = GlobalLowTypes[G];
+    };
 
+    std::vector<GlobalValue*> ToDelete;
+    auto HandleGlobal = [&] (GlobalValue* G) {
+      Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
+                                        "pizlonated_" + G->getName(), &M);
+      GlobalToGetter[G] = NewF;
+      Getters.insert(NewF);
+      FixupTypes(G, NewF);
+      ToDelete.push_back(G);
+    };
+    for (GlobalVariable* G : Globals)
+      HandleGlobal(G);
+    for (GlobalAlias* G : Aliases)
+      HandleGlobal(G);
+    for (Function* F : Functions) {
+      if (F->isIntrinsic())
+        continue;
+      HandleGlobal(F);
+      FunctionToHiddenFunction[F] = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
+                                                     GlobalValue::InternalLinkage, F->getAddressSpace(),
+                                                     "Jf_" + F->getName(), &M);
+    }
+    
     if (GlobalVariable* GlobalCtors = M.getGlobalVariable("llvm.global_ctors")) {
       ConstantArray* Array = cast<ConstantArray>(GlobalCtors->getInitializer());
       std::vector<Constant*> Args;
@@ -2913,10 +2202,12 @@ public:
         ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
         assert(Struct->getOperand(2) == LowRawNull);
         Function* Ctor = cast<Function>(Struct->getOperand(1));
+        Function* HiddenCtor = FunctionToHiddenFunction[Ctor];
+        assert(HiddenCtor);
         Function* NewF = Function::Create(
-          CtorDtorTy, GlobalValue::PrivateLinkage, 0, "filc_ctor_forwarder", &M);
+          CtorDtorTy, GlobalValue::InternalLinkage, 0, "filc_ctor_forwarder", &M);
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_ctor_forwarder_root", NewF);
-        CallInst::Create(DeferOrRunGlobalCtor, { Ctor }, "", RootBB);
+        CallInst::Create(DeferOrRunGlobalCtor, { HiddenCtor }, "", RootBB);
         ReturnInst::Create(C, RootBB);
         Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
       }
@@ -2932,55 +2223,19 @@ public:
         ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
         assert(Struct->getOperand(2) == LowRawNull);
         Function* Dtor = cast<Function>(Struct->getOperand(1));
+        Function* HiddenDtor = FunctionToHiddenFunction[Dtor];
         Function* NewF = Function::Create(
-          CtorDtorTy, GlobalValue::PrivateLinkage, 0, "filc_dtor_forwarder", &M);
+          CtorDtorTy, GlobalValue::InternalLinkage, 0, "filc_dtor_forwarder", &M);
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_dtor_forwarder_root", NewF);
-        AllocaInst* ReturnBuffer = new AllocaInst(
-          Int8Ty, 0, ConstantInt::get(IntPtrTy, 16), "filc_dtor_return", RootBB);
-        Instruction* Upper = GetElementPtrInst::Create(
-          Int8Ty, ReturnBuffer, ConstantInt::get(IntPtrTy, 16), "filc_dtor_return_upper", RootBB);
-        CallInst::Create(
-          PizlonatedFuncTy, Dtor,
-          { LowRawNull, LowRawNull, LowRawNull, ReturnBuffer, Upper, IntTypeRep },
-          "", RootBB);
+        CallInst::Create(RunGlobalDtor, { HiddenDtor }, "", RootBB);
         ReturnInst::Create(C, RootBB);
         Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
       }
       GlobalDtors->setInitializer(ConstantArray::get(Array->getType(), Args));
     }
 
-    auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
-      GlobalHighTypes[NewG] = GlobalHighTypes[G];
-      GlobalLowTypes[NewG] = GlobalLowTypes[G];
-    };
-
-    std::vector<GlobalValue*> ToDelete;
-    auto HandleGlobal = [&] (GlobalValue* G) {
-      Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
-                                        "pizlonated_g_" + G->getName(), &M);
-      GlobalToGetter[G] = NewF;
-      Getters.insert(NewF);
-      FixupTypes(G, NewF);
-      ToDelete.push_back(G);
-    };
     for (GlobalVariable* G : Globals) {
-      if (!G->isDeclaration()) {
-        Type* T = G->getValueType();
-        Type* LowT = lowerType(T);
-        // FIXME: We could totally mark these constant if we know that there's no pointer fixup!
-        GlobalToGlobal[G] = new GlobalVariable(
-          M, LowT, false, GlobalValue::InternalLinkage, UndefValue::get(LowT),
-          "filc_hidden_global_" + G->getName());
-      }
-      HandleGlobal(G);
-    }
-    for (GlobalAlias* G : Aliases) {
-      if (isa<GlobalVariable>(G->getAliasee()))
-        HandleGlobal(G);
-    }
-    
-    for (GlobalVariable* G : Globals) {
-      // FIXME: We can probably make this work, but who gives a shit for now?
+      // FIXME: We can probably make this work, but who gives a fugc for now?
       assert(G->getThreadLocalMode() == GlobalValue::NotThreadLocal);
 
       Function* NewF = GlobalToGetter[G];
@@ -2993,24 +2248,20 @@ public:
       if (G->isDeclaration())
         continue;
 
-      Type* T = G->getValueType();
-      Type* LowT = lowerType(T);
-
-      // FIXME: What if we're dealing with an array? Right now, we'll create a type that is O(array size).
-      // We could at least detect repeats here.
-      FilCTypeData* DTD = dataForLowType(LowT);
-      
-      GlobalVariable* NewDataG = GlobalToGlobal[G];
-      assert(NewDataG);
-      Constant* NewC = tryLowerConstantToConstant(
-        G->getInitializer(), ResultMode::NeedConstantWithPtrPlaceholders);
+      Constant* NewC = paddedConstant(
+        tryLowerConstantToConstant(G->getInitializer(), ResultMode::NeedConstantWithPtrPlaceholders));
       assert(NewC);
-      NewDataG->setInitializer(NewC);
+      GlobalVariable* NewDataG = new GlobalVariable(
+        M, NewC->getType(), false, GlobalValue::InternalLinkage, NewC,
+        "Jg_" + G->getName());
+      assert(NewDataG);
+
+      GlobalVariable* NewObjectG = objectGlobalForGlobal(NewDataG, G);
       
       BasicBlock* RootBB = BasicBlock::Create(C, "filc_global_getter_root", NewF);
 
       GlobalVariable* NewPtrG = new GlobalVariable(
-        M, Int128Ty, false, GlobalValue::PrivateLinkage, ConstantInt::get(Int128Ty, 0),
+        M, LowWidePtrTy, false, GlobalValue::PrivateLinkage, LowWideNull,
         "filc_gptr_" + G->getName());
       
       BasicBlock* FastBB = BasicBlock::Create(C, "filc_global_getter_fast", NewF);
@@ -3019,30 +2270,32 @@ public:
       BasicBlock* BuildBB = BasicBlock::Create(C, "filc_global_getter_build", NewF);
 
       Instruction* Branch = BranchInst::Create(SlowBB, FastBB, UndefValue::get(Int1Ty), RootBB);
-      Value* LoadPtr = loadPtrPart(NewPtrG, Branch);
+      Value* LoadPtr = loadPtr(NewPtrG, Branch);
       Branch->getOperandUse(0) = new ICmpInst(
-        Branch, ICmpInst::ICMP_EQ, LoadPtr, ConstantInt::get(Int128Ty, 0), "filc_check_global");
+        Branch, ICmpInst::ICMP_EQ, ptrWord(LoadPtr, Branch), ConstantInt::get(Int128Ty, 0),
+        "filc_check_global");
 
       ReturnInst::Create(C, LoadPtr, FastBB);
 
       Branch = BranchInst::Create(BuildBB, RecurseBB, UndefValue::get(Int1Ty), SlowBB);
       Instruction* MyInitializationContext = CallInst::Create(
-        GlobalInitializationContextCreate, { NewF->getArg(0) }, "filc_context_create", Branch);
-      Value* TypeRep = getTypeRepWithoutConstantPool(DTD, Branch);
-      Instruction* Capability = CallInst::Create(
-        NewCapability, { NewDataG, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowT)), TypeRep },
-        "filc_new_capability", Branch);
+        GlobalInitializationContextCreate, { NewF->getArg(0) }, "filc_context_create",
+        Branch);
+      Value* Ptr = createPtr(NewObjectG, NewDataG, Branch);
+      // NOTE: This function call is necessary even for the cases of globals with no meaningful
+      // initializer or an initializer we could just optimize to pure data, since we have to tell the
+      // runtime about this global so that the GC can find it.
       Instruction* Add = CallInst::Create(
-        GlobalInitializationContextAdd, { MyInitializationContext, NewPtrG, Capability },
+        GlobalInitializationContextAdd,
+        { MyInitializationContext, NewPtrG, NewObjectG },
         "filc_context_add", Branch);
       Branch->getOperandUse(0) = Add;
 
       CallInst::Create(
         GlobalInitializationContextDestroy, { MyInitializationContext }, "", RecurseBB);
-      ReturnInst::Create(C, Capability, RecurseBB);
+      ReturnInst::Create(C, Ptr, RecurseBB);
 
-      assert(DTD->Type.Main.Size);
-      Instruction* Return = ReturnInst::Create(C, Capability, BuildBB);
+      Instruction* Return = ReturnInst::Create(C, Ptr, BuildBB);
       if (verbose)
         errs() << "Lowering constant " << *G->getInitializer() << " with initialization context = " << *MyInitializationContext << "\n";
       std::vector<ConstantRelocation> Relocations;
@@ -3074,38 +2327,24 @@ public:
       CallInst::Create(GlobalInitializationContextDestroy, { MyInitializationContext }, "", Return);
     }
     for (Function* F : Functions) {
-      if (F->isIntrinsic() ||
-          F == ZrestrictImpl ||
-          F == ZallocImpl ||
-          F == ZallocFlexImpl ||
-          F == ZalignedAllocImpl ||
-          F == ZreallocImpl ||
-          F == ZhardAllocImpl ||
-          F == ZhardAllocFlexImpl ||
-          F == ZhardAlignedAllocImpl ||
-          F == ZhardReallocImpl ||
-          F == ZtypeofImpl)
+      if (F->isIntrinsic())
         continue;
       
       if (verbose)
         errs() << "Function before lowering: " << *F << "\n";
 
-      FunctionName = F->getName();
-      OldF = F;
-      NewF = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
-                              F->getLinkage(), F->getAddressSpace(),
-                              "pizlonated_f_" + F->getName(), &M);
-      FixupTypes(F, NewF);
-      std::vector<BasicBlock*> Blocks;
-      for (BasicBlock& BB : *F)
-        Blocks.push_back(&BB);
-      if (!Blocks.empty()) {
-        assert(!LocalConstantPoolPtr);
-        assert(!FutureIntFrame->getNumUses());
-        assert(!FutureTypedFrame->getNumUses());
-        IntFrameSize = 0;
-        IntFrameAlignment = 1;
-        TypedFrameType = CoreFilCType();
+      if (!F->isDeclaration()) {
+        FunctionName = F->getName();
+        OldF = F;
+        NewF = FunctionToHiddenFunction[F];
+        assert(NewF);
+      
+        MyThread = NewF->getArg(0);
+        FixupTypes(F, NewF);
+        std::vector<BasicBlock*> Blocks;
+        for (BasicBlock& BB : *F)
+          Blocks.push_back(&BB);
+        assert(!Blocks.empty());
         ReturnBufferSize = 0;
         ReturnBufferAlignment = 0;
         Args.clear();
@@ -3113,6 +2352,7 @@ public:
           BB->removeFromParent();
           BB->insertInto(NewF);
         }
+        computeFrameIndexMap(Blocks);
         // Snapshot the instructions before we do crazy stuff.
         std::vector<Instruction*> Instructions;
         for (BasicBlock* BB : Blocks) {
@@ -3121,8 +2361,10 @@ public:
             captureTypesIfNecessary(&I);
           }
 
-          // LMAO who needs backwards edge analysis when you don't give a fuck about perf?
-          CallInst::Create(Pollcheck, { }, "", BB->getTerminator());
+          // LMAO who needs backwards edge analysis when you don't give a fugc about perf?
+          CallInst::Create(
+              Pollcheck, { NewF->getArg(0), getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
+              BB->getTerminator());
         }
 
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);
@@ -3131,31 +2373,60 @@ public:
         ReturnInst* Return = ReturnInst::Create(C, ReturnB);
 
         if (F->getReturnType() != VoidTy) {
-          Value* ReturnDataPtr = forgePtrWithTypeRepAndUpper(
-            NewF->getArg(3), NewF->getArg(4), NewF->getArg(5), Return);
-          new StoreInst(
-            ReturnPhi, prepareForAccess(lowerType(F->getReturnType()), ReturnDataPtr, Return), Return);
+          Type* LowT = lowerType(F->getReturnType());
+          storeValueRecurse(
+            LowT, NewF->getArg(2), ReturnPhi, ptrPtr(NewF->getArg(2), Return), false,
+            DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic, SyncScope::System, StoreKind::Unbarriered,
+            Return);
         }
 
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
-        // FIXME: OMG this should happen after inlining. But whatever, we don't give a shit about
-        // perf for the most part.
-        Instruction* FastConstantPoolPtr = new LoadInst(
-          LowRawPtrTy, GlobalConstantPoolPtr, "filc_load_contantpool", InsertionPoint);
-        Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(
-          new ICmpInst(
-            InsertionPoint, ICmpInst::ICMP_EQ, FastConstantPoolPtr, LowRawNull,
-            "filc_check_constantpool"),
-          InsertionPoint, false);
-        Instruction* SlowConstantPoolPtr = CallInst::Create(
-          MakeConstantPool, { }, "filc_call_make_constantpool", NewBlockTerm);
-        LocalConstantPoolPtr = PHINode::Create(LowRawPtrTy, 2, "filc_constantpool", InsertionPoint);
-        LocalConstantPoolPtr->addIncoming(FastConstantPoolPtr, Blocks[0]);
-        LocalConstantPoolPtr->addIncoming(SlowConstantPoolPtr, SlowConstantPoolPtr->getParent());
+        StructType* MyFrameTy = StructType::get(
+          C, { LowRawPtrTy, LowRawPtrTy, IntPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
+        Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
+        Value* ThreadTopFramePtr = GetElementPtrInst::Create(
+          ThreadTy, NewF->getArg(0),
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+          "filc_thread_top_frame_ptr", InsertionPoint);
+        new StoreInst(
+          new LoadInst(LowRawPtrTy, ThreadTopFramePtr, "filc_thread_top_frame", InsertionPoint),
+          GetElementPtrInst::Create(
+            FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+            "filc_frame_parent_ptr", InsertionPoint),
+          InsertionPoint);
+        new StoreInst(Frame, ThreadTopFramePtr, InsertionPoint);
+        new StoreInst(
+          LowRawNull,
+          GetElementPtrInst::Create(
+            FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+            "filc_frame_parent_ptr", InsertionPoint),
+          InsertionPoint);
+        new StoreInst(
+          ConstantInt::get(IntPtrTy, FrameSize),
+          GetElementPtrInst::Create(
+            FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
+            "filc_frame_parent_ptr", InsertionPoint),
+          InsertionPoint);
+        for (size_t FrameIndex = FrameSize; FrameIndex--;)
+          recordObjectAtIndex(LowRawNull, FrameIndex, InsertionPoint);
 
-        ArgBufferPtr = forgePtrWithTypeRepAndUpper(
-          NewF->getArg(0), NewF->getArg(1), NewF->getArg(2), InsertionPoint);
-        Value* RawDataPtr = lowerPtr(ArgBufferPtr, InsertionPoint);
+        recordObjectAtIndex(ptrObject(NewF->getArg(1), InsertionPoint), MyArgsObjectIndex, InsertionPoint);
+
+        new StoreInst(
+          new LoadInst(
+            LowRawPtrTy,
+            GetElementPtrInst::Create(
+              FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+              "filc_frame_parent_ptr", Return),
+            "filc_frame_parent", Return),
+          GetElementPtrInst::Create(
+            ThreadTy, NewF->getArg(0),
+            { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+            "filc_thread_top_frame_ptr", Return),
+          Return);
+
+        ArgBufferPtr = NewF->getArg(1);
+        Value* RawDataPtr = ptrPtr(ArgBufferPtr, InsertionPoint);
         size_t ArgOffset = 0;
         for (unsigned Index = 0; Index < F->getFunctionType()->getNumParams(); ++Index) {
           Type* T = F->getFunctionType()->getParamType(Index);
@@ -3169,17 +2440,31 @@ public:
           Value* V = loadValueRecurse(
             LowT, ArgBufferPtr, ArgPtr, false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic,
             SyncScope::System, InsertionPoint);
+          recordObjects(OldF->getArg(Index), LowT, V, InsertionPoint);
           Args.push_back(V);
           ArgOffset += Size;
         }
         Instruction* ArgEndPtr = GetElementPtrInst::Create(
           Int8Ty, RawDataPtr, { ConstantInt::get(IntPtrTy, ArgOffset) }, "filc_arg_end_ptr",
           InsertionPoint);
-        ArgBufferPtr = reforgePtr(ArgBufferPtr, ArgEndPtr, InsertionPoint);
-        CallInst::Create(Deallocate, { NewF->getArg(0) }, "", Return);
+        ArgBufferPtr = ptrWithPtr(ArgBufferPtr, ArgEndPtr, InsertionPoint);
 
         FirstRealBlock = InsertionPoint->getParent();
-        
+
+        std::vector<PHINode*> Phis;
+        for (Instruction* I : Instructions) {
+          if (PHINode* Phi = dyn_cast<PHINode>(I))
+            Phis.push_back(Phi);
+          else if (!Phis.empty()) {
+            for (PHINode* Phi : Phis)
+              recordObjects(Phi, I);
+            Phis.clear();
+          }
+          if (I->isTerminator())
+            assert(I->getType()->isVoidTy());
+          else
+            recordObjects(I, I->getNextNode());
+        }
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I); });
         for (Instruction* I : Instructions)
           lowerInstruction(I, LowRawNull);
@@ -3196,168 +2481,38 @@ public:
           assert(!ReturnBufferSize);
           assert(!ReturnBufferAlignment);
         }
-
-        if (FutureAllocaStack->hasNUsesOrMore(1)) {
-          AllocaInst* AllocaStack =
-            new AllocaInst(AllocaStackTy, 0, "filc_alloca_bag_alloca", InsertionPoint);
-          CallInst::Create(
-            RealMemset,
-            { AllocaStack, ConstantInt::get(Int8Ty, 0),
-              ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(AllocaStackTy)),
-              ConstantInt::get(Int1Ty, false) },
-            "", InsertionPoint);
-          FutureAllocaStack->replaceAllUsesWith(AllocaStack);
-          CallInst::Create(AllocaStackDestroy, { AllocaStack }, "", Return);
-        }
-
-        InsertionPoint = &*FirstRealBlock->getFirstInsertionPt();
         
-        if (IntFrameSize) {
-          Instruction* AllocateIntFrame;
-          if (IntFrameAlignment > MinAlign) {
-            AllocateIntFrame = CallInst::Create(
-              AllocateIntWithAlignment,
-              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, 1),
-                ConstantInt::get(IntPtrTy, IntFrameAlignment) },
-              "filc_allocate_int_frame", InsertionPoint);
-          } else {
-            AllocateIntFrame = CallInst::Create(
-              AllocateInt,
-              { ConstantInt::get(IntPtrTy, IntFrameSize), ConstantInt::get(IntPtrTy, 1) },
-              "filc_allocate_int_frame", InsertionPoint);
-          }
-          FutureIntFrame->replaceAllUsesWith(AllocateIntFrame);
-          CallInst::Create(Deallocate, { AllocateIntFrame }, "", Return);
-        } else
-          assert(!FutureIntFrame->getNumUses());
-
-        if (TypedFrameType.isValid()) {
-          FilCType FullFrameType;
-          FullFrameType.Main = TypedFrameType;
-          FilCTypeData* DTD = dataForType(FullFrameType);
-          Instruction* AllocateTypedFrame = CallInst::Create(
-            AllocateOne, { getHeap(DTD, InsertionPoint, ConstantPoolEntryKind::Heap) },
-            "filc_allocate_typed_frame", InsertionPoint);
-          FutureTypedFrame->replaceAllUsesWith(AllocateTypedFrame);
-          CallInst::Create(Deallocate, { AllocateTypedFrame }, "", Return);
-        } else
-          assert(!FutureTypedFrame->getNumUses());
+        GlobalVariable* NewObjectG = objectGlobalForGlobal(NewF, OldF);
+        
+        Function* GetterF = GlobalToGetter[OldF];
+        assert(GetterF);
+        assert(GetterF->isDeclaration());
+        BasicBlock* RootBB = BasicBlock::Create(C, "filc_function_getter_root", GetterF);
+        Return = ReturnInst::Create(C, UndefValue::get(LowWidePtrTy), RootBB);
+        Return->getOperandUse(0) = createPtr(NewObjectG, NewF, Return);
       }
-      
-      NewF->copyAttributesFrom(F);
-      NewF->setAttributes(AttributeList());
-      F->replaceAllUsesWith(NewF);
-      F->eraseFromParent();
       
       FunctionName = "<internal>";
 
-      LocalConstantPoolPtr = nullptr;
-      
       if (verbose)
         errs() << "New function: " << *NewF << "\n";
     }
     for (GlobalAlias* G : Aliases) {
       Constant* C = G->getAliasee();
-      if (Function* TargetF = dyn_cast<Function>(C)) {
-        Function* NewF = Function::Create(PizlonatedFuncTy, G->getLinkage(), G->getAddressSpace(),
-                                          "pizlonated_f_" + G->getName(), &M);
-        BasicBlock* BB = BasicBlock::Create(this->C, "filc_alias_call", NewF);
-        CallInst::Create(
-          PizlonatedFuncTy, TargetF,
-          { NewF->getArg(0), NewF->getArg(1), NewF->getArg(2), NewF->getArg(3), NewF->getArg(4),
-            NewF->getArg(5) },
-          "", BB);
-        ReturnInst::Create(this->C, BB);
-        FixupTypes(G, NewF);
-        G->replaceAllUsesWith(NewF);
-        G->eraseFromParent();
-        continue;
-      }
-
-      if (GlobalVariable* GV = dyn_cast<GlobalVariable>(C)) {
-        Function* NewF = GlobalToGetter[G];
-        Function* TargetF = GlobalToGetter[GV];
-        assert(NewF);
-        assert(TargetF);
-        BasicBlock* BB = BasicBlock::Create(this->C, "filc_alias_global", NewF);
-        ReturnInst::Create(
-          this->C,
-          CallInst::Create(GlobalGetterTy, TargetF, { NewF->getArg(0) }, "filc_forward_global", BB),
-          BB);
-        continue;
-      }
-      
-      llvm_unreachable("don't know what to do with global aliases yet");
-      // FIXME: The GlobalAlias constant expression may produce something that is not at all a valid
-      // pointer. It's not at all clear that we get the right behavior here. Probably, we want there to
-      // be a compile-time or runtime check that we're producing a pointer that makes sense with a type
-      // that makes sense.
-      GlobalAlias* NewG = GlobalAlias::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "pizlonated_a_" + G->getName(),
-                                              G->getAliasee(), &M);
-      FixupTypes(G, NewG);
-      NewG->copyAttributesFrom(G);
-      G->replaceAllUsesWith(NewG);
-      G->eraseFromParent();
+      Function* NewF = GlobalToGetter[G];
+      Function* TargetF = GlobalToGetter[cast<GlobalValue>(C)];
+      assert(NewF);
+      assert(TargetF);
+      BasicBlock* BB = BasicBlock::Create(this->C, "filc_alias_global", NewF);
+      ReturnInst::Create(
+        this->C,
+        CallInst::Create(GlobalGetterTy, TargetF, { NewF->getArg(0) },
+                         "filc_forward_global", BB),
+        BB);
     }
-    for (GlobalIFunc* G : IFuncs) {
-      llvm_unreachable("don't know what to do with global ifuncs yet");
-      GlobalIFunc* NewG = GlobalIFunc::create(lowerType(G->getValueType()), G->getAddressSpace(),
-                                              G->getLinkage(), "pizlonated_i_" + G->getName(),
-                                              G->getResolver(), &M);
-      FixupTypes(G, NewG);
-      NewG->copyAttributesFrom(G);
-      G->replaceAllUsesWith(NewG);
-      G->eraseFromParent();
-    }
-
-    // Kill the remnants of the original globals.
-    for (GlobalVariable* G : Globals)
-      G->setLinkage(GlobalValue::PrivateLinkage);
-
-    Function* MakeConstantPoolFunc = cast<Function>(MakeConstantPool.getCallee());
-    MakeConstantPoolFunc->setLinkage(GlobalValue::PrivateLinkage);
-    BasicBlock* BB = BasicBlock::Create(C, "filc_make_constantpool_block", MakeConstantPoolFunc);
-    for (auto& pair : TypeDatas) {
-      CallInst::Create(ValidateType, {
-          CallInst::Create(GetType, { pair.second->TemplateRep }, "", BB),
-          LowRawNull
-        }, "", BB);
-    }
-    Instruction* ConstantPoolPtr = CallInst::Create(
-      AllocateUtility, { ConstantInt::get(IntPtrTy, 8 * ConstantPoolEntries.size()) },
-      "filc_allocate_constantpool", BB);
-    for (size_t Index = ConstantPoolEntries.size(); Index--;) {
-      Instruction* EntryPtr = GetElementPtrInst::Create(
-        LowRawPtrTy, ConstantPoolPtr, { ConstantInt::get(IntPtrTy, Index) },
-        "filc_constantpool_entry_ptr", BB);
-      const ConstantPoolEntry& CPE = ConstantPoolEntries[Index];
-      Instruction* Type = CallInst::Create(GetType, { CPE.DTD->TemplateRep }, "filc_get_type", BB);
-      switch (CPE.Kind) {
-      case ConstantPoolEntryKind::Type: {
-        new StoreInst(Type, EntryPtr, BB);
-        break;
-      }
-      case ConstantPoolEntryKind::Heap: {
-        Instruction* Heap = CallInst::Create(GetHeap, { Type }, "filc_get_heap", BB);
-        new StoreInst(Heap, EntryPtr, BB);
-        break;
-      }
-      case ConstantPoolEntryKind::HardHeap: {
-        Instruction* Heap = CallInst::Create(GetHardHeap, { Type }, "filc_get_heap", BB);
-        new StoreInst(Heap, EntryPtr, BB);
-        break;
-      } }
-    }
-    new StoreInst(ConstantPoolPtr, GlobalConstantPoolPtr, BB);
-    new FenceInst(C, AtomicOrdering::AcquireRelease, SyncScope::System, BB);
-    ReturnInst::Create(C, ConstantPoolPtr, BB);
 
     delete Dummy;
-    delete FutureIntFrame;
-    delete FutureTypedFrame;
     delete FutureReturnBuffer;
-    delete FutureAllocaStack;
 
     for (GlobalValue* G : ToDelete)
       G->replaceAllUsesWith(UndefValue::get(G->getType())); // FIXME - should be zero
@@ -3372,8 +2527,8 @@ public:
 
 } // anonymous namespace
 
-PreservedAnalyses FilPizlonatorPass::run(Module &M, ModuleAnalysisManager &MAM) {
-  Pizlonator P(M, MAM);
+PreservedAnalyses FilPizlonatorPass::run(Module &M, ModuleAnalysisManager&) {
+  Pizlonator P(M);
   P.run();
   return PreservedAnalyses::none();
 }

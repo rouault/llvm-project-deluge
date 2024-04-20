@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2020 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -84,6 +84,26 @@ static inline bool pas_bitvector_set_atomic_in_word(unsigned* word_ptr, size_t i
             return false;
         
         if (pas_compare_and_swap_uint32_weak(word_ptr, old_value, new_value))
+            return true;
+    }
+}
+
+static inline bool pas_bitvector_set_atomic_in_word_relaxed(
+    unsigned* word_ptr, size_t index, bool value)
+{
+    for (;;) {
+        unsigned old_value;
+        unsigned new_value;
+        
+        old_value = *word_ptr;
+
+        new_value = old_value;
+        pas_bitvector_set_in_word(&new_value, index, value);
+        
+        if (old_value == new_value)
+            return false;
+        
+        if (pas_compare_and_swap_uint32_weak_relaxed(word_ptr, old_value, new_value))
             return true;
     }
 }

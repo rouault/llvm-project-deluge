@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - "tak"
+  - "filc panic"
+output-excludes:
+  - "nie"

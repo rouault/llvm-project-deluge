@@ -31,7 +31,6 @@
 #include "pas_all_heaps.h"
 
 #include "bmalloc_heap_innards.h"
-#include "filc_heap_innards.h"
 #include "hotbit_heap_innards.h"
 #include "inline_medium_page_header_heap.h"
 #include "inline_non_committable_granules_heap.h"
@@ -128,15 +127,6 @@ bool pas_all_heaps_for_each_static_heap(pas_all_heaps_for_each_heap_callback cal
 #if PAS_ENABLE_OUTLINE_NON_COMMITTABLE_GRANULES
 	if (!callback(&outline_non_committable_granules_common_primitive_heap, arg))
 		return false;
-#endif
-
-#if PAS_ENABLE_FILC
-    if (!callback(&filc_int_heap, arg))
-        return false;
-    if (!callback(&filc_utility_heap, arg))
-        return false;
-    if (!callback(&filc_hard_int_heap, arg))
-        return false;
 #endif
 
     return true;

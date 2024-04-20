@@ -1,8 +1,0 @@
-return:
-  success
-output-includes:
-  - hard size = 1360
-  - soft size = 0
-  - hard size 2 = 112
-  - soft size 2 = 0
-  - thingy = hello, world!!!

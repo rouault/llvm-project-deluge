@@ -35,7 +35,7 @@ int main()
     pthread_mutex_init(&lock, NULL);
 
     for (i = NTHREADS; i--;) {
-        stuff* s = zalloc(stuff, 1);
+        stuff* s = zalloc(sizeof(stuff));
         s->str = zasprintf("thread = %u", i);
         ZASSERT(!pthread_create(threads + i, NULL, thread_main, s));
     }

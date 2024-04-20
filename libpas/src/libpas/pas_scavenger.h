@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019-2022 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -120,9 +120,6 @@ typedef enum {
 
 PAS_API void pas_scavenger_perform_synchronous_operation(
     pas_scavenger_synchronous_operation_kind kind);
-
-/* This is for debugging purpose only. */
-PAS_API void pas_scavenger_disable_shut_down(void);
 
 PAS_END_EXTERN_C;
 

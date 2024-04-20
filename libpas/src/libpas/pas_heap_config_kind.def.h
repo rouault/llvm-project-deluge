@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019-2021 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -97,10 +97,5 @@ PAS_DEFINE_HEAP_CONFIG_KIND(inline_non_committable_granules, INLINE_NON_COMMITTA
 
 #if PAS_ENABLE_OUTLINE_NON_COMMITTABLE_GRANULES
 PAS_DEFINE_HEAP_CONFIG_KIND(outline_non_committable_granules, OUTLINE_NON_COMMITTABLE_GRANULES_CONFIG)
-#endif
-
-#if PAS_ENABLE_FILC
-PAS_DEFINE_HEAP_CONFIG_KIND(filc, FILC_HEAP_CONFIG)
-PAS_DEFINE_HEAP_CONFIG_KIND(filc_hard, FILC_HARD_HEAP_CONFIG)
 #endif
 

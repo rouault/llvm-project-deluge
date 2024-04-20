@@ -24,7 +24,7 @@ static void* thread_main(void* arg)
     unsigned i;
     for (i = REPEAT; i--;) {
         unsigned length = (i % MAXLENGTH) + 1;
-        foo* f = zalloc_flex(foo, value, length);
+        foo* f = zalloc(__builtin_offsetof(foo, value) + length * sizeof(unsigned));
         unsigned j;
         for (j = length; j--;)
             f->value[j] = (i + j) % (MAXVAL + 1);

@@ -1,5 +1,5 @@
 return:
   success
 output-includes:
-  - ptr = 0xffffffffffffffff,0x0,0x0,type{invalid}
+  - ptr = 0xffffffffffffffff,<null>
   - Yay!

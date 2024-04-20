@@ -4,8 +4,8 @@
         for (unsigned i = iterations; i--;) { \
             int **ptrs[elements]; \
             for (unsigned j = elements; j--;) { \
-                ptrs[j] = zalloc(int*, 1); \
-                *ptrs[j] = zalloc(int, 1); \
+                ptrs[j] = zalloc(sizeof(int*)); \
+                *ptrs[j] = zalloc(sizeof(int)); \
                 **ptrs[j] = j; \
             } \
             for (unsigned j = elements; j--;) { \

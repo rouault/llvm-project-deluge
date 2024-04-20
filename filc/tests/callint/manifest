@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - spoko
-  - attempt to call pointer that is not a function
+  - "cannot access pointer as function, object isn't even special"
 output-excludes:
   kurcze

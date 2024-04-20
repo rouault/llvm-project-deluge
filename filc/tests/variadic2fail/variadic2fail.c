@@ -15,8 +15,8 @@ int foo(int x, ...)
 
 int main(void)
 {
-    int* x = zalloc(int, 1);
-    int* y = zalloc(int, 1);
+    int* x = zalloc(sizeof(int));
+    int* y = zalloc(sizeof(int));
     *x = 666;
     *y = 42;
     foo(3, x, y);

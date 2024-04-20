@@ -2,8 +2,8 @@
 
 int main()
 {
-    char* a = zalloc(char, 1);
-    char* b = zalloc(char, 1);
+    char* a = zalloc(1);
+    char* b = zalloc(1);
     zfree(a + (b - a));
     zprintf("oops\n");
     return 0;

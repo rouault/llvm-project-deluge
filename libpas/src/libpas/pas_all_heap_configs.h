@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,8 +28,6 @@
 #define PAS_ALL_HEAP_CONFIGS_H
 
 #include "bmalloc_heap_config.h"
-#include "filc_heap_config.h"
-#include "filc_hard_heap_config.h"
 #include "hotbit_heap_config.h"
 #include "inline_medium_page_header_config.h"
 #include "inline_non_committable_granules_config.h"

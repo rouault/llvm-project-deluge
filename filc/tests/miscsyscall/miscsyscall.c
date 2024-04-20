@@ -102,18 +102,18 @@ int main(int argc, char** argv)
     
     struct passwd* passwd2 = getpwuid(getuid());
     ZASSERT(passwd2);
-    ZASSERT(passwd2 == passwd);
-    ZASSERT(!strcmp(passwd->pw_name, name));
-    ZASSERT(!strcmp(passwd->pw_passwd, passwdd));
-    ZASSERT(passwd->pw_uid == getuid());
-    ZASSERT(passwd->pw_gid == getgid());
-    ZASSERT(!strcmp(passwd->pw_gecos, gecos));
-    ZASSERT(!strcmp(passwd->pw_dir, dir));
-    ZASSERT(!strcmp(passwd->pw_shell, shell));
+    ZASSERT(passwd2 != passwd);
+    ZASSERT(!strcmp(passwd2->pw_name, name));
+    ZASSERT(!strcmp(passwd2->pw_passwd, passwdd));
+    ZASSERT(passwd2->pw_uid == getuid());
+    ZASSERT(passwd2->pw_gid == getgid());
+    ZASSERT(!strcmp(passwd2->pw_gecos, gecos));
+    ZASSERT(!strcmp(passwd2->pw_dir, dir));
+    ZASSERT(!strcmp(passwd2->pw_shell, shell));
 
     passwd = getpwnam(name);
     ZASSERT(passwd);
-    ZASSERT(passwd == passwd2);
+    ZASSERT(passwd != passwd2);
     ZASSERT(!strcmp(passwd->pw_name, name));
     ZASSERT(!strcmp(passwd->pw_passwd, passwdd));
     ZASSERT(passwd->pw_uid == getuid());

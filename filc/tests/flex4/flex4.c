@@ -14,10 +14,10 @@ struct bar {
 
 int main(int argc, char** argv)
 {
-    struct bar* b = zalloc_flex(struct bar, z, 3333);
+    struct bar* b = zalloc(__builtin_offsetof(struct bar, z) + 3333 * sizeof(unsigned short));
     b->x = 42;
-    b->y = zalloc(struct foo, 1);
-    b->y->x = zalloc_flex(struct bar, z, 0);
+    b->y = zalloc(sizeof(struct foo));
+    b->y->x = zalloc(__builtin_offsetof(struct bar, z));
     b->y->y = 1410;
     b->w = 666;
     unsigned index;

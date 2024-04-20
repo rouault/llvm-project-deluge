@@ -2,7 +2,7 @@
 
 int main()
 {
-    zrealloc(zalloc(char, 64) + 1, char, 128);
+    zrealloc(zalloc(64) + 1, 128);
     return 0;
 }
 

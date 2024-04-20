@@ -26,6 +26,8 @@ do
     xcrun ../build/bin/clang -O3 -g -W -Werror -Wno-pointer-to-int-cast -c -o build/pizlonated-`basename $x .c`.o $x &
 done
 
+ruby src/libpas/generate_pizlonated_forwarders.rb
+
 do_build() {
     libname=$1
     flags=$2

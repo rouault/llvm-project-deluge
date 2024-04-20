@@ -26,7 +26,7 @@
 #ifndef FILC_PARKING_LOT_H
 #define FILC_PARKING_LOT_H
 
-#include "pas_utils.h"
+#include "filc_runtime.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -57,8 +57,14 @@ struct filc_unpark_result {
   
    Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
    long as you don't recursively call park_conditionally(). You can call unpark_one()/unpark_all()
-   though. It's useful to use before_sleep() for implementing condition variables. */
+   though. It's useful to use before_sleep() for implementing condition variables.
+
+   This is signal-safe, though you're on your own if you use this to park on something that only
+   the thread you interrupted can unpark. To achieve signal-safety, the validate callback is
+   called with signals blocked. That should be fine, since if you do unbounded work there, you'll
+   block who-knows-what-and-who anyway. */
 PAS_API bool filc_park_conditionally(
+    filc_thread* my_thread,
     const void* address,
     bool (*validate)(void* arg),
     void (*before_sleep)(void* arg),
@@ -67,16 +73,25 @@ PAS_API bool filc_park_conditionally(
 
 /* Unparks one thread from the queue associated with the given address, and calls the given
    callback while the address is locked. Reports to the callback whether any thread got
-   unparked and whether there may be any other threads still on the queue. */
+   unparked and whether there may be any other threads still on the queue.
+
+   This is signal-safe. */
 PAS_API void filc_unpark_one(
+    filc_thread* my_thread,
     const void* address,
     void (*callback)(filc_unpark_result result, void* arg),
     void* arg);
 
 /* Unparks up to count threads from the queue associated with the given address, which cannot be
    null. It's OK to pass UINT_MAX as count if you want to unpark all threads. Returns the number
-   of threads unparked. */
-PAS_API unsigned filc_unpark(const void* address, unsigned count);
+   of threads unparked.
+
+   This is signal-safe. */
+PAS_API unsigned filc_unpark(filc_thread* my_thread, const void* address, unsigned count);
+
+/* This is useful for fork(). Locking returns a cookie that has to be passed to unlock. */
+PAS_API void* filc_parking_lot_lock(void);
+PAS_API void filc_parking_lot_unlock(void* cookie);
 
 PAS_END_EXTERN_C;
 

@@ -1,271 +1,13 @@
 #ifndef FILC_STDFIL_H
 #define FILC_STDFIL_H
 
-/* ztype: Opaque representation of the Fil-C type. It's not possible to access the contents of a
-   Fil-C type except through whatever APIs we provide. Fil-C types are tricky, since they are
-   orthogonal to bounds. Every pointer has a bounds separate from the type, and the type's job is
-   to provide additional information. The only requirement is that a pointer's total range is a
-   multiple of whatever type it uses, or that it makes the math of flexes work out (where there is
-   an array of some type and a header).
-
-   Fil-C types can tell you the layout of memory if you also give them a slice, or span - a tuple
-   of begin and end, in bytes.
-
-   Fil-C types by themselves know a size for the purpose of informing the internal algorithm. It
-   should not be taken to mean the actual size of something. In particular, say you have a struct
-   like:
-
-       struct dejavu {
-           T a;
-           U b;
-           T c;
-           U d
-       };
-   
-   Observe that this type is the same as if we had an array of exactly two entries of this struct:
-   
-       struct pair {
-           T a;
-           U b;
-       };
-   
-   It's valid for a filc pointer to struct dejavu to describe itself in either of the following
-   ways:
-   
-       1. We could say that the pointer points to one dejavu.
-       2. We could say that the pointer points to two pairs.
-   
-   The statements are equivalent under the Fil-C type system, so the runtime and compiler are free
-   to pick whichever representation is most convenient. The type checks will work out the same
-   either way, because every type check (and every compiler-generated type introspection and all
-   type introspection in the runtime itself) always starts with a type and a slice, and the slice
-   has offsets in bytes.
-   
-   Things get even weirder when you consider that ztypes can represent flexes - objects with trailing
-   arrays. Flexes secretly also know the type of the array and where it starts. Hence, a flex can only
-   tell you memory layout if you only give it a slice since otherwise we don't know how many elements
-   the array has.
-   
-   This is quite different from C types. The APIs found here sometimes deal with C types and
-   sometimes with ztypes. APIs that take a C type do not need a slice, since the C type is both a
-   layout and a size. But anytime we have an API that takes a ztype - so anytime we want to deal with
-   types at runtime - then to emulate the behavior of a C type, we need at least a ztype and a size.
-   This denotes a slice starting at zero and ending at size. Those APIs may require that the size is
-   a multiple of the type's size and that the type not be a flex (like zalloc_with_type). Or, they
-   may allow the size to be any anything so long as 8 byte alignment is maintained for anything with
-   pointers. For example, slicing dejavu with [0, sizeof(dejavu) * 1.5) would create a type that is
-   equivalent to three pairs (i.e. it might even return the pair type). Basically, going "out of
-   bounds" of the type works as if we were asking for the layout of an array of that type, or the
-   layout of a flex with the appropriate array length to fit the slice.
-
-   This fact about ztypes can be traced to the fact that *every* pointer access in Fil-C must
-   perform a bounds check based on that pointer's lower and upper, and the lower/upper pair can't be
-   faked or tricked. So, the ztype's job is to give you information that is orthogonal to the bounds.
-   Therefore, ztypes are not in the business of bounds checking and always assume that your slice
-   makes sense. The business of bounds checking typically happens before the ztype even gets
-   consulted. */
-struct ztype;
-typedef struct ztype ztype;
-
-/* Don't call these _impls directly. Any uses that aren't exactly like the ones in the #defines may 
-   crash the compiler or produce a program that traps extra hard. */
-void* zrestrict_impl(const void* ptr, void* type_type, __SIZE_TYPE__ count);
-void* zalloc_impl(void* type_like, __SIZE_TYPE__ count);
-void* zalloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
-                       void* trailing_type_like, __SIZE_TYPE__ count);
-void* zaligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
-void* zrealloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
-void* zhard_alloc_impl(void* type_like, __SIZE_TYPE__ count);
-void* zhard_alloc_flex_impl(void* type_like, __SIZE_TYPE__ offset,
-                           void* trailing_type_like, __SIZE_TYPE__ count);
-void* zhard_aligned_alloc_impl(void* type_like, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
-void* zhard_realloc_impl(void* old_ptr, void* type_like, __SIZE_TYPE__ count);
-__SIZE_TYPE__ zcalloc_multiply(__SIZE_TYPE__ left, __SIZE_TYPE__ right);
-ztype* ztypeof_impl(void* type_like);
-
-/* Safely restricts the capability of the incoming pointer. If the given pointer cannot be treated as
-   the given type and size, trap.
-   
-   ptr must be a valid pointer, but can be of any type. type is a type expression. count must be
-   __SIZE_TYPE__ish. */
-#define zrestrict(ptr, type, count) ({ \
-        type __d_temporary; \
-        (type*)zrestrict_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
-
-/* Allocates count repetitions of the given type from virtual memory that has never been pointed at
-   by pointers that view it as anything other than count or more repetitions of the given type.
-   
-   Always zeroes newly allocated memory. There is no way to allocate memory that isn't zeroed.
-   
-   Crashes your program if allocation fails.
-   
-   Misuse of zalloc/zfree may cause logic errors where zalloc will return the same pointer as it had
-   previously returned, so pointers that you expected to different objects will end up pointing at the
-   same object.
-   
-   It's not possible to misuse zalloc/zfree to cause type confusion under the Fil-C P^I type system.
-   
-   type is a type expression. count must be __SIZE_TYPE__ish. */
-#define zalloc(type, count) ({ \
-        type __d_temporary; \
-        (type*)zalloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
-
-#define zcalloc(type, something_to_multiply, another_thing_to_multiply) \
-    zalloc(type, zcalloc_multiply((something_to_multiply), (another_thing_to_multiply)))
-
-#define zaligned_alloc(type, alignment, count) ({ \
-        type __d_temporary; \
-        (type*)zaligned_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(alignment), (__SIZE_TYPE__)(count)); \
-    })
-
-/* Allocates a flex object - that is, an object with a trailing array - with the given array length.
-
-   struct_type is a type expression; this must be a struct (or a typedef for a struct). field is the
-   name of a field in struct_type; this field is taken to be the trailing array. count must be
-   __SIZE_TYPE__ ish.
-
-   Misuse of this API may cause logic errors, or more likely, a situation where the returned pointer
-   has a type that is incompatible with all subsequent accesses, leading to filc thwarting your
-   program's execution. */
-#define zalloc_flex(struct_type, field, count) ({ \
-        struct_type __d_temporary; \
-        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
-        (struct_type*)zalloc_flex_impl( \
-            &__d_temporary, __builtin_offsetof(struct_type, field), \
-            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
-    })
-
-/* Allocates a flex object, like zalloc_flex, but is useful for cases where the type doesn't
-   actually have a flexible array member, and you'd like the flexible array to be placed after
-   sizeof the type.
-   
-   This is not what you want if the type does have a flexible array member, regardless of whether
-   it's old-school (type array[1]) or new-school (type array[]).
-   
-   base_type is a type expression. array_type is another type expression. count must be
-   __SIZE_TYPE__ ish. */
-#define zalloc_flex_cat(base_type, array_type, count) ({ \
-        base_type __d_temporary; \
-        array_type __d_trailing_temporary; \
-        (base_type*)zalloc_flex_impl( \
-            &__d_temporary, sizeof(base_type), \
-            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
-    })
-
-/* Allocates count repetitions of the given type from virtual memory that has never been pointed at
-   by pointers that view it as anything other than count or more repetitions of the given type.
-   The new memory is populated with a copy of the passed-in pointer. If the pointer points at more
-   than count repetitions of the type, then only the first count are copied. If the pointer points
-   at fewer than count repetitions of the type, then we only copy whatever it has.
-   
-   The pointer must point at the base of an allocation that is already some number of repetitions of
-   the given type (or a compatible type - in the sense of a pair being compatible with a pair of
-   pairs). In addition, this does all of the checks that deallocation would do. See the rules for
-   zfree for all of the checks performed on the old pointer.
-   
-   The size of the old allocation is based on the pointer's upper bounds, *not* on the underlying
-   allocation size! This means that you can do the OpenBSD-style recallocarray (which takes an old
-   size for the old pointer) by combining zrealloc with zrestrict.
-   
-   In addition to copying data from the old allocation, the new memory is zeroed. So, if you use
-   zrealloc to grow an array, then the added elements will start out zero.
-   
-   Misuse of zrealloc/zalloc/zfree may cause logic errors where zalloc/realloc will return the same
-   pointer as it had previously returned.
-   
-   It's not possible to misuse zrealloc to cause type confusion under the Fil-C P^I type system.
-   
-   ptr is a pointer of the given type, type is a type expression, count must be __SIZE_TYPE__ ish. */
-#define zrealloc(ptr, type, count) ({ \
-        type __d_temporary; \
-        (type*)zrealloc_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
-
-/* Free the object starting at the given pointer.
-   
-   If you pass NULL, this silently returns.
-   
-   If you pass a pointer where lower is NULL, this thwarts your program's stupidity by panicking.
-   
-   If you pass a pointer that is offset from lower (i.e. ptr != lower), this panicks your dumb program.
-   
-   If you pass a pointer that has an opaque type (like the type type, the function type, or filc
-   runtime types like the ones used to implement zthread APIs), this kills the shit out of your
-   program.
-   
-   If you pass a pointer that is already freed or was never allocated, then this might trap either now
-   or during any future call to zfree or zalloc. Note that the state where a trap is coming but hasn't
-   happened is not a weird state for the allocator; it's just buffering up the part where it will free
-   the object, and when that happens, the allocator will deterministically and well-defindedly either
-   identify an object it had allocated that it will now free, or it will kill the shit out of your
-   program.
-   
-   If you pass a pointer to the middle of an allocated object even when ptr == lower (which is still
-   possible by zrestricting and then zfreeing), then this will trap.
-   
-   If you free an object and then use it again, then that might be fine. But, free memory may be
-   decommitted at any time (so many start to trap or suddenly become all-zero). Memory that becomes
-   zero invalidates ptrs even when they straddle pages.
-
-   This has to be a synonym for free(), and it's up to libc to make this be the case by implementing
-   free() as a call to zfree(). If the libc author feels like doing extra checking (like if they
-   don't want it to be OK to free NULL), then whatever. */
+void* zalloc(__SIZE_TYPE__ count);
+void* zaligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+void* zrealloc(void* old_ptr, __SIZE_TYPE__ count);
+void* zaligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void zfree(void* ptr);
 
-/* If the allocator owns this pointer, returns the number of bytes allocated. This can be more than
-   the number of bytes in the pointer's capability, so you may not actually be able to use all of
-   the memory. The number of bytes allocated is always greater than zero.
-
-   If the allocator does not own this pointer, returns zero. */
-__SIZE_TYPE__ zgetallocsize(void* ptr);
-
-/* Allocate memory in the hard heap.
-   
-   The hard heap is intended for storing cryptographic secrets that cannot be written to swap, core
-   dumped, or kept in memory longer than necessary.
-   
-   This heap is incompatible with zfree(); you have to use zhard_free() to free memory from
-   zhard_alloc().
-   
-   The memory backing this heap is always given guard pages, is always locked (cannot be swapped),
-   and has DONT_DUMP (if the OS supports it). Additinally, both allocation and free always zero the
-   whole allocation. All underlying page regions allocated into this allocator have guard pages
-   around them. Automatic decommit still works. If the heap becomes empty, all of the pages will
-   be zeroed, unlocked, decommitted, and protected (PROT_NONE).
-
-   And, of course, the hard heap is totally isoheaped, hence an API that looks like normal zalloc
-   and has all of the guarantees as zalloc in addition to the mlocking B.S. */
-#define zhard_alloc(type, count) ({ \
-        type __d_temporary; \
-        (type*)zhard_alloc_impl(&__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
-#define zhard_calloc(type, something_to_multiply, another_thing_to_multiply) ({ \
-        __SIZE_TYPE__ __d_size; \
-        _Bool __d_mul = zcalloc_multiply((something_to_multiply), (another_thing_to_multiply), &__d_size); \
-        __d_mul ? zhard_alloc(type, __d_size) : NULL; \
-    })
-#define zhard_aligned_alloc(type, alignment, count) ({ \
-        type __d_temporary; \
-        (type*)zhard_aligned_alloc_impl( \
-            &__d_temporary, (__SIZE_TYPE__)(alignment), (__SIZE_TYPE__)(count)); \
-    })
-#define zhard_alloc_flex(struct_type, field, count) ({ \
-        struct_type __d_temporary; \
-        __typeof__(__d_temporary.field[0]) __d_trailing_temporary; \
-        (struct_type*)zhard_alloc_flex_impl( \
-            &__d_temporary, __builtin_offsetof(struct_type, field), \
-            &__d_trailing_temporary, (__SIZE_TYPE__)(count)); \
-    })
-#define zhard_realloc(ptr, type, count) ({ \
-        type __d_temporary; \
-        (type*)zhard_realloc_impl(ptr, &__d_temporary, (__SIZE_TYPE__)(count)); \
-    })
-void zhard_free(void* ptr);
-__SIZE_TYPE__ zhard_getallocsize(void* ptr);
-
-/* Accessors for the bounds and type.
+/* Accessors for the bounds.
  
    The lower and upper bounds have the same capability as the incoming ptr. So, if you know that a
    ptr points into the middle of struct foo and you want to get to the base of struct foo, you can
@@ -279,17 +21,9 @@ __SIZE_TYPE__ zhard_getallocsize(void* ptr);
        struct foo* foo = (struct foo*)zgetupper(ptr) - 1;
        
    In both cases, the pointer is usable provided that the bounds are big enough for struct foo and
-   that the type is compatible with struct foo.
-   
-   On the other hand, zgettype returns a very special kind of pointer. Anytime stdfil API says it
-   returns a ztype*, you'll get a pointer that knows that it points at the type type. It's not
-   possible to access such a pointer, but it is possible to pass it to APIs that take ztype*. APIs
-   that take ztype* validate the integrity of the type pointer. If you add anything to a ztype*,
-   then the capability will reject your pointer, so any uses will fail. So, it's not possible to
-   turn one ztype* into another via arithmetic. */
+   that the type is compatible with struct foo. */
 void* zgetlower(void* ptr);
 void* zgetupper(void* ptr);
-ztype* zgettype(void* ptr);
 
 /* Get the pointer's array length, which is the distance to upper in units of the ptr's static type. */
 #define zlength(ptr) ({ \
@@ -305,10 +39,13 @@ _Bool zinbounds(void* ptr);
 /* Tells if a value of the given size is in bounds of the pointer. */
 _Bool zvalinbounds(void* ptr, __SIZE_TYPE__ size);
 
+/* Returns true if the pointer points to a byte with unset type. */
+_Bool zisunset(void* ptr);
+
 /* Returns true if the pointer points at an integer byte.
    
-   If this returns false, then the pointer may point to a pointer, or to opaque memory, or to any other
-   type when we add more types.
+   If this returns false, then the pointer may point to a pointer, or be unset, or to opaque memory,
+   or to any other type when we add more types.
  
    Pointer must be in bounds, else your process dies. */
 _Bool zisint(void* ptr);
@@ -321,7 +58,7 @@ _Bool zisint(void* ptr);
      bytes from your pointer, then you'll be able to dereference it.
    
    - -1 means that this does not point to a pointer at all. This means it could mean that it's an int
-     or it could mean opaque memory. (Or any other type when we add more types.)
+     or it could be unset or it could mean opaque memory. (Or any other type when we add more types.)
      
    Pointer must be in bounds, else your process dies. */
 int zptrphase(void* ptr);
@@ -339,108 +76,17 @@ _Bool zisintorptr(void* ptr);
    
    This memmove will kill your process if anything goes out of bounds.
    
-   But on pointer mismatches (i.e. destination thought something was a pointer but the corresponding
-   source byte was an int, or vice-versa, or both source and destination has a pointer but at a
-   different phase), the destination's pointer or int is zeroed.
+   But on pointers (either destination thinks the byte is a pointer or the source thinks the byte is
+   a pointer), the value copied is zero.
    
    For example, if you call this to copy pointers to ints, those ints will become zero.
    
-   Or if you call this to copy ints to pointers, those pointers will become zero. */
+   Or if you call this to copy ints to pointers, those pointers will become zero.
+
+   Also if you copy pointers to pointers, then zero will be copied.
+
+   But if you copy ints to ints, then the actual bytes are copied. */
 void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
-
-/* Given a type and a range, returns a type that describes that range. Note that it's valid to ask
-   for a range bigger than the type. It's also valid for this to return a type whose size is smaller
-   than the range, if we can optimize repetitions (for example, iSC is the same as iSCiSC, so the
-   algorithm could return either, unless the range is too small for iSCiSC). That said, don't expect
-   that this function will definitely do any such optimizations. In particular, if the range is large,
-   then this might (try to) allocate a ginormous type. Since this never returns NULL, failure in those
-   allocations gives you the ultimate security mitigation (i.e. it kills the shit out of your
-   program). */
-ztype* zslicetype(ztype* type, __SIZE_TYPE__ begin, __SIZE_TYPE__ end);
-
-/* Gets a type that describes the first bytes of memory starting at where ptr points.
- 
-   Note that you could implement this using zgetlower, zgetupper, zgettype, and zslicetype, but it
-   would be gross. That's what happens behind the scenes, more or less. */
-ztype* zgettypeslice(void* ptr, __SIZE_TYPE__ bytes);
-
-/* Gets the ztype of the given C type. */
-#define ztypeof(type) ({ \
-        type __d_temporary; \
-        ztypeof_impl(&__d_temporary); \
-    })
-
-/* Concatenates the two type slices to create a new type. As with zslicetype, if the type looks like
-   an array of some simpler type, then the simpler type might get returned. That's also why you must
-   pass a size. */
-ztype* zcattype(ztype* a, __SIZE_TYPE__ asize, ztype* b, __SIZE_TYPE__ bsize);
-
-/* Allocate a bytes-size array of the given type, which is given dynamically. The size must be a
-   multiple of the type's size.
-
-   Here's an example use case. You can allocate some memory that can be used for memcpy'ing some bytes
-   out of an object and back again:
-
-       void* ptr2 = zalloc_with_type(zgettypeslice(ptr, bytes), bytes);
-
-   Or, to clone a whole object, you can do shenanigans like this:
-   
-       void* ptr2 = zalloc_with_type(zgettype(ptr), (char*)zgetupper(ptr) - (char*)zgetlower(ptr));
-       memcpy(ptr2, zgetlower(ptr), (char*)zgetupper(ptr) - (char*)zgetlower(ptr));
-       ptr2 = (char*)ptr2 + ((char*)ptr - (char*)zgetlower(ptr));
-   
-   This is a memory-safe escape hatch for situations where you don't know the type of the data that
-   you're dealing with, that data may have pointers, and you just want to be able to carry that data
-   around. Other than allowing you to specify a type dynamically (which implies picking the right
-   isoheap dynamically), it's exactly the same as zalloc. */
-void* zalloc_with_type(ztype* type, __SIZE_TYPE__ size);
-
-/* Allocate a zero-initialized object that is exactly like the one passed in from the standpoint of
-   the Fil-C type system. The new object will have the same type as what the obj pointer points to
-   and the same lower/upper bounds. This information comes from the pointer itself, so if you had
-   zrestricted the pointer or the pointer got borked, this will reflect in the allocated object. As
-   well, the resulting pointer will point at the same offset from lower as the obj pointer you
-   passed in. For example, if you pass in a pointer to the middle of an array, this will allocate
-   an array and return a pointer to the middle of it, offset in the same way as the original.
-
-   zalloc_like() is most useful if you want to describe the type+size in a simple-to-carry-around
-   kind of way. In particular, if you want to describe the type+size of something in a const
-   initializer, then using a pointer to a "default" instance of that thing is the simplest way to
-   do it. This should be seen as a deficiency in Fil-C, but it's one we can live with for now.
-   
-   Both the OpenSSL and Curl patches have some variant of this idiom (read this as a unified diff
-   snippet reflecting changes needed for Fil-C):
-   
-       +static const foo_bar_type foo_bar_type_prototype;
-        static const type_info foo_bar_type_info = {
-            ... (some stuff),
-       +    &foo_bar_type_prototype
-       -    sizeof(foo_bar_type)
-        };
-
-   In the original code, the size was used to tell some polymorphic allocator how big the foo_bar
-   object was going to be, so they can pass that to malloc. But that's not enough for Fil-C. So,
-   instead, we pass around a const void* prototype, and the polymorphic allocator now calls
-   zalloc_like(type_info->prototype) instead of malloc(type_info->size).
-   
-   In the future, you'd have been able to say ztypeof(foo_bar_type) in the static initializer, but:
-       1. That's not as convenient, since you still need to pass around the size!
-       2. You can't do it today, because clang's and llvm's notion of constexpr strongly rejects
-          everything about ztypeof(). A nontrivial amount of compiler surgery will be needed to
-          make that possible. Someday, maybe.
-
-   Ideally, there would be a way to carry around the type+size and put it in a const initializer.
-   Basically, a neatly-packaged tuple of ztype* and size, which would then constitute a Fil-C
-   dynamic equivalent of a C type. That thing would be a great replacement for prototypes. If we
-   built it today, then it would solve problem (1) above, but not problem (2). Ergo, we shall
-   proceed undaunted with prototypes and zalloc_like()! */
-void* zalloc_like(void* obj);
-
-/* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the type to that string.
-   Returns that string. You have to zfree the string when you're done with it.
-
-   This is exposed as %T in the zprintf family of functions. */
-char* ztype_to_new_string(ztype* type);
 
 /* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the ptr to that string.
    Returns that string. You have to zfree the string when you're done with it.
@@ -521,63 +167,6 @@ void zcompiler_fence(void);
 /* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Fil-C
    offers these functions instead.
 
-   But pointers are 32 bytes, you say! How can they be atomic, you say! What the fuck is going on!
-
-   Fil-C pointers comprise a sidecar and a capability. The capability always stores the pointer
-   itself and may store other information, too. The sidecar stores additional information, and may
-   also store the pointer, or not. The system is complex, but is arranged so that:
-   
-   - If you ever get a sidecar from one pointer and a capability from another, then the resulting
-     mix - the "borked ptr" - offers no escape from memory safety. Instead, it might trap in cases
-     where a normal pointer wouldn't have.
-     
-   - If the capability corresponds to a pointer that points to the base of an allocation, then
-     the sidecar is always ignored, and so it doesn't matter if it matches or not. The full
-     ptr, lower, upper, type combo is encoded in the capability (since ptr = lower). So, racing
-     with pointers to the base of things always works!
-   
-   - If the sidecar and capability really did correspond to the same pointer - i.e. it's not
-     borked at all - and it wasn't to the base of the allocation, then the sidecar and capability
-     combine to give you a precise and sound ptr, lower, upper, type combo.
-   
-   - If the capability corresponds to an out-of-bounds pointer (ptr < lower and ptr > upper; that's
-     right, I said > not >=), then the borked ptr might just be a boxed int (i.e. it will think
-     it points at nothing and all access will trap).
-   
-   - If both the capability and the sidecar corresponded to an out-of-bounds pointer, then the
-     borked pointer will point wherever the capability claimed, but will have the capability
-     (lower bounds, upper bounds, and type) from the sidecar. So, all accesses are likely to trap.
-     Or, you could arithmetic your way in-bounds again, to a place you could have been pointing at
-     the normal way were it not for the race.
-   
-   - If the capability corresponds to a pointer to the inside of an object or array of objects,
-     but *not* to the base of a flex object, then a mismatched sidecar is guaranteed to result
-     in the borked ptr's lower bounds snapping up towards the ptr, subject to the
-     (upper - lower) = k * type->size rule. The upper bound and type are retained precisely. So,
-     pointing into the middle of an object with nontrivial type will result in the lower bound
-     snapping up to the base of that object, not the interior pointer. Snapping the lower bound
-     up is memory-safe but it might cause your program to trap if you wanted to subtract from
-     the pointer and then access it.
-   
-   - If the capability corresponds to a pointer to the inside of the base of a flex object,
-     then the borked ptr will forget the flex array's bounds (the upper bound will snap down as
-     if the flex had no array). Note that you have to point past the beginning of the flex, and
-     not into the flex's array, for borked ptrs to have this effect.
-   
-   How do you avoid getting borked ptrs? Don't race on pointers.
-   
-   But what if you want to race on pointers? It's cool! Just make sure it's in bounds, or better
-   yet, points at the base of something. Then borked ptrs will work just fine for you.
-   
-   Atomic ops always bork the ptr by storing 0 into the sidecar. This helps remind you what's
-   happening in your racy code, if that code also involves CASing and such, which it usually
-   does. But if you're racing so hard you don't even CAS, then you get to discover the borking
-   in a probabilistic sort of way.
-   
-   This means that atomic ops just require a 128-bit CAS and a 128-bit store (and the store
-   to the sidecar doesn't need any fancy ordering). Normal loads/stores of ptrs use 128-bit
-   atomic loads/stores.
-
    Eventually, I'll even fix the clang bugs and then you'll be able to just use whatever your
    favorite compiler builtin for CAS is, instead of this junk. And those builtins will have
    identical semantics to these functions.
@@ -622,6 +211,13 @@ void* zxchg_ptr(void** ptr, void* new_value);
    The timeout is according to the REALTIME clock on POSIX, but formatted as a double because
    this is a civilized API. Use positive infinity (aka 1. / 0.) if you just want this to wait
    forever.
+   
+   This is signal-safe, but you're on your own if you park on something in a signal handler that
+   can only be unparked by the thread that the handler interrupted. Also, to make that work, the
+   condition callback is called with signals blocked. This is fine, since if you use that
+   function to do unbounded work, then you run the risk of blocking the whole program (since the
+   parking lot is holding a queue lock for the bucket for that address, which may be used by any
+   number of other addresses).
 
    Errors are reported by killing the shit out of your program. */
 _Bool zpark_if(const void* address,
@@ -641,13 +237,20 @@ _Bool zpark_if(const void* address,
    This matches the basic futex API except futexes would error on misaligned.
 
    Note that while this expects you to use an int, zpark_if has no such restriction. You could use
-   any atomic word there (or words, if you're fancy). */
+   any atomic word there (or words, if you're fancy).
+
+   This is signal-safe. */
 _Bool zcompare_and_park(const int* address, int expected_value,
                         double absolute_timeout_in_milliseconds);
 
 /* Unparks one thread from the queue associated with the given address, and calls the given
    callback while the address is locked. Reports to the callback whether any thread got
-   unparked and whether there may be any other threads still on the queue. */
+   unparked and whether there may be any other threads still on the queue.
+
+   This is signal-safe. But, that implies that the callback is called with signals blocked. That's
+   fine, since you have to avoid unbounded work in that function anyway, since it's called with
+   the bucket lock held, an the bucket lock may be shared between your address and any number of
+   other addresses. */
 void zunpark_one(const void* address,
                  void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
                  void* arg);
@@ -661,16 +264,6 @@ unsigned zunpark(const void* address, unsigned count);
 
    This is here so that the test suite can assert that it runs with testing asserts enabled. */
 _Bool zis_runtime_testing_enabled(void);
-
-/* Returns a pointer that has the sidecar from the first pointer and the capability from the
-   second pointer. This simulates any kind of race you like. If the sidecar and capability are
-   mismatched, then the resulting pointer will ignore the sidecar.
-   
-   This is here so that the test suite can simulate pointer races.
-   
-   There is no way to use this API in a memory-unsafe way. If you find a way to create a more
-   powerful capability by using this API, then it's a Fil-C bug and we should fix it. */
-void* zborkedptr(void* sidecar, void* capability);
 
 /* Asks Fil-C to run additional pointer validation on this pointer. If memory safety holds, then
    these checks will succeed. If they don't, then it's a Fil-C bug, and we should fix it. It could
@@ -806,17 +399,16 @@ int zsys_rename(const char* oldname, const char* newname);
 int zsys_unlink(const char* path);
 int zsys_link(const char* oldname, const char* newname);
 
-/* Functions that return bool: they return true on success, false on error. All of these set errno
-   on error. */
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
 unsigned zthread_self_id(void);
 void* zthread_get_cookie(void* thread);
 void* zthread_self_cookie(void);
 void zthread_set_self_cookie(void* cookie);
-void* zthread_create(void* (*callback)(void* arg), void* arg);
-_Bool zthread_join(void* thread, void** result);
-_Bool zthread_detach(void* thread);
+void* zthread_create(void* (*callback)(void* arg), void* arg); /* returns NULL on failure, sets
+                                                                  errno. */
+_Bool zthread_join(void* thread, void** result); /* Only fails with ESRCH for forked threads. Returns
+                                                    true on success, false on failure and sets errno. */
 
 #endif /* FILC_STDFIL_H */
 

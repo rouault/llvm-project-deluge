@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - filc panic
-  - deallocation did fail
+  - "cannot free ptr with ptr != lower"

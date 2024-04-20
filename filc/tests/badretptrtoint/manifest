@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - filc panic
+  - "cannot access 4 bytes as int, span contains non-ints"
+output-excludes:
+  - "f returned"

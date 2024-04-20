@@ -5,5 +5,5 @@ output-excludes:
 output-includes:
   - Spoko
   - filc panic
-  - cannot access 80 bytes as int, span contains non-ints
+  - span contains non-ints
 

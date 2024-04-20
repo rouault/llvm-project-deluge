@@ -4,8 +4,8 @@ int main(void) {
     for (unsigned i = 666; i--;) {
         int **ptrs[100];
         for (unsigned j = 100; j--;) {
-            ptrs[j] = zalloc(int*, 1);
-            *ptrs[j] = zalloc(int, 1);
+            ptrs[j] = zalloc(sizeof(int*));
+            *ptrs[j] = zalloc(sizeof(int));
             **ptrs[j] = j;
         }
         for (unsigned j = 100; j--;) {

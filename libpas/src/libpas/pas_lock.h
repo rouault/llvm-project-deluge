@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2021 Apple Inc. All rights reserved.
- * Copyright Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,6 +32,8 @@
 #include "pas_utils.h"
 
 PAS_BEGIN_EXTERN_C;
+
+PAS_API extern bool pas_lock_disallowed;
 
 enum pas_lock_hold_mode {
     pas_lock_is_not_held,
@@ -82,6 +84,7 @@ PAS_API PAS_NEVER_INLINE void pas_lock_lock_slow(pas_lock* lock);
 
 static inline void pas_lock_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
     pas_race_test_will_lock(lock);
     if (!pas_compare_and_swap_bool_weak(&lock->lock, false, true))
         pas_lock_lock_slow(lock);
@@ -90,6 +93,7 @@ static inline void pas_lock_lock(pas_lock* lock)
 
 static inline bool pas_lock_try_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
     bool result;
     result = !pas_compare_and_swap_bool_strong(&lock->lock, false, true);
     if (result)
@@ -141,6 +145,7 @@ static inline void pas_lock_construct_disabled(pas_lock* lock)
 
 static inline void pas_lock_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
 	pas_race_test_will_lock(lock);
 	AcquireSRWLockExclusive(&lock->lock);
 	pas_race_test_did_lock(lock);
@@ -148,6 +153,7 @@ static inline void pas_lock_lock(pas_lock* lock)
 
 static inline bool pas_lock_try_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
 	if (TryAcquireSRWLockExclusive(&lock->lock)) {
 		pas_race_test_did_try_lock(lock);
 		return true;
@@ -210,6 +216,7 @@ static inline void pas_lock_construct_disabled(pas_lock* lock)
 
 static inline void pas_lock_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
     if (PAS_LOCK_VERBOSE)
         pas_log("Thread " PAS_SYSTEM_THREAD_ID_FORMAT " Locking lock %p\n", pas_get_current_system_thread_id(), lock);
     pas_race_test_will_lock(lock);
@@ -219,6 +226,7 @@ static inline void pas_lock_lock(pas_lock* lock)
 
 static inline bool pas_lock_try_lock(pas_lock* lock)
 {
+    PAS_TESTING_ASSERT(!pas_lock_disallowed);
     bool result;
     if (PAS_LOCK_VERBOSE)
         pas_log("Thread " PAS_SYSTEM_THREAD_ID_FORMAT " TryLocking lock %p\n", pas_get_current_system_thread_id(), lock);

@@ -2,8 +2,8 @@ return:
   failure
 output-includes:
   - filc panic
-  - span has opaque type
-  - type{function}
+  - span contains non-ints
+  - "special,global,[function]"
 output-excludes:
   - blah
   - bytes when upper - ptr

@@ -19,7 +19,7 @@ struct bar {
 
 int main(void) {
     PRINT(sizeof(struct foo));
-    struct foo* ptr = zalloc(struct foo, 1);
+    struct foo* ptr = zalloc(sizeof(struct foo));
     ptr->x = 42;
     ptr->string = "hello";
     struct bar* ptr2 = (struct bar*)ptr;

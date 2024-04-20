@@ -1,0 +1,7 @@
+return:
+  success
+output-includes:
+  - "YAY"
+output-excludes:
+  - filc panic
+  - "NAY"

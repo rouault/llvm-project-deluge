@@ -1,17 +1,20 @@
 #ifndef FILC_RUNTIME_H
 #define FILC_RUNTIME_H
 
-#include <inttypes.h>
-#include <stdalign.h>
-#include <stdbool.h>
-#include <stdlib.h>
+#include "bmalloc_heap.h"
 #include "pas_allocation_config.h"
 #include "pas_hashtable.h"
 #include "pas_heap_ref.h"
 #include "pas_lock.h"
 #include "pas_lock_free_read_ptr_ptr_hashtable.h"
-#include "pas_ptr_hash_set.h"
+#include "pas_ptr_hash_map.h"
 #include "pas_range.h"
+#include "pas_segmented_vector.h"
+#include <inttypes.h>
+#include <stdalign.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 PAS_BEGIN_EXTERN_C;
 
@@ -23,9 +26,7 @@ PAS_BEGIN_EXTERN_C;
 
    This runtime is engineered under the following principles:
 
-   - It's based on libpas, so we get fully correct isoheap semantics and the perf of allocation in
-     those heaps is as good as what I can come up with after ~5 years of effort. The isoheap code
-     has been thoroughly battle-tested and we can trust it.
+   - It's based on libpas with the verse_heap, so we get to have a concurrent GC.
 
    - Coding standards have to be extremely high, and assert usage should be full-ass
      belt-and-suspenders. The goal of this code is to achieve memory safety under the FilC
@@ -35,137 +36,132 @@ PAS_BEGIN_EXTERN_C;
      go into optimization mode, I will be able to wreak havoc I'm just holding back from going
      there, for now. Lots of running code is better than a small amount of fast code. */
 
-struct filc_alloca_stack;
 struct filc_constant_relocation;
 struct filc_constexpr_node;
+struct filc_frame;
 struct filc_global_initialization_context;
-struct filc_initialization_entry;
+struct filc_native_frame;
+struct filc_object;
+struct filc_object_array;
 struct filc_origin;
 struct filc_ptr;
-struct filc_type;
-struct filc_type_template;
+struct filc_signal_handler;
+struct filc_return_buffer;
+struct filc_thread;
 struct pas_basic_heap_runtime_config;
 struct pas_stream;
-typedef struct filc_alloca_stack filc_alloca_stack;
+struct pas_thread_local_cache_node;
 typedef struct filc_constant_relocation filc_constant_relocation;
 typedef struct filc_constexpr_node filc_constexpr_node;
+typedef struct filc_frame filc_frame;
 typedef struct filc_global_initialization_context filc_global_initialization_context;
-typedef struct filc_initialization_entry filc_initialization_entry;
+typedef struct filc_native_frame filc_native_frame;
+typedef struct filc_object filc_object;
+typedef struct filc_object_array filc_object_array;
 typedef struct filc_origin filc_origin;
 typedef struct filc_ptr filc_ptr;
-typedef struct filc_type filc_type;
-typedef struct filc_type_template filc_type_template;
+typedef struct filc_return_buffer filc_return_buffer;
+typedef struct filc_signal_handler filc_signal_handler;
+typedef struct filc_thread filc_thread;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
+typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
 
 typedef uint8_t filc_word_type;
 
-/* Note that any statement like "128-bit word" below needs to be understood with the caveat that ptr
-   access also checks bounds. So, a pointer might say it has type "128-bit int" but bounds that say
-   "1 byte", in which case you get the intersection: "8-bit int". */
-#define FILC_WORD_TYPE_OFF_LIMITS        ((uint8_t)0)     /* 128-bit that cannot be accessed. */
-#define FILC_WORD_TYPE_INT               ((uint8_t)1)     /* 128-bit word that contains ints.
-                                                               Primitive ptrs may have bounds that
-                                                               are less than 16 bytes and may not have
-                                                               16 byte alignment. */
-#define FILC_WORD_TYPE_PTR_SIDECAR       ((uint8_t)2)     /* 128-bit word that contains the sidecar
-                                                               of a wide ptr. */
-#define FILC_WORD_TYPE_PTR_CAPABILITY    ((uint8_t)3)     /* 128-bit word that contains the capability
-                                                               of a wide ptr. */
+/* Each word in memory monotonically transitions type. The lattice is:
 
-#define FILC_WORD_SIZE sizeof(pas_uint128)
-
-/* Helper for emitting the ptr word types */
-#define FILC_WORD_TYPES_PTR \
-    FILC_WORD_TYPE_PTR_SIDECAR, \
-    FILC_WORD_TYPE_PTR_CAPABILITY
-
-/* The filc pointer, represented using its heap format. Let's call this the rest format. Pointers must
-   have this format when they are in any memory location of pointer type (i.e. the pair of SIDECAR and
-   CAPABILITY word types).
+   unset -> int
+   unset -> ptr
+   unset -> free
+   int -> free
+   ptr -> free
+   dirstream -> free
    
-   It would be smart to someday optimize both the compiler and the runtime for the filc pointer's flight
-   format: ptr, lower, upper, and type. That would be an awesome optimization, but I haven't done it yet,
-   because I am not yet interested in FilC's performance so long as I don't have a lot of running code.
-   
-   Instead, we pass around filc_ptrs, but to do anything with them, we have to call getters to get the
-   ptr/lower/upper/type. That's the current idiom even though it is surely inefficient and confusing for
-   debugging, since we don't clear invalid sidecars - we just lazily ignore them in the lower getter. */
+   Note that some states (dirstream, function, and thread) have no transition from unset. These are
+   allocated with filc_allocate_special, which sets the type straight away. These special types all
+   have upper = lower + 16 even though the payload is not 16 bytes!
+
+   Note that some of the states have no transition to free.
+
+   Hence, some types have no edges in the lattice (if they have no transition from unset and no
+   transition to free). */
+#define FILC_WORD_TYPE_UNSET              ((uint8_t)0)     /* 128-bit word whose type hasn't been set
+                                                              yet. */
+#define FILC_WORD_TYPE_INT                ((uint8_t)1)     /* 128-bit word that contains ints. */
+#define FILC_WORD_TYPE_PTR                ((uint8_t)2)     /* 128-bit word that contains a ptr. */
+#define FILC_WORD_TYPE_FREE               ((uint8_t)3)     /* 128-bit word that has been freed. */
+#define FILC_WORD_TYPE_FUNCTION           ((uint8_t)4)     /* Indicates the special function type.
+                                                              The lower points at the function but the
+                                                              GC-allocated payload is empty. */
+#define FILC_WORD_TYPE_THREAD             ((uint8_t)5)     /* Indicates the special thread type. The
+                                                              lower points at the payload. */
+#define FILC_WORD_TYPE_DIRSTREAM          ((uint8_t)6)     /* Indicates the special dirstream type.
+                                                              The lower points at the payload. */
+#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((uint8_t)7)     /* Indicates the special signal_handler.
+                                                              The lower points at the payload. */
+                                          
+#define FILC_WORD_SIZE                    sizeof(pas_uint128)
+                                          
+#define FILC_OBJECT_FLAG_FREE             ((uint8_t)1)     /* The object has been freed. */
+#define FILC_OBJECT_FLAG_RETURN_BUFFER    ((uint8_t)2)     /* This is a return buffer (so it's not
+                                                              GC'd and should never be seen by GC).
+                                                              Useful for assertions only! */
+#define FILC_OBJECT_FLAG_SPECIAL          ((uint8_t)4)     /* It's a special object. If there are no
+                                                              words, or any of them are unset/int/ptr,
+                                                              then this cannot be set. If this is set,
+                                                              then there must be one word, and that
+                                                              word must be one of free/function/
+                                                              thread/dirstream/signal_handler. */
+#define FILC_OBJECT_FLAG_GLOBAL           ((uint8_t)8)     /* Pointer to a global, so cannot be
+                                                              freed. */
+                                          
+#define FILC_MAX_MUSL_SIGNUM              31u
+                                          
+#define FILC_THREAD_STATE_ENTERED         ((uint8_t)1)
+#define FILC_THREAD_STATE_CHECK_REQUESTED ((uint8_t)2)
+#define FILC_THREAD_STATE_STOP_REQUESTED  ((uint8_t)4)
+#define FILC_THREAD_STATE_DEFERRED_SIGNAL ((uint8_t)8)
+
+#define FILC_MAX_BYTES_BETWEEN_POLLCHECKS ((size_t)1000)
+
+#define PIZLONATED_SIGNATURE \
+    filc_thread* my_thread, \
+    filc_ptr args, \
+    filc_ptr rets
+
 struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
-    /* The sidecar is optional. If it doesn't match the capability, we ignore it. In some cases, we just
-       store 0 in it. If the ptr = lower, then the sidecar is totally ignored. */
-    pas_uint128 sidecar;
-
-    /* The capabiltiy is mandatory. It stores the ptr itself, the upper bound, the type, and some data
-       that's useful for inferring more accurate bounds. */
-    pas_uint128 capability;
+    pas_uint128 word;
 };
 
-enum filc_capability_kind {
-    /* The ptr is exactly at lower, so ignore the sidecar. This avoids capability widening across
-       allocation boundaries. */
-    filc_capability_at_lower,
-
-    /* The ptr is inside an array allocation. If it's in the flex array allocation, the type will
-       be the trailing array type. */
-    filc_capability_in_array,
-
-    /* The ptr is inside the base of a flex. The capability's upper refers to the upper bounds of
-       the flex base. This has a special sidecar (the flex_upper sidecar). */
-    filc_capability_flex_base,
-
-    /* The ptr is out of bounds. The capability does not have an upper or type. This has a special
-       sidecar (the oob_capability sidecar). */
-    filc_capability_oob,
-};
-
-typedef enum filc_capability_kind filc_capability_kind;
-
-enum filc_sidecar_kind {
-    /* Normal sidecar, which tells the lower bounds. */
-    filc_sidecar_lower,
-
-    /* Sidecar used for flex_base capabilities, which tells the true upper bounds of the flex
-       allocation. */
-    filc_sidecar_flex_upper,
-
-    /* Sidecar used for oob capabilities, which contains the full capability but not the pointer.
-       I.e. the sidecar has lower, upper, and type. In this case, the sidecar's lower/upper/type
-       are combined with the capability's ptr. If that fails, then the ptr becomes a boxed int. */
-    filc_sidecar_oob_capability
-};
-
-typedef enum filc_sidecar_kind filc_sidecar_kind;
-
-/* Zero-word types are unique; they are only equal by pointer equality. They may or may not have
-   a size. If they have a size, they must have an alignment, and they may be allocated. Zero-word
-   types have a pas_heap_runtime_config* instead of a trailing_array.
-   
-   Non-zero-word types are equal if they are structurally the same. They must have a size that
-   matches num_words, as in: (size + 15) / 16 == num_words. They must have an alignment. And, they
-   have a trailing_array instead of a runtime_config. */
-struct filc_type {
-    unsigned index;
-    size_t size;
-    size_t alignment;
-    size_t num_words;
-    union {
-        const filc_type* trailing_array;
-        pas_basic_heap_runtime_config* runtime_config;
-    } u;
+struct filc_object {
+    /* NOTE: In the interest of simplicity, we say that lower and upper have to be word-aligned for
+       non-special objects and that upper-lower (i.e. the size) has to be word-aligned no matter
+       what.
+       
+       This means that the minimum allocation size is 16 bytes.
+       
+       This isn't a strict requirement for the system to work. It's only a requirement for things
+       that have ptrs. For now we make it a requirement (and obey it in the compiler and assert it
+       in the runtime) because it makes things more obvious. */
+    
+    void* lower;
+    void* upper;
+    uint8_t flags;
     filc_word_type word_types[];
 };
 
-/* Used to describe a non-opaque type to the runtime. For this to be useful, you need to pass it to
-   filc_get_type().
+/* The size of filc_object if it's a special object. This is based on special objects having just one
+   word_type. */
+#define FILC_SPECIAL_OBJECT_SIZE \
+    PAS_ROUND_UP_TO_POWER_OF_2(PAS_OFFSETOF(filc_object, word_types) + 1, FILC_WORD_SIZE)
 
-   There is no need for the layout of this to match filc_type. It cannot completely match it,
-   since type has extra fields that this doesn't need to have. */
-struct filc_type_template {
-    size_t size;
-    size_t alignment;
-    const filc_type_template* trailing_array;
-    filc_word_type word_types[];
+struct filc_return_buffer {
+    void* lower;
+    void* upper;
+    uint8_t flags;
+    filc_word_type word_type;
+    pas_uint128 data;
 };
 
 struct filc_origin {
@@ -175,24 +171,115 @@ struct filc_origin {
     unsigned column;
 };
 
-struct filc_initialization_entry {
-    pas_uint128* pizlonated_gptr;
-    pas_uint128 ptr_capability;
+#define FILC_FRAME_BODY \
+    filc_frame* parent; \
+    const filc_origin* origin; \
+    size_t num_objects
+
+struct filc_frame {
+    FILC_FRAME_BODY;
+    filc_object* objects[];
+};
+
+struct filc_object_array {
+    size_t num_objects;
+    size_t objects_capacity;
+    filc_object** objects;
+};
+
+struct filc_native_frame {
+    filc_native_frame* parent;
+    filc_object_array array;
+    bool locked;
+};
+
+struct filc_signal_handler {
+    filc_ptr function_ptr; /* This has to be pre-checked to actually be a callable function, but out
+                              of an abundance of caution, we check it again anyway when calling it. */
+    sigset_t mask;
+    int musl_signum; /* This is only needed for assertion discipline. */
+};
+
+struct filc_thread {
+    /* Begin fields that the compiler has to know about. */
+    uint8_t state;
+    filc_frame* top_frame;
+    /* End fields that the compiler has to know about. */
+    
+    filc_native_frame* top_native_frame;
+
+    void (*pollcheck_callback)(filc_thread* my_thread, void* arg);
+    void* pollcheck_arg;
+
+    /* protected by the thread_list_lock. */
+    filc_thread* next_thread;
+    filc_thread* prev_thread;
+
+    pas_thread_local_cache_node* tlc_node;
+    uint64_t tlc_node_version;
+
+    /* This is an allocated but not constructed object. It should be marked, but must not be put on
+       any mark stack. This allows allocation to pollcheck and/or exit if it needs to. */
+    filc_object* allocation_root;
+
+    filc_object_array mark_stack;
+
+    /* We currently assume that system_mutex and system_condition do not need destruction. That
+       happens to be true on every reasonable POSIX impl. */
+    pas_system_mutex lock; /* We grab all of these during fork(). */
+    pas_system_condition cond;
+    bool has_started; /* set to true when we actually commence starting the thread, after grabbing
+                         the handshake/stw locks. so, crucially, writes are protected by both the
+                         soft_handshake and the stop_the_world lock, and reads are protected by
+                         either one. */
+    bool is_stopping; /* set to true when the thread has proceeded far enough in the stop sequence
+                         that it no longer has allocators to stop or a mark stack. written to
+                         while entered and affects pollchecks only. */
+    bool has_stopped; /* set to true when the thread is shut down. This is what you want for when
+                         joining. */
+    bool error_starting; /* set to true if we failed to start the thread. This is useful just for
+                            the assertion in zthread_join that disallows joining on a thread that
+                            wasn't actually ever started. */
+    bool forked; /* set to true if this thread died due to forking. We use this to implement super
+                    precise semantics in that case; it allows zthread_join to return false/ESRCH if
+                    you try to join a thread that died due to fork. */
+    pthread_t thread; /* the underlying thread is always detached and this stays non-NULL so long
+                         as the thread is running.
+                         
+                         This is set to non-NULL the moment that the thread is fully started and
+                         is set back to NULL when the thread starts stopping. */
+    void (*thread_main)(PIZLONATED_SIGNATURE);
+    filc_ptr arg_ptr;
+    filc_ptr result_ptr;
+    filc_ptr cookie_ptr;
+
+    /* musl relies on each thread having a 32-bit id, so we oblige. */
+    unsigned tid;
+
+    /* We allow deferring signals aside from running entered. This is rare but useful. If this count is
+       nonzero, then the signal_pizlonator will not set DEFERRED_SIGNAL flag in the state, but will set
+       have_deferred_signal_special. */
+    unsigned special_signal_deferral_depth;
+    bool have_deferred_signal_special;
+    
+    uint64_t num_deferred_signals[FILC_MAX_MUSL_SIGNUM + 1];
 };
 
 struct filc_global_initialization_context {
     size_t ref_count;
-    pas_ptr_hash_set seen;
-    filc_initialization_entry* entries;
-    size_t num_entries;
-    size_t entries_capacity;
+    
+    /* Maps the location in memory that stores the persistent authoritative filc_ptr to the global
+       to the filc_object* that we are in the process of initializing.
+       
+       Key: filc_ptr* pizlonated_gptr
+       Value: filc_object* object */
+    pas_ptr_hash_map map;
 };
 
 enum filc_constant_kind {
-    /* The target is the actual function. */
-    filc_function_constant,
-
-    /* The target is a getter that returns a pointer to the global. */
+    /* The target is a getter that returns a pointer to the global.
+     
+       This is used for both functions and globals. */
     filc_global_constant,
 
     /* The target is a constexpr node. */
@@ -222,65 +309,50 @@ struct filc_constant_relocation {
     void* target;
 };
 
-struct filc_alloca_stack {
-    void** array;
-    size_t size;
-    size_t capacity;
-};
+#define FILC_FOR_EACH_LOCK(macro) \
+    macro(thread_list); \
+    macro(stop_the_world)
 
-#define FILC_ALLOCA_STACK_INITIALIZER { \
-        .array = NULL, \
-        .size = 0, \
-        .capacity = 0 \
-    }
+/* We use the system mutex for our global locks so that they are fork-friendly. The Darwin
+   os_unfair_lock, which we use for most of libpas, is not fork-friendly. That's because
+   os_unfair_lock has an assertion on unlock that the current thread holds the lock, and
+   os_unfair_locks held across fork into the child are not seen as being held by the calling
+   (child process) thread. */
+#define FILC_DECLARE_LOCK(name) \
+    PAS_API extern pas_system_mutex filc_ ## name ## _lock; \
+    PAS_API void filc_ ## name ## _lock_lock(void); \
+    PAS_API void filc_ ## name ## _lock_unlock(void); \
+    PAS_API void filc_ ## name ## _lock_assert_held(void)
+FILC_FOR_EACH_LOCK(FILC_DECLARE_LOCK);
+#undef FILC_DECLARE_LOCK
 
-/* This exist only so that compiler-generated templates that need the int type for trailing arrays can
-   refer to it. */
-extern const filc_type_template filc_int_type_template;
-
-extern const filc_type filc_int_type;
-extern const filc_type filc_one_ptr_type;
-extern const filc_type filc_int_ptr_type;
-extern const filc_type filc_function_type;
-extern const filc_type filc_type_type;
-
-extern const filc_type** filc_type_array;
-extern unsigned filc_type_array_size;
-extern unsigned filc_type_array_capacity;
-
-#define FILC_INVALID_TYPE_INDEX              0u
-#define FILC_INT_TYPE_INDEX                  1u
-#define FILC_ONE_PTR_TYPE_INDEX              2u
-#define FILC_INT_PTR_TYPE_INDEX              3u
-#define FILC_FUNCTION_TYPE_INDEX             4u
-#define FILC_TYPE_TYPE_INDEX                 5u
-#define FILC_MUSL_PASSWD_TYPE_INDEX          6u
-#define FILC_MUSL_SIGACTION_TYPE_INDEX       7u
-#define FILC_THREAD_TYPE_INDEX               8u
-#define FILC_MUSL_ADDRINFO_TYPE_INDEX        9u
-#define FILC_DIRSTREAM_TYPE_INDEX            10u
-#define FILC_MUSL_GROUP_TYPE_INDEX           11u
-#define FILC_MUSL_MSGHDR_TYPE_INDEX          12u
-#define FILC_TYPE_ARRAY_INITIAL_SIZE         13u
-#define FILC_TYPE_ARRAY_INITIAL_CAPACITY     100u
-#define FILC_TYPE_MAX_INDEX                  0x3fffffffu
-#define FILC_TYPE_INDEX_MASK                 0x3fffffffu
-#define FILC_TYPE_ARRAY_MAX_SIZE             0x40000000u
-
-extern pas_lock_free_read_ptr_ptr_hashtable filc_fast_type_table;
-extern pas_lock_free_read_ptr_ptr_hashtable filc_fast_heap_table;
-extern pas_lock_free_read_ptr_ptr_hashtable filc_fast_hard_heap_table;
-
-PAS_DECLARE_LOCK(filc_type);
-PAS_DECLARE_LOCK(filc_type_ops);
+/* These locks don't need to be held across fork, so no big deal. */
+PAS_DECLARE_LOCK(filc_soft_handshake);
 PAS_DECLARE_LOCK(filc_global_initialization);
 
-void filc_panic(const filc_origin* origin, const char* format, ...);
+PAS_API extern filc_thread* filc_first_thread;
+PAS_API extern pthread_key_t filc_thread_key;
 
-#define FILC_CHECK(exp, origin, ...) do {     \
+PAS_API extern bool filc_is_marking;
+
+PAS_API extern pas_heap* filc_heap;
+
+PAS_API extern filc_object* filc_free_singleton;
+
+PAS_API extern filc_object_array filc_global_variable_roots;
+
+/* Anything that takes origin for checking has the following meaning:
+   
+   - If the origin is NULL, we just use the origin that's at the top of the stack already.
+   - If the origin is not NULL, then this sets the top frame's origin to what is passed. */
+void filc_safety_panic(const filc_origin* origin, const char* format, ...); /* memory safety */
+void filc_internal_panic(const filc_origin* origin, const char* format, ...); /* internal error */
+void filc_user_panic(const filc_origin* origin, const char* format, ...); /* user-triggered */
+
+#define FILC_CHECK(exp, origin, ...) do { \
         if ((exp)) \
             break; \
-        filc_panic(origin, __VA_ARGS__); \
+        filc_safety_panic(origin, __VA_ARGS__); \
     } while (0)
 
 /* Ideally, all FILC_ASSERTs would be turned into FILC_CHECKs.
@@ -291,9 +363,8 @@ void filc_panic(const filc_origin* origin, const char* format, ...);
 #define FILC_ASSERT(exp, origin) do { \
         if ((exp)) \
             break; \
-        filc_panic( \
-            origin, \
-            "%s:%d: %s: safety assertion %s failed.", \
+        filc_safety_panic( \
+            origin, "%s:%d: %s: safety assertion %s failed.", \
             __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
     } while (0)
 
@@ -302,74 +373,223 @@ void filc_panic(const filc_origin* origin, const char* format, ...);
             break; \
         if ((exp)) \
             break; \
-        filc_panic( \
+        filc_internal_panic( \
             origin, "%s:%d: %s: testing assertion %s failed.", \
             __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
     } while (0)
 
-#define PIZLONATED_SIGNATURE \
-    void* pizlonated_arg_ptr, void* pizlonated_arg_upper, const filc_type* pizlonated_arg_type, \
-    void* pizlonated_ret_ptr, void* pizlonated_ret_upper, const filc_type *pizlonated_ret_type
-
-#define PIZLONATED_ARGS \
-    filc_ptr_forge(pizlonated_arg_ptr, pizlonated_arg_ptr, pizlonated_arg_upper, pizlonated_arg_type)
-#define PIZLONATED_RETS \
-    filc_ptr_forge(pizlonated_ret_ptr, pizlonated_ret_ptr, pizlonated_ret_upper, pizlonated_ret_type)
-
-#define PIZLONATED_DELETE_ARGS() do { \
-        filc_deallocate(pizlonated_arg_ptr); \
-        PAS_UNUSED_PARAM(pizlonated_arg_upper); \
-        PAS_UNUSED_PARAM(pizlonated_arg_type); \
-        PAS_UNUSED_PARAM(pizlonated_ret_ptr); \
-        PAS_UNUSED_PARAM(pizlonated_ret_upper); \
-        PAS_UNUSED_PARAM(pizlonated_ret_type); \
-    } while (false)
-
 /* Must be called from CRT before any FilC happens. If we ever allow FilC dylibs to be loaded 
    into non-FilC code, then we'll have to call it from compiler-generated initializers, too. It's
-   fine to call this more than once. */
+   not fine to call this more than once or at any other time than in the CRT. */
 PAS_API void filc_initialize(void);
 
+PAS_API filc_thread* filc_thread_create(void);
+
+/* Gives the thread's tid back. Has to be done while still entered. */
+PAS_API void filc_thread_relinquish_tid(filc_thread* thread);
+
+/* This removes the thread from the thread list and reuses its tid. */
+PAS_API void filc_thread_dispose(filc_thread* thread);
+
+PAS_API filc_thread* filc_get_my_thread(void);
+
+static inline bool filc_thread_is_entered(filc_thread* thread)
+{
+    return thread->state & FILC_THREAD_STATE_ENTERED;
+}
+
+PAS_API void filc_assert_my_thread_is_not_entered(void);
+
+/* Calls the callback from every thread. Returns when every thread has done so. */
+PAS_API void filc_soft_handshake(void (*callback)(filc_thread* my_thread, void* arg), void* arg);
+
+PAS_API void filc_stop_the_world(void);
+PAS_API void filc_resume_the_world(void);
+
 /* Begin execution in Fil-C. Executing Fil-C comes with the promise that you'll periodically do
-   a pollcheck and that all signals will be deferred to pollchecks.
-   
-   In the future, this might mean acquiring heap access (if Fil-C ever gets a GC). */
-PAS_API void filc_enter(void);
+   a pollcheck and that all signals will be deferred to pollchecks. */
+PAS_API void filc_enter(filc_thread* my_thread);
 
 /* End execution in Fil-C. Call this before doing anything that might block or anything to
    affect signal masks.
    
    You can exit and then reenter as much as you like. It'll be super cheap eventually. */
-PAS_API void filc_exit(void);
+PAS_API void filc_exit(filc_thread* my_thread);
 
-/* Check if there's a pending signal, and if so, run its handler.
+/* These have to be called entered, currently. The only thing stopping us from making them work
+   exited is that then, decrease_special_signal_deferral_depth would have to
+   handle_deferred_signals. */
+PAS_API void filc_increase_special_signal_deferral_depth(filc_thread* my_thread);
+PAS_API void filc_decrease_special_signal_deferral_depth(filc_thread* my_thread);
+
+static inline void filc_set_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+{
+    PAS_ASSERT(!my_thread->allocation_root);
+    my_thread->allocation_root = allocation_root;
+}
+
+static inline void filc_clear_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+{
+    PAS_ASSERT(my_thread->allocation_root == allocation_root);
+    my_thread->allocation_root = NULL;
+}
+
+PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
+PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
+
+/* It's hilarious that these are outline function calls right now. It's also hilarious that pop_frame
+   takes the frame. In the future, it'll only use it for assertions. */
+static inline void filc_push_frame(filc_thread* my_thread, filc_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(my_thread->top_frame != frame);
+    frame->parent = my_thread->top_frame;
+    my_thread->top_frame = frame;
+}
+static inline void filc_pop_frame(filc_thread* my_thread, filc_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(my_thread->top_frame == frame);
+    my_thread->top_frame = frame->parent;
+}
+
+static inline void filc_object_array_construct(filc_object_array* array)
+{
+    array->num_objects = 0;
+    array->objects_capacity = 0;
+    array->objects = NULL;
+}
+
+static inline void filc_object_array_destruct(filc_object_array* array)
+{
+    bmalloc_deallocate(array->objects);
+}
+
+PAS_API void filc_object_array_push(filc_object_array* array, filc_object* object);
+
+static filc_object* filc_object_array_pop(filc_object_array* array)
+{
+    if (!array->num_objects)
+        return NULL;
+    return array->objects[--array->num_objects];
+}
+
+PAS_API void filc_object_array_reset(filc_object_array* array);
+PAS_API void filc_object_array_push_all(filc_object_array* to, filc_object_array* from);
+PAS_API void filc_object_array_pop_all_from_and_push_to(filc_object_array* from,
+                                                        filc_object_array* to);
+
+/* Locking the native frame prevents us from accidentally adding stuff to the top_native_frame if
+   it doesn't belong to us. */
+static inline void filc_native_frame_lock(filc_native_frame* frame)
+{
+    PAS_ASSERT(!frame->locked);
+    frame->locked = true;
+}
+
+static inline void filc_native_frame_unlock(filc_native_frame* frame)
+{
+    PAS_ASSERT(frame->locked);
+    frame->locked = false;
+}
+
+static inline void filc_native_frame_assert_locked(filc_native_frame* frame)
+{
+    PAS_ASSERT(frame->locked);
+}
+
+static inline void filc_lock_top_native_frame(filc_thread* thread)
+{
+    if (thread->top_native_frame)
+        filc_native_frame_lock(thread->top_native_frame);
+}
+
+static inline void filc_unlock_top_native_frame(filc_thread* thread)
+{
+    if (thread->top_native_frame)
+        filc_native_frame_unlock(thread->top_native_frame);
+}
+
+static inline void filc_assert_top_frame_locked(filc_thread* thread)
+{
+    if (thread->top_native_frame)
+        filc_native_frame_assert_locked(thread->top_native_frame);
+}
+
+static inline void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    filc_object_array_construct(&frame->array);
+    frame->locked = false;
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
+    filc_assert_top_frame_locked(my_thread);
+    frame->parent = my_thread->top_native_frame;
+    my_thread->top_native_frame = frame;
+}
+
+static inline void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    filc_object_array_destruct(&frame->array);
+    PAS_TESTING_ASSERT(!frame->locked);
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame == frame);
+    my_thread->top_native_frame = frame->parent;
+}
+
+PAS_API void filc_native_frame_add(filc_native_frame* frame, filc_object* object);
+
+/* Requires that we have a top_native_frame, so can only be called from native functions. */
+PAS_API void filc_thread_track_object(filc_thread* my_thread, filc_object* object);
+
+PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin);
+
+/* Check if the GC needs us to do work. Also check if there's a pending signal, and if so, run its
+   handler.
    
    This mechanism allows us to have signal handlers that allocate even though the allocator uses
    locks. It also means that signal handlers can call into almost all stdfil API and all
    compiler-facing runtime API.
+   
+   This mechanism also allows us to handle GC safepoints.
 
    Only call this inside Fil-C execution and never after exiting. */
-PAS_API void filc_pollcheck(void);
+static inline void filc_pollcheck(filc_thread* my_thread, const filc_origin* origin)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    if ((my_thread->state & (FILC_THREAD_STATE_CHECK_REQUESTED |
+                             FILC_THREAD_STATE_STOP_REQUESTED |
+                             FILC_THREAD_STATE_DEFERRED_SIGNAL)))
+        filc_pollcheck_slow(my_thread, origin);
+}
+
+/* This is purely to make it easier for the compiler to emit pollchecks for now. It's a bug that
+   the compiler uses this, but, like, fugc it. */
+PAS_API void filc_pollcheck_outline(filc_thread* my_thread, const filc_origin* origin);
+
+void filc_thread_stop_allocators(filc_thread* my_thread);
+void filc_thread_mark_roots(filc_thread* my_thread);
+void filc_thread_sweep_mark_stack(filc_thread* my_thread);
+void filc_thread_donate(filc_thread* my_thread);
+
+void filc_mark_global_roots(filc_object_array* mark_stack);
 
 void filc_origin_dump(const filc_origin* origin, pas_stream* stream);
 
-static inline const filc_type* filc_type_lookup(unsigned index)
+void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream);
+
+void filc_validate_object(filc_object* object, const filc_origin* origin);
+void filc_validate_normal_object(filc_object* object, const filc_origin* origin);
+void filc_validate_return_buffer_object(filc_object* object, const filc_origin* origin);
+
+static inline void filc_testing_validate_object(filc_object* object, const filc_origin* origin)
 {
-    PAS_TESTING_ASSERT(index < filc_type_array_size);
-    return filc_type_array[index];
+    if (PAS_ENABLE_TESTING)
+        filc_validate_object(object, origin);
 }
-
-static inline size_t filc_type_template_num_words(const filc_type_template* type)
-{
-    return pas_round_up_to_power_of_2(type->size, FILC_WORD_SIZE) / FILC_WORD_SIZE;
-}
-
-PAS_API void filc_type_template_dump(const filc_type_template* type, pas_stream* stream);
-
-/* Hash-conses the type template to give you a type instance. If that exact type_template ptr has been
-   used for filc_get_type before, then this is lock-free. Otherwise, it's still O(1) but may need
-   some locks. You're expected to never free the type_template. */
-PAS_API const filc_type* filc_get_type(const filc_type_template* type_template);
 
 /* Run assertions on the ptr itself. The runtime isn't guaranteed to ever run this check. Pointers
    are expected to be valid by construction. This asserts properties that are going to be true
@@ -385,13 +605,10 @@ PAS_API const filc_type* filc_get_type(const filc_type_template* type_template);
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual FilC check that the compiler uses to achieve memory
    safety! */
-void filc_validate_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
-                              const filc_origin* origin);
+void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin);
 
-static inline void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_validate_ptr_impl(ptr.sidecar, ptr.capability, origin);
-}
+void filc_validate_normal_ptr(filc_ptr ptr, const filc_origin* origin);
+void filc_validate_return_buffer_ptr(filc_ptr ptr, const filc_origin* origin);
 
 static inline void filc_testing_validate_ptr(filc_ptr ptr)
 {
@@ -399,215 +616,46 @@ static inline void filc_testing_validate_ptr(filc_ptr ptr)
         filc_validate_ptr(ptr, NULL);
 }
 
-static inline unsigned filc_ptr_capability_type_index(filc_ptr ptr)
+static inline filc_object* filc_object_for_special_payload(void* payload)
 {
-    return (unsigned)(ptr.capability >> (pas_uint128)96) & FILC_TYPE_INDEX_MASK;
+    if (!payload)
+        return NULL;
+    filc_object* result = (filc_object*)((char*)payload - FILC_SPECIAL_OBJECT_SIZE);
+    PAS_TESTING_ASSERT(result->lower == payload);
+    PAS_TESTING_ASSERT(result->upper == (char*)payload + FILC_WORD_SIZE);
+    PAS_TESTING_ASSERT(result->word_types[0] == FILC_WORD_TYPE_THREAD ||
+                       result->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
+                       result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER);
+    return result;
 }
 
-static inline filc_capability_kind filc_ptr_capability_kind(filc_ptr ptr)
+static inline filc_object* filc_ptr_object(filc_ptr ptr)
 {
-    return (filc_capability_kind)(ptr.capability >> (pas_uint128)126);
-}
-
-static inline bool filc_ptr_is_boxed_int(filc_ptr ptr)
-{
-    return !filc_ptr_capability_type_index(ptr)
-        && filc_ptr_capability_kind(ptr) != filc_capability_oob;
-}
-
-static inline bool filc_ptr_capability_has_things(filc_ptr ptr)
-{
-    return filc_ptr_capability_type_index(ptr);
+    return (filc_object*)(uintptr_t)(ptr.word >> 64);
 }
 
 static inline void* filc_ptr_ptr(filc_ptr ptr)
 {
-    if (filc_ptr_is_boxed_int(ptr))
-        return (void*)(uintptr_t)ptr.capability;
-    return (void*)((uintptr_t)ptr.capability & PAS_ADDRESS_MASK);
+    return (void*)(uintptr_t)ptr.word;
 }
 
-void* filc_ptr_ptr_impl(pas_uint128 sidecar, pas_uint128 capability);
-
-static inline void* filc_ptr_capability_upper(filc_ptr ptr)
+static inline bool filc_ptr_is_boxed_int(filc_ptr ptr)
 {
-    PAS_TESTING_ASSERT(filc_ptr_capability_has_things(ptr));
-    return (void*)((uintptr_t)(ptr.capability >> (pas_uint128)48) & PAS_ADDRESS_MASK);
-}
-
-/* Not meant to be called directly; this is here so that we can implement filc_ptr_type. */
-static inline const filc_type* filc_ptr_capability_type(filc_ptr ptr)
-{
-    return filc_type_lookup(filc_ptr_capability_type_index(ptr));
-}
-
-/* Sidecar methods aren't meant to be called directly; they're here so that we can implement
-   filc_ptr_lower. */
-static inline void* filc_ptr_sidecar_ptr_or_upper(filc_ptr ptr)
-{
-    return (void*)((uintptr_t)ptr.sidecar & PAS_ADDRESS_MASK);
-}
-
-static inline void* filc_ptr_sidecar_lower_or_upper(filc_ptr ptr)
-{
-    return (void*)((uintptr_t)(ptr.sidecar >> (pas_uint128)48) & PAS_ADDRESS_MASK);
-}
-
-static inline unsigned filc_ptr_sidecar_type_index(filc_ptr ptr)
-{
-    return (unsigned)(ptr.sidecar >> (pas_uint128)96) & FILC_TYPE_INDEX_MASK;
-}
-
-static inline bool filc_ptr_sidecar_is_blank(filc_ptr ptr)
-{
-    return !filc_ptr_sidecar_type_index(ptr);
-}
-
-static inline filc_sidecar_kind filc_ptr_sidecar_kind(filc_ptr ptr)
-{
-    return (filc_sidecar_kind)(ptr.sidecar >> (pas_uint128)126);
-}
-
-static inline void* filc_ptr_sidecar_ptr(filc_ptr ptr)
-{
-    PAS_TESTING_ASSERT(filc_ptr_sidecar_kind(ptr) == filc_sidecar_lower
-                       || filc_ptr_sidecar_kind(ptr) == filc_sidecar_flex_upper);
-    return filc_ptr_sidecar_ptr_or_upper(ptr);
-}
-
-static inline void* filc_ptr_sidecar_lower(filc_ptr ptr)
-{
-    PAS_TESTING_ASSERT(filc_ptr_sidecar_kind(ptr) == filc_sidecar_lower
-                       || filc_ptr_sidecar_kind(ptr) == filc_sidecar_oob_capability);
-    return filc_ptr_sidecar_lower_or_upper(ptr);
-}
-
-static inline void* filc_ptr_sidecar_upper(filc_ptr ptr)
-{
-    PAS_TESTING_ASSERT(filc_ptr_sidecar_kind(ptr) == filc_sidecar_flex_upper
-                       || filc_ptr_sidecar_kind(ptr) == filc_sidecar_oob_capability);
-    if (filc_ptr_sidecar_kind(ptr) == filc_sidecar_oob_capability)
-        return filc_ptr_sidecar_ptr_or_upper(ptr);
-    return filc_ptr_sidecar_lower_or_upper(ptr);
-}
-
-static inline const filc_type* filc_ptr_sidecar_type(filc_ptr ptr)
-{
-    return filc_type_lookup(filc_ptr_sidecar_type_index(ptr));
-}
-
-static inline bool filc_ptr_sidecar_is_relevant(filc_ptr ptr)
-{
-    const filc_type* capability_type;
-    const filc_type* sidecar_type;
-    if (filc_ptr_is_boxed_int(ptr))
-        return false;
-    switch (filc_ptr_capability_kind(ptr)) {
-    case filc_capability_at_lower:
-        return false;
-    case filc_capability_in_array:
-        if (filc_ptr_sidecar_kind(ptr) != filc_sidecar_lower)
-            return false;
-        break;
-    case filc_capability_flex_base:
-        if (filc_ptr_sidecar_kind(ptr) != filc_sidecar_flex_upper)
-            return false;
-        break;
-    case filc_capability_oob:
-        return filc_ptr_sidecar_kind(ptr) == filc_sidecar_oob_capability;
-    }
-    if (filc_ptr_sidecar_ptr(ptr) != filc_ptr_ptr(ptr))
-        return false;
-    capability_type = filc_ptr_capability_type(ptr);
-    sidecar_type = filc_ptr_sidecar_type(ptr);
-    if (sidecar_type == capability_type)
-        return true;
-    PAS_TESTING_ASSERT(filc_ptr_capability_kind(ptr) != filc_capability_flex_base);
-    PAS_TESTING_ASSERT(!filc_ptr_sidecar_is_blank(ptr));
-    if (!sidecar_type->num_words)
-        return false;
-    return sidecar_type->u.trailing_array == capability_type;
-}
-
-static inline const filc_type* filc_ptr_type(filc_ptr ptr)
-{
-    if (filc_ptr_sidecar_is_relevant(ptr))
-        return filc_ptr_sidecar_type(ptr);
-    return filc_ptr_capability_type(ptr);
+    return !filc_ptr_object(ptr);
 }
 
 static inline void* filc_ptr_upper(filc_ptr ptr)
 {
     if (filc_ptr_is_boxed_int(ptr))
         return NULL;
-
-    switch (filc_ptr_capability_kind(ptr)) {
-    case filc_capability_at_lower:
-    case filc_capability_in_array:
-        return filc_ptr_capability_upper(ptr);
-
-    case filc_capability_flex_base:
-        if (!filc_ptr_sidecar_is_relevant(ptr))
-            return filc_ptr_capability_upper(ptr);
-        
-        return filc_ptr_sidecar_upper(ptr);
-
-    case filc_capability_oob:
-        if (filc_ptr_sidecar_kind(ptr) == filc_sidecar_oob_capability)
-            return filc_ptr_sidecar_upper(ptr);
-        
-        return NULL;
-    }
-
-    PAS_ASSERT(!"Should not be reached");
-    return NULL;
+    return filc_ptr_object(ptr)->upper;
 }
 
 static inline void* filc_ptr_lower(filc_ptr ptr)
 {
-    static const bool verbose = false;
-    
-    uintptr_t distance_to_upper;
-    uintptr_t distance_to_upper_of_element;
-
     if (filc_ptr_is_boxed_int(ptr))
         return NULL;
-
-    PAS_TESTING_ASSERT(filc_ptr_capability_type(ptr)
-                       || filc_ptr_capability_kind(ptr) == filc_capability_oob);
-
-    if (verbose)
-        pas_log("capability kind = %u\n", (unsigned)filc_ptr_capability_kind(ptr));
-
-    if (filc_ptr_capability_kind(ptr) == filc_capability_at_lower)
-        return filc_ptr_ptr(ptr);
-
-    if (filc_ptr_sidecar_is_relevant(ptr)
-        && filc_ptr_capability_kind(ptr) != filc_capability_flex_base) {
-        PAS_TESTING_ASSERT(filc_ptr_sidecar_lower(ptr) <= filc_ptr_upper(ptr));
-        return filc_ptr_sidecar_lower(ptr);
-    }
-
-    if (filc_ptr_capability_kind(ptr) == filc_capability_oob)
-        return NULL;
-
-    PAS_TESTING_ASSERT(filc_ptr_ptr(ptr) <= filc_ptr_upper(ptr));
-    if (filc_ptr_ptr(ptr) >= filc_ptr_upper(ptr))
-        return filc_ptr_upper(ptr);
-
-    distance_to_upper = (char*)filc_ptr_capability_upper(ptr) - (char*)filc_ptr_ptr(ptr);
-    PAS_TESTING_ASSERT(filc_ptr_capability_kind(ptr) == filc_capability_in_array
-                       || filc_ptr_capability_kind(ptr) == filc_capability_flex_base);
-    if (filc_ptr_capability_kind(ptr) == filc_capability_flex_base) {
-        PAS_TESTING_ASSERT(distance_to_upper);
-        PAS_TESTING_ASSERT(distance_to_upper < filc_ptr_capability_type(ptr)->size);
-    }
-    distance_to_upper_of_element = distance_to_upper % filc_ptr_type(ptr)->size;
-    if (!distance_to_upper_of_element)
-        return filc_ptr_ptr(ptr);
-    
-    return (char*)filc_ptr_ptr(ptr)
-        + distance_to_upper_of_element - filc_ptr_capability_type(ptr)->size;
+    return filc_ptr_object(ptr)->lower;
 }
 
 static inline uintptr_t filc_ptr_offset(filc_ptr ptr)
@@ -620,36 +668,88 @@ static inline uintptr_t filc_ptr_available(filc_ptr ptr)
     return (char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr);
 }
 
-static inline filc_ptr filc_ptr_create(pas_uint128 sidecar, pas_uint128 capability)
+static inline filc_ptr filc_ptr_from_word(pas_uint128 word)
 {
     filc_ptr result;
-    result.sidecar = sidecar;
-    result.capability = capability;
+    result.word = word;
     filc_testing_validate_ptr(result);
     return result;
 }
 
-PAS_API filc_ptr filc_ptr_forge(void* ptr, void* lower, void* upper, const filc_type* type);
-
-static inline filc_ptr filc_ptr_forge_with_size(void* ptr, size_t size, const filc_type* type)
+static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking(filc_object* object, void* ptr)
 {
-    return filc_ptr_forge(ptr, ptr, (char*)ptr + size, type);
+    filc_ptr result;
+    result.word = ((pas_uint128)(uintptr_t)object << 64) | (pas_uint128)(uintptr_t)ptr;
+    PAS_TESTING_ASSERT(filc_ptr_object(result) == object);
+    PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
+    filc_testing_validate_ptr(result);
+    return result;
 }
 
-static inline filc_ptr filc_ptr_forge_byte(void* ptr, const filc_type* type)
+static inline filc_ptr filc_ptr_create_with_manual_tracking(filc_object* object)
 {
-    return filc_ptr_forge_with_size(ptr, 1, type);
+    return filc_ptr_create_with_ptr_and_manual_tracking(object, object->lower);
 }
 
+static inline filc_ptr filc_ptr_create(filc_thread* my_thread, filc_object* object)
+{
+    filc_thread_track_object(my_thread, object);
+    return filc_ptr_create_with_manual_tracking(object);
+}
+
+static inline filc_ptr filc_ptr_for_return_buffer(filc_return_buffer* return_buffer,
+                                                  filc_word_type word_type)
+{
+    PAS_ASSERT(word_type == FILC_WORD_TYPE_INT || word_type == FILC_WORD_TYPE_PTR);
+    return_buffer->lower = &return_buffer->data;
+    return_buffer->upper = &return_buffer->data + 1;
+    return_buffer->flags = FILC_OBJECT_FLAG_RETURN_BUFFER;
+    return_buffer->word_type = word_type;
+    return_buffer->data = 0;
+    return filc_ptr_create_with_manual_tracking((filc_object*)return_buffer);
+}
+
+static inline filc_ptr filc_ptr_for_int_return_buffer(filc_return_buffer* return_buffer)
+{
+    return filc_ptr_for_return_buffer(return_buffer, FILC_WORD_TYPE_INT);
+}
+
+static inline filc_ptr filc_ptr_for_ptr_return_buffer(filc_return_buffer* return_buffer)
+{
+    return filc_ptr_for_return_buffer(return_buffer, FILC_WORD_TYPE_PTR);
+}
+
+static inline filc_ptr filc_ptr_forge_null(void)
+{
+    filc_ptr result;
+    result.word = 0;
+    PAS_TESTING_ASSERT(filc_ptr_is_boxed_int(result));
+    PAS_TESTING_ASSERT(!filc_ptr_ptr(result));
+    filc_testing_validate_ptr(result);
+    return result;
+}
+
+/* Creates a boxed int ptr, which cannot be accessed at all. */
 static inline filc_ptr filc_ptr_forge_invalid(void* ptr)
 {
-    return filc_ptr_forge(ptr, NULL, NULL, NULL);
+    filc_ptr result;
+    result.word = (pas_uint128)(uintptr_t)ptr;
+    PAS_TESTING_ASSERT(filc_ptr_is_boxed_int(result));
+    PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
+    filc_testing_validate_ptr(result);
+    return result;
 }
 
 static inline filc_ptr filc_ptr_with_ptr(filc_ptr ptr, void* new_ptr)
 {
-    return filc_ptr_forge(
-        new_ptr, filc_ptr_lower(ptr), filc_ptr_upper(ptr), filc_ptr_type(ptr));
+    filc_ptr result;
+    result = ptr;
+    result.word &= ~(pas_uint128)UINTPTR_MAX;
+    result.word |= (pas_uint128)(uintptr_t)new_ptr;
+    PAS_TESTING_ASSERT(filc_ptr_object(result) == filc_ptr_object(ptr));
+    PAS_TESTING_ASSERT(filc_ptr_ptr(result) == new_ptr);
+    filc_testing_validate_ptr(result);
+    return result;
 }
 
 static inline filc_ptr filc_ptr_with_offset(filc_ptr ptr, uintptr_t offset)
@@ -657,390 +757,266 @@ static inline filc_ptr filc_ptr_with_offset(filc_ptr ptr, uintptr_t offset)
     return filc_ptr_with_ptr(ptr, (char*)filc_ptr_ptr(ptr) + offset);
 }
 
+static inline filc_ptr filc_ptr_for_special_payload_with_manual_tracking(void* payload)
+{
+    return filc_ptr_create_with_manual_tracking(filc_object_for_special_payload(payload));
+}
+
+static inline filc_ptr filc_ptr_for_special_payload(filc_thread* my_thread, void* payload)
+{
+    return filc_ptr_create(my_thread, filc_object_for_special_payload(payload));
+}
+
 static inline bool filc_ptr_is_totally_equal(filc_ptr a, filc_ptr b)
 {
-    return a.sidecar == b.sidecar
-        && a.capability == b.capability;
+    return a.word == b.word;
 }
 
 static inline bool filc_ptr_is_totally_null(filc_ptr ptr)
 {
-    return filc_ptr_is_totally_equal(ptr, filc_ptr_forge_invalid(NULL));
+    return filc_ptr_is_totally_equal(ptr, filc_ptr_forge_null());
 }
 
-static inline filc_ptr filc_ptr_load(filc_ptr* ptr)
+static inline filc_ptr filc_ptr_load_with_manual_tracking(filc_ptr* ptr)
 {
     filc_ptr result;
-    result.sidecar = __c11_atomic_load((_Atomic pas_uint128*)&ptr->sidecar, __ATOMIC_RELAXED);
-    result.capability = __c11_atomic_load((_Atomic pas_uint128*)&ptr->capability, __ATOMIC_RELAXED);
+    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_RELAXED);
     return result;
 }
 
-static inline void filc_ptr_store(filc_ptr* ptr, filc_ptr value)
+static inline filc_ptr filc_ptr_load(filc_thread* my_thread, filc_ptr* ptr)
 {
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, value.sidecar, __ATOMIC_RELAXED);
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->capability, value.capability, __ATOMIC_RELAXED);
+    filc_ptr result = filc_ptr_load_with_manual_tracking(ptr);
+    filc_thread_track_object(my_thread, filc_ptr_object(result));
+    return result;
+}
+
+PAS_API void filc_store_barrier_slow(filc_thread* my_thread, filc_object* target);
+
+static inline void filc_store_barrier(filc_thread* my_thread, filc_object* target)
+{
+    if (PAS_UNLIKELY(filc_is_marking) && target)
+        filc_store_barrier_slow(my_thread, target);
+}
+
+PAS_API void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target);
+
+static inline void filc_ptr_store_without_barrier(filc_ptr* ptr, filc_ptr value)
+{
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, value.word, __ATOMIC_RELAXED);
+}
+
+static inline void filc_ptr_store(filc_thread* my_thread, filc_ptr* ptr, filc_ptr value)
+{
+    filc_store_barrier(my_thread, filc_ptr_object(value));
+    filc_ptr_store_without_barrier(ptr, value);
+}
+
+static inline bool filc_ptr_unfenced_unbarriered_weak_cas(
+    filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+{
+    return __c11_atomic_compare_exchange_weak(
+        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
+        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 }
 
 static inline bool filc_ptr_unfenced_weak_cas(
-    filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    /* This is optional; it's legal to do it or not do it, from the standpoint of FilC soundness.
-       If whoever reads the ptr sees a sidecar that doesn't match the capability, then it'll be
-       rejected anyway. Nuking the sidecar turns a rarely-occurring bad case into a deterministic
-       bad case, so code has to always deal with it. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
-    return __c11_atomic_compare_exchange_weak(
-        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
-        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    return filc_ptr_unfenced_unbarriered_weak_cas(ptr, expected, new_value);
 }
 
 static inline filc_ptr filc_ptr_unfenced_strong_cas(
-    filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    /* See above. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
     __c11_atomic_compare_exchange_strong(
-        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
         __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-    return filc_ptr_create(0, expected.capability);
+    return filc_ptr_from_word(expected.word);
 }
 
-static inline bool filc_ptr_weak_cas(filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+static inline bool filc_ptr_weak_cas(
+    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    /* See above. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
     return __c11_atomic_compare_exchange_weak(
-        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
-static inline filc_ptr filc_ptr_strong_cas(filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+static inline filc_ptr filc_ptr_strong_cas(
+    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    /* See above. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
     __c11_atomic_compare_exchange_strong(
-        (_Atomic pas_uint128*)&ptr->capability, &expected.capability, new_value.capability,
+        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-    return filc_ptr_create(0, expected.capability);
+    return filc_ptr_from_word(expected.word);
 }
 
-static inline filc_ptr filc_ptr_unfenced_xchg(filc_ptr* ptr, filc_ptr new_value)
+static inline filc_ptr filc_ptr_unfenced_xchg(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
 {
-    /* See above. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
-    return filc_ptr_create(
-        0,
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    return filc_ptr_from_word(
         __c11_atomic_exchange(
-            (_Atomic pas_uint128*)&ptr->capability, new_value.capability, __ATOMIC_RELAXED));
+            (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_RELAXED));
 }
 
-static inline filc_ptr filc_ptr_xchg(filc_ptr* ptr, filc_ptr new_value)
+static inline filc_ptr filc_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
 {
-    /* See above. */
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->sidecar, 0, __ATOMIC_RELAXED);
-    return filc_ptr_create(
-        0,
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    return filc_ptr_from_word(
         __c11_atomic_exchange(
-            (_Atomic pas_uint128*)&ptr->capability, new_value.capability, __ATOMIC_SEQ_CST));
+            (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST));
 }
 
+PAS_API void filc_object_flags_dump_with_comma(uint8_t flags, bool* comma, pas_stream* stream);
+PAS_API void filc_object_flags_dump(uint8_t flags, pas_stream* stream);
+PAS_API void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream);
+PAS_API void filc_object_dump(filc_object* object, pas_stream* stream);
 PAS_API void filc_ptr_dump(filc_ptr ptr, pas_stream* stream);
+PAS_API char* filc_object_to_new_string(filc_object* object);
 PAS_API char* filc_ptr_to_new_string(filc_ptr ptr); /* WARNING: this is different from
-                                                           zptr_to_new_string. This uses the
-                                                           utility heap - WHICH MUST NEVER LEAK TO
-                                                           PIZLONATED CODE - whereas the other one
-                                                           uses the int heap. */
+                                                       zptr_to_new_string. This uses the
+                                                       bmalloc heap - WHICH MUST NEVER LEAK TO
+                                                       PIZLONATED CODE - whereas the other one
+                                                       uses the GC heap. */
 
-/* Returns true if this type has no trailing array and is not opaque. */
-static inline bool filc_type_is_normal(const filc_type* type)
+static inline size_t filc_object_size(filc_object* object)
 {
-    return type->num_words && !type->u.trailing_array;
+    PAS_TESTING_ASSERT(object->upper >= object->lower);
+    size_t result = (char*)object->upper - (char*)object->lower;
+    PAS_TESTING_ASSERT(pas_is_aligned(result, FILC_WORD_SIZE));
+    return result;
 }
 
-static inline const filc_type* filc_type_get_trailing_array(const filc_type* type)
+static inline size_t filc_object_num_words_for_size(size_t size)
 {
-    if (type->num_words)
-        return type->u.trailing_array;
-    return NULL;
+    PAS_ASSERT(pas_is_aligned(size, FILC_WORD_SIZE));
+    return size / FILC_WORD_SIZE;
 }
 
-static inline filc_word_type filc_type_get_word_type(const filc_type* type,
-                                                         uintptr_t word_type_index)
+static inline size_t filc_object_num_words(filc_object* object)
 {
-    PAS_TESTING_ASSERT(type->num_words);
-    
-    if (type->u.trailing_array) {
-        if (word_type_index >= type->num_words) {
-            word_type_index -= type->num_words;
-            type = type->u.trailing_array;
-        }
-    }
-    return type->word_types[word_type_index % type->num_words];
+    return filc_object_size(object) / FILC_WORD_SIZE;
 }
 
-/* Run assertions on the type itself. The runtime isn't guaranteed to ever run this check. The
-   compiler is expected to only produce types that pass this check, and we provide no path for
-   the user to create types (unless they write unsafe code). */
-void filc_validate_type(const filc_type* type, const filc_origin* origin);
-
-static inline bool filc_type_is_equal(const filc_type* a, const filc_type* b)
+static inline size_t filc_object_word_type_index_for_ptr(filc_object* object, void* ptr)
 {
-    return a == b;
+    PAS_TESTING_ASSERT(object);
+    PAS_TESTING_ASSERT(ptr >= object->lower);
+    PAS_TESTING_ASSERT(ptr < object->upper);
+    return ((char*)ptr - (char*)object->lower) / FILC_WORD_SIZE;
 }
 
-static inline unsigned filc_type_hash(const filc_type* type)
+static inline filc_word_type filc_object_get_word_type(filc_object* object,
+                                                       size_t word_type_index)
 {
-    return pas_hash_ptr(type);
+    PAS_TESTING_ASSERT(word_type_index < filc_object_num_words(object));
+    return object->word_types[word_type_index];
 }
-
-PAS_API bool filc_type_template_is_equal(const filc_type_template* a,
-                                           const filc_type_template* b);
-PAS_API unsigned filc_type_template_hash(const filc_type_template* type);
-
-static inline size_t filc_type_representation_size(const filc_type* type)
-{
-    return PAS_OFFSETOF(filc_type, word_types)
-        + sizeof(filc_word_type) * type->num_words;
-}
-    
-static inline size_t filc_type_as_heap_type_get_type_size(const pas_heap_type* heap_type)
-{
-    const filc_type* type = (const filc_type*)heap_type;
-    PAS_TESTING_ASSERT(type->size);
-    PAS_TESTING_ASSERT(type->alignment);
-    return pas_round_up_to_power_of_2(type->size, type->alignment);
-}
-
-static inline size_t filc_type_as_heap_type_get_type_alignment(const pas_heap_type* heap_type)
-{
-    const filc_type* type = (const filc_type*)heap_type;
-    PAS_TESTING_ASSERT(type->size);
-    PAS_TESTING_ASSERT(type->alignment);
-    return type->alignment;
-}
-
-PAS_API pas_heap_runtime_config* filc_type_as_heap_type_get_runtime_config(
-    const pas_heap_type* type, pas_heap_runtime_config* config);
-PAS_API pas_heap_runtime_config* filc_type_as_heap_type_assert_default_runtime_config(
-    const pas_heap_type* type, pas_heap_runtime_config* config);
 
 PAS_API void filc_word_type_dump(filc_word_type type, pas_stream* stream);
 PAS_API char* filc_word_type_to_new_string(filc_word_type type);
 
-PAS_API void filc_type_dump(const filc_type* type, pas_stream* stream);
-PAS_API void filc_type_as_heap_type_dump(const pas_heap_type* type, pas_stream* stream);
+static inline bool filc_word_type_is_special(filc_word_type word_type)
+{
+    switch (word_type) {
+    case FILC_WORD_TYPE_FUNCTION:
+    case FILC_WORD_TYPE_THREAD:
+    case FILC_WORD_TYPE_SIGNAL_HANDLER:
+    case FILC_WORD_TYPE_DIRSTREAM:
+        return true;
+    default:
+        return false;
+    }
+}
 
-char* filc_type_to_new_string(const filc_type* type); /* WARNING: this is different from
-                                                             ztype_to_new_string. This uses the
-                                                             utility heap - WHICH MUST NEVER LEAK TO
-                                                             PIZLONATED CODE - whereas the other one
-                                                             uses the int heap. */
-
-PAS_API const filc_type* filc_type_slice(const filc_type* type, pas_range range,
-                                             const filc_origin* origin);
-PAS_API const filc_type* filc_type_cat(const filc_type* a, size_t a_size,
-                                           const filc_type* b, size_t b_size,
-                                           const filc_origin* origin);
-
-/* This is basically va_arg, but it doesn't check that the type matches. That's fine if the consumer
-   of the pointer is code compiled by FilC, since that will check on every access. That's not fine if
-   the consumer is someone writing legacy C code against some FilC flight API. */
-static inline filc_ptr filc_ptr_get_next_bytes(
-    filc_ptr* ptr, size_t size, size_t alignment)
+/* This is basically va_arg, but it doesn't check that the type matches or that it's even in bounds.
+   It's up to you to check the returned ptr. Also, it's assumed that filc_ptr* ptr points at a local
+   pointer that you own. */
+static inline filc_ptr filc_ptr_get_next_bytes(filc_ptr* ptr, size_t size, size_t alignment)
 {
     filc_ptr ptr_value;
     uintptr_t ptr_as_int;
     filc_ptr result;
 
-    ptr_value = filc_ptr_load(ptr);
+    ptr_value = *ptr;
     ptr_as_int = (uintptr_t)filc_ptr_ptr(ptr_value);
     ptr_as_int = pas_round_up_to_power_of_2(ptr_as_int, alignment);
 
     result = filc_ptr_with_ptr(ptr_value, (void*)ptr_as_int);
 
-    filc_ptr_store(ptr, filc_ptr_with_ptr(ptr_value, (char*)ptr_as_int + size));
+    *ptr = filc_ptr_with_ptr(ptr_value, (char*)ptr_as_int + size);
 
     return result;
 }
 
-/* Gives you a heap for the given type. This looks up the heap based on the structural equality
-   of the type, so equal types get the same heap.
+PAS_API filc_ptr filc_get_next_bytes_for_va_arg(
+    filc_thread* my_thread, filc_ptr ptr_ptr, size_t size, size_t alignment, const filc_origin* origin);
 
-   It's correct to call this every time you do a memory allocation. It's not the greatest idea, but
-   it will be lock-free (and basically fence-free) in the common case.
+/* Allocates a "special" object; this is used for functions, threads, and dirstreams. For these types,
+   the object's lower/upper pretends to have just one word but the payload size could be anything. The
+   one word is set to word_type. */
+filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_word_type word_type);
 
-   The type you pass here must be immortal. The runtime may refer to it forever. (That's not
-   strictly necessary so we could change that if we needed to.) */
-pas_heap_ref* filc_get_heap(const filc_type* type);
+/* Same as filc_allocate_special, but usable before we have ever created threads and before we have
+   any thread context. */
+filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type);
 
-void* filc_allocate_int(size_t size, size_t cout);
-void* filc_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
+filc_object* filc_allocate_with_existing_data(
+    filc_thread* my_thread, void* data, size_t size, int8_t object_flags,
+    filc_word_type initial_word_type);
 
-void* filc_allocate_one(pas_heap_ref* ref);
-void* filc_allocate_opaque(pas_heap_ref* ref);
-void* filc_allocate_many(pas_heap_ref* ref, size_t count);
-void* filc_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
+/* Allocates an object with a payload of the given size and brings all words into the unset state. The
+   object's lower/upper are set accordingly. */
+filc_object* filc_allocate(filc_thread* my_thread, size_t size);
 
-void* filc_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
-void* filc_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
-                                            size_t alignment);
-void* filc_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
-void* filc_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
-                                        size_t count, size_t alignment);
+/* Allocates an object with a payload of the given size and alignment. The object itself may or may not
+   have that alignment. Word types start out unset and the object's lower/upper are set accordingly. */
+filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment);
 
-/* This can allocate any type (ints or not), but it's considerably slower than the other allocation
-   entrypoints. The compiler avoids this in most cases. */
-void* filc_allocate_with_type(const filc_type* type, size_t size);
+/* Allocates an object and initializes it to be an int object. */
+filc_object* filc_allocate_int(filc_thread* my_thread, size_t size);
 
-/* FIXME: It would be great if this had a separate freeing function, and filc_deallocate asserted
-   if it detected that it was used to free a utility allocation.
-   
-   Right now, we just rely on the fact that zfree (and friends) do a bunch of checks that effectively
-   prevent freeing utility allocations. */
-void* filc_allocate_utility(size_t size);
+/* Reallocates the given object. The old object is freed and the new object contains a copy of the old
+   one up to the new_size. Any fresh memory not copied from the old object starts out with unset state. */
+filc_object* filc_reallocate(filc_thread* my_thread, filc_object* object, size_t new_size);
+filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object* object,
+                                            size_t new_size, size_t alignment);
 
-void* filc_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
-                               const filc_origin* origin);
-void* filc_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                              size_t size, size_t count, size_t alignment,
-                                              const filc_origin* origin);
+/* "Frees" the object. This transitions the state of all words to the free state. */
+void filc_free(filc_thread* my_thread, filc_object* object);
 
-void* filc_reallocate_impl(pas_uint128 sidecar, pas_uint128 capability,
-                           pas_heap_ref* ref, size_t count, const filc_origin* origin);
+/* Frees the object without checking that it's an object that can be freed. Used for freeing special
+   objects that we know we can free, like dirstreams. Only call this after checking that it's
+   something that is OK to free. This still does the is-not-already-free check. */
+void filc_free_yolo(filc_thread* my_thread, filc_object* object);
 
-/* Deallocation usually checks if the thread is in_filc. But, some deallocations happen during
-   thread destruction, when we've blocked all signals. Deallocations that can happen at that time
-   call the yolo version, which has no such check. This is a testing-only check, so the yolo version
-   is equivalent to the normal one in production. */
-void filc_deallocate_yolo(const void* ptr);
+void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
+void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin);
 
-/* Deallocate without the Fil-C type system checks. Super dangerous to use except for pointers
-   allocated by the Fil-C runtime! */
-void filc_deallocate(const void* ptr);
+#define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name) do { \
+        struct_type check_temp; \
+        filc_check_access_int(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
+                              sizeof(check_temp.field_name), NULL); \
+    } while (false)
 
-/* Deallocate with all of the checks! This is equivalent to filc_check_deallocate and then
-   filc_deallocate. */
-void filc_deallocate_safe(filc_ptr ptr);
+#define FILC_CHECK_PTR_FIELD(ptr, struct_type, field_name) do { \
+        filc_check_access_ptr(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
+                              NULL); \
+    } while (false)
 
-void pizlonated_f_zfree(PIZLONATED_SIGNATURE);
-void pizlonated_f_zgetallocsize(PIZLONATED_SIGNATURE);
+void filc_check_function_call(filc_ptr ptr);
 
-void pizlonated_f_zcalloc_multiply(PIZLONATED_SIGNATURE);
+void filc_check_access_special(
+    filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
 
-pas_heap_ref* filc_get_hard_heap(const filc_type* type);
-
-void* filc_hard_allocate_int(size_t size, size_t count);
-void* filc_hard_allocate_int_with_alignment(size_t size, size_t count, size_t alignment);
-void* filc_hard_allocate_one(pas_heap_ref* ref);
-void* filc_hard_allocate_many(pas_heap_ref* ref, size_t count);
-void* filc_hard_allocate_many_with_alignment(pas_heap_ref* ref, size_t count, size_t alignment);
-void* filc_hard_allocate_int_flex(size_t base_size, size_t element_size, size_t count);
-void* filc_hard_allocate_int_flex_with_alignment(size_t base_size, size_t element_size, size_t count,
-                                                   size_t alignment);
-void* filc_hard_allocate_flex(pas_heap_ref* ref, size_t base_size, size_t element_size, size_t count);
-void* filc_hard_allocate_flex_with_alignment(pas_heap_ref* ref, size_t base_size, size_t element_size,
-                                               size_t count, size_t alignment);
-void* filc_hard_reallocate_int_impl(pas_uint128 sidecar, pas_uint128 capability, size_t size, size_t count,
-                                    const filc_origin* origin);
-void* filc_hard_reallocate_int_with_alignment_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                                   size_t size, size_t count, size_t alignment,
-                                                   const filc_origin* origin);
-
-void* filc_hard_reallocate(pas_uint128 sidecar, pas_uint128 capability, pas_heap_ref* ref, size_t count,
-                           const filc_origin* origin);
-void filc_hard_deallocate(const void* ptr);
-
-/* This is super gross but it's fine for now. When the compiler allocates, it emits three calls.
-   First it calls the allocator. Then it calls new_capability. Then it calls new_sidecar.
-   
-   That's dumb!
-   
-   Why do I do it for now?
-   
-   - I also want to call all of these allocation functions from C code in the runtime, and most of
-     the time, that code just wants a void*. So if I wanted allocation functions that returned
-     a wide pointer, or even just the pointer's capability, then I'd have to have duplicate
-     entrypoints. I don't feel like writing that code right now, but I'll almost certainly do it
-     eventually.
-   
-   - It's super annoying to have code that returns a filc_ptr called from compiler-generated code,
-     since at the point I'm at in LLVM, the returns for structs may (or may not!) have been lowered
-     to some kind of pointer-passing convention. I can make LLVM return a struct like filc_ptr in
-     registers, but this is C code, and so these functions will have C's calling convention, which is
-     different from LLVM's when it comes to struct return! There are many ways around this,
-     especially since I control the compiler (I am not above having a separate hacked clang just for
-     compiling libfilc, or rewriting all of this in assembly, or in LLVM IR), but I don't feel
-     like doing that right now.
-   
-   Therfore, I have functions to build the capability and sidecar separately. Gross but at least it
-   gets me there.
-
-   Also, it's not actually necessary to know the size to construct the sidecar, but whatever, doing
-   it this way makes it more obviously correct. */
-pas_uint128 filc_new_capability(void* ptr, size_t size, const filc_type* type);
-pas_uint128 filc_new_sidecar(void* ptr, size_t size, const filc_type* type);
-
-void filc_log_allocation(filc_ptr ptr, const filc_origin* origin);
-void filc_log_allocation_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                const filc_origin* origin);
-
-void filc_check_forge(
-    void* ptr, size_t size, size_t count, const filc_type* type, const filc_origin* origin);
-
-void pizlonated_f_zhard_free(PIZLONATED_SIGNATURE);
-void pizlonated_f_zhard_getallocsize(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_zgetlower(PIZLONATED_SIGNATURE);
-void pizlonated_f_zgetupper(PIZLONATED_SIGNATURE);
-void pizlonated_f_zgettype(PIZLONATED_SIGNATURE);
-void pizlonated_f_zisint(PIZLONATED_SIGNATURE);
-void pizlonated_f_zptrphase(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_zslicetype(PIZLONATED_SIGNATURE);
-void pizlonated_f_zgettypeslice(PIZLONATED_SIGNATURE);
-void pizlonated_f_zcattype(PIZLONATED_SIGNATURE);
-void pizlonated_f_zalloc_with_type(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_ztype_to_new_string(PIZLONATED_SIGNATURE);
-void pizlonated_f_zptr_to_new_string(PIZLONATED_SIGNATURE);
-
-/* The compiler uses these for now because it makes LLVM codegen ridiculously easy to get right,
-   but it's totally the wrong way to do it from a perf standpoint. */
-pas_uint128 filc_update_sidecar(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
-pas_uint128 filc_update_capability(pas_uint128 sidecar, pas_uint128 capability, void* new_ptr);
-
-void filc_check_deallocate_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                  const filc_origin* origin);
-static inline void filc_check_deallocate(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_deallocate_impl(ptr.sidecar, ptr.capability, origin);
-}
-
-void filc_check_access_int_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                  uintptr_t bytes, const filc_origin* origin);
-void filc_check_access_ptr_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                  const filc_origin* origin);
-
-static inline void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
-{
-    filc_check_access_int_impl(ptr.sidecar, ptr.capability, bytes, origin);
-}
-static inline void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_access_ptr_impl(ptr.sidecar, ptr.capability, origin);
-}
-
-void filc_check_function_call_impl(pas_uint128 sidecar, pas_uint128 capability,
-                                     const filc_origin* origin);
-
-static inline void filc_check_function_call(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_function_call_impl(ptr.sidecar, ptr.capability, origin);
-}
-
-void filc_check_access_opaque(
-    filc_ptr ptr, const filc_type* expected_type, const filc_origin* origin);
+void filc_memset_with_exit(filc_thread* my_thread, void* ptr, unsigned value, size_t bytes);
+void filc_memcpy_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
+void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
 
 /* You can call these if you know that you're copying pointers (or possible pointers) and you've
    already proved that it's safe and the pointer/size are aligned.
@@ -1051,47 +1027,17 @@ void filc_check_access_opaque(
 
    The number of bytes must be a multiple of 16. */
 void filc_low_level_ptr_safe_bzero(void* ptr, size_t bytes);
-void filc_low_level_ptr_safe_memcpy(void* dst, void* src, size_t bytes);
-void filc_low_level_ptr_safe_memmove(void* dst, void* src, size_t bytes);
 
-void filc_memset_impl(pas_uint128 sidecar, pas_uint128 capability,
-                        unsigned value, size_t count, const filc_origin* origin);
-void filc_memcpy_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
-                        pas_uint128 src_sidecar, pas_uint128 src_capability,
-                        size_t count, const filc_origin* origin);
-void filc_memmove_impl(pas_uint128 dst_sidecar, pas_uint128 dst_capability,
-                         pas_uint128 src_sidecar, pas_uint128 src_capability,
-                         size_t count, const filc_origin* origin);
+void filc_low_level_ptr_safe_bzero_with_exit(filc_thread* my_thread, void* ptr, size_t bytes);
 
-static inline void filc_memset(filc_ptr ptr, unsigned value, size_t count, const filc_origin* origin)
-{
-    filc_memset_impl(ptr.sidecar, ptr.capability, value, count, origin);
-}
+void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
+                 const filc_origin* origin);
 
-static inline void filc_memcpy(filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
-{
-    filc_memcpy_impl(dst.sidecar, dst.capability, src.sidecar, src.capability, count, origin);
-}
-
-static inline void filc_memmove(filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
-{
-    filc_memmove_impl(dst.sidecar, dst.capability, src.sidecar, src.capability, count, origin);
-}
-
-/* Correct uses of this should always pass new_upper = ptr + K * new_type->size. This function does
-   not have to check that you did that. This property is ensured by the compiler and the fact that
-   the user-visible API (zrestrict) takes a count. */
-void filc_check_restrict(pas_uint128 sidecar, pas_uint128 capability,
-                         void* new_upper, const filc_type* new_type, const filc_origin* origin);
-
-static inline filc_ptr filc_restrict(filc_ptr ptr, size_t count, const filc_type* new_type,
-                                     const filc_origin* origin)
-{
-    void* new_upper;
-    new_upper = (char*)filc_ptr_ptr(ptr) + count * new_type->size;
-    filc_check_restrict(ptr.sidecar, ptr.capability, new_upper, new_type, origin);
-    return filc_ptr_forge(filc_ptr_ptr(ptr), filc_ptr_ptr(ptr), new_upper, new_type);
-}
+/* We don't have a separate memcpy right now. We could, in the future. But likely, the cost
+   difference between the two is much smaller than the cost overhead of checking, so it might
+   never be worth it. */
+void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                  const filc_origin* origin);
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
    get to the upper bound. Returns a copy of that string allocated in the utility heap, and checks
@@ -1107,92 +1053,97 @@ static inline filc_ptr filc_restrict(filc_ptr ptr, size_t count, const filc_type
    an in-bounds terminator, then this would have trapped.
 
    It's necessary to free the string when you're done with it. */
-const char* filc_check_and_get_new_str(filc_ptr ptr, const filc_origin* origin);
+char* filc_check_and_get_new_str(filc_ptr ptr);
 
-const char* filc_check_and_get_new_str_or_null(filc_ptr ptr, const filc_origin* origin);
+/* Assumes that the given memory has already been checked to be int and that it has the given size,
+   but otherwise does all of the same checks as filc_check_and_get_new_str(). */
+char* filc_check_and_get_new_str_for_int_memory(char* base, size_t size);
 
-filc_ptr filc_strdup(const char* str);
+char* filc_check_and_get_new_str_or_null(filc_ptr ptr);
 
-/* This is basically va_arg. Whatever kind of API we expose to native C code to interact with FilC
-   code will have to use this kind of API to parse the flights. */
-static inline filc_ptr filc_ptr_get_next(
-    filc_ptr* ptr, size_t count, size_t alignment, const filc_type* type,
-    const filc_origin* origin)
-{
-    return filc_restrict(filc_ptr_get_next_bytes(
-                               ptr, count * type->size, alignment),
-                           count, type, origin);
-}
+filc_ptr filc_strdup(filc_thread* my_thread, const char* str);
 
 /* NOTE: It's tempting to add a macro that takes a type and does get_next, but I don't see how
    that would handle pointers correctly. */
 
-static inline filc_ptr filc_ptr_get_next_ptr(filc_ptr* ptr, const filc_origin* origin)
+static inline filc_ptr filc_ptr_get_next_ptr_with_manual_tracking(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(filc_ptr), alignof(filc_ptr));
-    filc_check_access_ptr(slot_ptr, origin);
-    return filc_ptr_load((filc_ptr*)filc_ptr_ptr(slot_ptr));
+    filc_check_access_ptr(slot_ptr, NULL);
+    return filc_ptr_load_with_manual_tracking((filc_ptr*)filc_ptr_ptr(slot_ptr));
 }
 
-static inline int filc_ptr_get_next_int(filc_ptr* ptr, const filc_origin* origin)
+static inline filc_ptr filc_ptr_get_next_ptr(filc_thread* my_thread, filc_ptr* ptr)
+{
+    filc_ptr result = filc_ptr_get_next_ptr_with_manual_tracking(ptr);
+    filc_thread_track_object(my_thread, filc_ptr_object(result));
+    return result;
+}
+
+static inline int filc_ptr_get_next_int(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
-    filc_check_access_int(slot_ptr, sizeof(int), origin);
+    filc_check_access_int(slot_ptr, sizeof(int), NULL);
     return *(int*)filc_ptr_ptr(slot_ptr);
 }
 
-static inline unsigned filc_ptr_get_next_unsigned(filc_ptr* ptr, const filc_origin* origin)
+static inline unsigned filc_ptr_get_next_unsigned(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(unsigned), alignof(unsigned));
-    filc_check_access_int(slot_ptr, sizeof(unsigned), origin);
+    filc_check_access_int(slot_ptr, sizeof(unsigned), NULL);
     return *(unsigned*)filc_ptr_ptr(slot_ptr);
 }
 
-static inline long filc_ptr_get_next_long(filc_ptr* ptr, const filc_origin* origin)
+static inline long filc_ptr_get_next_long(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(long), alignof(long));
-    filc_check_access_int(slot_ptr, sizeof(long), origin);
+    filc_check_access_int(slot_ptr, sizeof(long), NULL);
     return *(long*)filc_ptr_ptr(slot_ptr);
 }
 
-static inline unsigned long filc_ptr_get_next_unsigned_long(filc_ptr* ptr,
-                                                              const filc_origin* origin)
+static inline unsigned long filc_ptr_get_next_unsigned_long(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(unsigned long), alignof(unsigned long));
-    filc_check_access_int(slot_ptr, sizeof(unsigned long), origin);
+    filc_check_access_int(slot_ptr, sizeof(unsigned long), NULL);
     return *(unsigned long*)filc_ptr_ptr(slot_ptr);
 }
 
-static inline size_t filc_ptr_get_next_size_t(filc_ptr* ptr, const filc_origin* origin)
+static inline size_t filc_ptr_get_next_size_t(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
-    filc_check_access_int(slot_ptr, sizeof(size_t), origin);
+    filc_check_access_int(slot_ptr, sizeof(size_t), NULL);
     return *(size_t*)filc_ptr_ptr(slot_ptr);
 }
 
-static inline double filc_ptr_get_next_double(filc_ptr* ptr, const filc_origin* origin)
+static inline double filc_ptr_get_next_double(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(double), alignof(double));
-    filc_check_access_int(slot_ptr, sizeof(double), origin);
+    filc_check_access_int(slot_ptr, sizeof(double), NULL);
     return *(double*)filc_ptr_ptr(slot_ptr);
 }
 
-/* Given a va_list ptr (so a ptr to a ptr), this:
-   
-   - checks that it is indeed a ptr to a ptr
-   - uses that ptr to va_arg according to the filc_ptr_get_next_bytes protocol
-   - checks that the resulting ptr can be restricted to count*type
-   - if all that goes well, returns a ptr you can load/store from safely according to that type */
-void* filc_va_arg_impl(
-    pas_uint128 va_list_sidecar, pas_uint128 va_list_capability,
-    size_t count, size_t alignment, const filc_type* type, const filc_origin* origin);
+static inline bool filc_ptr_get_next_bool(filc_ptr* ptr)
+{
+    filc_ptr slot_ptr;
+    slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(bool), alignof(bool));
+    filc_check_access_int(slot_ptr, sizeof(bool), NULL);
+    return *(bool*)filc_ptr_ptr(slot_ptr);
+}
+
+static inline ssize_t filc_ptr_get_next_ssize_t(filc_ptr* ptr)
+{
+    filc_ptr slot_ptr;
+    slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(ssize_t), alignof(ssize_t));
+    filc_check_access_int(slot_ptr, sizeof(ssize_t), NULL);
+    return *(ssize_t*)filc_ptr_ptr(slot_ptr);
+}
 
 /* If parent is not NULL, increases its ref count and returns it. Otherwise, creates a new context. */
 filc_global_initialization_context* filc_global_initialization_context_create(
@@ -1203,167 +1154,32 @@ filc_global_initialization_context* filc_global_initialization_context_create(
    
    If it's not in the set, then it's added to the set and true is returned. */
 bool filc_global_initialization_context_add(
-    filc_global_initialization_context* context, pas_uint128* pizlonated_gptr, pas_uint128 ptr_capability);
+    filc_global_initialization_context* context, filc_ptr* pizlonated_gptr, filc_object* object);
 /* Derefs the context. If the refcount reaches zero, it gets destroyed.
  
    Destroying the set means storing all known ptr_capabilities into their corresponding pizlonated_gptrs
    atomically. */
 void filc_global_initialization_context_destroy(filc_global_initialization_context* context);
 
-void filc_alloca_stack_push(filc_alloca_stack* stack, void* alloca);
-static inline size_t filc_alloca_stack_save(filc_alloca_stack* stack) { return stack->size; }
-void filc_alloca_stack_restore(filc_alloca_stack* stack, size_t size);
-void filc_alloca_stack_destroy(filc_alloca_stack* stack);
-
 void filc_execute_constant_relocations(
     void* constant, filc_constant_relocation* relocations, size_t num_relocations,
     filc_global_initialization_context* context);
 
 void filc_defer_or_run_global_ctor(void (*global_ctor)(PIZLONATED_SIGNATURE));
-void filc_run_deferred_global_ctors(void); /* Important safety property: libc must call this before
-                                                letting the user start threads. But it's OK if the
-                                                deferred constructors that this calls start threads,
-                                                as far as safety goes. */
-void pizlonated_f_zrun_deferred_global_ctors(PIZLONATED_SIGNATURE);
-
+void filc_run_deferred_global_ctors(filc_thread* my_thread); /* Important safety property: libc must
+                                                                call this before letting the user
+                                                                start threads. But it's OK if the
+                                                                deferred constructors that this calls
+                                                                start threads, as far as safety
+                                                                goes. */
+void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE));
 void filc_error(const char* reason, const filc_origin* origin);
 
-void pizlonated_f_zprint(PIZLONATED_SIGNATURE);
-void pizlonated_f_zprint_long(PIZLONATED_SIGNATURE);
-void pizlonated_f_zprint_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zerror(PIZLONATED_SIGNATURE);
-void pizlonated_f_zstrlen(PIZLONATED_SIGNATURE);
-void pizlonated_f_zisdigit(PIZLONATED_SIGNATURE);
+PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);
 
-void pizlonated_f_zfence(PIZLONATED_SIGNATURE);
-void pizlonated_f_zstore_store_fence(PIZLONATED_SIGNATURE);
-void pizlonated_f_zcompiler_fence(PIZLONATED_SIGNATURE);
-void pizlonated_f_zunfenced_weak_cas_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zweak_cas_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zunfenced_strong_cas_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zstrong_cas_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zunfenced_xchg_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zxchg_ptr(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_zis_runtime_testing_enabled(PIZLONATED_SIGNATURE);
-void pizlonated_f_zborkedptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zvalidate_ptr(PIZLONATED_SIGNATURE);
-void pizlonated_f_zscavenger_suspend(PIZLONATED_SIGNATURE);
-void pizlonated_f_zscavenger_resume(PIZLONATED_SIGNATURE);
-
-/* Amusingly, the order of these functions tell the story of me porting musl to filc. */
-void pizlonated_f_zregister_sys_errno_handler(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_ioctl(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_writev(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_read(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_readv(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_write(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_close(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_lseek(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_exit(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_geteuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getgid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getegid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_open(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getpid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_clock_gettime(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fstatat(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fstat(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fcntl(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getpwuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_sigaction(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_isatty(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_pipe(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_select(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_sched_yield(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_socket(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setsockopt(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_bind(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getaddrinfo(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_connect(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getsockname(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getsockopt(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getpeername(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_sendto(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_recvfrom(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getrlimit(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_umask(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_uname(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getitimer(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setitimer(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_pause(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_pselect(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getpeereid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_kill(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_raise(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_dup(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_dup2(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_sigprocmask(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getpwnam(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setgroups(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_opendir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fdopendir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_closedir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_readdir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_rewinddir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_seekdir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_telldir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_closelog(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_openlog(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setlogmask(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_syslog(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_chdir(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fork(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_waitpid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_listen(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_accept(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_socketpair(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setsid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_execve(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getppid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_chroot(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_seteuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setreuid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setgid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setegid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setregid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_nanosleep(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getgroups(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getgrouplist(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_readlink(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_openpty(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_ttyname_r(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getgrnam(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_chown(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_chmod(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_endutxent(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getutxent(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getutxid(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getutxline(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_pututxline(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_setutxent(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getlastlogx(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_getlastlogxbyname(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_sendmsg(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_recvmsg(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_fchmod(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_rename(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_unlink(PIZLONATED_SIGNATURE);
-void pizlonated_f_zsys_link(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_zthread_self(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_get_id(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_get_cookie(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_set_self_cookie(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_create(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_join(PIZLONATED_SIGNATURE);
-void pizlonated_f_zthread_detach(PIZLONATED_SIGNATURE);
-
-void pizlonated_f_zpark_if(PIZLONATED_SIGNATURE);
-void pizlonated_f_zunpark_one(PIZLONATED_SIGNATURE);
-void pizlonated_f_zunpark_all(PIZLONATED_SIGNATURE);
+PAS_API bool filc_get_bool_env(const char* name, bool default_value);
+PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);
+PAS_API size_t filc_get_size_env(const char* name, size_t default_value);
 
 PAS_END_EXTERN_C;
 

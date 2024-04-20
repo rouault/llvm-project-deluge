@@ -188,7 +188,6 @@ typedef long ssize_t;
 #define CNK_NUM     9
 #define CNK_PRCNT   10
 #define CNK_DELPTR  11
-#define CNK_DELTYP  12
 
 #define char_to_int(p) ((p)- '0')
 #ifndef MAX
@@ -508,10 +507,6 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 				cnk->type = CNK_DELPTR;
 				cnk->flags |= DP_F_UNSIGNED;
 				break;
-			case 'T':
-				cnk->type = CNK_DELTYP;
-				cnk->flags |= DP_F_UNSIGNED;
-				break;
 			case 'n':
 				cnk->type = CNK_NUM;
 				break;
@@ -627,7 +622,6 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 
 		case CNK_PTR:
                 case CNK_DELPTR:
-                case CNK_DELTYP:
 			cnk->strvalue = __builtin_va_arg (args, void *);
 			for (i = 1; i < clist[pnum].num; i++) {
 				clist[pnum].chunks[i]->strvalue = cnk->strvalue;
@@ -719,15 +713,6 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 
                 case CNK_DELPTR: {
                     char* text = zptr_to_new_string(cnk->strvalue);
-                    if (max == -1)
-                        max = zstrlen(text);
-                    fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
-                    zfree(text);
-                    break;
-                }
-
-                case CNK_DELTYP: {
-                    char* text = ztype_to_new_string((ztype*)cnk->strvalue);
                     if (max == -1)
                         max = zstrlen(text);
                     fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
@@ -1137,7 +1122,7 @@ static void dopr_outch(char *buffer, size_t *currlen, size_t maxlen, char c)
 }
 
 static struct pr_chunk *new_chunk(void) {
-    struct pr_chunk *new_c = zalloc(struct pr_chunk, 1);
+    struct pr_chunk *new_c = zalloc(sizeof(struct pr_chunk));
 
 	if (!new_c)
 		return NULL;
@@ -1173,10 +1158,10 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 		max = chunk->num;
 
 		if (*list == NULL) {
-                    l = zalloc(struct pr_chunk_x, max);
+                    l = zalloc(sizeof(struct pr_chunk_x) * max);
                     pos = 0;
 		} else {
-                    l = zrealloc(*list, struct pr_chunk_x, max);
+                    l = zrealloc(*list, sizeof(struct pr_chunk_x) * max);
                     pos = max_num;
 		}
 		if (l == NULL) {
@@ -1197,9 +1182,9 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 	i = chunk->num - 1;
 	cnum = l[i].num + 1;
 	if (l[i].chunks == NULL) {
-            c = zalloc(struct pr_chunk *, cnum);
+            c = zalloc(sizeof(struct pr_chunk *) * cnum);
 	} else {
-            c = zrealloc(l[i].chunks, struct pr_chunk *, cnum);
+            c = zrealloc(l[i].chunks, sizeof(struct pr_chunk *) * cnum);
 	}
 	if (c == NULL) {
 		for (i = 0; i < max; i++) {
@@ -1260,7 +1245,7 @@ char* zvasprintf(const char* format, __builtin_va_list args)
     if (snprintf_result < 0)
         return NULL;
 
-    result = zalloc(char, snprintf_result + 1);
+    result = zalloc(snprintf_result + 1);
     if (!result)
         NULL;
 

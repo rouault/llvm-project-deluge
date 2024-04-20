@@ -2,8 +2,8 @@
 
 int main(void)
 {
-    int** ptr = zalloc(int*, 42);
-    ptr[0] = zalloc(int, 1);
+    int** ptr = zalloc(sizeof(int*) * 42);
+    ptr[0] = zalloc(sizeof(int));
     ptr[0][0] = 666;
     if (ptr[0][0] == 666)
         zprint("YES\n");

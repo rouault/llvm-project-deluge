@@ -7,6 +7,44 @@
 #include <sys/wait.h>
 #include <errno.h>
 
+static void writeloop(int fd, char* data, size_t size)
+{
+    while (size) {
+        ssize_t result = write(fd, data, size);
+        zprintf("Wrote %ld bytes.\n", result);
+        ZASSERT(result);
+        if (result == -1) {
+            ZASSERT(errno == EINTR);
+            continue;
+        }
+        ZASSERT(result > 0);
+        ZASSERT(result <= size);
+        data += result;
+        size -= result;
+    }
+}
+
+static size_t readloop(int fd, char* data, size_t size)
+{
+    size_t bytes_read = 0;
+    while (size) {
+        ssize_t result = read(fd, data, size);
+        zprintf("Read %ld bytes.\n", result);
+        if (!result)
+            return bytes_read;
+        if (result == -1) {
+            ZASSERT(errno == EINTR);
+            continue;
+        }
+        ZASSERT(result > 0);
+        ZASSERT(result <= size);
+        data += result;
+        size -= result;
+        bytes_read += result;
+    }
+    return bytes_read;
+}
+
 static void child(int sockfd)
 {
     int socks[2];
@@ -25,7 +63,7 @@ static void child(int sockfd)
     msg.msg_controllen = sizeof(cmsgbuf.buf);
     cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    printf("cmsg->cmsg_len = %u\n", (unsigned)cmsg->cmsg_len);
+    zprintf("cmsg->cmsg_len = %u\n", (unsigned)cmsg->cmsg_len);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     *(int*)CMSG_DATA(cmsg) = socks[0];
@@ -38,7 +76,7 @@ static void child(int sockfd)
     msg.msg_iov = &vec;
     msg.msg_iovlen = 1;
 
-    printf("About to sendmsg. Sending fd = %d using fd = %d\n", socks[0], sockfd);
+    zprintf("About to sendmsg. Sending fd = %d using fd = %d\n", socks[0], sockfd);
 
     for (;;) {
         ssize_t send_result = sendmsg(sockfd, &msg, 0);
@@ -49,7 +87,13 @@ static void child(int sockfd)
         ZASSERT(my_errno == EINTR);
     }
 
-    ZASSERT(write(socks[1], "hello", strlen("hello") + 1) == strlen("hello") + 1);
+    /* Gotta acknowledge that the other side got the file descriptor. If they get it after we exit,
+       then they'll get a file descriptor that doesn't work. (Reproduced by running this test in
+       legacy C on Darwin.) */
+    char dummy;
+    ZASSERT(readloop(sockfd, &dummy, 1) == 1);
+
+    writeloop(socks[1], "hello", strlen("hello") + 1);
 }
 
 static void parent(int sockfd)
@@ -77,7 +121,7 @@ static void parent(int sockfd)
         int my_errno = errno;
         if (recv_result == 1)
             break;
-        printf("recv_result = %ld, error = %s\n", (long)recv_result, strerror(my_errno));
+        zprintf("recv_result = %ld, error = %s\n", (long)recv_result, strerror(my_errno));
         ZASSERT(recv_result == -1);
         ZASSERT(my_errno == EINTR);
     }
@@ -90,9 +134,13 @@ static void parent(int sockfd)
     ZASSERT(cmsg->cmsg_level == SOL_SOCKET);
     ZASSERT(cmsg->cmsg_len = CMSG_LEN(sizeof(int)));
     int othersockfd = *(int*)CMSG_DATA(cmsg);
+    zprintf("othersockfd = %d\n", othersockfd);
+
+    char dummy;
+    writeloop(sockfd, &dummy, 1);
 
     char buf[100];
-    ZASSERT(read(othersockfd, buf, sizeof(buf)) == strlen("hello") + 1);
+    ZASSERT(readloop(othersockfd, buf, sizeof(buf)) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));
 }
 
@@ -104,16 +152,16 @@ int main()
     int result = fork();
     ZASSERT(result >= 0);
     if (!result) {
-        printf("Running child!\n");
+        zprintf("Running child!\n");
         close(socks[1]);
         child(socks[0]);
-        printf("Child OK\n");
+        zprintf("Child OK\n");
     } else {
-        printf("Running parent!\n");
+        zprintf("Running parent!\n");
         close(socks[0]);
         parent(socks[1]);
         wait(NULL);
-        printf("Parent OK\n");
+        zprintf("Parent OK\n");
     }
     return 0;
 }

@@ -31,17 +31,16 @@ $testDirectory.each_entry {
     expectedOutputs = handleArray(manifest["output-includes"])
     forbiddenOutputs = handleArray(manifest["output-excludes"])
     runScript = fullPath + "run.sh"
+    compileScript = fullPath + "compile.sh"
+    justRunScript = fullPath + "justRun.sh"
+    justRunReleaseScript = fullPath + "justRunRelease.sh"
     subRunScript = fullPath + "subRun.sh"
+    subRunSTWScript = fullPath + "subRunSTW.sh"
+    subRunReleaseScript = fullPath + "subRunRelease.sh"
     binary = fullPath + testName
     compilerOutput = fullPath + "compilerOutput.txt"
     output = fullPath + "output.txt"
-    File.open(subRunScript, "w") {
-        | outp |
-        outp.puts "#!/bin/sh"
-        outp.puts "set -e"
-        outp.puts "DYLD_LIBRARY_PATH=pizfix/lib_test #{Shellwords.shellescape(binary)}"
-    }
-    File.open(runScript, "w") {
+    File.open(compileScript, "w") {
         | outp |
         outp.puts "#!/bin/sh"
         outp.print "xcrun build/bin/clang -o #{Shellwords.shellescape(binary)}"
@@ -58,40 +57,81 @@ $testDirectory.each_entry {
         outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "    exit 1"
         outp.puts "fi"
-        outp.puts "#{Shellwords.shellescape(subRunScript)} >& #{Shellwords.shellescape(output)}"
-        if expectedReturn == "failure"
-            outp.puts "if [ $? -eq 0 ]"
-        else
-            outp.puts "if [ $? -ne 0 ]"
-        end
-        outp.puts "then"
-        if expectedReturn == "failure"
-            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected program to return failure"))
-        else
-            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected program to return success"))
-        end
-        outp.puts "    cat #{Shellwords.shellescape(output)}"
-        outp.puts "    exit 1"
-        outp.puts "fi"
-        expectedOutputs.each {
-            | expectedOutput |
-            outp.puts "fgrep #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(output)} > /dev/null || {"
-            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected output to contain #{expectedOutput}"))
-            outp.puts "    cat #{Shellwords.shellescape(output)}"
-            outp.puts "    exit 1"
-            outp.puts "}"
-        }
-        forbiddenOutputs.each {
-            | forbiddenOutput |
-            outp.puts "fgrep #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(output)} > /dev/null && {"
-            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: expected output to NOT contain #{forbiddenOutput}"))
-            outp.puts "    cat #{Shellwords.shellescape(output)}"
-            outp.puts "    exit 1"
-            outp.puts "}"
-        }
-        outp.puts ":"
     }
+    File.open(justRunScript, "w") {
+        | outp |
+        outp.puts "#!/bin/sh"
+        outp.puts "set -e"
+        outp.puts "DYLD_LIBRARY_PATH=pizfix/lib_test #{Shellwords.shellescape(binary)}"
+    }
+    File.open(justRunReleaseScript, "w") {
+        | outp |
+        outp.puts "#!/bin/sh"
+        outp.puts "set -e"
+        outp.puts "#{Shellwords.shellescape(binary)}"
+    }
+    [{:script => subRunScript,
+      :cmdPrefix => "FUGC_MIN_THRESHOLD=0",
+      :justRunScript => justRunScript},
+     {:script => subRunSTWScript,
+      :cmdPrefix => "FUGC_MIN_THRESHOLD=0 FUGC_STW=1",
+      :justRunScript => justRunScript},
+     {:script => subRunReleaseScript,
+      :cmdPrefix => "",
+      :justRunScript => justRunReleaseScript}].each {
+        | params |
+        File.open(params[:script], "w") {
+            | outp |
+            outp.puts "#!/bin/sh"
+            outp.puts "#{params[:cmdPrefix]} FILC_EXIT_ON_PANIC=1 FILC_DUMP_SETUP=1 #{Shellwords.shellescape(params[:justRunScript])} >& #{Shellwords.shellescape(output)}"
+            if expectedReturn == "failure"
+                outp.puts "if [ $? -eq 0 ]"
+            else
+                outp.puts "if [ $? -ne 0 ]"
+            end
+            outp.puts "then"
+            if expectedReturn == "failure"
+                outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return failure"))
+            else
+                outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return success"))
+            end
+            outp.puts "    cat #{Shellwords.shellescape(output)}"
+            outp.puts "    exit 1"
+            outp.puts "fi"
+            expectedOutputs.each {
+                | expectedOutput |
+                outp.puts "fgrep #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(output)} > /dev/null || {"
+                outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected output to contain #{expectedOutput}"))
+                outp.puts "    cat #{Shellwords.shellescape(output)}"
+                outp.puts "    exit 1"
+                outp.puts "}"
+            }
+            forbiddenOutputs.each {
+                | forbiddenOutput |
+                outp.puts "fgrep #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(output)} > /dev/null && {"
+                outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected output to NOT contain #{forbiddenOutput}"))
+                outp.puts "    cat #{Shellwords.shellescape(output)}"
+                outp.puts "    exit 1"
+                outp.puts "}"
+            }
+            outp.puts ":"
+        }
+    }
+    File.open(runScript, "w") {
+        | outp |
+        outp.puts "#!/bin/sh"
+        outp.puts "set -e"
+        outp.puts "#{Shellwords.shellescape(compileScript)}"
+        outp.puts "#{Shellwords.shellescape(subRunScript)}"
+        outp.puts "#{Shellwords.shellescape(subRunSTWScript)}"
+        outp.puts "#{Shellwords.shellescape(subRunReleaseScript)}"
+    }
+    compileScript.chmod(0755)
+    justRunScript.chmod(0755)
+    justRunReleaseScript.chmod(0755)
     subRunScript.chmod(0755)
+    subRunSTWScript.chmod(0755)
+    subRunReleaseScript.chmod(0755)
     runScript.chmod(0755)
     $tests << runScript
 }

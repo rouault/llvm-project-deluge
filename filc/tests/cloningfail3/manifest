@@ -1,6 +1,0 @@
-return:
-  failure
-output-includes:
-  - "zgettypeslice: cannot slice 8...80 as int, span contains non-ints (type = type{80,16,iSCSC})."
-  - filc panic
-

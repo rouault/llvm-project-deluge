@@ -16,9 +16,9 @@ int foo(int x, ...)
 int main(void)
 {
     zprint("yes = ");
-    int* x = zalloc(int, 1);
-    int* y = zalloc(int, 1);
-    int* z = zalloc(int, 1);
+    int* x = zalloc(sizeof(int));
+    int* y = zalloc(sizeof(int));
+    int* z = zalloc(sizeof(int));
     *x = 666;
     *y = 42;
     *z = 1980;

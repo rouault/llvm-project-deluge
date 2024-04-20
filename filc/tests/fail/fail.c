@@ -4,13 +4,13 @@ int* opaque(int*);
 
 int main(void)
 {
-    int x;
-    int* ptr = opaque(&x) + 1;
+    int x; /* This gets a word-sized box. */
+    int* ptr = opaque(&x) + 4;
     *ptr = 42;
     if (*ptr == 42)
         zprint("YAY\n");
     else
-        zerror("fail");
+        zerror("NAY\n");
     return 0;
 }
 

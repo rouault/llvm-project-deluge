@@ -121,15 +121,3 @@ PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(jit_medium_bitfit,
                                    JIT_HEAP_CONFIG.medium_bitfit_config)
 #endif
 
-#if PAS_ENABLE_FILC
-PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(filc_small_bitfit,
-                                   FILC_HEAP_CONFIG.small_bitfit_config)
-PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(filc_medium_bitfit,
-                                   FILC_HEAP_CONFIG.medium_bitfit_config)
-PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(filc_marge_bitfit,
-                                   FILC_HEAP_CONFIG.marge_bitfit_config)
-
-PAS_DEFINE_BITFIT_PAGE_CONFIG_KIND(filc_hard_bitfit,
-                                   FILC_HARD_HEAP_CONFIG.small_bitfit_config)
-#endif
-
