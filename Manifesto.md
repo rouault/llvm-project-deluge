@@ -392,9 +392,9 @@ Let's break that down:
   "soft handshakes" while other made men will call "ragged safepoints". In the language of civilians,
   this means that the GC may ask threads to do some work (like scan stack), but threads do this
   asynchronously, on their own time, without waiting for the collector or other threads. The only "pause"
-  threads experience is the pollcheck callback, which does work bounded by that thread's stack
-  height. That "pause" is usually shorter than the slowest path you might take through a typical
-  `malloc` implementation.
+  threads experience is the callback executed in response to the soft handshake, which does work bounded
+  by that thread's stack height. That "pause" is usually shorter than the slowest path you might take
+  through a typical `malloc` implementation.
 
 - Grey-stack: the collector assumes it must rescan thread stacks to fixpoint. That is, GC starts with
   a soft handshake to scan stack, and then marks in a loop. If this
