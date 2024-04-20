@@ -11,4 +11,5 @@ git clone https://github.com/pizlonator/deluded-zlib-1.3.git zlib-1.3
 git clone https://github.com/pizlonator/deluded-openssl-3.2.0.git openssl-3.2.0
 git clone https://github.com/pizlonator/deluded-curl-8.5.0.git curl-8.5.0
 git clone https://github.com/pizlonator/deluded-openssh-portable.git
+git clone https://github.com/pizlonator/pizlonated-pcre-8.39.git pcre-8.39
 

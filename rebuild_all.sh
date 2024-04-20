@@ -18,3 +18,5 @@ filc/run-tests
 (cd curl-8.5.0 && make distclean && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --with-openssl --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
 (cd deluded-openssh-portable && make distclean && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
+
+(cd pcre-8.39 && make distclean && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties --enable-pcregrep-libz && make -j `sysctl -n hw.ncpu` && make install)
