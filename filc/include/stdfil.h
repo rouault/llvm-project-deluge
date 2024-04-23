@@ -72,6 +72,20 @@ _Bool zisptr(void* ptr);
    New types, as well as opaque memory, will return false. */
 _Bool zisintorptr(void* ptr);
 
+/* Construct a pointer that has the capability from `object` but the address from `address`. This
+   is a memory-safe operation, and it's guaranteed to be equivalent to:
+   
+       object -= (uintptr_t)object;
+       object += address;
+   
+   This is useful for situations where you want to use part of the object's address for tag bits. */
+void* zmkptr(void* object, unsigned long address);
+
+/* Memory-safe helpers for doing bit math on addresses. */
+void* zorptr(void* ptr, unsigned long bits);
+void* zandptr(void* ptr, unsigned long bits);
+void* zxorptr(void* ptr, unsigned long bits);
+
 /* The pointer-nullifying memmove.
    
    This memmove will kill your process if anything goes out of bounds.
@@ -398,6 +412,10 @@ int zsys_fchmod(int fd, unsigned mode);
 int zsys_rename(const char* oldname, const char* newname);
 int zsys_unlink(const char* path);
 int zsys_link(const char* oldname, const char* newname);
+long zsys_sysconf_override(int name); /* If libpizlo wants to override this value, it returns
+                                         it; otherwise it returns -1 with ENOSYS. Many sysconfs
+                                         are handled by musl! */
+int zsys_numcores(void);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);

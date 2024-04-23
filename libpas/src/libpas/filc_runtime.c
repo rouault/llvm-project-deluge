@@ -45,6 +45,7 @@
 #include <util.h>
 #include <grp.h>
 #include <utmpx.h>
+#include <sys/sysctl.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -7422,6 +7423,254 @@ int filc_native_zsys_link(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr
     if (result < 0)
         set_errno(my_errno);
     return result;
+}
+
+long filc_native_zsys_sysconf_override(filc_thread* my_thread, int musl_name)
+{
+    int name;
+    switch (musl_name) {
+    case 0:
+        name = _SC_ARG_MAX;
+        break;
+    case 1:
+        name = _SC_CHILD_MAX;
+        break;
+    case 2:
+        name = _SC_CLK_TCK;
+        break;
+    case 3:
+        name = _SC_NGROUPS_MAX;
+        break;
+    case 4:
+        name = _SC_OPEN_MAX;
+        break;
+    case 5:
+        name = _SC_STREAM_MAX;
+        break;
+    case 6:
+        name = _SC_TZNAME_MAX;
+        break;
+    case 7:
+        name = _SC_JOB_CONTROL;
+        break;
+    case 8:
+        name = _SC_SAVED_IDS;
+        break;
+    case 9:
+        name = _SC_REALTIME_SIGNALS;
+        break;
+    case 10:
+        name = _SC_PRIORITY_SCHEDULING;
+        break;
+    case 11:
+        name = _SC_TIMERS;
+        break;
+    case 12:
+        name = _SC_ASYNCHRONOUS_IO;
+        break;
+    case 13:
+        name = _SC_PRIORITIZED_IO;
+        break;
+    case 14:
+        name = _SC_SYNCHRONIZED_IO;
+        break;
+    case 15:
+        name = _SC_FSYNC;
+        break;
+    case 16:
+        name = _SC_MAPPED_FILES;
+        break;
+    case 17:
+        name = _SC_MEMLOCK;
+        break;
+    case 18:
+        name = _SC_MEMLOCK_RANGE;
+        break;
+    case 19:
+        name = _SC_MEMORY_PROTECTION;
+        break;
+    case 20:
+        name = _SC_MESSAGE_PASSING;
+        break;
+    case 21:
+        name = _SC_SEMAPHORES;
+        break;
+    case 22:
+        name = _SC_SHARED_MEMORY_OBJECTS;
+        break;
+    case 23:
+        name = _SC_AIO_LISTIO_MAX;
+        break;
+    case 24:
+        name = _SC_AIO_MAX;
+        break;
+    case 25:
+        name = _SC_AIO_PRIO_DELTA_MAX;
+        break;
+    case 26:
+        name = _SC_DELAYTIMER_MAX;
+        break;
+    case 27:
+        name = _SC_MQ_OPEN_MAX;
+        break;
+    case 28:
+        name = _SC_MQ_PRIO_MAX;
+        break;
+    case 29:
+        name = _SC_VERSION;
+        break;
+    case 30:
+        name = _SC_PAGESIZE;
+        break;
+    case 31:
+        name = _SC_RTSIG_MAX;
+        break;
+    case 32:
+        name = _SC_SEM_NSEMS_MAX;
+        break;
+    case 33:
+        name = _SC_SEM_VALUE_MAX;
+        break;
+    case 34:
+        name = _SC_SIGQUEUE_MAX;
+        break;
+    case 35:
+        name = _SC_TIMER_MAX;
+        break;
+    case 36:
+        name = _SC_BC_BASE_MAX;
+        break;
+    case 37:
+        name = _SC_BC_DIM_MAX;
+        break;
+    case 38:
+        name = _SC_BC_SCALE_MAX;
+        break;
+    case 39:
+        name = _SC_BC_STRING_MAX;
+        break;
+    case 40:
+        name = _SC_COLL_WEIGHTS_MAX;
+        break;
+    case 42:
+        name = _SC_EXPR_NEST_MAX;
+        break;
+    case 43:
+        name = _SC_LINE_MAX;
+        break;
+    case 44:
+        name = _SC_RE_DUP_MAX;
+        break;
+    case 46:
+        name = _SC_2_VERSION;
+        break;
+    case 47:
+        name = _SC_2_C_BIND;
+        break;
+    case 48:
+        name = _SC_2_C_DEV;
+        break;
+    case 49:
+        name = _SC_2_FORT_DEV;
+        break;
+    case 50:
+        name = _SC_2_FORT_RUN;
+        break;
+    case 51:
+        name = _SC_2_SW_DEV;
+        break;
+    case 52:
+        name = _SC_2_LOCALEDEF;
+        break;
+    case 60:
+        name = _SC_IOV_MAX;
+        break;
+    case 67:
+        name = _SC_THREADS;
+        break;
+    case 68:
+        name = _SC_THREAD_SAFE_FUNCTIONS;
+        break;
+    case 69:
+        name = _SC_GETGR_R_SIZE_MAX;
+        break;
+    case 70:
+        name = _SC_GETPW_R_SIZE_MAX;
+        break;
+    case 71:
+        name = _SC_LOGIN_NAME_MAX;
+        break;
+    case 72:
+        name = _SC_TTY_NAME_MAX;
+        break;
+    case 83:
+        name = _SC_NPROCESSORS_CONF;
+        break;
+    case 84:
+        name = _SC_NPROCESSORS_ONLN;
+        break;
+    case 85:
+        name = _SC_PHYS_PAGES;
+        break;
+    case 87:
+        name = _SC_PASS_MAX;
+        break;
+    case 89:
+        name = _SC_XOPEN_VERSION;
+        break;
+    case 90:
+        name = _SC_XOPEN_XCU_VERSION;
+        break;
+    case 91:
+        name = _SC_XOPEN_UNIX;
+        break;
+    case 92:
+        name = _SC_XOPEN_CRYPT;
+        break;
+    case 93:
+        name = _SC_XOPEN_ENH_I18N;
+        break;
+    case 94:
+        name = _SC_XOPEN_SHM;
+        break;
+    case 95:
+        name = _SC_2_CHAR_TERM;
+        break;
+    case 97:
+        name = _SC_2_UPE;
+        break;
+    default:
+        set_errno(ENOSYS);
+        return -1;
+    }
+    filc_exit(my_thread);
+    errno = 0;
+    long result = sysconf(name);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (my_errno)
+        set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_numcores(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    unsigned result;
+    size_t length = sizeof(result);
+    int name[] = {
+        CTL_HW,
+        HW_AVAILCPU
+    };
+    int sysctl_result = sysctl(name, sizeof(name) / sizeof(int), &result, &length, 0, 0);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (sysctl_result < 0) {
+        set_errno(my_errno);
+        return -1;
+    }
+    PAS_ASSERT((int)result >= 0);
+    return (int)result;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

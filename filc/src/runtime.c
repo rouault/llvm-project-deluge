@@ -22,6 +22,29 @@ _Bool zisintorptr(void* ptr)
     return zisint(ptr) || zisptr(ptr);
 }
 
+void* zmkptr(void* object, unsigned long address)
+{
+    char* ptr = (char*)object;
+    ptr -= (unsigned long)object;
+    ptr += address;
+    return ptr;
+}
+
+void* zorptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr | bits);
+}
+
+void* zandptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr & bits);
+}
+
+void* zxorptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr ^ bits);
+}
+
 void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
 {
     char* dst = (char*)dst_ptr;
