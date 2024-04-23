@@ -1585,6 +1585,10 @@ class Pizlonator {
         II->eraseFromParent();
         return true;
 
+      case Intrinsic::assume:
+        II->eraseFromParent();
+        return true;
+
       default:
         if (!II->getCalledFunction()->doesNotAccessMemory()
             && !isa<ConstrainedFPIntrinsic>(II)) {
