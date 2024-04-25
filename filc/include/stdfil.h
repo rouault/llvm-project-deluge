@@ -1,6 +1,14 @@
 #ifndef FILC_STDFIL_H
 #define FILC_STDFIL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if 0
+} /* tell emacs what's up */
+#endif
+
 void* zalloc(__SIZE_TYPE__ count);
 void* zaligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 void* zrealloc(void* old_ptr, __SIZE_TYPE__ count);
@@ -85,6 +93,13 @@ void* zmkptr(void* object, unsigned long address);
 void* zorptr(void* ptr, unsigned long bits);
 void* zandptr(void* ptr, unsigned long bits);
 void* zxorptr(void* ptr, unsigned long bits);
+
+/* Returns a pointer that points to `newptr` masked by the `mask`, while preserving the
+   bits from `oldptr` masked by `~mask`. Also asserts that `newptr` has no bits in `~mask`.
+   
+   Useful for situations where you want to reassign a pointer from `oldptr` to `newptr` but
+   you have some kind of tagging in `~mask`. */
+void* zretagptr(void* newptr, void* oldptr, unsigned long mask);
 
 /* The pointer-nullifying memmove.
    
@@ -416,6 +431,9 @@ long zsys_sysconf_override(int name); /* If libpizlo wants to override this valu
                                          it; otherwise it returns -1 with ENOSYS. Many sysconfs
                                          are handled by musl! */
 int zsys_numcores(void);
+void* zsys_mmap(void* address, __SIZE_TYPE__ length, int prot, int flags, int fd, long offset);
+int zsys_munmap(void* address, __SIZE_TYPE__ length);
+int zsys_ftruncate(int fd, long length);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
@@ -427,6 +445,10 @@ void* zthread_create(void* (*callback)(void* arg), void* arg); /* returns NULL o
                                                                   errno. */
 _Bool zthread_join(void* thread, void** result); /* Only fails with ESRCH for forked threads. Returns
                                                     true on success, false on failure and sets errno. */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* FILC_STDFIL_H */
 

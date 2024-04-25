@@ -4,11 +4,13 @@
 #include <sys/wait.h>
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #define ZASSERT(exp) do { \
     if ((exp)) \
         break; \
     fprintf(stderr, "%s:%d: %s: assertion %s failed.\n", __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
+    abort(); \
 } while (0)
 
 void* thread_main(void* arg)

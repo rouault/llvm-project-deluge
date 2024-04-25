@@ -115,6 +115,7 @@ typedef uint8_t filc_word_type;
                                                               thread/dirstream/signal_handler. */
 #define FILC_OBJECT_FLAG_GLOBAL           ((uint8_t)8)     /* Pointer to a global, so cannot be
                                                               freed. */
+#define FILC_OBJECT_FLAG_MMAP             ((uint8_t)16)    /* Pointer to mmap. */
                                           
 #define FILC_MAX_MUSL_SIGNUM              31u
                                           
@@ -399,6 +400,8 @@ static inline bool filc_thread_is_entered(filc_thread* thread)
 }
 
 PAS_API void filc_assert_my_thread_is_not_entered(void);
+
+PAS_API void filc_soft_handshake_no_op_callback(filc_thread* my_thread, void* arg);
 
 /* Calls the callback from every thread. Returns when every thread has done so. */
 PAS_API void filc_soft_handshake(void (*callback)(filc_thread* my_thread, void* arg), void* arg);

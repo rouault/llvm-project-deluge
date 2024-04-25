@@ -46,6 +46,7 @@
 #include <grp.h>
 #include <utmpx.h>
 #include <sys/sysctl.h>
+#include <sys/mman.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -664,6 +665,12 @@ static bool run_pollcheck_callback_from_handshake(filc_thread* thread)
     }
 
     return false;
+}
+
+void filc_soft_handshake_no_op_callback(filc_thread* my_thread, void* arg)
+{
+    PAS_ASSERT(my_thread);
+    PAS_ASSERT(!arg);
 }
 
 void filc_soft_handshake(void (*callback)(filc_thread* my_thread, void* arg), void* arg)
@@ -1285,6 +1292,10 @@ void filc_object_flags_dump_with_comma(uint8_t flags, bool* comma, pas_stream* s
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "global");
     }
+    if (flags & FILC_OBJECT_FLAG_MMAP) {
+        pas_stream_print_comma(stream, comma, ",");
+        pas_stream_printf(stream, "mmap");
+    }
 }
 
 void filc_object_flags_dump(uint8_t flags, pas_stream* stream)
@@ -1871,6 +1882,11 @@ void filc_free(filc_thread* my_thread, filc_object* object)
         !(object->flags & FILC_OBJECT_FLAG_GLOBAL),
         NULL,
         "cannot free global object %s.",
+        filc_object_to_new_string(object));
+    FILC_CHECK(
+        !(object->flags & FILC_OBJECT_FLAG_MMAP),
+        NULL,
+        "cannot free mmap object %s.",
         filc_object_to_new_string(object));
     filc_free_yolo(my_thread, object);
 }
@@ -7671,6 +7687,120 @@ int filc_native_zsys_numcores(filc_thread* my_thread)
     }
     PAS_ASSERT((int)result >= 0);
     return (int)result;
+}
+
+static bool from_musl_prot(int musl_prot, int* prot)
+{
+    *prot = 0;
+    if (check_and_clear(&musl_prot, 1))
+        *prot |= PROT_READ;
+    if (check_and_clear(&musl_prot, 2))
+        *prot |= PROT_WRITE;
+    return !musl_prot;
+}
+
+static bool from_musl_mmap_flags(int musl_flags, int* flags)
+{
+    *flags = 0;
+    if (check_and_clear(&musl_flags, 0x01))
+        *flags |= MAP_SHARED;
+    if (check_and_clear(&musl_flags, 0x02))
+        *flags |= MAP_PRIVATE;
+    if (check_and_clear(&musl_flags, 0x20))
+        *flags |= MAP_ANON;
+    return !musl_flags;
+}
+
+static filc_ptr mmap_error_result(void)
+{
+    return filc_ptr_forge_invalid((void*)(intptr_t)-1);
+}
+
+filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t length, int musl_prot,
+                               int musl_flags, int fd, long offset)
+{
+    static const bool verbose = true;
+    if (filc_ptr_ptr(address)) {
+        set_errno(EINVAL);
+        return mmap_error_result();
+    }
+    int prot;
+    if (!from_musl_prot(musl_prot, &prot)) {
+        set_errno(EINVAL);
+        return mmap_error_result();
+    }
+    int flags;
+    if (!from_musl_mmap_flags(musl_flags, &flags)) {
+        set_errno(EINVAL);
+        return mmap_error_result();
+    }
+    if (!(flags & MAP_SHARED) && !(flags & MAP_PRIVATE)) {
+        set_errno(EINVAL);
+        return mmap_error_result();
+    }
+    if (!!(flags & MAP_SHARED) && !!(flags & MAP_PRIVATE)) {
+        set_errno(EINVAL);
+        return mmap_error_result();
+    }
+    filc_exit(my_thread);
+    void* raw_result = mmap(NULL, length, prot, flags, fd, offset);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (raw_result == (void*)(intptr_t)-1) {
+        set_errno(my_errno);
+        return mmap_error_result();
+    }
+    PAS_ASSERT(raw_result);
+    filc_word_type initial_word_type;
+    if ((flags & MAP_PRIVATE) && (flags & MAP_ANON) && fd == -1 && !offset) {
+        if (verbose)
+            pas_log("using unset word type.\n");
+        initial_word_type = FILC_WORD_TYPE_UNSET;
+    } else {
+        if (verbose)
+            pas_log("using int word type.\n");
+        initial_word_type = FILC_WORD_TYPE_INT;
+    }
+    filc_object* object = filc_allocate_with_existing_data(
+        my_thread, raw_result, length, FILC_OBJECT_FLAG_MMAP, initial_word_type);
+    PAS_ASSERT(object->lower == raw_result);
+    return filc_ptr_create_with_manual_tracking(object);
+}
+
+int filc_native_zsys_munmap(filc_thread* my_thread, filc_ptr address, size_t length)
+{
+    filc_object* object = object_for_deallocate(address);
+    FILC_CHECK(
+        filc_object_size(object) == length,
+        NULL,
+        "cannot partially munmap (ptr = %s, length = %zu).",
+        filc_ptr_to_new_string(address), length);
+    FILC_CHECK(
+        object->flags & FILC_OBJECT_FLAG_MMAP,
+        NULL,
+        "cannot munmap something that was not mmapped (ptr = %s).",
+        filc_ptr_to_new_string(address));
+    filc_free_yolo(my_thread, object);
+    filc_exit(my_thread);
+    filc_soft_handshake(filc_soft_handshake_no_op_callback, NULL);
+    int result = munmap(filc_ptr_ptr(address), length);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_ftruncate(filc_thread* my_thread, int fd, long length)
+{
+    filc_exit(my_thread);
+    int result = ftruncate(fd, length);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

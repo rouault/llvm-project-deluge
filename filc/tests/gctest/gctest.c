@@ -7,6 +7,7 @@
         break; \
     fprintf(stderr, "%s:%d: %s: assertion %s failed.\n", \
             __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
+    abort(); \
 } while (0)
 
 static const size_t num_nodes = 10000;

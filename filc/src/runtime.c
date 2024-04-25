@@ -45,6 +45,12 @@ void* zxorptr(void* ptr, unsigned long bits)
     return zmkptr(ptr, (unsigned long)ptr ^ bits);
 }
 
+void* zretagptr(void* newptr, void* oldptr, unsigned long mask)
+{
+    ZASSERT(!((unsigned long)newptr & ~mask));
+    return zorptr(newptr, (unsigned long)oldptr & ~mask);
+}
+
 void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
 {
     char* dst = (char*)dst_ptr;
