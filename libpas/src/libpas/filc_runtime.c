@@ -2091,7 +2091,10 @@ static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
     first_word_type_index = offset / FILC_WORD_SIZE;
     last_word_type_index = (offset + bytes - 1) / FILC_WORD_SIZE;
 
-    /* FIXME: Eventually, we'll want this to exit. */
+    /* FIXME: Eventually, we'll want this to exit.
+     
+       If we do make it exit, then we'll have to make sure that we check that the object is not
+       FREE, since any exit might observe munmap. */
 
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;
@@ -7719,7 +7722,7 @@ static filc_ptr mmap_error_result(void)
 filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t length, int musl_prot,
                                int musl_flags, int fd, long offset)
 {
-    static const bool verbose = true;
+    static const bool verbose = false;
     if (filc_ptr_ptr(address)) {
         set_errno(EINVAL);
         return mmap_error_result();
