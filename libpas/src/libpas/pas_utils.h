@@ -730,6 +730,40 @@ static inline bool pas_compare_and_swap_uint16_weak(uint16_t* ptr, uint16_t old_
 #endif
 }
 
+static inline bool pas_compare_and_swap_uint16_weak_relaxed(uint16_t* ptr, uint16_t old_value, uint16_t new_value)
+{
+#if PAS_COMPILER(MSVC)
+    return InterlockedCompareExchange16((SHORT volatile*)(uintptr_t)ptr, old_value, new_value) == old_value;
+#elif PAS_COMPILER(ARM64_ATOMICS_LL_SC)
+    uint32_t value = 0;
+    uint32_t cond = 0;
+    asm volatile (
+        "ldxrh %w[value], [%x[ptr]]\t\n"
+        "cmp %w[value], %w[old_value], uxth\t\n"
+        "b.ne 1f\t\n"
+        "stlxrh %w[cond], %w[new_value], [%x[ptr]]\t\n"
+        "cbz %w[cond], 0f\t\n"
+        "b 2f\t\n"
+    "0:\t\n"
+        "mov %w[cond], #1\t\n"
+        "b 3f\t\n"
+    "1:\t\n"
+        "clrex\t\n"
+    "2:\t\n"
+        "mov %w[cond], wzr\t\n"
+    "3:\t\n"
+        /* outputs */  : [value]"=&r"(value), [cond]"=&r"(cond)
+        /* inputs  */  : [old_value]"r"((uint32_t)old_value), [new_value]"r"((uint32_t)new_value), [ptr]"r"(ptr)
+        /* clobbers */ : "cc", "memory"
+    );
+    return cond;
+#elif PAS_COMPILER(CLANG)
+    return __c11_atomic_compare_exchange_weak((_Atomic uint16_t*)ptr, &old_value, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#else
+    return __atomic_compare_exchange_n((uint16_t*)ptr, &old_value, new_value, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+#endif
+}
+
 static inline bool pas_compare_and_swap_uint32_weak(uint32_t* ptr, uint32_t old_value, uint32_t new_value)
 {
 #if PAS_COMPILER(MSVC)

@@ -68,6 +68,7 @@ typedef struct pas_stream pas_stream;
 typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
 
 typedef uint8_t filc_word_type;
+typedef uint16_t filc_object_flags;
 
 /* Each word in memory monotonically transitions type. The lattice is:
 
@@ -86,37 +87,40 @@ typedef uint8_t filc_word_type;
 
    Hence, some types have no edges in the lattice (if they have no transition from unset and no
    transition to free). */
-#define FILC_WORD_TYPE_UNSET              ((uint8_t)0)     /* 128-bit word whose type hasn't been set
-                                                              yet. */
-#define FILC_WORD_TYPE_INT                ((uint8_t)1)     /* 128-bit word that contains ints. */
-#define FILC_WORD_TYPE_PTR                ((uint8_t)2)     /* 128-bit word that contains a ptr. */
-#define FILC_WORD_TYPE_FREE               ((uint8_t)3)     /* 128-bit word that has been freed. */
-#define FILC_WORD_TYPE_FUNCTION           ((uint8_t)4)     /* Indicates the special function type.
-                                                              The lower points at the function but the
-                                                              GC-allocated payload is empty. */
-#define FILC_WORD_TYPE_THREAD             ((uint8_t)5)     /* Indicates the special thread type. The
-                                                              lower points at the payload. */
-#define FILC_WORD_TYPE_DIRSTREAM          ((uint8_t)6)     /* Indicates the special dirstream type.
-                                                              The lower points at the payload. */
-#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((uint8_t)7)     /* Indicates the special signal_handler.
-                                                              The lower points at the payload. */
+#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't been set
+                                                                     yet. */
+#define FILC_WORD_TYPE_INT                ((filc_word_type)1)     /* 128-bit word that contains ints. */
+#define FILC_WORD_TYPE_PTR                ((filc_word_type)2)     /* 128-bit word that contains a ptr. */
+#define FILC_WORD_TYPE_FREE               ((filc_word_type)3)     /* 128-bit word that has been freed. */
+#define FILC_WORD_TYPE_FUNCTION           ((filc_word_type)4)     /* Indicates the special function type.
+                                                                     The lower points at the function but the
+                                                                     GC-allocated payload is empty. */
+#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread type. The
+                                                                     lower points at the payload. */
+#define FILC_WORD_TYPE_DIRSTREAM          ((filc_word_type)6)     /* Indicates the special dirstream type.
+                                                                     The lower points at the payload. */
+#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)7)     /* Indicates the special signal_handler.
+                                                                     The lower points at the payload. */
                                           
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
-                                          
-#define FILC_OBJECT_FLAG_FREE             ((uint8_t)1)     /* The object has been freed. */
-#define FILC_OBJECT_FLAG_RETURN_BUFFER    ((uint8_t)2)     /* This is a return buffer (so it's not
-                                                              GC'd and should never be seen by GC).
-                                                              Useful for assertions only! */
-#define FILC_OBJECT_FLAG_SPECIAL          ((uint8_t)4)     /* It's a special object. If there are no
-                                                              words, or any of them are unset/int/ptr,
-                                                              then this cannot be set. If this is set,
-                                                              then there must be one word, and that
-                                                              word must be one of free/function/
-                                                              thread/dirstream/signal_handler. */
-#define FILC_OBJECT_FLAG_GLOBAL           ((uint8_t)8)     /* Pointer to a global, so cannot be
-                                                              freed. */
-#define FILC_OBJECT_FLAG_MMAP             ((uint8_t)16)    /* Pointer to mmap. */
-                                          
+
+#define FILC_OBJECT_FLAG_FREE             ((filc_object_flags)1)  /* The object has been freed. */
+#define FILC_OBJECT_FLAG_RETURN_BUFFER    ((filc_object_flags)2)  /* This is a return buffer (so it's not
+                                                                     GC'd and should never be seen by GC).
+                                                                     Useful for assertions only! */
+#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)4)  /* It's a special object. If there are no
+                                                                     words, or any of them are unset/int/ptr,
+                                                                     then this cannot be set. If this is set,
+                                                                     then there must be one word, and that
+                                                                     word must be one of free/function/
+                                                                     thread/dirstream/signal_handler. */
+#define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)8)  /* Pointer to a global, so cannot be
+                                                                     freed. */
+#define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)16) /* Pointer to mmap. */
+#define FILC_OBJECT_FLAGS_PIN_SHIFT       ((filc_object_flags)5)  /* Data is pinned by the runtime, so
+                                                                     cannot be freed. This is only useful
+                                                                     for munmap scenarios. */
+
 #define FILC_MAX_MUSL_SIGNUM              31u
                                           
 #define FILC_THREAD_STATE_ENTERED         ((uint8_t)1)
@@ -148,7 +152,7 @@ struct filc_object {
     
     void* lower;
     void* upper;
-    uint8_t flags;
+    filc_object_flags flags;
     filc_word_type word_types[];
 };
 
@@ -160,7 +164,7 @@ struct filc_object {
 struct filc_return_buffer {
     void* lower;
     void* upper;
-    uint8_t flags;
+    filc_object_flags flags;
     filc_word_type word_type;
     pas_uint128 data;
 };
@@ -559,14 +563,19 @@ PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* orig
    
    This mechanism also allows us to handle GC safepoints.
 
-   Only call this inside Fil-C execution and never after exiting. */
-static inline void filc_pollcheck(filc_thread* my_thread, const filc_origin* origin)
+   Only call this inside Fil-C execution and never after exiting.
+
+   Returns true if the pollcheck was actually taken. */
+static inline bool filc_pollcheck(filc_thread* my_thread, const filc_origin* origin)
 {
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
     if ((my_thread->state & (FILC_THREAD_STATE_CHECK_REQUESTED |
                              FILC_THREAD_STATE_STOP_REQUESTED |
-                             FILC_THREAD_STATE_DEFERRED_SIGNAL)))
+                             FILC_THREAD_STATE_DEFERRED_SIGNAL))) {
         filc_pollcheck_slow(my_thread, origin);
+        return true;
+    }
+    return false;
 }
 
 /* This is purely to make it easier for the compiler to emit pollchecks for now. It's a bug that
@@ -875,8 +884,8 @@ static inline filc_ptr filc_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc
             (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST));
 }
 
-PAS_API void filc_object_flags_dump_with_comma(uint8_t flags, bool* comma, pas_stream* stream);
-PAS_API void filc_object_flags_dump(uint8_t flags, pas_stream* stream);
+PAS_API void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream);
+PAS_API void filc_object_flags_dump(filc_object_flags flags, pas_stream* stream);
 PAS_API void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream);
 PAS_API void filc_object_dump(filc_object* object, pas_stream* stream);
 PAS_API void filc_ptr_dump(filc_ptr ptr, pas_stream* stream);
@@ -998,6 +1007,13 @@ void filc_free(filc_thread* my_thread, filc_object* object);
    something that is OK to free. This still does the is-not-already-free check. */
 void filc_free_yolo(filc_thread* my_thread, filc_object* object);
 
+/* munmap() can free memory while we're exited. If we use memory while exited, and it might be
+   mmap memory, then we must pin it first. This will cause munmap() to fail.
+
+   For convenience, these functions forgive you for passing a NULL object. */
+void filc_pin(filc_object* object);
+void filc_unpin(filc_object* object);
+
 void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
 void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin);
 
@@ -1017,9 +1033,13 @@ void filc_check_function_call(filc_ptr ptr);
 void filc_check_access_special(
     filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
 
-void filc_memset_with_exit(filc_thread* my_thread, void* ptr, unsigned value, size_t bytes);
-void filc_memcpy_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
-void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
+void filc_memset_with_exit(filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes);
+void filc_memcpy_with_exit(
+    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
+    void* dst, const void* src, size_t bytes);
+void filc_memmove_with_exit(
+    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
+    void* dst, const void* src, size_t bytes);
 
 /* You can call these if you know that you're copying pointers (or possible pointers) and you've
    already proved that it's safe and the pointer/size are aligned.
@@ -1031,7 +1051,8 @@ void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, 
    The number of bytes must be a multiple of 16. */
 void filc_low_level_ptr_safe_bzero(void* ptr, size_t bytes);
 
-void filc_low_level_ptr_safe_bzero_with_exit(filc_thread* my_thread, void* ptr, size_t bytes);
+void filc_low_level_ptr_safe_bzero_with_exit(
+    filc_thread* my_thread, filc_object* object, void* ptr, size_t bytes);
 
 void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
                  const filc_origin* origin);
@@ -1064,6 +1085,7 @@ char* filc_check_and_get_new_str_for_int_memory(char* base, size_t size);
 
 char* filc_check_and_get_new_str_or_null(filc_ptr ptr);
 
+/* Safely create a Fil-C string from a legacy C string. */
 filc_ptr filc_strdup(filc_thread* my_thread, const char* str);
 
 /* NOTE: It's tempting to add a macro that takes a type and does get_next, but I don't see how

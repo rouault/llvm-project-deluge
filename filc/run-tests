@@ -31,7 +31,7 @@ $testDirectory.each_entry {
     end
     manifest = YAML.load_file(fullPath + "manifest")
     expectedReturn = manifest["return"]
-    raise unless expectedReturn == "success" or expectedReturn == "failure"
+    raise unless expectedReturn == "success" or expectedReturn == "failure" or expectedReturn == "crash"
     expectedOutputs = handleArray(manifest["output-includes"])
     forbiddenOutputs = handleArray(manifest["output-excludes"])
     runScript = fullPath + "run.sh"
@@ -88,16 +88,26 @@ $testDirectory.each_entry {
             | outp |
             outp.puts "#!/bin/sh"
             outp.puts "#{params[:cmdPrefix]} FILC_EXIT_ON_PANIC=1 FILC_DUMP_SETUP=1 #{Shellwords.shellescape(params[:justRunScript])} >& #{Shellwords.shellescape(output)}"
-            if expectedReturn == "failure"
+            case expectedReturn
+            when "failure"
+                outp.puts "if [ $? -ne 42 ]"
+            when "crash"
                 outp.puts "if [ $? -eq 0 ]"
-            else
+            when "success"
                 outp.puts "if [ $? -ne 0 ]"
+            else
+                raise
             end
             outp.puts "then"
-            if expectedReturn == "failure"
+            case expectedReturn
+            when "failure"
                 outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return failure"))
-            else
+            when "crash"
+                outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to crash"))
+            when "success"
                 outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return success"))
+            else
+                raise
             end
             outp.puts "    cat #{Shellwords.shellescape(output)}"
             outp.puts "    exit 1"

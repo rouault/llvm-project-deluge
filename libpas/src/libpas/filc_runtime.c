@@ -1274,7 +1274,7 @@ void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
         pas_stream_printf(stream, "<somewhere>");
 }
 
-void filc_object_flags_dump_with_comma(uint8_t flags, bool* comma, pas_stream* stream)
+void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream)
 {
     if (flags & FILC_OBJECT_FLAG_FREE) {
         pas_stream_print_comma(stream, comma, ",");
@@ -1296,9 +1296,13 @@ void filc_object_flags_dump_with_comma(uint8_t flags, bool* comma, pas_stream* s
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "mmap");
     }
+    if (flags >> FILC_OBJECT_FLAGS_PIN_SHIFT) {
+        pas_stream_print_comma(stream, comma, ",");
+        pas_stream_printf(stream, "pinned(%u)", flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
+    }
 }
 
-void filc_object_flags_dump(uint8_t flags, pas_stream* stream)
+void filc_object_flags_dump(filc_object_flags flags, pas_stream* stream)
 {
     if (!flags) {
         pas_stream_printf(stream, "none");
@@ -1771,6 +1775,8 @@ static filc_object* finish_reallocate(
     for (index = common_num_words; index--;) {
         for (;;) {
             filc_word_type word_type = old_object->word_types[index];
+            /* Don't have to check for freeing here since old_object has to be a malloc object and
+               those get freed by GC, so even if a free happened, we still have access to the memory. */
             pas_uint128 word = __c11_atomic_load((_Atomic pas_uint128*)(src + index), __ATOMIC_RELAXED);
             if (word_type == FILC_WORD_TYPE_UNSET) {
                 if (word) {
@@ -1836,20 +1842,22 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
 
 void filc_free_yolo(filc_thread* my_thread, filc_object* object)
 {
-    /* FIXME: This almost certainly doesn't have to be a CAS loop, since this is the only case of
-       the obect->flags ever being mutated by anyone. If this stopped being a CAS loop, the only
-       "bug" is we'd sometimes silently and safely allow double frees - it would be as if you freed
-       the object once. */
     for (;;) {
-        uint8_t old_flags = object->flags;
+        filc_object_flags old_flags = object->flags;
         FILC_CHECK(
             !(old_flags & FILC_OBJECT_FLAG_FREE),
             NULL,
             "cannot free already free object %s.",
             filc_object_to_new_string(object));
+        /* Technically, this check is only needed for mmap objects. */
+        FILC_CHECK(
+            !(old_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT),
+            NULL,
+            "cannot free pinned object %s.",
+            filc_object_to_new_string(object));
         PAS_TESTING_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
-        uint8_t new_flags = old_flags | FILC_OBJECT_FLAG_FREE;
-        if (pas_compare_and_swap_uint8_weak_relaxed(&object->flags, old_flags, new_flags))
+        filc_object_flags new_flags = old_flags | FILC_OBJECT_FLAG_FREE;
+        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
             break;
     }
     if (filc_object_size(object) > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
@@ -1889,6 +1897,49 @@ void filc_free(filc_thread* my_thread, filc_object* object)
         "cannot free mmap object %s.",
         filc_object_to_new_string(object));
     filc_free_yolo(my_thread, object);
+}
+
+void filc_pin(filc_object* object)
+{
+    if (!object)
+        return;
+    if (object->flags & FILC_OBJECT_FLAG_GLOBAL)
+        return;
+    for (;;) {
+        filc_object_flags old_flags = object->flags;
+        FILC_CHECK(
+            !(old_flags & FILC_OBJECT_FLAG_FREE),
+            NULL,
+            "cannot pin free object %s.",
+            filc_object_to_new_string(object));
+        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
+        filc_object_flags new_flags = old_flags + ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
+        FILC_CHECK(
+            new_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT,
+            NULL,
+            "pin count overflow in %s.",
+            filc_object_to_new_string(object));
+        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
+            break;
+    }
+}
+
+void filc_unpin(filc_object* object)
+{
+    if (!object)
+        return;
+    if (object->flags & FILC_OBJECT_FLAG_GLOBAL)
+        return;
+    for (;;) {
+        filc_object_flags old_flags = object->flags;
+        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_FREE)); /* should never happen */
+        PAS_ASSERT(old_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
+        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
+        PAS_ASSERT(old_flags >= ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT));
+        filc_object_flags new_flags = old_flags - ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
+        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
+            break;
+    }
 }
 
 filc_ptr filc_native_zalloc(filc_thread* my_thread, size_t size)
@@ -2168,37 +2219,52 @@ void filc_check_function_call(filc_ptr ptr)
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
 }
 
-void filc_memset_with_exit(filc_thread* my_thread, void* ptr, unsigned value, size_t bytes)
+void filc_memset_with_exit(
+    filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         memset(ptr, value, bytes);
         return;
     }
+    filc_pin(object);
     filc_exit(my_thread);
     memset(ptr, value, bytes);
     filc_enter(my_thread);
+    filc_unpin(object);
 }
 
-void filc_memcpy_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes)
+void filc_memcpy_with_exit(
+    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
+    void* dst, const void* src, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         memcpy(dst, src, bytes);
         return;
     }
+    filc_pin(dst_object);
+    filc_pin(src_object);
     filc_exit(my_thread);
     memcpy(dst, src, bytes);
     filc_enter(my_thread);
+    filc_unpin(dst_object);
+    filc_unpin(src_object);
 }
 
-void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes)
+void filc_memmove_with_exit(
+    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
+    void* dst, const void* src, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         memmove(dst, src, bytes);
         return;
     }
+    filc_pin(dst_object);
+    filc_pin(src_object);
     filc_exit(my_thread);
     memmove(dst, src, bytes);
     filc_enter(my_thread);
+    filc_unpin(dst_object);
+    filc_unpin(src_object);
 }
 
 void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
@@ -2215,15 +2281,18 @@ void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
         __c11_atomic_store((_Atomic pas_uint128*)ptr++, 0, __ATOMIC_RELAXED);
 }
 
-void filc_low_level_ptr_safe_bzero_with_exit(filc_thread* my_thread, void* raw_ptr, size_t bytes)
+void filc_low_level_ptr_safe_bzero_with_exit(
+    filc_thread* my_thread, filc_object* object, void* raw_ptr, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         filc_low_level_ptr_safe_bzero(raw_ptr, bytes);
         return;
     }
+    filc_pin(object);
     filc_exit(my_thread);
     filc_low_level_ptr_safe_bzero(raw_ptr, bytes);
     filc_enter(my_thread);
+    filc_unpin(object);
 }
 
 void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
@@ -2245,12 +2314,12 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
         && pas_is_aligned((uintptr_t)raw_ptr, FILC_WORD_SIZE)
         && pas_is_aligned(count, FILC_WORD_SIZE)) {
         check_accessible(ptr, origin);
-        filc_low_level_ptr_safe_bzero_with_exit(my_thread, raw_ptr, count);
+        filc_low_level_ptr_safe_bzero_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, count);
         return;
     }
 
     check_int(ptr, count, origin);
-    filc_memset_with_exit(my_thread, raw_ptr, value, count);
+    filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
 }
 
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
@@ -2387,7 +2456,10 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
                 cur_dst_word_index--;
                 cur_src_word_index--;
             }
-            filc_pollcheck(my_thread, NULL);
+            if (filc_pollcheck(my_thread, NULL)) {
+                check_accessible(dst, NULL);
+                check_accessible(src, NULL);
+            }
         }
         
         filc_pop_frame(my_thread, copy_frame);
@@ -2398,7 +2470,8 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
         pas_log("Taking int-only memmove path.\n");
     check_int(dst, count, origin);
     check_int(src, count, origin);
-    filc_memmove_with_exit(my_thread, raw_dst_ptr, raw_src_ptr, count);
+    filc_memmove_with_exit(
+        my_thread, filc_ptr_object(dst), filc_ptr_object(src), raw_dst_ptr, raw_src_ptr, count);
 }
 
 static char* finish_check_and_get_new_str(char* base, size_t length)
@@ -2447,7 +2520,7 @@ filc_ptr filc_strdup(filc_thread* my_thread, const char* str)
         return filc_ptr_forge_null();
     size_t size = strlen(str) + 1;
     filc_ptr result = filc_ptr_create(my_thread, filc_allocate_int(my_thread, size));
-    filc_memcpy_with_exit(my_thread, filc_ptr_ptr(result), str, size);
+    filc_memcpy_with_exit(my_thread, filc_ptr_object(result), NULL, filc_ptr_ptr(result), str, size);
     return result;
 }
 
@@ -3575,11 +3648,13 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
         if (filc_ptr_ptr(arg_ptr))
             filc_check_access_int(arg_ptr, sizeof(int), NULL);
+        filc_pin(filc_ptr_object(arg_ptr));
         filc_exit(my_thread);
         int result = ioctl(fd, TIOCSCTTY, filc_ptr_ptr(arg_ptr));
         if (result < 0)
             goto error;
         filc_enter(my_thread);
+        filc_unpin(filc_ptr_object(arg_ptr));
         return result;
     }
     case 0x5413: /* TIOCGWINSZ */ {
@@ -3641,7 +3716,7 @@ error_in_filc:
 
 struct musl_iovec { filc_ptr iov_base; size_t iov_len; };
 
-static struct iovec* prepare_iovec(filc_ptr musl_iov, int iovcnt)
+static struct iovec* prepare_iovec(filc_thread* my_thread, filc_ptr musl_iov, int iovcnt)
 {
     struct iovec* iov;
     size_t iov_size;
@@ -3665,36 +3740,56 @@ static struct iovec* prepare_iovec(filc_ptr musl_iov, int iovcnt)
         filc_check_access_int(
             filc_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_len)),
             sizeof(size_t), NULL);
-        musl_iov_base = ((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_base;
+        musl_iov_base = filc_ptr_load(
+            my_thread, &((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_base);
         iov_len = ((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_len;
         filc_check_access_int(musl_iov_base, iov_len, NULL);
+        filc_pin(filc_ptr_object(musl_iov_base));
         iov[index].iov_base = filc_ptr_ptr(musl_iov_base);
         iov[index].iov_len = iov_len;
     }
     return iov;
 }
 
+static void unprepare_iovec(struct iovec* iov, filc_ptr musl_iov, int iovcnt)
+{
+    size_t index;
+    for (index = 0; index < (size_t)iovcnt; ++index) {
+        filc_ptr musl_iov_entry;
+        filc_ptr musl_iov_base;
+        musl_iov_entry = filc_ptr_with_offset(musl_iov, sizeof(struct musl_iovec) * index);
+        filc_check_access_ptr(
+            filc_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_base)), NULL);
+        musl_iov_base = filc_ptr_load_with_manual_tracking(
+            &((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_base);
+        filc_unpin(filc_ptr_object(musl_iov_base));
+    }
+    bmalloc_deallocate(iov);
+}
+
 ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr musl_iov, int iovcnt)
 {
     ssize_t result;
-    struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
+    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt);
     filc_exit(my_thread);
     result = writev(fd, iov, iovcnt);
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0)
         set_errno(my_errno);
-    bmalloc_deallocate(iov);
+    unprepare_iovec(iov, musl_iov, iovcnt);
     return result;
 }
 
 ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
     filc_check_access_int(buf, size, NULL);
+    filc_pin(filc_ptr_object(buf));
     filc_exit(my_thread);
     ssize_t result = read(fd, filc_ptr_ptr(buf), size);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -3703,24 +3798,26 @@ ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size
 ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr musl_iov, int iovcnt)
 {
     ssize_t result;
-    struct iovec* iov = prepare_iovec(musl_iov, iovcnt);
+    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt);
     filc_exit(my_thread);
     result = readv(fd, iov, iovcnt);
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0)
         set_errno(my_errno);
-    bmalloc_deallocate(iov);
+    unprepare_iovec(iov, musl_iov, iovcnt);
     return result;
 }
 
 ssize_t filc_native_zsys_write(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
     filc_check_access_int(buf, size, NULL);
+    filc_pin(filc_ptr_object(buf));
     filc_exit(my_thread);
     ssize_t result = write(fd, filc_ptr_ptr(buf), size);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -4492,10 +4589,16 @@ int filc_native_zsys_select(filc_thread* my_thread, int nfds,
         timeout.tv_sec = musl_timeout->tv_sec;
         timeout.tv_usec = musl_timeout->tv_usec;
     }
+    filc_pin(filc_ptr_object(readfds_ptr));
+    filc_pin(filc_ptr_object(writefds_ptr));
+    filc_pin(filc_ptr_object(exceptfds_ptr));
     filc_exit(my_thread);
     int result = select(nfds, readfds, writefds, exceptfds, musl_timeout ? &timeout : NULL);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(readfds_ptr));
+    filc_unpin(filc_ptr_object(writefds_ptr));
+    filc_unpin(filc_ptr_object(exceptfds_ptr));
     if (result < 0)
         set_errno(my_errno);
     if (musl_timeout) {
@@ -4838,10 +4941,12 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
     default:
         goto einval;
     }
+    filc_pin(filc_ptr_object(optval_ptr));
     filc_exit(my_thread);
     int result = setsockopt(sockfd, level, optname, optval, optlen);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(optval_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -5375,10 +5480,12 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
     default:
         goto einval;
     }
+    filc_pin(filc_ptr_object(optval_ptr));
     filc_exit(my_thread);
     int result = getsockopt(sockfd, level, optname, optval, &optlen);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(optval_ptr));
     if (result < 0) {
         set_errno(my_errno);
         return result;
@@ -5511,10 +5618,12 @@ ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf
     unsigned addrlen;
     if (!from_musl_sockaddr(musl_addr, musl_addrlen, &addr, &addrlen))
         goto einval;
+    filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     ssize_t result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags, addr, addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     if (result < 0)
         set_errno(my_errno);
 
@@ -5548,12 +5657,14 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
         addr = (struct sockaddr*)alloca(addrlen);
         pas_zero_memory(addr, addrlen);
     }
+    filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     ssize_t result = recvfrom(
         sockfd, filc_ptr_ptr(buf_ptr), len, flags,
         addr, filc_ptr_ptr(musl_addrlen_ptr) ? &addrlen : NULL);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     if (result < 0)
         set_errno(my_errno);
     else if (filc_ptr_ptr(musl_addrlen_ptr)) {
@@ -5664,6 +5775,7 @@ int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
     filc_check_access_int(buf_ptr, sizeof(struct musl_utsname), NULL);
     struct musl_utsname* musl_buf = (struct musl_utsname*)filc_ptr_ptr(buf_ptr);
     struct utsname buf;
+    filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     PAS_ASSERT(!uname(&buf));
     snprintf(musl_buf->sysname, sizeof(musl_buf->sysname), "%s", buf.sysname);
@@ -5673,6 +5785,7 @@ int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
     snprintf(musl_buf->machine, sizeof(musl_buf->machine), "%s", buf.machine);
     PAS_ASSERT(!getdomainname(musl_buf->domainname, sizeof(musl_buf->domainname) - 1));
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     musl_buf->domainname[sizeof(musl_buf->domainname) - 1] = 0;
     return 0;
 }
@@ -5777,12 +5890,18 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
     sigset_t sigmask;
     if (musl_sigmask)
         from_musl_sigset(musl_sigmask, &sigmask);
+    filc_pin(filc_ptr_object(readfds_ptr));
+    filc_pin(filc_ptr_object(writefds_ptr));
+    filc_pin(filc_ptr_object(exceptfds_ptr));
     filc_exit(my_thread);
     int result = pselect(nfds, readfds, writefds, exceptfds,
                          musl_timeout ? &timeout : NULL,
                          musl_sigmask ? &sigmask : NULL);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(readfds_ptr));
+    filc_unpin(filc_ptr_object(writefds_ptr));
+    filc_unpin(filc_ptr_object(exceptfds_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -5939,6 +6058,7 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
         "size argument too big, causes overflow; size = %zu.",
         size);
     filc_check_access_int(list_ptr, total_size, NULL);
+    filc_pin(filc_ptr_object(list_ptr));
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
     if (verbose) {
@@ -5948,6 +6068,7 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
     int result = setgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(list_ptr));
     if (verbose)
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
@@ -6381,10 +6502,12 @@ int filc_native_zsys_socketpair(filc_thread* my_thread, int musl_domain, int mus
         set_errno(EINVAL);
         return -1;
     }
+    filc_pin(filc_ptr_object(sv_ptr));
     filc_exit(my_thread);
     int result = socketpair(domain, type, protocol, (int*)filc_ptr_ptr(sv_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(sv_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -6566,11 +6689,13 @@ int filc_native_zsys_getgroups(filc_thread* my_thread, int size, filc_ptr list_p
         "size argument too big, causes overflow; size = %d.",
         size);
     filc_check_access_int(list_ptr, total_size, NULL);
+    filc_pin(filc_ptr_object(list_ptr));
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
     int result = getgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(list_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -6591,6 +6716,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
         "ngroups argument too big, causes overflow; ngroups = %d.",
         ngroups);
     filc_check_access_int(groups_ptr, total_size, NULL);
+    filc_pin(filc_ptr_object(groups_ptr));
     filc_exit(my_thread);
     if (verbose)
         pas_log("ngroups = %d\n", ngroups);
@@ -6599,6 +6725,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
         pas_log("ngroups after = %d\n", ngroups);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(groups_ptr));
     bmalloc_deallocate(user);
     if (verbose)
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
@@ -6627,10 +6754,12 @@ long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_p
 {
     char* path = filc_check_and_get_new_str(path_ptr);
     filc_check_access_int(buf_ptr, bufsize, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     long result = readlink(path, (char*)filc_ptr_ptr(buf_ptr), bufsize);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     bmalloc_deallocate(path);
     if (result < 0)
         set_errno(my_errno);
@@ -6655,11 +6784,15 @@ int filc_native_zsys_openpty(filc_thread* my_thread, filc_ptr masterfd_ptr, filc
         win = alloca(sizeof(struct winsize));
         from_musl_winsize((struct musl_winsize*)filc_ptr_ptr(musl_win_ptr), win);
     }
+    filc_pin(filc_ptr_object(masterfd_ptr));
+    filc_pin(filc_ptr_object(slavefd_ptr));
     filc_exit(my_thread);
     int result = openpty((int*)filc_ptr_ptr(masterfd_ptr), (int*)filc_ptr_ptr(slavefd_ptr),
                          NULL, term, win);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(masterfd_ptr));
+    filc_unpin(filc_ptr_object(slavefd_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -6668,10 +6801,12 @@ int filc_native_zsys_openpty(filc_thread* my_thread, filc_ptr masterfd_ptr, filc
 int filc_native_zsys_ttyname_r(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t buflen)
 {
     filc_check_access_int(buf_ptr, buflen, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     int result = ttyname_r(fd, (char*)filc_ptr_ptr(buf_ptr), buflen);
     int my_errno = errno;
     filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -7084,10 +7219,12 @@ struct musl_cmsghdr {
     int cmsg_type;
 };
 
-static void destroy_msghdr(struct msghdr* msghdr)
+static void destroy_msghdr(struct msghdr* msghdr, struct musl_msghdr* musl_msghdr)
 {
+    unprepare_iovec(
+        msghdr->msg_iov, filc_ptr_load_with_manual_tracking(&musl_msghdr->msg_iov),
+        musl_msghdr->msg_iovlen);
     bmalloc_deallocate(msghdr->msg_name);
-    bmalloc_deallocate(msghdr->msg_iov);
     bmalloc_deallocate(msghdr->msg_control);
 }
 
@@ -7097,7 +7234,7 @@ static void from_musl_msghdr_base(filc_thread* my_thread,
     pas_zero_memory(msghdr, sizeof(struct msghdr));
 
     int iovlen = musl_msghdr->msg_iovlen;
-    msghdr->msg_iov = prepare_iovec(filc_ptr_load(my_thread, &musl_msghdr->msg_iov), iovlen);
+    msghdr->msg_iov = prepare_iovec(my_thread, filc_ptr_load(my_thread, &musl_msghdr->msg_iov), iovlen);
     msghdr->msg_iovlen = iovlen;
 
     msghdr->msg_flags = 0; /* This field is ignored so just zero-init it. */
@@ -7218,7 +7355,7 @@ static bool from_musl_msghdr_for_send(filc_thread* my_thread,
 
     return true;
 error:
-    destroy_msghdr(msghdr);
+    destroy_msghdr(msghdr, musl_msghdr);
     return false;
 }
 
@@ -7332,7 +7469,7 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     if (verbose)
         pas_log("sendmsg result = %ld\n", (long)result);
     filc_enter(my_thread);
-    destroy_msghdr(&msg);
+    destroy_msghdr(&msg, musl_msg);
     if (result < 0)
         set_errno(errno);
     return result;
@@ -7382,7 +7519,7 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
         set_errno(my_errno);
     } else
         to_musl_msghdr_for_recv(my_thread, &msg, musl_msg);
-    destroy_msghdr(&msg);
+    destroy_msghdr(&msg, musl_msg);
     return result;
 
 einval:

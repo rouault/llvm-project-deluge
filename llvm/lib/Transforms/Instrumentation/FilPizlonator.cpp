@@ -60,9 +60,9 @@ static constexpr WordType WordTypeInt = 1;
 static constexpr WordType WordTypePtr = 2;
 static constexpr WordType WordTypeFunction = 4;
 
-static constexpr uint8_t ObjectFlagReturnBuffer = 2;
-static constexpr uint8_t ObjectFlagSpecial = 4;
-static constexpr uint8_t ObjectFlagGlobal = 8;
+static constexpr uint16_t ObjectFlagReturnBuffer = 2;
+static constexpr uint16_t ObjectFlagSpecial = 4;
+static constexpr uint16_t ObjectFlagGlobal = 8;
 
 enum class ConstantKind {
   Global,
@@ -150,6 +150,7 @@ class Pizlonator {
   Type* VoidTy;
   Type* Int1Ty;
   Type* Int8Ty;
+  Type* Int16Ty;
   Type* Int32Ty;
   Type* IntPtrTy;
   Type* Int128Ty;
@@ -1093,19 +1094,19 @@ class Pizlonator {
       WordTypes.push_back(WordTypeInt);
   }
 
-  Constant* objectConstant(Constant* Lower, Constant* Upper, int8_t ObjectFlags,
+  Constant* objectConstant(Constant* Lower, Constant* Upper, uint16_t ObjectFlags,
                            const std::vector<WordType>& WordTypes) {
     StructType* ObjectTy = StructType::get(
-      C, { LowRawPtrTy, LowRawPtrTy, Int8Ty, ArrayType::get(Int8Ty, WordTypes.size()) });
+      C, { LowRawPtrTy, LowRawPtrTy, Int16Ty, ArrayType::get(Int8Ty, WordTypes.size()) });
     return ConstantStruct::get(
       ObjectTy,
-      { Lower, Upper, ConstantInt::get(Int8Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
+      { Lower, Upper, ConstantInt::get(Int16Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
   }
 
   Constant* objectConstantForGlobal(GlobalValue* G) {
     std::vector<WordType> WordTypes;
     size_t ObjectSize;
-    int8_t ObjectFlags = ObjectFlagGlobal;
+    int16_t ObjectFlags = ObjectFlagGlobal;
     if (isa<Function>(G)) {
       WordTypes.push_back(WordTypeFunction);
       ObjectSize = WordSize;
@@ -1879,7 +1880,7 @@ class Pizlonator {
       (new StoreInst(RetBufferUpper, objectUpperPtr(FutureReturnBuffer, CI), CI))
         ->setDebugLoc(CI->getDebugLoc());
       (new StoreInst(
-        ConstantInt::get(Int8Ty, ObjectFlagReturnBuffer), objectFlagsPtr(FutureReturnBuffer, CI), CI))
+        ConstantInt::get(Int16Ty, ObjectFlagReturnBuffer), objectFlagsPtr(FutureReturnBuffer, CI), CI))
         ->setDebugLoc(CI->getDebugLoc());
 
       Value* RetPtr = createPtr(FutureReturnBuffer, RetBufferPayload, CI);
@@ -2087,6 +2088,7 @@ public:
     VoidTy = Type::getVoidTy(C);
     Int1Ty = Type::getInt1Ty(C);
     Int8Ty = Type::getInt8Ty(C);
+    Int16Ty = Type::getInt16Ty(C);
     Int32Ty = Type::getInt32Ty(C);
     IntPtrTy = Type::getIntNTy(C, PtrBits);
     assert(IntPtrTy == Type::getInt64Ty(C)); // FilC is 64-bit-only, for now.
@@ -2094,7 +2096,7 @@ public:
     LowRawPtrTy = PointerType::get(C, TargetAS);
     LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
     OriginTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
-    ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int8Ty, Int8Ty}, "filc_object");
+    ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");
     FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy}, "filc_frame");
     ThreadTy = StructType::create({Int8Ty, LowRawPtrTy}, "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
@@ -2194,9 +2196,11 @@ public:
       if (F->isIntrinsic())
         continue;
       HandleGlobal(F);
-      FunctionToHiddenFunction[F] = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
-                                                     GlobalValue::InternalLinkage, F->getAddressSpace(),
-                                                     "Jf_" + F->getName(), &M);
+      if (!F->isDeclaration()) {
+        FunctionToHiddenFunction[F] = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
+                                                       GlobalValue::InternalLinkage, F->getAddressSpace(),
+                                                       "Jf_" + F->getName(), &M);
+      }
     }
     
     if (GlobalVariable* GlobalCtors = M.getGlobalVariable("llvm.global_ctors")) {

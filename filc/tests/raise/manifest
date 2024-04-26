@@ -1,5 +1,5 @@
 return:
-  failure
+  crash
 output-includes:
   - "so far so good"
 output-excludes:
