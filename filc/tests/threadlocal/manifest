@@ -1,0 +1,13 @@
+return:
+  success
+output-includes:
+  - "(1) x = 42"
+  - "(1) y = 666"
+  - "(2) x = 35"
+  - "(2) y = 36"
+  - "(thr) x = 555"
+  - "(dtor1) x = 555"
+  - "(dtor2) x = 555"
+  - "(dtor3) x = 555"
+  - "(dtor4) x = 555"
+

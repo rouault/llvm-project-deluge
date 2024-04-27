@@ -5,6 +5,7 @@
 #include <llvm/IR/TypedPointerType.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
+#include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <llvm/TargetParser/Triple.h>
 #include <vector>
 #include <unordered_map>
@@ -2047,6 +2048,117 @@ class Pizlonator {
     return false;
   }
 
+  void lowerThreadLocals() {
+    // - Lower all threadlocal variables to pthread_key_t, which is an i32, and a function that allocates
+    //   the initial "value" (i.e. object containing the initial value). I guess that function can call
+    //   malloc and just store the value.
+    // - For all threadlocal variables, add a global ctor that pthread_key_create's them.
+    // - For all threadlocal variables, add a global dtor that pthread_key_delete's them.
+    // - Lower all llvm.threadlocal.address calls to pthread_getspecific_with_default_np, which passes
+    //   the key and the default value function.
+    //
+    // Since this runs before any Fil-C transformations, the resulting code will be made memory safe by
+    // those later transformations.
+    //
+    // Possible problem: if I do it this way then I'm almost certainly interacting badly with thread local
+    // destruction. In particular: you'll be able to observe the __thread variable's value being reset
+    // if you access it from one of your own destructors. Except! It appears that my implementation of
+    // thread locals in musl doesn't behave that way - if a threadlocal has no destructor then we never
+    // NULL it.
+
+    std::vector<GlobalVariable*> ThreadLocals;
+
+    for (GlobalVariable& G : M.globals()) {
+      if (G.isThreadLocal())
+        ThreadLocals.push_back(&G);
+    }
+    for (Function& F : M.functions())
+      assert(!F.isThreadLocal());
+    for (GlobalAlias& G : M.aliases())
+      assert(!G.isThreadLocal()); // We could probably support this.
+    assert(M.ifunc_empty());
+
+    if (ThreadLocals.empty())
+      return;
+
+    std::unordered_map<GlobalVariable*, GlobalVariable*> ThreadLocalKeyMap;
+    std::unordered_map<GlobalVariable*, Function*> ThreadLocalInitializerMap;
+
+    FunctionType* InitializerTy = FunctionType::get(LowRawPtrTy, false);
+    FunctionCallee Malloc = M.getOrInsertFunction("malloc", LowRawPtrTy, IntPtrTy);
+    FunctionCallee PthreadKeyCreate = M.getOrInsertFunction("pthread_key_create", Int32Ty, LowRawPtrTy, LowRawPtrTy);
+    FunctionCallee PthreadGetspecificWithDefaultNP = M.getOrInsertFunction("pthread_getspecific_with_default_np", LowRawPtrTy, Int32Ty, LowRawPtrTy);
+
+    for (GlobalVariable* G : ThreadLocals) {
+      GlobalVariable* Key = new GlobalVariable(
+        M, Int32Ty, false, G->getLinkage(), ConstantInt::get(Int32Ty, 0), "__piztk_" + G->getName());
+      ThreadLocalKeyMap[G] = Key;
+
+      Function* Initializer = Function::Create(
+        InitializerTy, G->getLinkage(), 0, "__pizti_" + G->getName(), &M);
+      ThreadLocalInitializerMap[G] = Initializer;
+
+      if (!G->isDeclaration()) {
+        BasicBlock* RootBB = BasicBlock::Create(C, "filc_thread_local_initializer_root", Initializer);
+        Value* Result = CallInst::Create(
+          Malloc,
+          { ConstantInt::get(IntPtrTy, DL.getTypeStoreSizeBeforeFilC(G->getInitializer()->getType())) },
+          "filc_thread_local_allocate", RootBB);
+        new StoreInst(G->getInitializer(), Result, RootBB);
+        ReturnInst::Create(C, Result, RootBB);
+      }
+    }
+
+    Function* Ctor = Function::Create(
+      CtorDtorTy, GlobalValue::InternalLinkage, 0, "filc_threadlocal_ctor", &M);
+    BasicBlock* RootBB = BasicBlock::Create(C, "filc_threadlocal_ctor_root", Ctor);
+    for (GlobalVariable* G : ThreadLocals) {
+      GlobalVariable* Key = ThreadLocalKeyMap[G];
+      assert(Key);
+      CallInst::Create(PthreadKeyCreate, { Key, LowRawNull }, "", RootBB);
+    }
+    ReturnInst::Create(C, RootBB);
+    appendToGlobalCtors(M, Ctor, 0, LowRawNull);
+
+    // FIXME: We aren't currently registering anything to clean up the threadlocals. Oh well?
+
+    for (Function& F : M.functions()) {
+      for (BasicBlock& BB : F) {
+        std::vector<Instruction*> Insts;
+        for (Instruction& I : BB)
+          Insts.push_back(&I);
+        for (Instruction* I : Insts) {
+          IntrinsicInst* II = dyn_cast<IntrinsicInst>(I);
+          if (!II)
+            continue;
+
+          if (II->getIntrinsicID() != Intrinsic::threadlocal_address)
+            continue;
+
+          GlobalVariable* OldKey = cast<GlobalVariable>(II->getArgOperand(0));
+          assert(OldKey);
+          GlobalVariable* Key = ThreadLocalKeyMap[OldKey];
+          Function* Initializer = ThreadLocalInitializerMap[OldKey];
+          assert(Key);
+          assert(Initializer);
+
+          Instruction* KeyValue = new LoadInst(Int32Ty, Key, "filc_threadlocal_key_load", II);
+          KeyValue->setDebugLoc(II->getDebugLoc());
+          Instruction* Getspecific = CallInst::Create(
+            PthreadGetspecificWithDefaultNP, { KeyValue, Initializer }, "filc_getspecific", II);
+          Getspecific->setDebugLoc(II->getDebugLoc());
+          II->replaceAllUsesWith(Getspecific);
+          II->eraseFromParent();
+        }
+      }
+    }
+
+    for (GlobalVariable* G : ThreadLocals) {
+      G->replaceAllUsesWith(LowRawNull);
+      G->eraseFromParent();
+    }
+  }
+
   void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
@@ -2077,13 +2189,6 @@ public:
     if (verbose)
       errs() << "Going to town on module:\n" << M << "\n";
 
-    prepare();
-
-    if (verbose)
-      errs() << "Prepared module:\n" << M << "\n";
-
-    FunctionName = "<internal>";
-    
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
     Int1Ty = Type::getInt1Ty(C);
@@ -2094,6 +2199,21 @@ public:
     assert(IntPtrTy == Type::getInt64Ty(C)); // FilC is 64-bit-only, for now.
     Int128Ty = Type::getInt128Ty(C);
     LowRawPtrTy = PointerType::get(C, TargetAS);
+    CtorDtorTy = FunctionType::get(VoidTy, false);
+    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
+
+    lowerThreadLocals();
+    
+    if (verbose)
+      errs() << "Module with lowered thread locals:\n" << M << "\n";
+
+    prepare();
+
+    if (verbose)
+      errs() << "Prepared module:\n" << M << "\n";
+
+    FunctionName = "<internal>";
+    
     LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
     OriginTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
     ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");
@@ -2107,8 +2227,6 @@ public:
     PizlonatedFuncTy = FunctionType::get(
       VoidTy, { LowRawPtrTy, LowWidePtrTy, LowWidePtrTy }, false);
     GlobalGetterTy = FunctionType::get(LowWidePtrTy, { LowRawPtrTy }, false);
-    CtorDtorTy = FunctionType::get(VoidTy, false);
-    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     // Fugc the DSO!
     if (GlobalVariable* DSO = M.getGlobalVariable("__dso_handle")) {
