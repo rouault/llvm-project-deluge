@@ -2101,7 +2101,9 @@ class Pizlonator {
 
     for (GlobalVariable* G : ThreadLocals) {
       GlobalVariable* Key = new GlobalVariable(
-        M, Int32Ty, false, G->getLinkage(), ConstantInt::get(Int32Ty, 0), "__piztk_" + G->getName());
+        M, Int32Ty, false, G->getLinkage(),
+        !G->isDeclaration() ? ConstantInt::get(Int32Ty, 0) : nullptr,
+        "__piztk_" + G->getName());
       ThreadLocalKeyMap[G] = Key;
 
       Function* Initializer = Function::Create(
