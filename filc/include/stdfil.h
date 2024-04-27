@@ -217,6 +217,10 @@ void* zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zunfenced_xchg_ptr(void** ptr, void* new_value);
 void* zxchg_ptr(void** ptr, void* new_value);
+void zatomic_store_ptr(void** ptr, void* new_value);
+void zunfenced_atomic_store_ptr(void** ptr, void* new_value);
+void* zatomic_load_ptr(void** ptr);
+void* zunfenced_atomic_load_ptr(void** ptr);
 
 /* Parks the thread in a queue associated with the given address, which cannot be null. The
    parking only succeeds if the condition function returns true while the queue lock is held.

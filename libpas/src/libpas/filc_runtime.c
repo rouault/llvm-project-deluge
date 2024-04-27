@@ -2924,14 +2924,12 @@ void filc_native_zcompiler_fence(filc_thread* my_thread)
 bool filc_native_zunfenced_weak_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_unfenced_weak_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 bool filc_native_zweak_cas_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_weak_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
@@ -2939,7 +2937,6 @@ bool filc_native_zweak_cas_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr ex
 filc_ptr filc_native_zunfenced_strong_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_unfenced_strong_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
@@ -2947,23 +2944,46 @@ filc_ptr filc_native_zunfenced_strong_cas_ptr(
 filc_ptr filc_native_zstrong_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_strong_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 filc_ptr filc_native_zunfenced_xchg_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_unfenced_xchg(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 filc_ptr filc_native_zxchg_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    PAS_UNUSED_PARAM(my_thread);
     filc_check_access_ptr(ptr, NULL);
     return filc_ptr_xchg(my_thread, filc_ptr_ptr(ptr), new_value);
+}
+
+void filc_native_zatomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
+{
+    filc_check_access_ptr(ptr, NULL);
+    filc_ptr_store_fenced(my_thread, filc_ptr_ptr(ptr), new_value);
+}
+
+void filc_native_zunfenced_atomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
+{
+    filc_check_access_ptr(ptr, NULL);
+    filc_ptr_store(my_thread, filc_ptr_ptr(ptr), new_value);
+}
+
+filc_ptr filc_native_zatomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    filc_check_access_ptr(ptr, NULL);
+    return filc_ptr_load_fenced_with_manual_tracking(filc_ptr_ptr(ptr));
+}
+
+filc_ptr filc_native_zunfenced_atomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    filc_check_access_ptr(ptr, NULL);
+    return filc_ptr_load_with_manual_tracking(filc_ptr_ptr(ptr));
 }
 
 bool filc_native_zis_runtime_testing_enabled(filc_thread* my_thread)

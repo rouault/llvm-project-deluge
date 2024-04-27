@@ -884,6 +884,19 @@ static inline filc_ptr filc_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc
             (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST));
 }
 
+static inline void filc_ptr_store_fenced(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
+{
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST);
+}
+
+static inline filc_ptr filc_ptr_load_fenced_with_manual_tracking(filc_ptr* ptr)
+{
+    filc_ptr result;
+    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_SEQ_CST);
+    return result;
+}
+
 PAS_API void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream);
 PAS_API void filc_object_flags_dump(filc_object_flags flags, pas_stream* stream);
 PAS_API void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream);
