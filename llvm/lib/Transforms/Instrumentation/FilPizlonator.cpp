@@ -1034,7 +1034,11 @@ class Pizlonator {
     recordObjects(V, lowerType(V->getType()), V, InsertBefore);
   }
 
-  void buildWordTypesRecurse(Type* LowT, size_t& Size, std::vector<WordType>& WordTypes) {
+  void buildWordTypesRecurse(
+    Type* OuterLowT, Type* LowT, size_t& Size, std::vector<WordType>& WordTypes) {
+    if (verbose)
+      errs() << "Dealing with LowT = " << *LowT << ", Size = " << Size << "\n";
+    
     assert((Size + WordSize - 1) / WordSize == WordTypes.size());
     if (Size % WordSize) {
       assert(!WordTypes.empty());
@@ -1049,6 +1053,10 @@ class Pizlonator {
     assert(LowT != LowRawPtrTy);
     
     if (LowT == LowWidePtrTy) {
+      if ((Size % WordSize)) {
+        errs() << "Trouble with offset of pointer in " << *OuterLowT
+               << ", current LowT = " << *LowT << ", Size = " << Size << "\n";
+      }
       assert(!(Size % WordSize));
       Size += WordSize;
       WordTypes.push_back(WordTypePtr);
@@ -1064,7 +1072,7 @@ class Pizlonator {
         assert(ProposedSize >= Size);
         Size = ProposedSize;
         Fill();
-        buildWordTypesRecurse(InnerT, Size, WordTypes);
+        buildWordTypesRecurse(OuterLowT, InnerT, Size, WordTypes);
       }
       size_t ProposedSize = SizeBefore + SL->getSizeInBytes();
       assert(ProposedSize >= Size);
@@ -1075,13 +1083,13 @@ class Pizlonator {
     
     if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
       for (uint64_t Index = AT->getNumElements(); Index--;)
-        buildWordTypesRecurse(AT->getElementType(), Size, WordTypes);
+        buildWordTypesRecurse(OuterLowT, AT->getElementType(), Size, WordTypes);
       return;
     }
       
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
-        buildWordTypesRecurse(VT->getElementType(), Size, WordTypes);
+        buildWordTypesRecurse(OuterLowT, VT->getElementType(), Size, WordTypes);
       return;
     }
 
@@ -1105,6 +1113,8 @@ class Pizlonator {
   }
 
   Constant* objectConstantForGlobal(GlobalValue* G) {
+    if (verbose)
+      errs() << "Creating object constant for global = " << *G << "\n";
     std::vector<WordType> WordTypes;
     size_t ObjectSize;
     int16_t ObjectFlags = ObjectFlagGlobal;
@@ -1115,7 +1125,7 @@ class Pizlonator {
     } else {
       size_t Size = 0;
       Type* LowT = G->getValueType();
-      buildWordTypesRecurse(LowT, Size, WordTypes);
+      buildWordTypesRecurse(LowT, LowT, Size, WordTypes);
       assert(Size == DL.getTypeStoreSize(LowT));
       assert(!(Size % WordSize));
       ObjectSize = Size;
