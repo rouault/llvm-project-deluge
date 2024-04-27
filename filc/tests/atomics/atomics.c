@@ -10,11 +10,11 @@ int main()
     ZASSERT(!ptr);
     ZASSERT(!zunfenced_weak_cas_ptr(&ptr, a, b));
     ZASSERT(!ptr);
-    ZASSERT(zunfenced_weak_cas_ptr(&ptr, NULL, a));
+    while (!zunfenced_weak_cas_ptr(&ptr, NULL, a));
     ZASSERT(ptr == a);
     ZASSERT(!zweak_cas_ptr(&ptr, NULL, a));
     ZASSERT(ptr == a);
-    ZASSERT(zweak_cas_ptr(&ptr, a, b));
+    while (!zweak_cas_ptr(&ptr, a, b));
     ZASSERT(ptr == b);
     ZASSERT(zunfenced_strong_cas_ptr(&ptr, a, b) == b);
     ZASSERT(ptr == b);
