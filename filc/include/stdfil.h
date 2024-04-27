@@ -215,6 +215,8 @@ _Bool zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value);
 _Bool zweak_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
+_Bool zunfenced_intense_cas_ptr(void** ptr, void** expected, void* new_value);
+_Bool zintense_cas_ptr(void** ptr, void** expected, void* new_value);
 void* zunfenced_xchg_ptr(void** ptr, void* new_value);
 void* zxchg_ptr(void** ptr, void* new_value);
 void zatomic_store_ptr(void** ptr, void* new_value);

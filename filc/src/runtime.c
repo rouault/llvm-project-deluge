@@ -94,6 +94,22 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
     }
 }
 
+_Bool zunfenced_intense_cas_ptr(void** ptr, void** expected_ptr, void* new_value)
+{
+    void* expected = *expected_ptr;
+    void* result = zunfenced_strong_cas_ptr(ptr, expected, new_value);
+    *expected_ptr = result;
+    return result == expected;
+}
+
+_Bool zintense_cas_ptr(void** ptr, void** expected_ptr, void* new_value)
+{
+    void* expected = *expected_ptr;
+    void* result = zstrong_cas_ptr(ptr, expected, new_value);
+    *expected_ptr = result;
+    return result == expected;
+}
+
 typedef struct {
     const int* address;
     int expected_value;
