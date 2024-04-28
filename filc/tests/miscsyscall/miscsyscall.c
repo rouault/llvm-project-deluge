@@ -14,6 +14,7 @@
 #include <sys/resource.h>
 #include <sys/utsname.h>
 #include <grp.h>
+#include <stdbool.h>
 
 int main(int argc, char** argv)
 {
@@ -175,6 +176,16 @@ int main(int argc, char** argv)
     ZASSERT(group);
     ZASSERT(!strcmp(group->gr_name, "tty"));
     ZASSERT(group->gr_gid);
+
+    char buf[256];
+    ZASSERT(!getentropy(buf, 256));
+    bool all_zero = true;
+    size_t index;
+    for (index = 256; index--;) {
+        if (buf[index])
+            all_zero = false;
+    }
+    ZASSERT(!all_zero);
 
     zprintf("No worries.\n");
     return 0;

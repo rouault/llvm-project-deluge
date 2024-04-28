@@ -47,6 +47,7 @@
 #include <utmpx.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
+#include <sys/random.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -7958,6 +7959,20 @@ int filc_native_zsys_ftruncate(filc_thread* my_thread, int fd, long length)
     int result = ftruncate(fd, length);
     int my_errno = errno;
     filc_enter(my_thread);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getentropy(filc_thread* my_thread, filc_ptr buf_ptr, size_t len)
+{
+    filc_check_access_int(buf_ptr, len, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
+    filc_exit(my_thread);
+    int result = getentropy(filc_ptr_ptr(buf_ptr), len);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
     if (result < 0)
         set_errno(my_errno);
     return result;
