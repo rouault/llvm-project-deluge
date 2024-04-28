@@ -330,7 +330,9 @@ points to the base of a GC-allocated *monotonic capability* object (hence the Mo
 
 It so happens that for most allocations, the payload (where the raw pointer can perform accesses
 without trapping) is the same allocation as the capability object. The payload is right after the
-capability object within that allocation.
+capability object within that allocation. MonoCaps also support `mmap`. In that case, the capability
+object is a separate allocation from the payload, since the payload comes directly from `mmap`.
+MonoCaps also support `munmap`, by first invalidating the capability and then unmapping the payload.
 
 The object format contains:
 
@@ -338,7 +340,7 @@ The object format contains:
 
 - 64-bit upper bounds.
 
-- 8-bit flags. This is used for supporting unusual situations, like globally allocated objects,
+- 16-bit flags. This is used for supporting unusual situations, like globally allocated objects,
   special runtime-internal objects (like threads and signal handlers), as well as the free object
   state. Function pointers also leverage the flags.
 
