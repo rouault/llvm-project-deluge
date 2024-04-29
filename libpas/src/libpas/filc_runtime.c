@@ -2311,11 +2311,33 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
         pas_log("count = %zu\n", count);
     check_access_common(ptr, count, origin);
     
-    if (!value
-        && pas_is_aligned((uintptr_t)raw_ptr, FILC_WORD_SIZE)
-        && pas_is_aligned(count, FILC_WORD_SIZE)) {
+    if (!value) {
+        /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
+           anything. In particular, we could leave them UNSET and then skip the memset.
+           
+           But, we cnanot leave them UNSET and do the memset since that might race with someone
+           converting the range to PTR and result in a partially-nulled ptr. */
+        
+        char* start = raw_ptr;
+        char* end = raw_ptr + count;
+        char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
+        char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
+        if (aligned_start > end || aligned_end < start) {
+            check_int(ptr, count, origin);
+            memset(raw_ptr, 0, count);
+            return;
+        }
+        if (aligned_start > start) {
+            check_int(ptr, aligned_start - start, origin);
+            memset(start, 0, aligned_start - start);
+        }
         check_accessible(ptr, origin);
-        filc_low_level_ptr_safe_bzero_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, count);
+        filc_low_level_ptr_safe_bzero_with_exit(
+            my_thread, filc_ptr_object(ptr), aligned_start, aligned_end - aligned_start);
+        if (end > aligned_end) {
+            check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, origin);
+            memset(aligned_end, 0, end - aligned_end);
+        }
         return;
     }
 
