@@ -8000,6 +8000,23 @@ int filc_native_zsys_getentropy(filc_thread* my_thread, filc_ptr buf_ptr, size_t
     return result;
 }
 
+filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_t size)
+{
+    filc_check_access_int(buf_ptr, size, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
+    filc_exit(my_thread);
+    char* result = getcwd((char*)filc_ptr_ptr(buf_ptr), size);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
+    PAS_ASSERT(!result || result == (char*)filc_ptr_ptr(buf_ptr));
+    if (!result)
+        set_errno(my_errno);
+    if (!result)
+        return filc_ptr_forge_null();
+    return buf_ptr;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

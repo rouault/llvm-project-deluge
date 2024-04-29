@@ -441,6 +441,7 @@ void* zsys_mmap(void* address, __SIZE_TYPE__ length, int prot, int flags, int fd
 int zsys_munmap(void* address, __SIZE_TYPE__ length);
 int zsys_ftruncate(int fd, long length);
 int zsys_getentropy(void* buffer, __SIZE_TYPE__ len);
+char* zsys_getcwd(char* buf, __SIZE_TYPE__ size);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);

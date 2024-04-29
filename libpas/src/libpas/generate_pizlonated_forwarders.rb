@@ -186,6 +186,7 @@ addSig "filc_ptr", "zsys_mmap", "filc_ptr", "size_t", "int", "int", "int", "long
 addSig "int", "zsys_munmap", "filc_ptr", "size_t"
 addSig "int", "zsys_ftruncate", "int", "long"
 addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
+addSig "filc_ptr", "zsys_getcwd", "filc_ptr", "size_t"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
