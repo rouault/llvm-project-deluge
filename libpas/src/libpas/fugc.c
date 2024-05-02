@@ -5,6 +5,7 @@
 #include "fugc.h"
 #include "pas_fd_stream.h"
 #include "verse_heap_mark_bits_page_commit_controller.h"
+#include "verse_heap_object_set_inlines.h"
 #include <signal.h>
 
 #if PAS_ENABLE_FILC
@@ -32,11 +33,11 @@
    GC is active. That's made possible thanks to polling collector_suspend_requested and structuring
    the GC loop as a state machine.
 
-   There are no destructors or weak references. No weak maps, either. This GC is just here so we
-   don't have to trust the C-hacking Cowboy (TM) when they call free(). But the fact that free()
-   flags the object for killage (because of the redirect-ptr-to-free-object thing) means that we
-   don't have to worry about GC-induced leaks in C programs that use free() like they would have if
-   they were written against a legacy malloc.
+   There are no destructors, except for internal use. There are no weak references. No weak maps,
+   either. This GC is just here so we don't have to trust the C-hacking Cowboy (TM) when they call
+   free(). But the fact that free() flags the object for killage (because of the redirect-ptr-to-
+   free-object thing) means that we don't have to worry about GC-induced leaks in C programs that
+   use free() like they would have if they were written against a legacy malloc.
 
    This code looks simple, but it totally isn't. It's relying on the filc_runtime and the
    FilPizlonator pass to do a lot of heavy lifting for us. And it's relying on the excellent
@@ -55,16 +56,19 @@ static filc_object_array global_stack;
 static filc_object_array local_stack;
 static pas_lock global_stack_lock;
 
+static size_t destruct_size = SIZE_MAX;
+static size_t destruct_index = SIZE_MAX;
+
 static size_t sweep_size = SIZE_MAX;
 static size_t sweep_index = SIZE_MAX;
 
 static size_t live_bytes_at_start = SIZE_MAX;
-static size_t live_bytes_after_marking = SIZE_MAX;
+static size_t live_bytes_before_sweeping = SIZE_MAX;
 
 static size_t minimum_threshold;
 
 static double overall_start_time;
-static double sweep_start_time;
+static double mark_end_time;
 static double overall_end_time;
 
 #define VERBOSE_HANDSHAKE_STACKS 6
@@ -81,6 +85,7 @@ bool fugc_world_is_stopped;
 enum collector_state {
     collector_waiting,
     collector_marking,
+    collector_destructing,
     collector_sweeping
 };
 
@@ -135,10 +140,10 @@ static void marking_pollcheck_callback(filc_thread* thread, void* arg)
     filc_thread_donate(thread);
 }
 
-static void sweep_pollcheck_callback(filc_thread* thread, void* arg)
+static void after_marking_pollcheck_callback(filc_thread* thread, void* arg)
 {
     PAS_ASSERT(!arg);
-    dump_handshake(thread, "sweep");
+    dump_handshake(thread, "after_marking");
     filc_thread_stop_allocators(thread);
     filc_thread_sweep_mark_stack(thread);
 }
@@ -178,6 +183,16 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
         PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
         mark_outgoing_thread_ptrs(stack, (filc_thread*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
         break;
+    case FILC_WORD_TYPE_PTR_TABLE:
+        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+        filc_ptr_table_mark_outgoing_ptrs(
+            (filc_ptr_table*)((char*)object + FILC_SPECIAL_OBJECT_SIZE), stack);
+        break;
+    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+        filc_ptr_table_array_mark_outgoing_ptrs(
+            (filc_ptr_table_array*)((char*)object + FILC_SPECIAL_OBJECT_SIZE), stack);
+        break;
     default:
         pas_log("Got a bad special ptr type: ");
         filc_word_type_dump(word_type, &pas_log_stream.base);
@@ -192,6 +207,9 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
 
 static void mark_outgoing_ptrs(filc_object_array* stack, filc_object* object)
 {
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Marking outgoing objects from %p\n", object);
     PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
     if ((object->flags & FILC_OBJECT_FLAG_SPECIAL)) {
         mark_outgoing_special_ptrs(stack, object);
@@ -203,6 +221,23 @@ static void mark_outgoing_ptrs(filc_object_array* stack, filc_object* object)
     for (index = filc_object_num_words(object); index--;) {
         if (filc_object_get_word_type(object, index) == FILC_WORD_TYPE_PTR)
             fugc_mark_or_free(stack, payload + index);
+    }
+}
+
+static void destruct_object_callback(void* raw_object, void* arg)
+{
+    PAS_ASSERT(!arg);
+    filc_object* object = (filc_object*)raw_object;
+    PAS_ASSERT(object->flags & FILC_OBJECT_FLAG_SPECIAL);
+    PAS_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
+    switch (object->word_types[0]) {
+    case FILC_WORD_TYPE_PTR_TABLE:
+        PAS_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+        filc_ptr_table_destruct((filc_ptr_table*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+        break;
+    default:
+        PAS_ASSERT(!"Encountered object in destructor space that should not have destructor.");
+        break;
     }
 }
 
@@ -273,7 +308,7 @@ static void wait_and_start_marking(void)
     current_collector_state = collector_marking;
 }
 
-static void mark_and_start_sweeping(void)
+static void mark_and_start_destructing(void)
 {
     if (verbose >= VERBOSE_PHASES)
         pas_log("[%d] fugc: marking\n", pas_getpid());
@@ -302,19 +337,54 @@ static void mark_and_start_sweeping(void)
     filc_is_marking = false;
     
     if (verbose >= VERBOSE_CYCLES)
-        sweep_start_time = pas_get_time_in_milliseconds();
+        mark_end_time = pas_get_time_in_milliseconds();
 
-    PAS_ASSERT(live_bytes_after_marking == SIZE_MAX);
-    live_bytes_after_marking = verse_heap_live_bytes;
-    
+    PAS_ASSERT(destruct_size == SIZE_MAX);
+    PAS_ASSERT(destruct_index == SIZE_MAX);
+    verse_heap_object_set_start_iterate_before_handshake(filc_destructor_set);
+    filc_soft_handshake(after_marking_pollcheck_callback, NULL);
+    destruct_size = verse_heap_object_set_start_iterate_after_handshake(filc_destructor_set);
+    destruct_index = 0;
+
+    current_collector_state = collector_destructing;
+}
+
+static void destruct_and_start_sweeping(void)
+{
+    if (verbose >= VERBOSE_PHASES) {
+        pas_log("[%d] fugc: marking took %lf ms; destructing\n",
+                pas_getpid(), mark_end_time - overall_start_time);
+    }
+
+    PAS_ASSERT(!filc_is_marking);
+    PAS_ASSERT(current_collector_state == collector_destructing);
+
+    for (; destruct_index < destruct_size; destruct_index += 10) {
+        if (collector_suspend_requested)
+            return;
+        size_t next_destruct_index = pas_min_uintptr(destruct_index + 10, destruct_size);
+        verse_heap_object_set_iterate_range_inline(
+            filc_destructor_set, destruct_index, next_destruct_index,
+            verse_heap_iterate_unmarked, destruct_object_callback, NULL);
+    }
+
+    destruct_index = SIZE_MAX;
+    destruct_size = SIZE_MAX;
+
+    verse_heap_object_set_end_iterate(filc_destructor_set);
+
+    PAS_ASSERT(live_bytes_before_sweeping == SIZE_MAX);
+    live_bytes_before_sweeping = verse_heap_live_bytes;
+
     verse_heap_start_sweep_before_handshake();
-    filc_soft_handshake(sweep_pollcheck_callback, NULL);
+    filc_soft_handshake(stop_allocators_pollcheck_callback, NULL);
     PAS_ASSERT(!global_stack.num_objects);
     PAS_ASSERT(!local_stack.num_objects);
     filc_object_array_reset(&global_stack);
     filc_object_array_destruct(&local_stack);
 
     PAS_ASSERT(sweep_size == SIZE_MAX);
+    PAS_ASSERT(sweep_index == SIZE_MAX);
     sweep_size = verse_heap_start_sweep_after_handshake();
     sweep_index = 0;
 
@@ -323,10 +393,8 @@ static void mark_and_start_sweeping(void)
 
 static void sweep_and_end(void)
 {
-    if (verbose >= VERBOSE_PHASES) {
-        pas_log("[%d] fugc: marking took %lf ms; sweeping\n",
-                pas_getpid(), sweep_start_time - overall_start_time);
-    }
+    if (verbose >= VERBOSE_PHASES)
+        pas_log("[%d] fugc: sweeping\n", pas_getpid());
 
     PAS_ASSERT(!filc_is_marking);
     PAS_ASSERT(current_collector_state == collector_sweeping);
@@ -357,20 +425,21 @@ static void sweep_and_end(void)
     if (verbose >= VERBOSE_CYCLES) {
         overall_end_time = pas_get_time_in_milliseconds();
         if (verbose >= VERBOSE_PHASES) {
-            pas_log("[%d] fugc: sweeping took %lf ms; completed cycle %llu in %lf ms, swept %zu bytes, "
+            pas_log("[%d] fugc: destructing and sweeping took %lf ms; completed cycle %llu in %lf ms, "
+                    "swept %zu bytes, "
                     "survived %zu bytes, have %zu live bytes\n",
-                    pas_getpid(), overall_end_time - sweep_start_time, completed_cycle,
+                    pas_getpid(), overall_end_time - mark_end_time, completed_cycle,
                     overall_end_time - overall_start_time,
                     verse_heap_swept_bytes, surviving_bytes, verse_heap_live_bytes);
         } else if (verbose >= VERBOSE_BREAKDOWN) {
             pas_log("[%d] fugc: %zu kb -> %zu kb -> %zu kb + %zu kb (floated) in %.3lf ms "
                     "(%.0lf%% marking)\n",
-                    pas_getpid(), live_bytes_at_start / 1024, live_bytes_after_marking / 1024,
+                    pas_getpid(), live_bytes_at_start / 1024, live_bytes_before_sweeping / 1024,
                     surviving_bytes / 1024,
                     verse_heap_live_bytes > surviving_bytes
                     ? (verse_heap_live_bytes - surviving_bytes) / 1024 : 0,
                     overall_end_time - overall_start_time,
-                    100. * (sweep_start_time - overall_start_time)
+                    100. * (mark_end_time - overall_start_time)
                     / (overall_end_time - overall_start_time));
         } else {
             pas_log("[%d] fugc: %zu kb -> %zu kb in %.3lf ms\n",
@@ -379,7 +448,7 @@ static void sweep_and_end(void)
         }
     }
     live_bytes_at_start = SIZE_MAX;
-    live_bytes_after_marking = SIZE_MAX;
+    live_bytes_before_sweeping = SIZE_MAX;
     size_t proposed_threshold = (size_t)(surviving_bytes * 1.5);
     PAS_ASSERT(proposed_threshold >= surviving_bytes);
     PAS_ASSERT(!surviving_bytes || proposed_threshold < surviving_bytes * 2);
@@ -411,7 +480,10 @@ static pas_thread_return_type collector_thread(void* arg)
             wait_and_start_marking();
             continue;
         case collector_marking:
-            mark_and_start_sweeping();
+            mark_and_start_destructing();
+            continue;
+        case collector_destructing:
+            destruct_and_start_sweeping();
             continue;
         case collector_sweeping:
             sweep_and_end();

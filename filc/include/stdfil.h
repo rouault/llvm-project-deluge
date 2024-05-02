@@ -123,6 +123,48 @@ void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
    This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);
 
+/* The zptrtable can be used to encode pointers as integers. The integers are __SIZE_TYPE__ but
+   tend to be small; you can usually get away with storing them in 32 bits.
+   
+   The zptrtable itself is garbage collected, so you don't have to free it (and attempting to
+   free it will kill the shit out of your process).
+   
+   You can have as many zptrtables as you like.
+   
+   Encoding a ptr is somewhat expensive. Currently, the zptrtable takes a per-zptrtable lock to
+   do it (so at least it's not a global lock).
+   
+   Decoding a ptr is cheap. There is no locking.
+   
+   The zptrtable automatically purges pointers to free objects and reuses their indices.
+   However, the table does keep a strong reference to objects. So, if you encode a ptr and then
+   never free it, then the zptrtable will keep it alive. But if you free it, the zptrtable will
+   autopurge it.
+   
+   If you try to encode a ptr to a free object, you get 0. If you decode 0 or if the object that
+   would have been decoded is free, this returns NULL. Valid pointers encode to some non-zero
+   integer. You cannot rely on those integers to be sequential, but you can rely on them to:
+
+   - Stay out of the the "null page" (i.e. they are >=16384) just to avoid clashing with
+     assumptions about pointers (even though the indices are totally no pointers).
+
+   - Fit in 32 bits unless you have hundreds of millions of objects in the table.
+
+   - Definitely fit in 64 bits in the general case.
+   
+   - Be multiples of 16 to look even more ptr-like (and allow low bit tagging if you're into
+     that sort of thing). */
+struct zptrtable;
+typedef struct zptrtable zptrtable;
+
+zptrtable* zptrtable_new(void);
+__SIZE_TYPE__ zptrtable_encode(zptrtable* table, void* ptr);
+void* zptrtable_decode(zptrtable* table, __SIZE_TYPE__ encoded_ptr);
+
+/* This function is just for testing zptrtable and it only returns accurate data if
+   zis_runtime_testing_enabled(). */
+__SIZE_TYPE__ ztesting_get_num_ptrtables(void);
+
 /* Low-level printing functions. These might die someday. They are useful for Fil-C's own tests. They
    print directly to stdout using write(). They are safe (passing an invalid ptr to zprint() will trap
    for sure, and it will never print out of bounds even if there is no null terminator). */
@@ -308,6 +350,30 @@ _Bool zis_runtime_testing_enabled(void);
    If you run with pizfix/lib_test in your library path, then this check happens in a bunch of
    random places anyway (and that's the main reason why the lib_test version is so slow). */
 void zvalidate_ptr(void* ptr);
+
+/* Request and wait for a fresh garbage collection cycle. If a GC cycle is already happening, then this
+   will cause another one to happen after that one finishes, and will wait for that one.
+
+   GCing doesn't automatically decommit the freed memory. If you want that to also happen, then call
+   zscavenge_synchronously() after this returns.
+
+   If the GC is running concurrently (the default), then other threads do not wait. Only the calling
+   thread waits.
+
+   If the GC is running in stop-the-world mode (not the default, also not recommended), then this will
+   stop all threads to do the GC. */
+void zgc_request_and_wait(void);
+
+/* Request a synchronous scavenge. This decommits all memory that can be decommitted.
+   
+   If we you want to free all memory that can possibly be freed and you're happy to wait, then you should
+   first zgc_request_and_wait() and then zscavenge_synchronously().
+
+   Note that it's fine to call this whether the scavenger is suspended or not. Even if the scavenger is
+   suspended, this will scavenge synchronously. If the scavenger is not suspended, then this will at worst
+   contend on some locks with the scavenger thread (and at best cause the scavenge to happen faster due to
+   parallelism). */
+void zscavenge_synchronously(void);
 
 /* Suspend the scavenger. If the scavenger is suspended, then free pages are not returned to the OS.
    This is intended to be used only for testing. */

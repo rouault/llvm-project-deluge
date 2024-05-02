@@ -1426,6 +1426,11 @@ static inline unsigned pas_hash64(uint64_t value)
     return pas_hash32((unsigned)value) ^ pas_hash32((unsigned)(value >> 32));
 }
 
+static inline unsigned pas_hash128(pas_uint128 value)
+{
+    return pas_hash64((uint64_t)value) ^ pas_hash64((uint64_t)(value >> (pas_uint128)64));
+}
+
 static inline unsigned pas_hash_intptr(uintptr_t value)
 {
     if (sizeof(uintptr_t) == 8)

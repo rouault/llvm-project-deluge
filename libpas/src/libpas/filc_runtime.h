@@ -45,12 +45,16 @@ struct filc_object;
 struct filc_object_array;
 struct filc_origin;
 struct filc_ptr;
+struct filc_ptr_table;
+struct filc_ptr_table_array;
+struct filc_ptr_uintptr_hash_map_entry;
 struct filc_signal_handler;
 struct filc_return_buffer;
 struct filc_thread;
 struct pas_basic_heap_runtime_config;
 struct pas_stream;
 struct pas_thread_local_cache_node;
+struct verse_heap_object_set;
 typedef struct filc_constant_relocation filc_constant_relocation;
 typedef struct filc_constexpr_node filc_constexpr_node;
 typedef struct filc_frame filc_frame;
@@ -60,12 +64,16 @@ typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
 typedef struct filc_origin filc_origin;
 typedef struct filc_ptr filc_ptr;
+typedef struct filc_ptr_table filc_ptr_table;
+typedef struct filc_ptr_table_array filc_ptr_table_array;
+typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
 typedef struct filc_return_buffer filc_return_buffer;
 typedef struct filc_signal_handler filc_signal_handler;
 typedef struct filc_thread filc_thread;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
 typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
+typedef struct verse_heap_object_set verse_heap_object_set;
 
 typedef uint8_t filc_word_type;
 typedef uint16_t filc_object_flags;
@@ -87,20 +95,25 @@ typedef uint16_t filc_object_flags;
 
    Hence, some types have no edges in the lattice (if they have no transition from unset and no
    transition to free). */
-#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't been set
-                                                                     yet. */
+#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't been
+                                                                     set yet. */
 #define FILC_WORD_TYPE_INT                ((filc_word_type)1)     /* 128-bit word that contains ints. */
 #define FILC_WORD_TYPE_PTR                ((filc_word_type)2)     /* 128-bit word that contains a ptr. */
 #define FILC_WORD_TYPE_FREE               ((filc_word_type)3)     /* 128-bit word that has been freed. */
 #define FILC_WORD_TYPE_FUNCTION           ((filc_word_type)4)     /* Indicates the special function type.
-                                                                     The lower points at the function but the
-                                                                     GC-allocated payload is empty. */
-#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread type. The
-                                                                     lower points at the payload. */
+                                                                     The lower points at the function but
+                                                                     the GC-allocated payload is empty. */
+#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread type.
+                                                                     The lower points at the payload. */
 #define FILC_WORD_TYPE_DIRSTREAM          ((filc_word_type)6)     /* Indicates the special dirstream type.
                                                                      The lower points at the payload. */
 #define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)7)     /* Indicates the special signal_handler.
                                                                      The lower points at the payload. */
+#define FILC_WORD_TYPE_PTR_TABLE          ((filc_word_type)8)     /* Indicates the special ptr_table.
+                                                                     The lower points at the payload. */
+#define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)9)     /* Indicates the special
+                                                                     ptr_table_array. The lower points at
+                                                                     the payload. */
                                           
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
 
@@ -108,11 +121,12 @@ typedef uint16_t filc_object_flags;
 #define FILC_OBJECT_FLAG_RETURN_BUFFER    ((filc_object_flags)2)  /* This is a return buffer (so it's not
                                                                      GC'd and should never be seen by GC).
                                                                      Useful for assertions only! */
-#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)4)  /* It's a special object. If there are no
-                                                                     words, or any of them are unset/int/ptr,
-                                                                     then this cannot be set. If this is set,
-                                                                     then there must be one word, and that
-                                                                     word must be one of free/function/
+#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)4)  /* It's a special object. If there are
+                                                                     no words, or any of them are
+                                                                     unset/int/ptr, then this cannot be
+                                                                     set. If this is set, then there must
+                                                                     be one word, and that word must be
+                                                                     one of free/function/
                                                                      thread/dirstream/signal_handler. */
 #define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)8)  /* Pointer to a global, so cannot be
                                                                      freed. */
@@ -129,6 +143,9 @@ typedef uint16_t filc_object_flags;
 #define FILC_THREAD_STATE_DEFERRED_SIGNAL ((uint8_t)8)
 
 #define FILC_MAX_BYTES_BETWEEN_POLLCHECKS ((size_t)1000)
+
+#define FILC_PTR_TABLE_OFFSET             ((uintptr_t)66666)
+#define FILC_PTR_TABLE_SHIFT              ((uintptr_t)4)
 
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
@@ -314,6 +331,95 @@ struct filc_constant_relocation {
     void* target;
 };
 
+typedef filc_ptr filc_ptr_uintptr_hash_map_key;
+
+struct filc_ptr_uintptr_hash_map_entry {
+    filc_ptr key;
+    uintptr_t value;
+};
+
+static inline filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry_create_empty(void)
+{
+    filc_ptr_uintptr_hash_map_entry result;
+    result.key.word = 0;
+    result.value = 0;
+    return result;
+}
+
+static inline filc_ptr_uintptr_hash_map_entry
+filc_ptr_uintptr_hash_map_entry_create_deleted(void)
+{
+    filc_ptr_uintptr_hash_map_entry result;
+    result.key.word = 0;
+    result.value = 1;
+    return result;
+}
+
+static inline bool filc_ptr_uintptr_hash_map_entry_is_empty_or_deleted(
+    filc_ptr_uintptr_hash_map_entry entry)
+{
+    if (!entry.key.word) {
+        PAS_ASSERT(!entry.value || entry.value == 1);
+        return true;
+    }
+    return false;
+}
+
+static inline bool
+filc_ptr_uintptr_hash_map_entry_is_empty(filc_ptr_uintptr_hash_map_entry entry)
+{
+    if (!entry.key.word) {
+        PAS_ASSERT(!entry.value || entry.value == 1);
+        return !entry.value;
+    }
+    return false;
+}
+
+static inline bool
+filc_ptr_uintptr_hash_map_entry_is_deleted(filc_ptr_uintptr_hash_map_entry entry)
+{
+    if (!entry.key.word) {
+        PAS_ASSERT(!entry.value || entry.value == 1);
+        return entry.value;
+    }
+    return false;
+}
+
+static inline filc_ptr
+filc_ptr_uintptr_hash_map_entry_get_key(filc_ptr_uintptr_hash_map_entry entry)
+{
+    return entry.key;
+}
+
+static inline unsigned filc_ptr_uintptr_hash_map_key_get_hash(filc_ptr ptr)
+{
+    return pas_hash128(ptr.word);
+}
+
+static inline bool filc_ptr_uintptr_hash_map_key_is_equal(filc_ptr a, filc_ptr b)
+{
+    return a.word == b.word;
+}
+
+PAS_CREATE_HASHTABLE(filc_ptr_uintptr_hash_map,
+                     filc_ptr_uintptr_hash_map_entry,
+                     filc_ptr_uintptr_hash_map_key);
+
+struct filc_ptr_table {
+    pas_lock lock;
+    filc_ptr_uintptr_hash_map encode_map;
+    uintptr_t* free_indices;
+    size_t num_free_indices;
+    size_t free_indices_capacity;
+    filc_ptr_table_array* array;
+};
+
+struct filc_ptr_table_array {
+    size_t num_entries;
+    size_t capacity;
+    filc_ptr ptrs[];
+};
+
 #define FILC_FOR_EACH_LOCK(macro) \
     macro(thread_list); \
     macro(stop_the_world)
@@ -340,7 +446,9 @@ PAS_API extern pthread_key_t filc_thread_key;
 
 PAS_API extern bool filc_is_marking;
 
-PAS_API extern pas_heap* filc_heap;
+PAS_API extern pas_heap* filc_default_heap;
+PAS_API extern pas_heap* filc_destructor_heap;
+PAS_API extern verse_heap_object_set* filc_destructor_set;
 
 PAS_API extern filc_object* filc_free_singleton;
 
@@ -637,7 +745,9 @@ static inline filc_object* filc_object_for_special_payload(void* payload)
     PAS_TESTING_ASSERT(result->upper == (char*)payload + FILC_WORD_SIZE);
     PAS_TESTING_ASSERT(result->word_types[0] == FILC_WORD_TYPE_THREAD ||
                        result->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
-                       result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER);
+                       result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
+                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
+                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY);
     return result;
 }
 
@@ -953,8 +1063,27 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
     case FILC_WORD_TYPE_THREAD:
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
     case FILC_WORD_TYPE_DIRSTREAM:
+    case FILC_WORD_TYPE_PTR_TABLE:
+    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
         return true;
     default:
+        return false;
+    }
+}
+
+static inline bool filc_special_word_type_has_destructor(filc_word_type word_type)
+{
+    switch (word_type) {
+    case FILC_WORD_TYPE_PTR_TABLE:
+        return true;
+    case FILC_WORD_TYPE_FUNCTION:
+    case FILC_WORD_TYPE_THREAD:
+    case FILC_WORD_TYPE_SIGNAL_HANDLER:
+    case FILC_WORD_TYPE_DIRSTREAM:
+    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+        return false;
+    default:
+        PAS_ASSERT(!"Not a special word type");
         return false;
     }
 }
@@ -1019,6 +1148,16 @@ void filc_free(filc_thread* my_thread, filc_object* object);
    objects that we know we can free, like dirstreams. Only call this after checking that it's
    something that is OK to free. This still does the is-not-already-free check. */
 void filc_free_yolo(filc_thread* my_thread, filc_object* object);
+
+filc_ptr_table* filc_ptr_table_create(filc_thread* my_thread);
+void filc_ptr_table_destruct(filc_ptr_table* ptr_table);
+uintptr_t filc_ptr_table_encode(filc_thread* my_thread, filc_ptr_table* ptr_table, filc_ptr ptr);
+filc_ptr filc_ptr_table_decode_with_manual_tracking(
+    filc_ptr_table* ptr_table, uintptr_t encoded_ptr);
+void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_array* stack);
+
+filc_ptr_table_array* filc_ptr_table_array_create(filc_thread* my_thread, size_t capacity);
+void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_object_array* stack);
 
 /* munmap() can free memory while we're exited. If we use memory while exited, and it might be
    mmap memory, then we must pin it first. This will cause munmap() to fail.

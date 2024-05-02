@@ -20,6 +20,9 @@ PAS_API void fugc_resume(void);
 
 static inline void fugc_mark(filc_object_array* mark_stack, filc_object* object)
 {
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Marking object %p\n", object);
     if (!object)
         return;
     PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));

@@ -77,7 +77,9 @@ filc_thread* filc_first_thread;
 pthread_key_t filc_thread_key;
 bool filc_is_marking;
 
-pas_heap* filc_heap;
+pas_heap* filc_default_heap;
+pas_heap* filc_destructor_heap;
+verse_heap_object_set* filc_destructor_set;
 
 filc_object* filc_free_singleton;
 
@@ -436,11 +438,15 @@ void filc_initialize(void)
     FILC_FOR_EACH_LOCK(INITIALIZE_LOCK);
 #undef INITIALIZE_LOCK
 
-    filc_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
+    filc_default_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
+    filc_destructor_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
+    filc_destructor_set = verse_heap_object_set_create();
+    verse_heap_add_to_set(filc_destructor_heap, filc_destructor_set);
     verse_heap_did_become_ready_for_allocation();
 
     filc_free_singleton = (filc_object*)verse_heap_allocate(
-        filc_heap, pas_round_up_to_power_of_2(PAS_OFFSETOF(filc_object, word_types), FILC_WORD_SIZE));
+        filc_default_heap, pas_round_up_to_power_of_2(PAS_OFFSETOF(filc_object, word_types),
+                                                      FILC_WORD_SIZE));
     filc_free_singleton->lower = NULL;
     filc_free_singleton->upper = NULL;
     filc_free_singleton->flags = FILC_OBJECT_FLAG_FREE;
@@ -1132,6 +1138,8 @@ void filc_thread_stop_allocators(filc_thread* my_thread)
 
 void filc_thread_mark_roots(filc_thread* my_thread)
 {
+    static const bool verbose = false;
+    
     assert_participates_in_pollchecks(my_thread);
 
     filc_object* allocation_root;
@@ -1145,8 +1153,11 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     filc_frame* frame;
     for (frame = my_thread->top_frame; frame; frame = frame->parent) {
         size_t index;
-        for (index = frame->num_objects; index--;)
+        for (index = frame->num_objects; index--;) {
+            if (verbose)
+                pas_log("Marking thread root %p\n", frame->objects[index]);
             fugc_mark(&my_thread->mark_stack, frame->objects[index]);
+        }
     }
 
     filc_native_frame* native_frame;
@@ -1219,7 +1230,10 @@ static void signal_pizlonator(int signum)
        
        Quite likely the best kind of trickery here is to send the signal to another thread, unless
        it's a pthread_kill(). We can handle the pthread_kill() case by having pthread_kill() wait
-       until the victim thread has properly started and is ready for signals. */
+       until the victim thread has properly started and is ready for signals.
+    
+       Another idea: it sorta seems like starting a thread inherits signals. So, we should start threads
+       with all signals blocked, and then problem solved? */
     PAS_ASSERT(thread);
     
     if ((thread->state & FILC_THREAD_STATE_ENTERED) || thread->special_signal_deferral_depth) {
@@ -1444,6 +1458,12 @@ void filc_word_type_dump(filc_word_type type, pas_stream* stream)
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
         pas_stream_printf(stream, "signal_handler");
         return;
+    case FILC_WORD_TYPE_PTR_TABLE:
+        pas_stream_printf(stream, "ptr_table");
+        return;
+    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+        pas_stream_printf(stream, "ptr_table_array");
+        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -1589,12 +1609,20 @@ filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type)
     /* NOTE: This cannot assert anything about the Fil-C thread because we do use this before any
        threads have been created. */
 
+    /* NOTE: This must not exit, because we might hold rando locks while calling into this. */
+
     PAS_ASSERT(filc_word_type_is_special(word_type));
+
+    pas_heap* heap;
+    if (filc_special_word_type_has_destructor(word_type))
+        heap = filc_destructor_heap;
+    else
+        heap = filc_default_heap;
 
     size_t total_size;
     PAS_ASSERT(!pas_add_uintptr_overflow(FILC_SPECIAL_OBJECT_SIZE, size, &total_size));
 
-    filc_object* result = (filc_object*)verse_heap_allocate(filc_heap, total_size);
+    filc_object* result = (filc_object*)verse_heap_allocate(heap, total_size);
     result->lower = (char*)result + FILC_SPECIAL_OBJECT_SIZE;
     result->upper = (char*)result + FILC_SPECIAL_OBJECT_SIZE + FILC_WORD_SIZE;
     result->flags = FILC_OBJECT_FLAG_SPECIAL;
@@ -1648,7 +1676,7 @@ filc_object* filc_allocate_with_existing_data(
     size_t num_words;
     size_t base_object_size;
     prepare_allocate_object(&size, &num_words, &base_object_size);
-    filc_object* result = (filc_object*)verse_heap_allocate(filc_heap, base_object_size);
+    filc_object* result = (filc_object*)verse_heap_allocate(filc_default_heap, base_object_size);
     if (size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         initialize_object_with_existing_data(
             result, data, size, num_words, object_flags, initial_word_type);
@@ -1712,7 +1740,7 @@ static filc_object* allocate_impl(filc_thread* my_thread, size_t size, filc_word
     size_t total_size;
     prepare_allocate(&size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_allocate(
-        my_thread, verse_heap_allocate(filc_heap, total_size),
+        my_thread, verse_heap_allocate(filc_default_heap, total_size),
         size, num_words, offset_to_payload, initial_word_type);
 }
 
@@ -1732,7 +1760,7 @@ filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, s
     size_t total_size;
     prepare_allocate(&size, alignment, &num_words, &offset_to_payload, &total_size);
     return finish_allocate(
-        my_thread, verse_heap_allocate_with_alignment(filc_heap, total_size, alignment),
+        my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
         size, num_words, offset_to_payload, FILC_WORD_TYPE_UNSET);
 }
 
@@ -1821,7 +1849,7 @@ filc_object* filc_reallocate(filc_thread* my_thread, filc_object* object, size_t
     size_t total_size;
     prepare_allocate(&new_size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_reallocate(
-        my_thread, verse_heap_allocate(filc_heap, total_size),
+        my_thread, verse_heap_allocate(filc_default_heap, total_size),
         object, new_size, num_words, offset_to_payload);
 }
 
@@ -1837,7 +1865,7 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
     size_t total_size;
     prepare_allocate(&new_size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_reallocate(
-        my_thread, verse_heap_allocate_with_alignment(filc_heap, total_size, alignment),
+        my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
         object, new_size, num_words, offset_to_payload);
 }
 
@@ -1898,6 +1926,222 @@ void filc_free(filc_thread* my_thread, filc_object* object)
         "cannot free mmap object %s.",
         filc_object_to_new_string(object));
     filc_free_yolo(my_thread, object);
+}
+
+static size_t num_ptrtables = 0;
+
+filc_ptr_table* filc_ptr_table_create(filc_thread* my_thread)
+{
+    filc_ptr_table* result = (filc_ptr_table*)
+        filc_allocate_special(my_thread, sizeof(filc_ptr_table), FILC_WORD_TYPE_PTR_TABLE)->lower;
+
+    pas_lock_construct(&result->lock);
+    filc_ptr_uintptr_hash_map_construct(&result->encode_map);
+    result->free_indices_capacity = 10;
+    result->free_indices = bmalloc_allocate(sizeof(uintptr_t) * result->free_indices_capacity);
+    result->num_free_indices = 0;
+    result->array = filc_ptr_table_array_create(my_thread, 10);
+
+    if (PAS_ENABLE_TESTING)
+        pas_atomic_exchange_add_uintptr(&num_ptrtables, 1);
+
+    return result;
+}
+
+void filc_ptr_table_destruct(filc_ptr_table* ptr_table)
+{
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Destructing ptrtable\n");
+    pas_allocation_config allocation_config;
+    initialize_bmalloc_allocation_config(&allocation_config);
+    filc_ptr_uintptr_hash_map_destruct(&ptr_table->encode_map, &allocation_config);
+    bmalloc_deallocate(ptr_table->free_indices);
+
+    if (PAS_ENABLE_TESTING)
+        pas_atomic_exchange_add_uintptr(&num_ptrtables, (intptr_t)-1);
+}
+
+static uintptr_t ptr_table_encode_holding_lock(
+    filc_thread* my_thread, filc_ptr_table* ptr_table, filc_ptr ptr)
+{
+    pas_allocation_config allocation_config;
+    initialize_bmalloc_allocation_config(&allocation_config);
+
+    PAS_ASSERT(ptr_table->array);
+
+    /* This function does the store barrier twice, but like, whatever. */
+    filc_store_barrier(my_thread, filc_ptr_object(ptr));
+    filc_ptr_uintptr_hash_map_add_result add_result =
+        filc_ptr_uintptr_hash_map_add(&ptr_table->encode_map, ptr, NULL, &allocation_config);
+    if (!add_result.is_new_entry) {
+        uintptr_t result = add_result.entry->value;
+        PAS_ASSERT(result < ptr_table->array->num_entries);
+        PAS_ASSERT(result < ptr_table->array->capacity);
+        return (result + FILC_PTR_TABLE_OFFSET) << FILC_PTR_TABLE_SHIFT;
+    }
+
+    uintptr_t result;
+    if (ptr_table->num_free_indices)
+        result = ptr_table->free_indices[--ptr_table->num_free_indices];
+    else {
+        if (ptr_table->array->num_entries >= ptr_table->array->capacity) {
+            PAS_ASSERT(ptr_table->array->num_entries == ptr_table->array->capacity);
+            size_t new_capacity = ptr_table->array->capacity << 1;
+            PAS_ASSERT(new_capacity > ptr_table->array->capacity);
+            filc_ptr_table_array* new_array = filc_ptr_table_array_create(my_thread, new_capacity);
+
+            /* There's some universe where we do this loop exited, but it probably just doesn't matter
+               at all. */
+            size_t index;
+            for (index = ptr_table->array->num_entries; index--;) {
+                filc_ptr_store(
+                    my_thread, new_array->ptrs + index,
+                    filc_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index));
+            }
+
+            new_array->num_entries = ptr_table->array->num_entries;
+            ptr_table->array = new_array;
+        }
+
+        PAS_ASSERT(ptr_table->array->num_entries < ptr_table->array->capacity);
+        result = ptr_table->array->num_entries++;
+    }
+
+    PAS_ASSERT(result < ptr_table->array->num_entries);
+    PAS_ASSERT(result < ptr_table->array->capacity);
+    filc_ptr_store(my_thread, ptr_table->array->ptrs + result, ptr);
+    return (result + FILC_PTR_TABLE_OFFSET) << FILC_PTR_TABLE_SHIFT;
+}
+
+uintptr_t filc_ptr_table_encode(filc_thread* my_thread, filc_ptr_table* ptr_table, filc_ptr ptr)
+{
+    if (!filc_ptr_ptr(ptr) || !filc_ptr_object(ptr)
+        || (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+        return 0;
+    pas_lock_lock(&ptr_table->lock);
+    uintptr_t result = ptr_table_encode_holding_lock(my_thread, ptr_table, ptr);
+    pas_lock_unlock(&ptr_table->lock);
+    return result;
+}
+
+filc_ptr filc_ptr_table_decode_with_manual_tracking(filc_ptr_table* ptr_table, uintptr_t encoded_ptr)
+{
+    filc_ptr_table_array* array = ptr_table->array;
+    
+    size_t index = (encoded_ptr >> FILC_PTR_TABLE_SHIFT) - FILC_PTR_TABLE_OFFSET;
+    if (index >= array->num_entries)
+        return filc_ptr_forge_null();
+
+    /* NULL shouldn't have gotten this far. */
+    PAS_TESTING_ASSERT(encoded_ptr);
+
+    filc_ptr result = filc_ptr_load_with_manual_tracking(array->ptrs + index);
+    if (!filc_ptr_ptr(result))
+        return filc_ptr_forge_null();
+
+    PAS_TESTING_ASSERT(filc_ptr_object(result));
+    if (filc_ptr_object(result)->flags & FILC_OBJECT_FLAG_FREE)
+        return filc_ptr_forge_null();
+
+    return result;
+}
+
+void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_array* stack)
+{
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Marking ptr table at %p.\n", ptr_table);
+    /* This needs to rehash the the whole table, marking non-free objects, and just skipping the free
+       ones.
+       
+       Then it needs to walk the array and remove the free entries, putting their indices into the
+       free_indices array.
+    
+       This may result in the hashtable and the array disagreeing a bit, and that's fine. They'll only
+       disagree on things that are free.
+    
+       If the hashtable has an entry that the array doesn't have: this means that the object in question
+       is free, so we'll never look up that entry in the hashtable due to the free check. New objects
+       that take the same address will get a fresh entry in the hashtable and a fresh index.
+    
+       If the array has an entry that the hashtable doesn't have: decoding that object will fail the
+       free check, so you won't be able to tell that the object has an index. Adding new objects that
+       take the same address won't be able to reuse that index, because it'll seem to be taken. */
+
+    pas_lock_lock(&ptr_table->lock);
+
+    pas_allocation_config allocation_config;
+    initialize_bmalloc_allocation_config(&allocation_config);
+
+    filc_ptr_uintptr_hash_map new_encode_map;
+    filc_ptr_uintptr_hash_map_construct(&new_encode_map);
+    size_t index;
+    for (index = ptr_table->encode_map.table_size; index--;) {
+        filc_ptr_uintptr_hash_map_entry entry = ptr_table->encode_map.table[index];
+        if (filc_ptr_uintptr_hash_map_entry_is_empty_or_deleted(entry))
+            continue;
+        if (filc_ptr_object(entry.key)->flags & FILC_OBJECT_FLAG_FREE)
+            continue;
+        fugc_mark(stack, filc_ptr_object(entry.key));
+        filc_ptr_uintptr_hash_map_add_new(&new_encode_map, entry, NULL, &allocation_config);
+    }
+    filc_ptr_uintptr_hash_map_destruct(&ptr_table->encode_map, &allocation_config);
+    ptr_table->encode_map = new_encode_map;
+
+    fugc_mark(stack, filc_object_for_special_payload(ptr_table->array));
+
+    /* It's not necessary to mark entries in this array, since they'll be marked when we
+       filc_ptr_table_array_mark_outgoing_ptrs(). It's not clear that we could avoid marking them in
+       that function, though maybe we could avoid it. */
+    for (index = ptr_table->array->num_entries; index--;) {
+        filc_ptr ptr = filc_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index);
+        if (!filc_ptr_ptr(ptr))
+            continue;
+        if (!(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+            continue;
+        if (ptr_table->num_free_indices >= ptr_table->free_indices_capacity) {
+            PAS_ASSERT(ptr_table->num_free_indices == ptr_table->free_indices_capacity);
+
+            size_t new_free_indices_capacity = ptr_table->free_indices_capacity << 1;
+            PAS_ASSERT(new_free_indices_capacity > ptr_table->free_indices_capacity);
+
+            uintptr_t* new_free_indices = bmalloc_allocate(sizeof(uintptr_t) * new_free_indices_capacity);
+            memcpy(new_free_indices, ptr_table->free_indices,
+                   sizeof(uintptr_t) * ptr_table->num_free_indices);
+
+            bmalloc_deallocate(ptr_table->free_indices);
+            ptr_table->free_indices = new_free_indices;
+            ptr_table->free_indices_capacity = new_free_indices_capacity;
+        }
+        PAS_ASSERT(ptr_table->num_free_indices < ptr_table->free_indices_capacity);
+        ptr_table->free_indices[ptr_table->num_free_indices++] = index;
+        filc_ptr_store_without_barrier(ptr_table->array->ptrs + index, filc_ptr_forge_null());
+    }
+    
+    pas_lock_unlock(&ptr_table->lock);
+}
+
+filc_ptr_table_array* filc_ptr_table_array_create(filc_thread* my_thread, size_t capacity)
+{
+    size_t array_size;
+    PAS_ASSERT(!pas_mul_uintptr_overflow(sizeof(filc_ptr), capacity, &array_size));
+    size_t total_size;
+    PAS_ASSERT(!pas_add_uintptr_overflow(
+                   PAS_OFFSETOF(filc_ptr_table_array, ptrs), array_size, &total_size));
+    
+    filc_ptr_table_array* result = (filc_ptr_table_array*)
+        filc_allocate_special(my_thread, total_size, FILC_WORD_TYPE_PTR_TABLE_ARRAY)->lower;
+    result->capacity = capacity;
+
+    return result;
+}
+
+void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_object_array* stack)
+{
+    size_t index;
+    for (index = array->num_entries; index--;)
+        fugc_mark(stack, filc_ptr_object(filc_ptr_load_with_manual_tracking(array->ptrs + index)));
 }
 
 void filc_pin(filc_object* object)
@@ -2048,6 +2292,31 @@ int filc_native_zptrphase(filc_thread* my_thread, filc_ptr ptr)
     return (int)offset_in_word;
 }
 
+filc_ptr filc_native_zptrtable_new(filc_thread* my_thread)
+{
+    return filc_ptr_for_special_payload_with_manual_tracking(filc_ptr_table_create(my_thread));
+}
+
+size_t filc_native_zptrtable_encode(filc_thread* my_thread, filc_ptr table_ptr, filc_ptr ptr)
+{
+    filc_check_access_special(table_ptr, FILC_WORD_TYPE_PTR_TABLE, NULL);
+    return filc_ptr_table_encode(my_thread, (filc_ptr_table*)filc_ptr_ptr(table_ptr), ptr);
+}
+
+filc_ptr filc_native_zptrtable_decode(filc_thread* my_thread, filc_ptr table_ptr, size_t encoded_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    filc_check_access_special(table_ptr, FILC_WORD_TYPE_PTR_TABLE, NULL);
+    return filc_ptr_table_decode_with_manual_tracking(
+        (filc_ptr_table*)filc_ptr_ptr(table_ptr), encoded_ptr);
+}
+
+size_t filc_native_ztesting_get_num_ptrtables(filc_thread* my_thread)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    return num_ptrtables;
+}
+
 void filc_validate_object(filc_object* object, const filc_origin* origin)
 {
     if (object == filc_free_singleton) {
@@ -2066,7 +2335,9 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
                     object->word_types[0] == FILC_WORD_TYPE_FUNCTION ||
                     object->word_types[0] == FILC_WORD_TYPE_THREAD ||
                     object->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
-                    object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER,
+                    object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
+                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
+                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY,
                     origin);
         if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION)
             FILC_ASSERT(pas_is_aligned((uintptr_t)object->lower, FILC_WORD_SIZE), origin);
@@ -3021,6 +3292,25 @@ void filc_native_zvalidate_ptr(filc_thread* my_thread, filc_ptr ptr)
     filc_validate_ptr(ptr, NULL);
 }
 
+void filc_native_zgc_request_and_wait(filc_thread* my_thread)
+{
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Requesting GC and waiting.\n");
+    filc_exit(my_thread);
+    fugc_wait(fugc_request_fresh());
+    filc_enter(my_thread);
+    if (verbose)
+        pas_log("Done with GC.\n");
+}
+
+void filc_native_zscavenge_synchronously(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    pas_scavenger_run_synchronously_now();
+    filc_enter(my_thread);
+}
+
 void filc_native_zscavenger_suspend(filc_thread* my_thread)
 {
     filc_exit(my_thread);
@@ -3030,8 +3320,9 @@ void filc_native_zscavenger_suspend(filc_thread* my_thread)
 
 void filc_native_zscavenger_resume(filc_thread* my_thread)
 {
-    PAS_UNUSED_PARAM(my_thread);
+    filc_exit(my_thread);
     pas_scavenger_resume();
+    filc_enter(my_thread);
 }
 
 static void (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
