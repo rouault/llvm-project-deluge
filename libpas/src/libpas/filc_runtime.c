@@ -1970,8 +1970,6 @@ static uintptr_t ptr_table_encode_holding_lock(
 
     PAS_ASSERT(ptr_table->array);
 
-    /* This function does the store barrier twice, but like, whatever. */
-    filc_store_barrier(my_thread, filc_ptr_object(ptr));
     filc_ptr_uintptr_hash_map_add_result add_result =
         filc_ptr_uintptr_hash_map_add(&ptr_table->encode_map, ptr, NULL, &allocation_config);
     if (!add_result.is_new_entry) {
@@ -2010,6 +2008,8 @@ static uintptr_t ptr_table_encode_holding_lock(
 
     PAS_ASSERT(result < ptr_table->array->num_entries);
     PAS_ASSERT(result < ptr_table->array->capacity);
+    filc_ptr_store(my_thread, &add_result.entry->key, ptr);
+    add_result.entry->value = result;
     filc_ptr_store(my_thread, ptr_table->array->ptrs + result, ptr);
     return (result + FILC_PTR_TABLE_OFFSET) << FILC_PTR_TABLE_SHIFT;
 }

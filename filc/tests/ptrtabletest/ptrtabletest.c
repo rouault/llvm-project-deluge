@@ -20,6 +20,8 @@ __attribute__((__noinline__)) static void doit(void)
     ZASSERT(index2 >= 65536);
     ZASSERT(!(index2 & 15));
     ZASSERT(index1 != index2);
+    ZASSERT(zptrtable_encode(table, object1) == index1);
+    ZASSERT(zptrtable_encode(table, object2) == index2);
     ZASSERT(zptrtable_decode(table, index1) == object1);
     ZASSERT(zptrtable_decode(table, index2) == object2);
     zfree(object1);
