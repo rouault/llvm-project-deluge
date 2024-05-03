@@ -4425,16 +4425,23 @@ static int handle_fstat_result(filc_ptr musl_stat_ptr, struct stat *st,
     return 0;
 }
 
+static int from_musl_atfd(int fd)
+{
+    if (fd == -100)
+        fd = AT_FDCWD;
+    return fd;
+}
+
 int filc_native_zsys_fstatat(
-    filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr musl_stat_ptr, int musl_flag)
+    filc_thread* my_thread, int musl_fd, filc_ptr path_ptr, filc_ptr musl_stat_ptr,
+    int musl_flag)
 {
     int flag;
     if (!from_musl_fstatat_flag(musl_flag, &flag)) {
         set_errno(EINVAL);
         return -1;
     }
-    if (fd == -100)
-        fd = AT_FDCWD;
+    int fd = from_musl_atfd(musl_fd);
     struct stat st;
     char* path = filc_check_and_get_new_str(path_ptr);
     filc_exit(my_thread);
@@ -8306,6 +8313,20 @@ filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_
     if (!result)
         return filc_ptr_forge_null();
     return buf_ptr;
+}
+
+int filc_native_zsys_mkdirat(filc_thread* my_thread, int musl_dirfd, filc_ptr pathname_ptr, unsigned mode)
+{
+    int dirfd = from_musl_atfd(musl_dirfd);
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = mkdirat(dirfd, pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

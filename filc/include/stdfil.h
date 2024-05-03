@@ -508,6 +508,7 @@ int zsys_munmap(void* address, __SIZE_TYPE__ length);
 int zsys_ftruncate(int fd, long length);
 int zsys_getentropy(void* buffer, __SIZE_TYPE__ len);
 char* zsys_getcwd(char* buf, __SIZE_TYPE__ size);
+int zsys_mkdirat(int dirfd, const char* pathname, unsigned mode);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
