@@ -4029,6 +4029,22 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         filc_enter(my_thread);
         return result;
     }
+    case 0x5450: /* FIONCLEX */ {
+        filc_exit(my_thread);
+        int result = ioctl(fd, FIONCLEX, NULL);
+        if (result < 0)
+            goto error;
+        filc_enter(my_thread);
+        return result;
+    }
+    case 0x5451: /* FIOCLEX */ {
+        filc_exit(my_thread);
+        int result = ioctl(fd, FIOCLEX, NULL);
+        if (result < 0)
+            goto error;
+        filc_enter(my_thread);
+        return result;
+    }
     default:
         if (verbose)
             pas_log("Invalid ioctl request = %lu.\n", request);
