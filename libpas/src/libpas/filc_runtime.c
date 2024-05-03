@@ -4775,13 +4775,18 @@ static int to_musl_sa_flags(int sa_flags)
     return result;
 }
 
-static void check_signal(int signum)
+static bool is_unsafe_signal(int signum)
 {
-    FILC_CHECK(signum != SIGILL, NULL, "cannot override SIGILL.");
-    FILC_CHECK(signum != SIGTRAP, NULL, "cannot override SIGTRAP.");
-    FILC_CHECK(signum != SIGBUS, NULL, "cannot override SIGBUS.");
-    FILC_CHECK(signum != SIGSEGV, NULL, "cannot override SIGSEGV.");
-    FILC_CHECK(signum != SIGFPE, NULL, "cannot override SIGFPE.");
+    switch (signum) {
+    case SIGILL:
+    case SIGTRAP:
+    case SIGBUS:
+    case SIGSEGV:
+    case SIGFPE:
+        return true;
+    default:
+        return false;
+    }
 }
 
 static bool is_musl_special_signal_handler(void* handler)
@@ -4821,7 +4826,10 @@ int filc_native_zsys_sigaction(filc_thread* my_thread, int musl_signum, filc_ptr
         set_errno(EINVAL);
         return -1;
     }
-    check_signal(signum);
+    if (is_unsafe_signal(signum) && filc_ptr_ptr(act_ptr)) {
+        set_errno(ENOSYS);
+        return -1;
+    }
     if (filc_ptr_ptr(act_ptr))
         check_musl_sigaction(act_ptr);
     if (filc_ptr_ptr(oact_ptr))
@@ -4866,6 +4874,8 @@ int filc_native_zsys_sigaction(filc_thread* my_thread, int musl_signum, filc_ptr
         return -1;
     }
     if (musl_oact) {
+        if (is_unsafe_signal(signum))
+            PAS_ASSERT(oact.sa_handler == SIG_DFL);
         if (is_special_signal_handler(oact.sa_handler))
             filc_ptr_store(my_thread, &musl_oact->sa_handler_ish,
                            to_musl_special_signal_handler(oact.sa_handler));
