@@ -44,6 +44,8 @@ $testDirectory.each_entry {
     binary = fullPath + testName
     compilerOutput = fullPath + "compilerOutput.txt"
     output = fullPath + "output.txt"
+    outputSTW = fullPath + "outputSTW.txt"
+    outputRelease = fullPath + "outputRelease.txt"
     File.open(compileScript, "w") {
         | outp |
         outp.puts "#!/bin/sh"
@@ -76,18 +78,21 @@ $testDirectory.each_entry {
     }
     [{:script => subRunScript,
       :cmdPrefix => "FUGC_MIN_THRESHOLD=0",
-      :justRunScript => justRunScript},
+      :justRunScript => justRunScript,
+      :output => output},
      {:script => subRunSTWScript,
       :cmdPrefix => "FUGC_MIN_THRESHOLD=0 FUGC_STW=1",
-      :justRunScript => justRunScript},
+      :justRunScript => justRunScript,
+      :output => outputSTW},
      {:script => subRunReleaseScript,
       :cmdPrefix => "",
-      :justRunScript => justRunReleaseScript}].each {
+      :justRunScript => justRunReleaseScript,
+      :output => outputRelease}].each {
         | params |
         File.open(params[:script], "w") {
             | outp |
             outp.puts "#!/bin/sh"
-            outp.puts "#{params[:cmdPrefix]} FILC_EXIT_ON_PANIC=1 FILC_DUMP_SETUP=1 #{Shellwords.shellescape(params[:justRunScript])} >& #{Shellwords.shellescape(output)}"
+            outp.puts "#{params[:cmdPrefix]} FILC_EXIT_ON_PANIC=1 FILC_DUMP_SETUP=1 #{Shellwords.shellescape(params[:justRunScript])} >& #{Shellwords.shellescape(params[:output])}"
             case expectedReturn
             when "failure"
                 outp.puts "if [ $? -ne 42 ]"
@@ -109,22 +114,22 @@ $testDirectory.each_entry {
             else
                 raise
             end
-            outp.puts "    cat #{Shellwords.shellescape(output)}"
+            outp.puts "    cat #{Shellwords.shellescape(params[:output])}"
             outp.puts "    exit 1"
             outp.puts "fi"
             expectedOutputs.each {
                 | expectedOutput |
-                outp.puts "fgrep #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(output)} > /dev/null || {"
+                outp.puts "fgrep #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(params[:output])} > /dev/null || {"
                 outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected output to contain #{expectedOutput}"))
-                outp.puts "    cat #{Shellwords.shellescape(output)}"
+                outp.puts "    cat #{Shellwords.shellescape(params[:output])}"
                 outp.puts "    exit 1"
                 outp.puts "}"
             }
             forbiddenOutputs.each {
                 | forbiddenOutput |
-                outp.puts "fgrep #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(output)} > /dev/null && {"
+                outp.puts "fgrep #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(params[:output])} > /dev/null && {"
                 outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected output to NOT contain #{forbiddenOutput}"))
-                outp.puts "    cat #{Shellwords.shellescape(output)}"
+                outp.puts "    cat #{Shellwords.shellescape(params[:output])}"
                 outp.puts "    exit 1"
                 outp.puts "}"
             }
