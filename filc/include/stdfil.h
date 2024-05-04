@@ -400,6 +400,7 @@ void zscavenger_resume(void);
 void zrun_deferred_global_ctors(void);
 
 void zregister_sys_errno_handler(void (*errno_handler)(int errno_value));
+void zregister_sys_dlerror_handler(void (*dlerror_handler)(const char* str));
 int zsys_ioctl(int fd, unsigned long request, ...);
 long zsys_writev(int fd, const void* iov, int iovcnt);
 long zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
@@ -517,6 +518,11 @@ int zsys_ftruncate(int fd, long length);
 int zsys_getentropy(void* buffer, __SIZE_TYPE__ len);
 char* zsys_getcwd(char* buf, __SIZE_TYPE__ size);
 int zsys_mkdirat(int dirfd, const char* pathname, unsigned mode);
+void* zsys_dlopen(const char* filename, int flags); /* FIXME: we should add dlclose support eventually,
+                                                       but that would require changing the ABI so that
+                                                       globals are GC-allocated. Which is fine, we could
+                                                       do that. */
+void* zsys_dlsym(void* handle, const char* symbol);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);

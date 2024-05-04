@@ -1,0 +1,7 @@
+return:
+  success
+libraries:
+  libtest.so:
+    - library.c
+output-includes:
+  - "called foo."

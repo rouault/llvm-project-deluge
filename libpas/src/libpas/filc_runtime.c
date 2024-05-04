@@ -48,6 +48,7 @@
 #include <sys/sysctl.h>
 #include <sys/mman.h>
 #include <sys/random.h>
+#include <dlfcn.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -1464,6 +1465,9 @@ void filc_word_type_dump(filc_word_type type, pas_stream* stream)
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
         pas_stream_printf(stream, "ptr_table_array");
         return;
+    case FILC_WORD_TYPE_DL_HANDLE:
+        pas_stream_printf(stream, "dl_handle");
+        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -1686,6 +1690,23 @@ filc_object* filc_allocate_with_existing_data(
             result, data, size, num_words, object_flags, initial_word_type);
         filc_enter_with_allocation_root(my_thread, result);
     }
+    return result;
+}
+
+filc_object* filc_allocate_special_with_existing_payload(
+    filc_thread* my_thread, void* payload, filc_word_type word_type)
+{
+    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_ASSERT(word_type == FILC_WORD_TYPE_FUNCTION ||
+               word_type == FILC_WORD_TYPE_DL_HANDLE);
+
+    filc_object* result = (filc_object*)verse_heap_allocate(filc_default_heap, FILC_SPECIAL_OBJECT_SIZE);
+    result->lower = payload;
+    result->upper = (char*)payload + FILC_WORD_SIZE;
+    result->flags = FILC_OBJECT_FLAG_SPECIAL;
+    result->word_types[0] = word_type;
+    pas_store_store_fence();
     return result;
 }
 
@@ -2337,9 +2358,11 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
                     object->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
                     object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
-                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY,
+                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
+                    object->word_types[0] == FILC_WORD_TYPE_DL_HANDLE,
                     origin);
-        if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION)
+        if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION &&
+            object->word_types[0] != FILC_WORD_TYPE_DL_HANDLE)
             FILC_ASSERT(pas_is_aligned((uintptr_t)object->lower, FILC_WORD_SIZE), origin);
         return;
     }
@@ -3338,6 +3361,19 @@ void filc_native_zregister_sys_errno_handler(filc_thread* my_thread, filc_ptr er
     pizlonated_errno_handler = (void(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(errno_handler);
 }
 
+static void (*pizlonated_dlerror_handler)(PIZLONATED_SIGNATURE);
+
+void filc_native_zregister_sys_dlerror_handler(filc_thread* my_thread, filc_ptr dlerror_handler)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    FILC_CHECK(
+        !pizlonated_dlerror_handler,
+        NULL,
+        "dlerror handler already registered.");
+    filc_check_function_call(dlerror_handler);
+    pizlonated_dlerror_handler = (void(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(dlerror_handler);
+}
+
 static void set_musl_errno(int errno_value)
 {
     FILC_CHECK(
@@ -3455,9 +3491,27 @@ static int to_musl_errno(int errno_value)
     }
 }
 
-static PAS_NEVER_INLINE void set_errno(int errno_value)
+static void set_errno(int errno_value)
 {
     set_musl_errno(to_musl_errno(errno_value));
+}
+
+static void set_dlerror(const char* error)
+{
+    PAS_ASSERT(error);
+    FILC_CHECK(
+        pizlonated_dlerror_handler,
+        NULL,
+        "dlerror handler not registered when trying to set dlerror = %s.", error);
+    filc_thread* my_thread = filc_get_my_thread();
+    filc_ptr args = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(filc_ptr)));
+    filc_check_access_ptr(args, NULL);
+    filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(args), filc_strdup(my_thread, error));
+    filc_return_buffer return_buffer;
+    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
+    filc_lock_top_native_frame(my_thread);
+    pizlonated_dlerror_handler(my_thread, args, rets);
+    filc_unlock_top_native_frame(my_thread);
 }
 
 #define check_and_clear(passed_flags_ptr, passed_expected) ({ \
@@ -8349,10 +8403,76 @@ int filc_native_zsys_mkdirat(filc_thread* my_thread, int musl_dirfd, filc_ptr pa
     int result = mkdirat(dirfd, pathname, mode);
     int my_errno = errno;
     filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         set_errno(my_errno);
     return result;
+}
+
+static bool from_musl_dlopen_flags(int musl_flags, int* flags)
+{
+    *flags = 0;
+    if (check_and_clear(&musl_flags, 1))
+        *flags |= RTLD_LAZY;
+    if (check_and_clear(&musl_flags, 2))
+        *flags |= RTLD_NOW;
+    if (check_and_clear(&musl_flags, 4))
+        *flags |= RTLD_NOLOAD;
+    if (check_and_clear(&musl_flags, 4096))
+        *flags |= RTLD_NODELETE;
+    if (check_and_clear(&musl_flags, 256))
+        *flags |= RTLD_GLOBAL;
+    else
+        *flags |= RTLD_LOCAL;
+    return !musl_flags;
+}
+
+filc_ptr filc_native_zsys_dlopen(filc_thread* my_thread, filc_ptr filename_ptr, int musl_flags)
+{
+    int flags;
+    if (!from_musl_dlopen_flags(musl_flags, &flags)) {
+        set_dlerror("Unrecognized flag to dlopen");
+        return filc_ptr_forge_null();
+    }
+    char* filename;
+    if (filc_ptr_ptr(filename_ptr))
+        filename = filc_check_and_get_new_str(filename_ptr);
+    else
+        filename = NULL;
+    filc_exit(my_thread);
+    void* handle = dlopen(filename, flags);
+    filc_enter(my_thread);
+    bmalloc_deallocate(filename);
+    if (!handle) {
+        set_dlerror(dlerror());
+        return filc_ptr_forge_null();
+    }
+    return filc_ptr_create_with_manual_tracking(
+        filc_allocate_special_with_existing_payload(my_thread, handle, FILC_WORD_TYPE_DL_HANDLE));
+}
+
+filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, filc_ptr symbol_ptr)
+{
+    filc_check_access_special(handle_ptr, FILC_WORD_TYPE_DL_HANDLE, NULL);
+    void* handle = filc_ptr_ptr(handle_ptr);
+    char* symbol = filc_check_and_get_new_str(symbol_ptr);
+    pas_allocation_config allocation_config;
+    initialize_bmalloc_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    pas_string_stream_printf(&stream, "pizlonated_%s", symbol);
+    bmalloc_deallocate(symbol);
+    filc_exit(my_thread);
+    filc_ptr (*raw_symbol)(filc_global_initialization_context*) =
+        dlsym(handle, pas_string_stream_get_string(&stream));
+    filc_enter(my_thread);
+    pas_string_stream_destruct(&stream);
+    if (!raw_symbol) {
+        set_dlerror(dlerror());
+        return filc_ptr_forge_null();
+    }
+    return raw_symbol(NULL);
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

@@ -114,7 +114,11 @@ typedef uint16_t filc_object_flags;
 #define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)9)     /* Indicates the special
                                                                      ptr_table_array. The lower points at
                                                                      the payload. */
-                                          
+#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)10)    /* Indicates the special dlopen handle
+                                                                     type. The lower points at the hanle
+                                                                     but the GC_allocated payload is
+                                                                     empty. */
+
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
 
 #define FILC_OBJECT_FLAG_FREE             ((filc_object_flags)1)  /* The object has been freed. */
@@ -1065,6 +1069,7 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+    case FILC_WORD_TYPE_DL_HANDLE:
         return true;
     default:
         return false;
@@ -1081,6 +1086,7 @@ static inline bool filc_special_word_type_has_destructor(filc_word_type word_typ
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+    case FILC_WORD_TYPE_DL_HANDLE:
         return false;
     default:
         PAS_ASSERT(!"Not a special word type");
@@ -1123,6 +1129,9 @@ filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type);
 filc_object* filc_allocate_with_existing_data(
     filc_thread* my_thread, void* data, size_t size, int8_t object_flags,
     filc_word_type initial_word_type);
+
+filc_object* filc_allocate_special_with_existing_payload(
+    filc_thread* my_thread, void* payload, filc_word_type word_type);
 
 /* Allocates an object with a payload of the given size and brings all words into the unset state. The
    object's lower/upper are set accordingly. */

@@ -173,6 +173,7 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
     case FILC_WORD_TYPE_FUNCTION:
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_FREE: /* dirstreams can be freed. */
+    case FILC_WORD_TYPE_DL_HANDLE:
         break;
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
         PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);

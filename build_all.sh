@@ -25,3 +25,4 @@ filc/run-tests
 (cd deluded-openssh-portable && autoreconf && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
 
 (cd pcre-8.39 && CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties --enable-pcregrep-libz && make -j `sysctl -n hw.ncpu` && make install)
+
