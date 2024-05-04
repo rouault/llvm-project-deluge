@@ -669,7 +669,7 @@ static void empty_finish_callback(bool result, void* arg)
     PAS_UNUSED_PARAM(arg);
 }
 
-bool filc_park_conditionally(
+filc_park_result filc_park_conditionally(
     filc_thread* my_thread,
     const void* address,
     bool (*validate)(void* arg),
@@ -697,7 +697,7 @@ bool filc_park_conditionally(
 
     if (!enqueue_result) {
         filc_decrease_special_signal_deferral_depth(my_thread);
-        return false;
+        return filc_park_condition_failed;
     }
 
     /* This is so wacky. I want parking lot waiting to be signal-safe. The way we achieve this is that
@@ -758,7 +758,7 @@ bool filc_park_conditionally(
     if (did_get_dequeued) {
         /* This is the normal case - we got dequeued by someone before the timer expired. */
         filc_decrease_special_signal_deferral_depth(my_thread);
-        return true;
+        return filc_park_unparked;
     }
 
     data.did_dequeue = false;
@@ -781,7 +781,7 @@ bool filc_park_conditionally(
     filc_enter(my_thread);
 
     filc_decrease_special_signal_deferral_depth(my_thread);
-    return !data.did_dequeue;
+    return data.did_dequeue ? filc_park_timed_out : filc_park_unparked;
 }
 
 typedef struct {

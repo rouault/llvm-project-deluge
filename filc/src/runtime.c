@@ -126,7 +126,8 @@ static void empty_before_sleep(void* arg)
     (void)arg;
 }
 
-_Bool zcompare_and_park(const int* address, int expected_value, double absolute_timeout_in_milliseconds)
+zpark_result zcompare_and_park(
+    const int* address, int expected_value, double absolute_timeout_in_milliseconds)
 {
     compare_and_park_data data;
     data.address = (const int*)((const char*)address - ((unsigned long)address % sizeof(int)));

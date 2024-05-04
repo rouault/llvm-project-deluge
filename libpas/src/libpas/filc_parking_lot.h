@@ -33,6 +33,15 @@ PAS_BEGIN_EXTERN_C;
 /* This is a port of the WTF::ParkingLot, with a bunch of simplications, to Fil-C. This parking
    lot could be "generalized" to be a libpas parking lot, but that would take effort. */
 
+/* This has to match zpark_result. */
+enum filc_park_result {
+    filc_park_condition_failed,
+    filc_park_timed_out,
+    filc_park_unparked
+};
+
+typedef enum filc_park_result filc_park_result;
+
 struct filc_unpark_result;
 typedef struct filc_unpark_result filc_unpark_result;
 
@@ -48,12 +57,12 @@ struct filc_unpark_result {
    parking only succeeds if the validate function returns true while the queue lock is held.
   
    If validate returns false, it will unlock the internal parking queue and then it will
-   return false.
+   return filc_park_condition_failed.
   
    If validate returns true, it will enqueue the thread, unlock the parking queue lock, call
    the before_sleep function, and then it will sleep so long as the thread continues to be on the
-   queue and the timeout hasn't fired. Finally, this returns true if we actually got unparked or
-   false if the timeout was hit.
+   queue and the timeout hasn't fired. Finally, this returns filc_park_unparked if we actually
+   got unparked or filc_park_timed_out if the timeout was hit.
   
    Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
    long as you don't recursively call park_conditionally(). You can call unpark_one()/unpark_all()
@@ -63,7 +72,7 @@ struct filc_unpark_result {
    the thread you interrupted can unpark. To achieve signal-safety, the validate callback is
    called with signals blocked. That should be fine, since if you do unbounded work there, you'll
    block who-knows-what-and-who anyway. */
-PAS_API bool filc_park_conditionally(
+PAS_API filc_park_result filc_park_conditionally(
     filc_thread* my_thread,
     const void* address,
     bool (*validate)(void* arg),

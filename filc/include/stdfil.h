@@ -266,16 +266,24 @@ void zunfenced_atomic_store_ptr(void** ptr, void* new_value);
 void* zatomic_load_ptr(void** ptr);
 void* zunfenced_atomic_load_ptr(void** ptr);
 
+enum zpark_result {
+    zpark_condition_failed,
+    zpark_timed_out,
+    zpark_unparked
+};
+
+typedef enum zpark_result zpark_result;
+
 /* Parks the thread in a queue associated with the given address, which cannot be null. The
    parking only succeeds if the condition function returns true while the queue lock is held.
   
    If condition returns false, it will unlock the internal parking queue and then it will
-   return false.
+   return zpark_condition_failed.
   
    If condition returns true, it will enqueue the thread, unlock the parking queue lock, call
    the before_sleep function, and then it will sleep so long as the thread continues to be on the
-   queue and the timeout hasn't fired. Finally, this returns true if we actually got unparked or
-   false if the timeout was hit.
+   queue and the timeout hasn't fired. Finally, this returns zpark_unpakred if we actually got
+   unparked or zpark_timed_out if the timeout was hit.
   
    Note that before_sleep is called with no locks held, so it's OK to do pretty much anything so
    long as you don't recursively call zpark_if(). You can call zunpark_one()/zunpark_all()
@@ -297,11 +305,11 @@ void* zunfenced_atomic_load_ptr(void** ptr);
    number of other addresses).
 
    Errors are reported by killing the shit out of your program. */
-_Bool zpark_if(const void* address,
-               _Bool (*condition)(void* arg),
-               void (*before_sleep)(void* arg),
-               void* arg,
-               double absolute_timeout_in_milliseconds);
+zpark_result zpark_if(const void* address,
+                      _Bool (*condition)(void* arg),
+                      void (*before_sleep)(void* arg),
+                      void* arg,
+                      double absolute_timeout_in_milliseconds);
 
 /* Simplified version of zpark_if. If the address is int-aligned, then this does a zpark_if with
    a condition that returns true if the address contains the expected value. Does nothing on
@@ -317,8 +325,8 @@ _Bool zpark_if(const void* address,
    any atomic word there (or words, if you're fancy).
 
    This is signal-safe. */
-_Bool zcompare_and_park(const int* address, int expected_value,
-                        double absolute_timeout_in_milliseconds);
+zpark_result zcompare_and_park(const int* address, int expected_value,
+                               double absolute_timeout_in_milliseconds);
 
 /* Unparks one thread from the queue associated with the given address, and calls the given
    callback while the address is locked. Reports to the callback whether any thread got

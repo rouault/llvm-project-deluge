@@ -8618,9 +8618,9 @@ static void zpark_if_before_sleep_callback(void* arg)
     filc_unlock_top_native_frame(data->my_thread);
 }
 
-bool filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr condition_ptr,
-                          filc_ptr before_sleep_ptr, filc_ptr arg_ptr,
-                          double absolute_timeout_in_milliseconds)
+int filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr condition_ptr,
+                         filc_ptr before_sleep_ptr, filc_ptr arg_ptr,
+                         double absolute_timeout_in_milliseconds)
 {
     FILC_CHECK(
         filc_ptr_ptr(address_ptr),
