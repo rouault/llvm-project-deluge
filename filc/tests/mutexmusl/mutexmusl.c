@@ -11,6 +11,14 @@ int main(int argc, char** argv)
     ZASSERT(!pthread_mutex_trylock(&mutex));
     ZASSERT(!pthread_mutex_unlock(&mutex));
     ZASSERT(!pthread_mutex_destroy(&mutex));
+
+    pthread_mutex_t mutex2 = PTHREAD_MUTEX_INITIALIZER;
+    ZASSERT(!pthread_mutex_lock(&mutex2));
+    ZASSERT(!pthread_mutex_unlock(&mutex2));
+    ZASSERT(!pthread_mutex_trylock(&mutex2));
+    ZASSERT(!pthread_mutex_unlock(&mutex2));
+    ZASSERT(!pthread_mutex_destroy(&mutex2));
+
     printf("Bardzo dobrze\n");
     return 0;
 }

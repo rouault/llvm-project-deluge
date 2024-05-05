@@ -15,6 +15,18 @@ int main(int argc, char** argv)
     ZASSERT(!pthread_rwlock_trywrlock(&rwlock));
     ZASSERT(!pthread_rwlock_unlock(&rwlock));
     ZASSERT(!pthread_rwlock_destroy(&rwlock));
+
+    pthread_rwlock_t rwlock2 = PTHREAD_RWLOCK_INITIALIZER;
+    ZASSERT(!pthread_rwlock_rdlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_unlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_tryrdlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_unlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_wrlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_unlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_trywrlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_unlock(&rwlock2));
+    ZASSERT(!pthread_rwlock_destroy(&rwlock2));
+
     printf("Wporzo\n");
     return 0;
 }
