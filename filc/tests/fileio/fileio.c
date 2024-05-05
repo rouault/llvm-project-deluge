@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <stdbool.h>
 #include <sys/socket.h>
+#include <poll.h>
 
 int main(int argc, char** argv)
 {
@@ -94,6 +95,12 @@ int main(int argc, char** argv)
     ZASSERT(FD_ISSET(fds[0], &readfds));
     ZASSERT(pselect(fds[0] + 1, &readfds, NULL, NULL, NULL, NULL) == 1);
     ZASSERT(FD_ISSET(fds[0], &readfds));
+
+    struct pollfd pollfds[1];
+    pollfds[0].fd = fds[0];
+    pollfds[0].events = POLLIN;
+    ZASSERT(poll(pollfds, 1, -1) == 1);
+    ZASSERT(pollfds[0].revents == POLLIN);
     
     ZASSERT(read(fds[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));

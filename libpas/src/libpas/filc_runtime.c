@@ -49,6 +49,7 @@
 #include <sys/mman.h>
 #include <sys/random.h>
 #include <dlfcn.h>
+#include <poll.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -8473,6 +8474,141 @@ filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, fil
         return filc_ptr_forge_null();
     }
     return raw_symbol(NULL);
+}
+
+static bool from_musl_poll_events(short musl_events, short* events)
+{
+    *events = 0;
+    if (check_and_clear(&musl_events, 0x001))
+        *events |= POLLIN;
+    if (check_and_clear(&musl_events, 0x002))
+        *events |= POLLPRI;
+    if (check_and_clear(&musl_events, 0x004))
+        *events |= POLLOUT;
+    if (check_and_clear(&musl_events, 0x008))
+        *events |= POLLERR;
+    if (check_and_clear(&musl_events, 0x010))
+        *events |= POLLHUP;
+    if (check_and_clear(&musl_events, 0x020))
+        *events |= POLLNVAL;
+    if (check_and_clear(&musl_events, 0x040))
+        *events |= POLLRDNORM;
+    if (check_and_clear(&musl_events, 0x080))
+        *events |= POLLRDBAND;
+    if (check_and_clear(&musl_events, 0x100))
+        *events |= POLLWRNORM;
+    if (check_and_clear(&musl_events, 0x200))
+        *events |= POLLWRBAND;
+    return !musl_events;
+}
+
+static void to_musl_poll_revents(short musl_events, short revents, short* musl_revents)
+{
+    *musl_revents = 0;
+    if (check_and_clear(&revents, POLLIN)) {
+        if (!(musl_events & 0x001) && (musl_events & 0x040))
+            *musl_revents |= 0x040;
+        else
+            *musl_revents |= 0x001;
+    }
+    if (check_and_clear(&revents, POLLPRI))
+        *musl_revents |= 0x002;
+    if (check_and_clear(&revents, POLLOUT)) {
+        if (!(musl_events & 0x004) && (musl_events & 0x100))
+            *musl_revents |= 0x100;
+        else
+            *musl_revents |= 0x004;
+    }
+    if (check_and_clear(&revents, POLLERR))
+        *musl_revents |= 0x008;
+    if (check_and_clear(&revents, POLLHUP))
+        *musl_revents |= 0x010;
+    if (check_and_clear(&revents, POLLNVAL))
+        *musl_revents |= 0x020;
+    if (check_and_clear(&revents, POLLRDNORM))
+        *musl_revents |= 0x040;
+    if (check_and_clear(&revents, POLLRDBAND))
+        *musl_revents |= 0x080;
+    if (check_and_clear(&revents, POLLWRNORM))
+        *musl_revents |= 0x100;
+    if (check_and_clear(&revents, POLLWRBAND))
+        *musl_revents |= 0x200;
+    PAS_ASSERT(!revents);
+}
+
+struct musl_pollfd {
+    int fd;
+    short events;
+    short revents;
+};
+
+static struct pollfd* from_musl_pollfds(struct musl_pollfd* musl_pollfds, unsigned long nfds)
+{
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(nfds, sizeof(struct pollfd), &total_size),
+        NULL,
+        "nfds so big that native pollfds size calculation overflowed.");
+    struct pollfd* result = bmalloc_allocate(total_size);
+
+    size_t index;
+    for (index = nfds; index--;) {
+        result[index].fd = musl_pollfds[index].fd;
+        if (!from_musl_poll_events(musl_pollfds[index].events, &result[index].events))
+            goto error;
+        result[index].revents = 0;
+    }
+    
+    return result;
+    
+error:
+    bmalloc_deallocate(result);
+    return NULL;
+}
+
+static void to_musl_pollfds(struct pollfd* pollfds, struct musl_pollfd* musl_pollfds, unsigned long nfds)
+{
+    size_t index;
+    for (index = nfds; index--;) {
+        to_musl_poll_revents(
+            musl_pollfds[index].events, pollfds[index].revents, &musl_pollfds[index].revents);
+    }
+}
+
+int filc_native_zsys_poll(
+    filc_thread* my_thread, filc_ptr musl_pollfds_ptr, unsigned long nfds, int timeout)
+{
+    if (!nfds) {
+        filc_exit(my_thread);
+        int result = poll(NULL, 0, timeout);
+        int my_errno = errno;
+        filc_enter(my_thread);
+        if (result < 0)
+            set_errno(errno);
+        return result;
+    }
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(nfds, sizeof(struct musl_pollfd), &total_size),
+        NULL,
+        "nfds so big that pollfds size calculation overflowed.");
+    filc_check_access_int(musl_pollfds_ptr, total_size, NULL);
+    struct musl_pollfd* musl_pollfds = filc_ptr_ptr(musl_pollfds_ptr);
+    struct pollfd* pollfds = from_musl_pollfds(musl_pollfds, nfds);
+    if (!pollfds) {
+        set_errno(EINVAL);
+        return -1;
+    }
+    filc_exit(my_thread);
+    int result = poll(pollfds, nfds, timeout);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        set_errno(errno);
+    else
+        to_musl_pollfds(pollfds, musl_pollfds, nfds);
+    bmalloc_deallocate(pollfds);
+    return result;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
