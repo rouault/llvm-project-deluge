@@ -4462,7 +4462,7 @@ static bool from_musl_fstatat_flag(int musl_flag, int* result)
     if (check_and_clear(&musl_flag, 0x100))
         *result |= AT_SYMLINK_NOFOLLOW;
     if (check_and_clear(&musl_flag, 0x200))
-        *result |= AT_REMOVEDIR | AT_EACCESS;
+        *result |= AT_EACCESS; /* NOTE: in the case of unlinkat, this would be REMOVEDIR. */
     if (check_and_clear(&musl_flag, 0x400))
         *result |= AT_SYMLINK_FOLLOW;
     return !musl_flag;
@@ -8608,6 +8608,25 @@ int filc_native_zsys_poll(
     else
         to_musl_pollfds(pollfds, musl_pollfds, nfds);
     bmalloc_deallocate(pollfds);
+    return result;
+}
+
+int filc_native_zsys_faccessat(filc_thread* my_thread, int musl_dirfd, filc_ptr pathname_ptr,
+                               int mode, int musl_flags)
+{
+    int dirfd = from_musl_atfd(musl_dirfd);
+    int flags;
+    if (!from_musl_fstatat_flag(musl_flags, &flags)) {
+        set_errno(EINVAL);
+        return -1;
+    }
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = faccessat(dirfd, pathname, mode, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        set_errno(my_errno);
     return result;
 }
 
