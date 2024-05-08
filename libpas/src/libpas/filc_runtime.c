@@ -2592,19 +2592,39 @@ void filc_low_level_ptr_safe_bzero_with_exit(
 }
 
 void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
-                 const filc_origin* origin)
+                 const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     char* raw_ptr;
     
     if (!count)
         return;
-
+    
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+    
+    static const filc_origin origin = {
+        .function = "memset",
+        .filename = "<runtime>",
+        .line = 0,
+        .column = 0
+    };
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[1];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->num_objects = 1;
+    frame->objects[0] = filc_ptr_object(ptr);
+    filc_push_frame(my_thread, frame);
+    
     raw_ptr = filc_ptr_ptr(ptr);
-
+    
     if (verbose)
         pas_log("count = %zu\n", count);
-    check_access_common(ptr, count, origin);
+    check_access_common(ptr, count, NULL);
     
     if (!value) {
         /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
@@ -2618,178 +2638,218 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
         char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
         char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
         if (aligned_start > end || aligned_end < start) {
-            check_int(ptr, count, origin);
+            check_int(ptr, count, NULL);
             memset(raw_ptr, 0, count);
-            return;
+            goto done;
         }
         if (aligned_start > start) {
-            check_int(ptr, aligned_start - start, origin);
+            check_int(ptr, aligned_start - start, NULL);
             memset(start, 0, aligned_start - start);
         }
-        check_accessible(ptr, origin);
+        check_accessible(ptr, NULL);
         filc_low_level_ptr_safe_bzero_with_exit(
             my_thread, filc_ptr_object(ptr), aligned_start, aligned_end - aligned_start);
         if (end > aligned_end) {
-            check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, origin);
+            check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
             memset(aligned_end, 0, end - aligned_end);
+        }
+        goto done;
+    } else {
+        check_int(ptr, count, NULL);
+        filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
+    }
+
+done:
+    filc_pop_frame(my_thread, frame);
+}
+
+enum memmove_smidgen_part {
+    memmove_lower_smidgen,
+    memmove_upper_smidgen
+};
+
+typedef enum memmove_smidgen_part memmove_smidgen_part;
+
+static void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr src,
+                            char* dst_start, char* aligned_dst_start,
+                            char* dst_end, char* aligned_dst_end,
+                            char* src_start)
+{
+    switch (part) {
+    case memmove_lower_smidgen:
+        if (aligned_dst_start > dst_start) {
+            check_int(dst, aligned_dst_start - dst_start, NULL);
+            check_int(src, aligned_dst_start - dst_start, NULL);
+            memmove(dst_start, src_start, aligned_dst_start - dst_start);
+        }
+        return;
+
+    case memmove_upper_smidgen:
+        if (dst_end > aligned_dst_end) {
+            check_int(filc_ptr_with_ptr(dst, aligned_dst_end), dst_end - aligned_dst_end, NULL);
+            check_int(filc_ptr_with_offset(src, aligned_dst_end - dst_start),
+                      dst_end - aligned_dst_end, NULL);
+            memmove(aligned_dst_end, src_start + (aligned_dst_end - dst_start),
+                    dst_end - aligned_dst_end);
         }
         return;
     }
-
-    check_int(ptr, count, origin);
-    filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
+    PAS_ASSERT(!"Bad part");
 }
 
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
-                  const filc_origin* origin)
+                  const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     
-    char* raw_dst_ptr;
-    char* raw_src_ptr;
-    
     if (!count)
         return;
+    
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+    
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
 
-    check_access_common(dst, count, origin);
-    check_access_common(src, count, origin);
+    static const filc_origin origin = {
+        .function = "memmove",
+        .filename = "<runtime>",
+        .line = 0,
+        .column = 0
+    };
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[2];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->num_objects = 2;
+    frame->objects[0] = dst_object;
+    frame->objects[1] = src_object;
+    filc_push_frame(my_thread, frame);
+    
+    check_access_common(dst, count, NULL);
+    check_access_common(src, count, NULL);
 
-    raw_dst_ptr = filc_ptr_ptr(dst);
-    raw_src_ptr = filc_ptr_ptr(src);
+    char* dst_start = filc_ptr_ptr(dst);
+    char* src_start = filc_ptr_ptr(src);
 
-    if (pas_is_aligned((uintptr_t)raw_dst_ptr, FILC_WORD_SIZE) &&
-        pas_is_aligned(count, FILC_WORD_SIZE)) {
+    char* dst_end = dst_start + count;
+    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
+    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
 
-        if (verbose)
-            pas_log("Taking ptr-safe memmove path.\n");
-
-        if (origin)
-            my_thread->top_frame->origin = origin;
-
-        static const filc_origin copy_origin = {
-            .function = "filc_memmove",
-            .filename = "<runtime>",
-            .line = 0,
-            .column = 0
-        };
-        struct {
-            FILC_FRAME_BODY;
-            filc_object* objects[2];
-        } actual_frame;
-        pas_zero_memory(&actual_frame, sizeof(actual_frame));
-        filc_frame* copy_frame = (filc_frame*)&actual_frame;
-        copy_frame->origin = &copy_origin;
-        copy_frame->num_objects = 2;
-        copy_frame->objects[0] = filc_ptr_object(dst);
-        copy_frame->objects[1] = filc_ptr_object(src);
-        filc_push_frame(my_thread, copy_frame);
-        
-        bool src_can_has_ptrs = pas_is_aligned((uintptr_t)raw_src_ptr, FILC_WORD_SIZE);
-        
-        check_accessible(dst, NULL);
-        if (src_can_has_ptrs)
-            check_accessible(src, NULL);
-        else
-            check_int(src, count, NULL);
-
-        pas_uint128* cur_dst = (pas_uint128*)raw_dst_ptr;
-        pas_uint128* cur_src = (pas_uint128*)raw_src_ptr;
-        filc_object* dst_object = filc_ptr_object(dst);
-        filc_object* src_object = filc_ptr_object(src);
-        size_t cur_dst_word_index = (raw_dst_ptr - (char*)dst_object->lower) / FILC_WORD_SIZE;
-        size_t cur_src_word_index = (raw_src_ptr - (char*)src_object->lower) / FILC_WORD_SIZE;
-        size_t countdown = count / FILC_WORD_SIZE;
-
-        bool is_up = true;
-        if (cur_dst > cur_src) {
-            is_up = false;
-            cur_dst += countdown - 1;
-            cur_src += countdown - 1;
-            cur_dst_word_index += countdown - 1;
-            cur_src_word_index += countdown - 1;
-        }
-
-        while (countdown--) {
-            for (;;) {
-                filc_word_type src_word_type;
-                pas_uint128 src_word;
-                if (src_can_has_ptrs) {
-                    src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
-                    src_word = __c11_atomic_load((_Atomic pas_uint128*)cur_src, __ATOMIC_RELAXED);
-                } else {
-                    src_word_type = FILC_WORD_TYPE_INT;
-                    src_word = *cur_src;
-                }
-                if (!src_word) {
-                    /* copying an unset zero word is always legal to any destination type, no
-                       problem. it's even OK to copy a zero into free memory. and there's zero value
-                       in changing the destination type from unset to anything. */
-                    __c11_atomic_store((_Atomic pas_uint128*)cur_dst, 0, __ATOMIC_RELAXED);
-                    break;
-                }
-                if (src_word_type == FILC_WORD_TYPE_UNSET) {
-                    /* We have surely raced between someone initializing the word to be not unset, and if
-                       we try again we'll see it no longer unset. */
-                    pas_fence();
-                    continue;
-                }
-                FILC_CHECK(
-                    src_word_type == FILC_WORD_TYPE_INT ||
-                    src_word_type == FILC_WORD_TYPE_PTR,
-                    NULL,
-                    "cannot copy anything but int or ptr (dst = %s, src = %s).",
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
-                filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
-                if (dst_word_type == FILC_WORD_TYPE_UNSET) {
-                    if (!pas_compare_and_swap_uint8_weak(
-                            dst_object->word_types + cur_dst_word_index,
-                            FILC_WORD_TYPE_UNSET,
-                            src_word_type))
-                        continue;
-                } else {
-                    FILC_CHECK(
-                        src_word_type == dst_word_type,
-                        NULL,
-                        "type mismatch while copying (dst = %s, src = %s).",
-                        filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
-                        filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
-                }
-                if (src_word_type == FILC_WORD_TYPE_PTR) {
-                    filc_ptr ptr;
-                    ptr.word = src_word;
-                    filc_store_barrier(my_thread, filc_ptr_object(ptr));
-                }
-                __c11_atomic_store((_Atomic pas_uint128*)cur_dst, src_word, __ATOMIC_RELAXED);
-                break;
-            }
-            if (is_up) {
-                cur_dst++;
-                cur_src++;
-                cur_dst_word_index++;
-                cur_src_word_index++;
-            } else {
-                cur_dst--;
-                cur_src--;
-                cur_dst_word_index--;
-                cur_src_word_index--;
-            }
-            if (filc_pollcheck(my_thread, NULL)) {
-                check_accessible(dst, NULL);
-                check_accessible(src, NULL);
-            }
-        }
-        
-        filc_pop_frame(my_thread, copy_frame);
-        return;
+    if (aligned_dst_start > dst_end || aligned_dst_end < dst_start) {
+        check_int(dst, count, NULL);
+        check_int(src, count, NULL);
+        memmove(dst_start, src_start, count);
+        goto done;
     }
 
-    if (verbose)
-        pas_log("Taking int-only memmove path.\n");
-    check_int(dst, count, origin);
-    check_int(src, count, origin);
-    filc_memmove_with_exit(
-        my_thread, filc_ptr_object(dst), filc_ptr_object(src), raw_dst_ptr, raw_src_ptr, count);
+    bool is_up = dst_start < src_start;
+
+    memmove_smidgen(is_up ? memmove_lower_smidgen : memmove_upper_smidgen,
+                    dst, src, dst_start, aligned_dst_start, dst_end, aligned_dst_end, src_start);
+
+    bool src_can_has_ptrs =
+        pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
+        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE);
+
+    check_accessible(dst, NULL);
+    if (src_can_has_ptrs)
+        check_accessible(src, NULL);
+    else
+        check_int(src, count, NULL);
+    
+    pas_uint128* cur_dst = (pas_uint128*)aligned_dst_start;
+    pas_uint128* cur_src = (pas_uint128*)(src_start + (aligned_dst_start - dst_start));
+    size_t cur_dst_word_index = ((char*)cur_dst - (char*)dst_object->lower) / FILC_WORD_SIZE;
+    size_t cur_src_word_index = ((char*)cur_src - (char*)src_object->lower) / FILC_WORD_SIZE;
+    size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
+
+    if (!is_up) {
+        cur_dst += countdown - 1;
+        cur_src += countdown - 1;
+        cur_dst_word_index += countdown - 1;
+        cur_src_word_index += countdown - 1;
+    }
+    
+    while (countdown--) {
+        for (;;) {
+            filc_word_type src_word_type;
+            pas_uint128 src_word;
+            if (src_can_has_ptrs) {
+                src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
+                src_word = __c11_atomic_load((_Atomic pas_uint128*)cur_src, __ATOMIC_RELAXED);
+            } else {
+                src_word_type = FILC_WORD_TYPE_INT;
+                src_word = *cur_src;
+            }
+            if (!src_word) {
+                /* copying an unset zero word is always legal to any destination type, no
+                   problem. it's even OK to copy a zero into free memory. and there's zero value
+                   in changing the destination type from unset to anything. */
+                __c11_atomic_store((_Atomic pas_uint128*)cur_dst, 0, __ATOMIC_RELAXED);
+                break;
+            }
+            if (src_word_type == FILC_WORD_TYPE_UNSET) {
+                /* We have surely raced between someone initializing the word to be not unset, and if
+                   we try again we'll see it no longer unset. */
+                pas_fence();
+                continue;
+            }
+            FILC_CHECK(
+                src_word_type == FILC_WORD_TYPE_INT ||
+                src_word_type == FILC_WORD_TYPE_PTR,
+                NULL,
+                "cannot copy anything but int or ptr (dst = %s, src = %s).",
+                filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
+                filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
+            filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
+            if (dst_word_type == FILC_WORD_TYPE_UNSET) {
+                if (!pas_compare_and_swap_uint8_weak(
+                        dst_object->word_types + cur_dst_word_index,
+                        FILC_WORD_TYPE_UNSET,
+                        src_word_type))
+                    continue;
+            } else {
+                FILC_CHECK(
+                    src_word_type == dst_word_type,
+                    NULL,
+                    "type mismatch while copying (dst = %s, src = %s).",
+                    filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
+                    filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
+            }
+            if (src_word_type == FILC_WORD_TYPE_PTR) {
+                filc_ptr ptr;
+                ptr.word = src_word;
+                filc_store_barrier(my_thread, filc_ptr_object(ptr));
+            }
+            __c11_atomic_store((_Atomic pas_uint128*)cur_dst, src_word, __ATOMIC_RELAXED);
+            break;
+        }
+        if (is_up) {
+            cur_dst++;
+            cur_src++;
+            cur_dst_word_index++;
+            cur_src_word_index++;
+        } else {
+            cur_dst--;
+            cur_src--;
+            cur_dst_word_index--;
+            cur_src_word_index--;
+        }
+        if (filc_pollcheck(my_thread, NULL)) {
+            check_accessible(dst, NULL);
+            check_accessible(src, NULL);
+        }
+    }
+    
+    memmove_smidgen(is_up ? memmove_upper_smidgen : memmove_lower_smidgen,
+                    dst, src, dst_start, aligned_dst_start, dst_end, aligned_dst_end, src_start);
+
+done:
+    filc_pop_frame(my_thread, frame);
 }
 
 static char* finish_check_and_get_new_str(char* base, size_t length)
