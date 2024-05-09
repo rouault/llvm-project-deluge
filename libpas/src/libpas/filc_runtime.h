@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <signal.h>
 
 PAS_BEGIN_EXTERN_C;
 
@@ -278,6 +279,8 @@ struct filc_thread {
     filc_ptr arg_ptr;
     filc_ptr result_ptr;
     filc_ptr cookie_ptr;
+
+    sigset_t initial_blocked_sigs;
 
     /* musl relies on each thread having a 32-bit id, so we oblige. */
     unsigned tid;

@@ -1,0 +1,8 @@
+return:
+  success
+output-includes:
+  - "initial set: signal 3."
+  - "initial set: signal 10."
+  - "thread blocked: signal 3."
+  - "thread blocked: signal 10."
+

@@ -126,10 +126,6 @@ static pas_thread_return_type scavenger_thread_main(void* arg)
     qos_class_t configured_qos_class;
 #endif
 
-    sigset_t fullset;
-    pas_reasonably_fill_sigset(&fullset);
-    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, NULL));
-
     PAS_UNUSED_PARAM(arg);
     
     PAS_ASSERT(pas_scavenger_current_state == pas_scavenger_state_polling);
@@ -408,7 +404,13 @@ void pas_scavenger_notify_eligibility_if_needed(void)
     
     if (pas_scavenger_current_state == pas_scavenger_state_no_thread) {
         pas_scavenger_current_state = pas_scavenger_state_polling;
+        
+        sigset_t fullset;
+        pas_reasonably_fill_sigset(&fullset);
+        sigset_t oldset;
+        PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, &oldset));
         pas_create_detached_thread(scavenger_thread_main, NULL);
+        PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
     }
     
     if (pas_scavenger_current_state == pas_scavenger_state_deep_sleep) {

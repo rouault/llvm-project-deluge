@@ -1227,15 +1227,11 @@ static void signal_pizlonator(int signum)
     /* We're running on a thread that shouldn't be receiving signals or we're running in a thread
        that hasn't fully started.
        
-       It's possible to handle both cases with enough trickery, but I just assert that it doesn't
-       happen, for now.
+       This shouldn't happen, because:
        
-       Quite likely the best kind of trickery here is to send the signal to another thread, unless
-       it's a pthread_kill(). We can handle the pthread_kill() case by having pthread_kill() wait
-       until the victim thread has properly started and is ready for signals.
-    
-       Another idea: it sorta seems like starting a thread inherits signals. So, we should start threads
-       with all signals blocked, and then problem solved? */
+       - Service threads have all of our signals blocked from the start.
+       
+       - Newly created threads have signals blocked until they set the thread. */
     PAS_ASSERT(thread);
     
     if ((thread->state & FILC_THREAD_STATE_ENTERED) || thread->special_signal_deferral_depth) {
@@ -4813,21 +4809,33 @@ filc_ptr filc_native_zsys_getpwuid(filc_thread* my_thread, unsigned uid)
 static void from_musl_sigset(struct musl_sigset* musl_sigset,
                              sigset_t* sigset)
 {
+    static const bool verbose = false;
+    
     static const unsigned num_active_words = 2;
     static const unsigned num_active_bits = 2 * 64;
 
     pas_reasonably_fill_sigset(sigset);
     
-    unsigned musl_signum;
-    for (musl_signum = num_active_bits; musl_signum--;) {
-        bool bit_value = !!(musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)]
-                            & PAS_BITVECTOR_BIT_MASK64(musl_signum));
+    unsigned musl_sigindex;
+    for (musl_sigindex = num_active_bits; musl_sigindex--;) {
+        int musl_signum = musl_sigindex + 1;
+        bool bit_value = !!(musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)]
+                            & PAS_BITVECTOR_BIT_MASK64(musl_sigindex));
+        if (verbose)
+            pas_log("musl_signum %u: %s\n", musl_signum, bit_value ? "yes" : "no");
         if (bit_value)
             continue;
         int signum = from_musl_signum(musl_signum);
-        if (signum < 0)
+        if (signum < 0) {
+            if (verbose)
+                pas_log("no conversion, skipping.\n");
             continue;
+        }
         sigdelset(sigset, signum);
+    }
+    if (verbose) {
+        for (int sig = 1; sig < 32; ++sig)
+            pas_log("signal %d masked: %s\n", sig, sigismember(sigset, sig) ? "yes" : "no");
     }
 }
 
@@ -4860,11 +4868,14 @@ static void to_musl_sigset(sigset_t* sigset, struct musl_sigset* musl_sigset)
     unsigned musl_signum;
     for (musl_signum = num_active_bits; musl_signum--;) {
         int signum = from_musl_signum(musl_signum);
+        /* FIXME: Maybe we should instead clear the bit in this case? */
         if (signum < 0)
             continue;
         if (!sigismember(sigset, signum)) {
-            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_signum)] &=
-                ~PAS_BITVECTOR_BIT_MASK64(musl_signum);
+            PAS_ASSERT(musl_signum);
+            unsigned musl_sigindex = musl_signum - 1;
+            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)] &=
+                ~PAS_BITVECTOR_BIT_MASK64(musl_sigindex);
         }
     }
 }
@@ -8747,6 +8758,8 @@ static void* start_thread(void* arg)
     PAS_ASSERT(!thread->thread);
     pas_fence();
     thread->thread = pthread_self();
+
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &thread->initial_blocked_sigs, NULL));
     
     filc_enter(thread);
 
@@ -8863,7 +8876,11 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
     filc_soft_handshake_lock_lock();
     thread->has_started = true;
     pthread_t ignored_thread;
+    sigset_t fullset;
+    pas_reasonably_fill_sigset(&fullset);
+    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, &thread->initial_blocked_sigs));
     int result = pthread_create(&ignored_thread, NULL, start_thread, thread);
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &thread->initial_blocked_sigs, NULL));
     if (result)
         thread->has_started = false;
     filc_soft_handshake_lock_unlock();

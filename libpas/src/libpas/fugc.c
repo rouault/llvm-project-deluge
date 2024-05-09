@@ -469,10 +469,6 @@ static pas_thread_return_type collector_thread(void* arg)
 {
     PAS_ASSERT(!arg);
     
-    sigset_t fullset;
-    pas_reasonably_fill_sigset(&fullset);
-    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, NULL));
-
     PAS_ASSERT(collector_thread_is_running);
 
     while (!collector_suspend_requested) {
@@ -510,6 +506,16 @@ static void trigger_callback(void)
     pas_system_mutex_unlock(&collector_thread_state_lock);
 }
 
+static void create_thread(void)
+{
+    sigset_t fullset;
+    pas_reasonably_fill_sigset(&fullset);
+    sigset_t oldset;
+    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, &oldset));
+    pas_create_detached_thread(collector_thread, NULL);
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
+}
+
 void fugc_initialize(void)
 {
     pas_system_mutex_construct(&collector_thread_state_lock);
@@ -525,8 +531,7 @@ void fugc_initialize(void)
     should_stop_the_world = filc_get_bool_env("FUGC_STW", false);
 
     collector_thread_is_running = true;
-    
-    pas_create_detached_thread(collector_thread, NULL);
+    create_thread();
 }
 
 void fugc_suspend(void)
@@ -548,7 +553,7 @@ void fugc_resume(void)
     PAS_ASSERT(collector_suspend_requested);
     collector_suspend_requested = false;
     collector_thread_is_running = true;
-    pas_create_detached_thread(collector_thread, NULL);
+    create_thread();
     pas_system_mutex_unlock(&collector_thread_state_lock);
 }
 
