@@ -4863,19 +4863,18 @@ static void to_musl_sigset(sigset_t* sigset, struct musl_sigset* musl_sigset)
     static const unsigned num_active_words = 2;
     static const unsigned num_active_bits = 2 * 64;
 
-    memset(musl_sigset, 255, sizeof(struct musl_sigset));
+    memset(musl_sigset, 0, sizeof(struct musl_sigset));
     
     unsigned musl_signum;
     for (musl_signum = num_active_bits; musl_signum--;) {
         int signum = from_musl_signum(musl_signum);
-        /* FIXME: Maybe we should instead clear the bit in this case? */
         if (signum < 0)
             continue;
-        if (!sigismember(sigset, signum)) {
+        if (sigismember(sigset, signum)) {
             PAS_ASSERT(musl_signum);
             unsigned musl_sigindex = musl_signum - 1;
-            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)] &=
-                ~PAS_BITVECTOR_BIT_MASK64(musl_sigindex);
+            musl_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)] |=
+                PAS_BITVECTOR_BIT_MASK64(musl_sigindex);
         }
     }
 }
@@ -9064,7 +9063,7 @@ bool filc_get_bool_env(const char* name, bool default_value)
         !strcasecmp(value, "no") ||
         !strcasecmp(value, "false"))
         return false;
-    pas_panic("invalid fugc environment variable %s value: %s (expected boolean like 1, yes, true, 0, no, "
+    pas_panic("invalid environment variable %s value: %s (expected boolean like 1, yes, true, 0, no, "
               "or false)\n", name, value);
     return false;
 }
@@ -9077,7 +9076,7 @@ unsigned filc_get_unsigned_env(const char* name, unsigned default_value)
     unsigned result;
     if (sscanf(value, "%u", &result) == 1)
         return result;
-    pas_panic("invalid fugc environment variable %s value: %s (expected decimal unsigned int)\n",
+    pas_panic("invalid environment variable %s value: %s (expected decimal unsigned int)\n",
               name, value);
     return 0;
 }
@@ -9090,7 +9089,7 @@ size_t filc_get_size_env(const char* name, size_t default_value)
     size_t result;
     if (sscanf(value, "%zu", &result) == 1)
         return result;
-    pas_panic("invalid fugc environment variable %s value: %s (expected decimal byte size)\n",
+    pas_panic("invalid environment variable %s value: %s (expected decimal byte size)\n",
               name, value);
     return 0;
 }
