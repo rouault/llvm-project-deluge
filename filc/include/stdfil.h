@@ -525,6 +525,7 @@ void* zsys_dlopen(const char* filename, int flags); /* FIXME: we should add dlcl
 void* zsys_dlsym(void* handle, const char* symbol);
 int zsys_poll(void* pollfds, unsigned long nfds, int timeout);
 int zsys_faccessat(int dirfd, const char* pathname, int mode, int flags);
+int zsys_sigwait(const void* sigmask, int* sig);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);

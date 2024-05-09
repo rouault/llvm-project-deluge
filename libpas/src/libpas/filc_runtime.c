@@ -8700,6 +8700,22 @@ int filc_native_zsys_faccessat(filc_thread* my_thread, int musl_dirfd, filc_ptr 
     return result;
 }
 
+int filc_native_zsys_sigwait(filc_thread* my_thread, filc_ptr sigmask_ptr, filc_ptr sig_ptr)
+{
+    filc_check_access_int(sigmask_ptr, sizeof(struct musl_sigset), NULL);
+    sigset_t sigmask;
+    from_musl_sigset((struct musl_sigset*)filc_ptr_ptr(sigmask_ptr), &sigmask);
+    filc_exit(my_thread);
+    int signum;
+    int result = sigwait(&sigmask, &signum);
+    filc_enter(my_thread);
+    if (result)
+        return result;
+    filc_check_access_int(sig_ptr, sizeof(int), NULL);
+    *(int*)filc_ptr_ptr(sig_ptr) = to_musl_signum(signum);
+    return 0;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

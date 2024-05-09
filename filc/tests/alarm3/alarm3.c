@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
+#include <pthread.h>
 
 static bool gotit = false;
 
@@ -16,12 +17,14 @@ static void handler(int signo)
 int main()
 {
     signal(SIGALRM, handler);
-    ualarm(1000, 1000);
-    while (!gotit) {
-        /* FIXME: This should use sigwait! */
-        ZASSERT(pause() < 0);
-        ZASSERT(errno == EINTR);
-    }
+    sigset_t set;
+    ZASSERT(!sigemptyset(&set));
+    ZASSERT(!sigaddset(&set, SIGALRM));
+    ZASSERT(!pthread_sigmask(SIG_BLOCK, &set, NULL));
+    ualarm(1000, 0);
+    int signum;
+    ZASSERT(!sigwait(&set, &signum));
+    ZASSERT(signum == SIGALRM);
     printf("Znakomicie\n");
     return 0;
 }
