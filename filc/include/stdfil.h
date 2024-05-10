@@ -526,6 +526,7 @@ void* zsys_dlsym(void* handle, const char* symbol);
 int zsys_poll(void* pollfds, unsigned long nfds, int timeout);
 int zsys_faccessat(int dirfd, const char* pathname, int mode, int flags);
 int zsys_sigwait(const void* sigmask, int* sig);
+int zsys_fsync(int fd);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);

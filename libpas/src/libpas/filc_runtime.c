@@ -430,6 +430,7 @@ static filc_signal_handler* signal_table[FILC_MAX_MUSL_SIGNUM + 1];
 
 static bool is_initialized = false; /* Useful for assertions. */
 static bool exit_on_panic = false;
+static bool dump_errnos = false;
 
 void filc_initialize(void)
 {
@@ -468,6 +469,7 @@ void filc_initialize(void)
     fugc_initialize();
 
     exit_on_panic = filc_get_bool_env("FILC_EXIT_ON_PANIC", false);
+    dump_errnos = filc_get_bool_env("FILC_DUMP_ERRNOS", false);
     
     if (filc_get_bool_env("FILC_DUMP_SETUP", false)) {
         pas_log("filc setup:\n");
@@ -3550,7 +3552,13 @@ static int to_musl_errno(int errno_value)
 
 static void set_errno(int errno_value)
 {
-    set_musl_errno(to_musl_errno(errno_value));
+    int musl_errno = to_musl_errno(errno_value);
+    if (dump_errnos) {
+        pas_log("Setting errno! System errno = %d, musl errno = %d, system error = %s\n",
+                errno_value, musl_errno, strerror(errno_value));
+        filc_thread_dump_stack(filc_get_my_thread(), &pas_log_stream.base);
+    }
+    set_musl_errno(musl_errno);
 }
 
 static void set_dlerror(const char* error)
@@ -4373,6 +4381,7 @@ static int from_musl_open_flags(int musl_flags)
         result |= O_CLOEXEC;
     if (check_and_clear(&musl_flags, 020000))
         result |= O_ASYNC;
+    check_and_clear(&musl_flags, 0100000); // O_LARGEFILE
 
     if (musl_flags)
         return -1;
@@ -8714,6 +8723,18 @@ int filc_native_zsys_sigwait(filc_thread* my_thread, filc_ptr sigmask_ptr, filc_
     filc_check_access_int(sig_ptr, sizeof(int), NULL);
     *(int*)filc_ptr_ptr(sig_ptr) = to_musl_signum(signum);
     return 0;
+}
+
+int filc_native_zsys_fsync(filc_thread* my_thread, int fd)
+{
+    filc_exit(my_thread);
+    int result = fsync(fd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
