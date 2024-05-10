@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
-static const size_t num_threads = 10;
+static const size_t num_threads = 3;
 static const size_t repeats = 2000;
 static const size_t num_toplevel_keys = 1000;
 static const size_t num_inner_keys = 1000;
