@@ -475,6 +475,7 @@ void filc_initialize(void)
         pas_log("filc setup:\n");
         pas_log("    testing library: %s\n", PAS_ENABLE_TESTING ? "yes" : "no");
         pas_log("    exit on panic: %s\n", exit_on_panic ? "yes" : "no");
+        pas_log("    dump errnos: %s\n", dump_errnos ? "yes" : "no");
         fugc_dump_setup();
     }
     

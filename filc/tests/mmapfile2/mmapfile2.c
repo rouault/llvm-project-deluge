@@ -31,11 +31,13 @@ int main()
     munmap(memory, 16384);
     close(fd);
 
-    fd = open("filc/tests/mmapfile/mmapfile.dat", O_RDONLY);
+    fd = open("filc/tests/mmapfile2/mmapfile.dat", O_RDONLY);
     ASSERT(fd > 2);
     char buf[100];
     ASSERT(read(fd, buf, 100) == 100);
-    ASSERT(!strcmp(buf, "hello, world!\n"));
+    size_t index;
+    for (index = 100; index--;)
+        ASSERT(!buf[index]);
 
     return 0;
 }
