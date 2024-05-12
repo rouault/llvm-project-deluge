@@ -4053,13 +4053,13 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         struct termios termios;
         struct musl_termios* musl_termios;
         filc_ptr musl_termios_ptr;
-        musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
-        musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         filc_exit(my_thread);
         if (tcgetattr(fd, &termios) < 0)
             goto error;
         filc_enter(my_thread);
+        musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_check_access_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
+        musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         to_musl_termios(&termios, musl_termios);
         return 0;
     }
@@ -4115,14 +4115,14 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         filc_ptr musl_winsize_ptr;
         struct musl_winsize* musl_winsize;
         struct winsize winsize;
-        musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
-        musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         filc_exit(my_thread);
         int result = ioctl(fd, TIOCGWINSZ, &winsize);
         if (result < 0)
             goto error;
         filc_enter(my_thread);
+        musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
+        musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         to_musl_winsize(&winsize, musl_winsize);
         return result;
     }
@@ -4485,7 +4485,6 @@ struct musl_timespec {
 
 int filc_native_zsys_clock_gettime(filc_thread* my_thread, int musl_clock_id, filc_ptr timespec_ptr)
 {
-    filc_check_access_int(timespec_ptr, sizeof(struct musl_timespec), NULL);
     clockid_t clock_id;
     if (!from_musl_clock_id(musl_clock_id, &clock_id)) {
         set_errno(EINVAL);
@@ -4500,6 +4499,7 @@ int filc_native_zsys_clock_gettime(filc_thread* my_thread, int musl_clock_id, fi
         set_errno(my_errno);
         return -1;
     }
+    filc_check_access_int(timespec_ptr, sizeof(struct musl_timespec), NULL);
     struct musl_timespec* musl_timespec = (struct musl_timespec*)filc_ptr_ptr(timespec_ptr);
     musl_timespec->tv_sec = ts.tv_sec;
     musl_timespec->tv_nsec = ts.tv_nsec;
@@ -5041,7 +5041,6 @@ int filc_native_zsys_isatty(filc_thread* my_thread, int fd)
 
 int filc_native_zsys_pipe(filc_thread* my_thread, filc_ptr fds_ptr)
 {
-    filc_check_access_int(fds_ptr, sizeof(int) * 2, NULL);
     int fds[2];
     filc_exit(my_thread);
     int result = pipe(fds);
@@ -5054,6 +5053,7 @@ int filc_native_zsys_pipe(filc_thread* my_thread, filc_ptr fds_ptr)
         set_errno(my_errno);
         return -1;
     }
+    filc_check_access_int(fds_ptr, sizeof(int) * 2, NULL);
     ((int*)filc_ptr_ptr(fds_ptr))[0] = fds[0];
     ((int*)filc_ptr_ptr(fds_ptr))[1] = fds[1];
     return 0;
@@ -5775,7 +5775,6 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
     struct musl_addrinfo* musl_hints = filc_ptr_ptr(hints_ptr);
     if (musl_hints)
         check_musl_addrinfo(hints_ptr);
-    filc_check_access_ptr(res_ptr, NULL);
     struct addrinfo hints;
     pas_zero_memory(&hints, sizeof(hints));
     if (musl_hints) {
@@ -5806,6 +5805,7 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
         musl_result = to_musl_eai(result);
         goto done;
     }
+    filc_check_access_ptr(res_ptr, NULL);
     filc_ptr* addrinfo_ptr = (filc_ptr*)filc_ptr_ptr(res_ptr);
     struct addrinfo* current;
     for (current = res; current; current = current->ai_next) {
@@ -5875,7 +5875,6 @@ int filc_native_zsys_getsockname(filc_thread* my_thread,
     
     filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
     unsigned musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
 
     unsigned addrlen = MAX_SOCKADDRLEN;
     struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
@@ -5890,6 +5889,8 @@ int filc_native_zsys_getsockname(filc_thread* my_thread,
     
     PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
 
+    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     /* pass our own copy of musl_addrlen to avoid TOCTOU. */
     PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6035,7 +6036,6 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr mu
     
     filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
     unsigned musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
 
     unsigned addrlen = MAX_SOCKADDRLEN;
     struct sockaddr* addr = (struct sockaddr*)alloca(addrlen);
@@ -6050,6 +6050,8 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr mu
     
     PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
 
+    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     /* pass our own copy of musl_addrlen to avoid TOCTOU. */
     PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6145,7 +6147,6 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
     if (filc_ptr_ptr(musl_addrlen_ptr)) {
         filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
         musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
-        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
     } else
         musl_addrlen = 0;
     int flags;
@@ -6170,6 +6171,8 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
     if (result < 0)
         set_errno(my_errno);
     else if (filc_ptr_ptr(musl_addrlen_ptr)) {
+        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
         /* pass our own copy of musl_addrlen to avoid TOCTOU. */
         PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6231,7 +6234,6 @@ static unsigned long long to_musl_rlimit_value(rlim_t value)
 
 int filc_native_zsys_getrlimit(filc_thread* my_thread, int musl_resource, filc_ptr rlim_ptr)
 {
-    filc_check_access_int(rlim_ptr, sizeof(struct musl_rlimit), NULL);
     int resource;
     if (!from_musl_resource(musl_resource, &resource))
         goto einval;
@@ -6244,6 +6246,7 @@ int filc_native_zsys_getrlimit(filc_thread* my_thread, int musl_resource, filc_p
         set_errno(my_errno);
     else {
         PAS_ASSERT(!result);
+        filc_check_access_int(rlim_ptr, sizeof(struct musl_rlimit), NULL);
         struct musl_rlimit* musl_rlim = (struct musl_rlimit*)filc_ptr_ptr(rlim_ptr);
         musl_rlim->rlim_cur = to_musl_rlimit_value(rlim.rlim_cur);
         musl_rlim->rlim_max = to_musl_rlimit_value(rlim.rlim_max);
@@ -6299,7 +6302,6 @@ struct musl_itimerval {
 
 int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr musl_value_ptr)
 {
-    filc_check_access_int(musl_value_ptr, sizeof(struct musl_itimerval), NULL);
     filc_exit(my_thread);
     struct itimerval value;
     int result = getitimer(which, &value);
@@ -6309,6 +6311,7 @@ int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr musl_
         set_errno(my_errno);
         return -1;
     }
+    filc_check_access_int(musl_value_ptr, sizeof(struct musl_itimerval), NULL);
     struct musl_itimerval* musl_value = (struct musl_itimerval*)filc_ptr_ptr(musl_value_ptr);
     musl_value->it_interval.tv_sec = value.it_interval.tv_sec;
     musl_value->it_interval.tv_usec = value.it_interval.tv_usec;
@@ -6321,8 +6324,6 @@ int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr musl_
                                filc_ptr musl_old_value_ptr)
 {
     filc_check_access_int(musl_new_value_ptr, sizeof(struct musl_itimerval), NULL);
-    if (filc_ptr_ptr(musl_old_value_ptr))
-        filc_check_access_int(musl_old_value_ptr, sizeof(struct musl_itimerval), NULL);
     struct itimerval new_value;
     struct musl_itimerval* musl_new_value = (struct musl_itimerval*)filc_ptr_ptr(musl_new_value_ptr);
     new_value.it_interval.tv_sec = musl_new_value->it_interval.tv_sec;
@@ -6340,6 +6341,7 @@ int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr musl_
     }
     struct musl_itimerval* musl_old_value = (struct musl_itimerval*)filc_ptr_ptr(musl_old_value_ptr);
     if (musl_old_value) {
+        filc_check_access_int(musl_old_value_ptr, sizeof(struct musl_itimerval), NULL);
         musl_old_value->it_interval.tv_sec = old_value.it_interval.tv_sec;
         musl_old_value->it_interval.tv_usec = old_value.it_interval.tv_usec;
         musl_old_value->it_value.tv_sec = old_value.it_value.tv_sec;
@@ -6411,8 +6413,6 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
 
 int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr, filc_ptr gid_ptr)
 {
-    filc_check_access_int(uid_ptr, sizeof(unsigned), NULL);
-    filc_check_access_int(gid_ptr, sizeof(unsigned), NULL);
     filc_exit(my_thread);
     uid_t uid;
     gid_t gid;
@@ -6421,6 +6421,8 @@ int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr
     filc_enter(my_thread);
     PAS_ASSERT(result == -1 || !result);
     if (!result) {
+        filc_check_access_int(uid_ptr, sizeof(unsigned), NULL);
+        filc_check_access_int(gid_ptr, sizeof(unsigned), NULL);
         *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
         *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
         return 0;
@@ -6512,7 +6514,6 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int musl_how, filc_ptr 
     } else
         set = NULL;
     if (filc_ptr_ptr(musl_oldset_ptr)) {
-        filc_check_access_int(musl_oldset_ptr, sizeof(struct musl_sigset), NULL);
         oldset = alloca(sizeof(sigset_t));
         pas_zero_memory(oldset, sizeof(sigset_t));
     } else
@@ -6530,6 +6531,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int musl_how, filc_ptr 
     }
     if (filc_ptr_ptr(musl_oldset_ptr)) {
         PAS_ASSERT(oldset);
+        filc_check_access_int(musl_oldset_ptr, sizeof(struct musl_sigset), NULL);
         to_musl_sigset(oldset, (struct musl_sigset*)filc_ptr_ptr(musl_oldset_ptr));
     }
     return 0;
@@ -6966,7 +6968,6 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_ad
     if (filc_ptr_ptr(musl_addrlen_ptr)) {
         filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
         musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
-        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
     } else
         musl_addrlen = 0;
     unsigned addrlen = MAX_SOCKADDRLEN;
@@ -6982,6 +6983,8 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_ad
     if (result < 0)
         set_errno(my_errno);
     else {
+        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
         /* pass our own copy of musl_addrlen to avoid TOCTOU. */
         PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -7162,8 +7165,6 @@ int filc_native_zsys_setregid(filc_thread* my_thread, unsigned rgid, unsigned eg
 int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr musl_req_ptr, filc_ptr musl_rem_ptr)
 {
     filc_check_access_int(musl_req_ptr, sizeof(struct musl_timespec), NULL);
-    if (filc_ptr_ptr(musl_rem_ptr))
-        filc_check_access_int(musl_rem_ptr, sizeof(struct musl_timespec), NULL);
     struct timespec req;
     struct timespec rem;
     req.tv_sec = ((struct musl_timespec*)filc_ptr_ptr(musl_req_ptr))->tv_sec;
@@ -7175,6 +7176,7 @@ int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr musl_req_ptr, fi
     if (result < 0) {
         set_errno(my_errno);
         if (my_errno == EINTR && filc_ptr_ptr(musl_rem_ptr)) {
+            filc_check_access_int(musl_rem_ptr, sizeof(struct musl_timespec), NULL);
             ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_sec = rem.tv_sec;
             ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_nsec = rem.tv_nsec;
         }
@@ -7233,6 +7235,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
         set_errno(my_errno);
+    filc_check_access_int(ngroups_ptr, sizeof(int), NULL);
     *(int*)filc_ptr_ptr(ngroups_ptr) = ngroups;
     return result;
 }
@@ -8685,8 +8688,10 @@ int filc_native_zsys_poll(
     filc_enter(my_thread);
     if (result < 0)
         set_errno(errno);
-    else
+    else {
+        filc_check_access_int(musl_pollfds_ptr, total_size, NULL);
         to_musl_pollfds(pollfds, musl_pollfds, nfds);
+    }
     bmalloc_deallocate(pollfds);
     return result;
 }
