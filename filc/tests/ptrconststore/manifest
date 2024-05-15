@@ -1,0 +1,9 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "readonly"
+  - "cannot write to read-only object"
+  - "Got this far"
+output-excludes:
+  - "Should not get this far"

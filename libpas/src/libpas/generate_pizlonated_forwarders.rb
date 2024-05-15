@@ -281,9 +281,9 @@ File.open("src/libpas/filc_native_forwarders.c", "w") {
             outp.print "    "
         else
             if signature.rets == "filc_ptr"
-                outp.puts "    filc_check_access_ptr(rets, NULL);"
+                outp.puts "    filc_check_write_ptr(rets, NULL);"
             else
-                outp.puts "    filc_check_access_int(rets, sizeof(#{signature.rets}), NULL);"
+                outp.puts "    filc_check_write_int(rets, sizeof(#{signature.rets}), NULL);"
             end
             outp.print "    #{signature.rets} result = "
         end

@@ -73,12 +73,12 @@ int main(int argc, char** argv)
         size = strlen(argv[index]) + 1;
         arg = filc_ptr_create(my_thread, filc_allocate_int(my_thread, size));
         memcpy(filc_ptr_ptr(arg), argv[index], size);
-        filc_check_access_ptr(arg_ptr, NULL);
+        filc_check_write_ptr(arg_ptr, NULL);
         filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(arg_ptr), arg);
     }
 
     filc_ptr arg_ptr = filc_ptr_with_offset(pizlonated_argv, argc * sizeof(filc_ptr));
-    filc_check_access_ptr(arg_ptr, NULL);
+    filc_check_write_ptr(arg_ptr, NULL);
     filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(arg_ptr), filc_ptr_forge_null());
 
     for (environ_size = 0; environ[environ_size]; ++environ_size);
@@ -86,8 +86,8 @@ int main(int argc, char** argv)
 
     init_libc_args_ptr = filc_ptr_create(
         my_thread, filc_allocate(my_thread, sizeof(struct init_libc_args)));
-    FILC_CHECK_PTR_FIELD(init_libc_args_ptr, struct init_libc_args, environ);
-    FILC_CHECK_PTR_FIELD(init_libc_args_ptr, struct init_libc_args, program_name);
+    FILC_CHECK_PTR_FIELD(init_libc_args_ptr, struct init_libc_args, environ, filc_write_access);
+    FILC_CHECK_PTR_FIELD(init_libc_args_ptr, struct init_libc_args, program_name, filc_write_access);
     init_libc_args = (struct init_libc_args*)filc_ptr_ptr(init_libc_args_ptr);
     environ_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(filc_ptr) * environ_size));
     filc_ptr_store(my_thread, &init_libc_args->environ, environ_ptr);
@@ -129,8 +129,8 @@ int main(int argc, char** argv)
     filc_run_deferred_global_ctors(my_thread);
 
     main_args_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(struct main_args)));
-    FILC_CHECK_INT_FIELD(main_args_ptr, struct main_args, argc);
-    FILC_CHECK_PTR_FIELD(main_args_ptr, struct main_args, argv);
+    FILC_CHECK_INT_FIELD(main_args_ptr, struct main_args, argc, filc_write_access);
+    FILC_CHECK_PTR_FIELD(main_args_ptr, struct main_args, argv, filc_write_access);
     main_args = (struct main_args*)filc_ptr_ptr(main_args_ptr);
     main_args->argc = argc;
     filc_ptr_store(my_thread, &main_args->argv, pizlonated_argv);

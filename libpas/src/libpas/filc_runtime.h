@@ -136,7 +136,8 @@ typedef uint16_t filc_object_flags;
 #define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)8)  /* Pointer to a global, so cannot be
                                                                      freed. */
 #define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)16) /* Pointer to mmap. */
-#define FILC_OBJECT_FLAGS_PIN_SHIFT       ((filc_object_flags)5)  /* Data is pinned by the runtime, so
+#define FILC_OBJECT_FLAG_READONLY         ((filc_object_flags)32) /* Object is readonly. */
+#define FILC_OBJECT_FLAGS_PIN_SHIFT       ((filc_object_flags)6)  /* Data is pinned by the runtime, so
                                                                      cannot be freed. This is only useful
                                                                      for munmap scenarios. */
 
@@ -160,6 +161,16 @@ typedef uint16_t filc_object_flags;
 struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
     pas_uint128 word;
 };
+
+enum filc_access_kind {
+    filc_read_access,
+
+    /* Since there is no write-only data, checking for write means you're also checking for
+       read. */
+    filc_write_access,
+};
+
+typedef enum filc_access_kind filc_access_kind;
 
 struct filc_object {
     /* NOTE: In the interest of simplicity, we say that lower and upper have to be word-aligned for
@@ -1130,7 +1141,7 @@ filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_wor
 filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type);
 
 filc_object* filc_allocate_with_existing_data(
-    filc_thread* my_thread, void* data, size_t size, int8_t object_flags,
+    filc_thread* my_thread, void* data, size_t size, filc_object_flags object_flags,
     filc_word_type initial_word_type);
 
 filc_object* filc_allocate_special_with_existing_payload(
@@ -1178,18 +1189,24 @@ void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_o
 void filc_pin(filc_object* object);
 void filc_unpin(filc_object* object);
 
-void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
-void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin);
+void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, filc_access_kind kind,
+                           const filc_origin* origin);
+void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);
 
-#define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name) do { \
+void filc_check_read_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
+void filc_check_write_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
+void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin);
+
+#define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
         struct_type check_temp; \
         filc_check_access_int(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
-                              sizeof(check_temp.field_name), NULL); \
+                              sizeof(check_temp.field_name), (access_kind), NULL); \
     } while (false)
 
-#define FILC_CHECK_PTR_FIELD(ptr, struct_type, field_name) do { \
+#define FILC_CHECK_PTR_FIELD(ptr, struct_type, field_name, access_kind) do { \
         filc_check_access_ptr(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
-                              NULL); \
+                              (access_kind), NULL); \
     } while (false)
 
 void filc_check_function_call(filc_ptr ptr);
@@ -1259,7 +1276,7 @@ static inline filc_ptr filc_ptr_get_next_ptr_with_manual_tracking(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(filc_ptr), alignof(filc_ptr));
-    filc_check_access_ptr(slot_ptr, NULL);
+    filc_check_read_ptr(slot_ptr, NULL);
     return filc_ptr_load_with_manual_tracking((filc_ptr*)filc_ptr_ptr(slot_ptr));
 }
 
@@ -1274,7 +1291,7 @@ static inline int filc_ptr_get_next_int(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(int), alignof(int));
-    filc_check_access_int(slot_ptr, sizeof(int), NULL);
+    filc_check_read_int(slot_ptr, sizeof(int), NULL);
     return *(int*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1282,7 +1299,7 @@ static inline unsigned filc_ptr_get_next_unsigned(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(unsigned), alignof(unsigned));
-    filc_check_access_int(slot_ptr, sizeof(unsigned), NULL);
+    filc_check_read_int(slot_ptr, sizeof(unsigned), NULL);
     return *(unsigned*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1290,7 +1307,7 @@ static inline long filc_ptr_get_next_long(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(long), alignof(long));
-    filc_check_access_int(slot_ptr, sizeof(long), NULL);
+    filc_check_read_int(slot_ptr, sizeof(long), NULL);
     return *(long*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1298,7 +1315,7 @@ static inline unsigned long filc_ptr_get_next_unsigned_long(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(unsigned long), alignof(unsigned long));
-    filc_check_access_int(slot_ptr, sizeof(unsigned long), NULL);
+    filc_check_read_int(slot_ptr, sizeof(unsigned long), NULL);
     return *(unsigned long*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1306,7 +1323,7 @@ static inline size_t filc_ptr_get_next_size_t(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
-    filc_check_access_int(slot_ptr, sizeof(size_t), NULL);
+    filc_check_read_int(slot_ptr, sizeof(size_t), NULL);
     return *(size_t*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1314,7 +1331,7 @@ static inline double filc_ptr_get_next_double(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(double), alignof(double));
-    filc_check_access_int(slot_ptr, sizeof(double), NULL);
+    filc_check_read_int(slot_ptr, sizeof(double), NULL);
     return *(double*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1322,7 +1339,7 @@ static inline bool filc_ptr_get_next_bool(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(bool), alignof(bool));
-    filc_check_access_int(slot_ptr, sizeof(bool), NULL);
+    filc_check_read_int(slot_ptr, sizeof(bool), NULL);
     return *(bool*)filc_ptr_ptr(slot_ptr);
 }
 
@@ -1330,7 +1347,7 @@ static inline ssize_t filc_ptr_get_next_ssize_t(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(ssize_t), alignof(ssize_t));
-    filc_check_access_int(slot_ptr, sizeof(ssize_t), NULL);
+    filc_check_read_int(slot_ptr, sizeof(ssize_t), NULL);
     return *(ssize_t*)filc_ptr_ptr(slot_ptr);
 }
 

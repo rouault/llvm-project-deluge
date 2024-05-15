@@ -64,6 +64,12 @@ static constexpr WordType WordTypeFunction = 4;
 static constexpr uint16_t ObjectFlagReturnBuffer = 2;
 static constexpr uint16_t ObjectFlagSpecial = 4;
 static constexpr uint16_t ObjectFlagGlobal = 8;
+static constexpr uint16_t ObjectFlagReadonly = 32;
+
+enum class AccessKind {
+  Read,
+  Write
+};
 
 enum class ConstantKind {
   Global,
@@ -177,9 +183,11 @@ class Pizlonator {
   FunctionCallee AllocateFunction;
   FunctionCallee Allocate;
   FunctionCallee AllocateWithAlignment;
-  FunctionCallee CheckAccessInt;
-  FunctionCallee CheckAccessPtr;
-  FunctionCallee CheckAccessFunctionCall;
+  FunctionCallee CheckReadInt;
+  FunctionCallee CheckReadPtr;
+  FunctionCallee CheckWriteInt;
+  FunctionCallee CheckWritePtr;
+  FunctionCallee CheckFunctionCall;
   FunctionCallee Memset;
   FunctionCallee Memmove;
   FunctionCallee GlobalInitializationContextCreate;
@@ -343,20 +351,60 @@ class Pizlonator {
     return LowT;
   }
 
-  void checkInt(Value *P, unsigned Size, Instruction *InsertBefore) {
+  void checkReadInt(Value *P, unsigned Size, Instruction *InsertBefore) {
     CallInst::Create(
-      CheckAccessInt,
+      CheckReadInt,
       { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
       "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void checkPtr(Value *P, Instruction *InsertBefore) {
-    if (verbose)
-      errs() << "Inserting call to " << *CheckAccessPtr.getFunctionType() << "\n";
+  void checkWriteInt(Value *P, unsigned Size, Instruction *InsertBefore) {
     CallInst::Create(
-      CheckAccessPtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      CheckWriteInt,
+      { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+      "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
+  }
+
+  void checkInt(Value* P, unsigned Size, AccessKind AK, Instruction *InsertBefore) {
+    switch (AK) {
+    case AccessKind::Read:
+      checkReadInt(P, Size, InsertBefore);
+      return;
+    case AccessKind::Write:
+      checkWriteInt(P, Size, InsertBefore);
+      return;
+    }
+    llvm_unreachable("Bad access kind");
+  }
+
+  void checkReadPtr(Value *P, Instruction *InsertBefore) {
+    if (verbose)
+      errs() << "Inserting call to " << *CheckReadPtr.getFunctionType() << "\n";
+    CallInst::Create(
+      CheckReadPtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      ->setDebugLoc(InsertBefore->getDebugLoc());
+  }
+
+  void checkWritePtr(Value *P, Instruction *InsertBefore) {
+    if (verbose)
+      errs() << "Inserting call to " << *CheckWritePtr.getFunctionType() << "\n";
+    CallInst::Create(
+      CheckWritePtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      ->setDebugLoc(InsertBefore->getDebugLoc());
+  }
+
+  void checkPtr(Value *P, AccessKind AK, Instruction *InsertBefore) {
+    switch (AK) {
+    case AccessKind::Read:
+      checkReadPtr(P, InsertBefore);
+      return;
+    case AccessKind::Write:
+      checkWritePtr(P, InsertBefore);
+      return;
+    }
+    llvm_unreachable("Bad access kind");
   }
 
   Value* ptrWord(Value* P, Instruction* InsertBefore) {
@@ -532,9 +580,9 @@ class Pizlonator {
     return false;
   }
 
-  void checkRecurse(Type *LowT, Value* HighP, Value *P, Instruction *InsertBefore) {
+  void checkRecurse(Type *LowT, Value* HighP, Value *P, AccessKind AK, Instruction *InsertBefore) {
     if (!hasPtrsForCheck(LowT)) {
-      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), InsertBefore);
+      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), AK, InsertBefore);
       return;
     }
     
@@ -551,7 +599,7 @@ class Pizlonator {
     assert(LowT != LowRawPtrTy);
 
     if (LowT == LowWidePtrTy) {
-      checkPtr(ptrWithPtr(HighP, P, InsertBefore), InsertBefore);
+      checkPtr(ptrWithPtr(HighP, P, InsertBefore), AK, InsertBefore);
       return;
     }
 
@@ -563,7 +611,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_struct", InsertBefore);
-        checkRecurse(InnerT, HighP, InnerP, InsertBefore);
+        checkRecurse(InnerT, HighP, InnerP, AK, InsertBefore);
       }
       return;
     }
@@ -573,7 +621,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
-        checkRecurse(AT->getElementType(), HighP, InnerP, InsertBefore);
+        checkRecurse(AT->getElementType(), HighP, InnerP, AK, InsertBefore);
       }
       return;
     }
@@ -583,7 +631,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
-        checkRecurse(VT->getElementType(), HighP, InnerP, InsertBefore);
+        checkRecurse(VT->getElementType(), HighP, InnerP, AK, InsertBefore);
       }
       return;
     }
@@ -598,9 +646,9 @@ class Pizlonator {
 
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
-  Value* prepareForAccess(Type *LowT, Value *HighP, Instruction *InsertBefore) {
+  Value* prepareForAccess(Type *LowT, Value *HighP, AccessKind AK, Instruction *InsertBefore) {
     Value* LowP = ptrPtr(HighP, InsertBefore);
-    checkRecurse(LowT, HighP, LowP, InsertBefore);
+    checkRecurse(LowT, HighP, LowP, AK, InsertBefore);
     return LowP;
   }
 
@@ -685,7 +733,7 @@ class Pizlonator {
                           Instruction* InsertBefore) {
     // In the future, checks will exit or pollcheck, so we need to ensure that we do all of them before
     // we do the actual load.
-    checkRecurse(LowT, HighP, P, InsertBefore);
+    checkRecurse(LowT, HighP, P, AccessKind::Read, InsertBefore);
     return loadValueRecurseAfterCheck(LowT, HighP, P, isVolatile, A, AO, SS, InsertBefore);
   }
 
@@ -770,7 +818,7 @@ class Pizlonator {
   void storeValueRecurse(Type* LowT, Value* HighP, Value* V, Value* P,
                          bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, StoreKind SK,
                          Instruction* InsertBefore) {
-    checkRecurse(LowT, HighP, P, InsertBefore);
+    checkRecurse(LowT, HighP, P, AccessKind::Write, InsertBefore);
     storeValueRecurseAfterCheck(LowT, HighP, V, P, isVolatile, A, AO, SS, SK, InsertBefore);
   }
 
@@ -1112,7 +1160,7 @@ class Pizlonator {
       { Lower, Upper, ConstantInt::get(Int16Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
   }
 
-  Constant* objectConstantForGlobal(GlobalValue* G) {
+  Constant* objectConstantForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
     if (verbose)
       errs() << "Creating object constant for global = " << *G << "\n";
     std::vector<WordType> WordTypes;
@@ -1129,6 +1177,8 @@ class Pizlonator {
       assert(Size == DL.getTypeStoreSize(LowT));
       assert(!(Size % WordSize));
       ObjectSize = Size;
+      if (cast<GlobalVariable>(OriginalG)->isConstant())
+        ObjectFlags |= ObjectFlagReadonly;
     }
     assert(!(ObjectSize % WordSize));
     return objectConstant(
@@ -1137,7 +1187,7 @@ class Pizlonator {
   }
 
   GlobalVariable* objectGlobalForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
-    Constant* NewObjectC = objectConstantForGlobal(G);
+    Constant* NewObjectC = objectConstantForGlobal(G, OriginalG);
     return new GlobalVariable(
       M, NewObjectC->getType(), true, GlobalValue::InternalLinkage, NewObjectC,
       "Jo_" + OriginalG->getName());
@@ -1566,7 +1616,7 @@ class Pizlonator {
 
       case Intrinsic::vastart:
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        checkPtr(II->getArgOperand(0), II);
+        checkWritePtr(II->getArgOperand(0), II);
         storePtr(ArgBufferPtr, ptrPtr(II->getArgOperand(0), II), StoreKind::Barriered, II);
         II->eraseFromParent();
         return true;
@@ -1574,8 +1624,8 @@ class Pizlonator {
       case Intrinsic::vacopy: {
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        checkPtr(II->getArgOperand(0), II);
-        checkPtr(II->getArgOperand(1), II);
+        checkWritePtr(II->getArgOperand(0), II);
+        checkReadPtr(II->getArgOperand(1), II);
         Value* Load = loadPtr(ptrPtr(II->getArgOperand(1), II), II);
         storePtr(Load, ptrPtr(II->getArgOperand(0), II), StoreKind::Barriered, II);
         II->eraseFromParent();
@@ -1709,7 +1759,7 @@ class Pizlonator {
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
       assert(!hasPtrsForCheck(InstLowTypes[AI]));
-      Value* LowP = prepareForAccess(InstLowTypes[AI], AI->getPointerOperand(), AI);
+      Value* LowP = prepareForAccess(InstLowTypes[AI], AI->getPointerOperand(), AccessKind::Write, AI);
       AI->getOperandUse(AtomicCmpXchgInst::getPointerOperandIndex()) = LowP;
       return;
     }
@@ -1717,7 +1767,7 @@ class Pizlonator {
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
       assert(!hasPtrsForCheck(InstLowTypes[AI]));
       AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) =
-        prepareForAccess(AI->getValOperand()->getType(), AI->getPointerOperand(), AI);
+        prepareForAccess(AI->getValOperand()->getType(), AI->getPointerOperand(), AccessKind::Write, AI);
       return;
     }
 
@@ -1800,7 +1850,7 @@ class Pizlonator {
       (new StoreInst(getOrigin(CI->getDebugLoc()), OriginPtr, CI))->setDebugLoc(CI->getDebugLoc());
       
       CallInst::Create(
-        CheckAccessFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
+        CheckFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
         ->setDebugLoc(CI->getDebugLoc());
 
       Value* ArgBufferWidePtrValue;
@@ -2290,9 +2340,11 @@ public:
     AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateWithAlignment = M.getOrInsertFunction("filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    CheckAccessInt = M.getOrInsertFunction("filc_check_access_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckAccessPtr = M.getOrInsertFunction("filc_check_access_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckAccessFunctionCall = M.getOrInsertFunction("filc_check_function_call", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt = M.getOrInsertFunction("filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckReadPtr = M.getOrInsertFunction("filc_check_read_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt = M.getOrInsertFunction("filc_check_write_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckWritePtr = M.getOrInsertFunction("filc_check_write_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckFunctionCall = M.getOrInsertFunction("filc_check_function_call", VoidTy, LowWidePtrTy, LowRawPtrTy);
     Memset = M.getOrInsertFunction("filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
     Memmove = M.getOrInsertFunction("filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     GlobalInitializationContextCreate = M.getOrInsertFunction("filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);

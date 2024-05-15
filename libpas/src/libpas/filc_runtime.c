@@ -122,15 +122,15 @@ struct musl_passwd {
     filc_ptr pw_shell;
 };
 
-static void check_musl_passwd(filc_ptr ptr)
+static void check_musl_passwd(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_name);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_passwd);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_passwd, pw_uid);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_passwd, pw_gid);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_gecos);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_dir);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_shell);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_name, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_passwd, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_passwd, pw_uid, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_passwd, pw_gid, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_gecos, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_dir, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_passwd, pw_shell, access_kind);
 }
 
 struct musl_group {
@@ -140,21 +140,21 @@ struct musl_group {
     filc_ptr gr_mem;
 };
 
-static void check_musl_group(filc_ptr ptr)
+static void check_musl_group(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_name);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_passwd);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_group, gr_gid);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_mem);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_name, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_passwd, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_group, gr_gid, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_group, gr_mem, access_kind);
 }
 
 struct musl_sigset {
     unsigned long bits[128 / sizeof(long)];
 };
 
-static void check_musl_sigset(filc_ptr ptr)
+static void check_musl_sigset(filc_ptr ptr, filc_access_kind access_kind)
 {
-    filc_check_access_int(ptr, sizeof(struct musl_sigset), NULL);
+    filc_check_access_int(ptr, sizeof(struct musl_sigset), access_kind, NULL);
 }
 
 struct musl_sigaction {
@@ -164,12 +164,12 @@ struct musl_sigaction {
     filc_ptr sa_restorer; /* ignored */
 };
 
-static void check_musl_sigaction(filc_ptr ptr)
+static void check_musl_sigaction(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_sigaction, sa_handler_ish);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_sigaction, sa_mask);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_sigaction, sa_flags);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_sigaction, sa_restorer);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_sigaction, sa_handler_ish, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_sigaction, sa_mask, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_sigaction, sa_flags, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_sigaction, sa_restorer, access_kind);
 }
 
 static int from_musl_signum(int signum)
@@ -346,16 +346,16 @@ struct musl_addrinfo {
     filc_ptr ai_next;
 };
 
-static void check_musl_addrinfo(filc_ptr ptr)
+static void check_musl_addrinfo(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_flags);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_family);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_socktype);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_protocol);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_addrlen);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_addr);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_canonname);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_next);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_flags, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_family, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_socktype, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_protocol, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_addrinfo, ai_addrlen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_addr, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_canonname, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_addrinfo, ai_next, access_kind);
 }
 
 struct musl_dirent {
@@ -365,9 +365,9 @@ struct musl_dirent {
     char d_name[256];
 };
 
-static void check_musl_dirent(filc_ptr ptr)
+static void check_musl_dirent(filc_ptr ptr, filc_access_kind access_kind)
 {
-    filc_check_access_int(ptr, sizeof(struct musl_dirent), NULL);
+    filc_check_access_int(ptr, sizeof(struct musl_dirent), access_kind, NULL);
 }
 
 typedef struct {
@@ -415,15 +415,15 @@ struct musl_msghdr {
     int msg_flags;
 };
 
-static void check_musl_msghdr(filc_ptr ptr)
+static void check_musl_msghdr(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_name);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_namelen);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_iov);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_iovlen);
-    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_control);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_controllen);
-    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_flags);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_name, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_namelen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_iov, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_iovlen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct musl_msghdr, msg_control, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_controllen, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct musl_msghdr, msg_flags, access_kind);
 }
 
 static filc_signal_handler* signal_table[FILC_MAX_MUSL_SIGNUM + 1];
@@ -1312,6 +1312,10 @@ void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "mmap");
     }
+    if (flags & FILC_OBJECT_FLAG_READONLY) {
+        pas_stream_print_comma(stream, comma, ",");
+        pas_stream_printf(stream, "readonly");
+    }
     if (flags >> FILC_OBJECT_FLAGS_PIN_SHIFT) {
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "pinned(%u)", flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
@@ -1497,7 +1501,8 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     filc_store_barrier(my_thread, target);
 }
 
-static void check_access_common(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
+static void check_access_common(filc_ptr ptr, uintptr_t bytes, filc_access_kind access_kind,
+                                const filc_origin* origin)
 {
     if (PAS_ENABLE_TESTING)
         filc_validate_ptr(ptr, origin);
@@ -1526,6 +1531,14 @@ static void check_access_common(filc_ptr ptr, uintptr_t bytes, const filc_origin
         "cannot access %zu bytes when upper - ptr = %zu (ptr = %s).",
         bytes, (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
         filc_ptr_to_new_string(ptr));
+
+    if (access_kind == filc_write_access) {
+        FILC_CHECK(
+            !(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY),
+            origin,
+            "cannot write to read-only object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
+    }
 }
 
 void filc_check_access_special(filc_ptr ptr, filc_word_type word_type, const filc_origin* origin)
@@ -1594,7 +1607,7 @@ filc_ptr filc_get_next_bytes_for_va_arg(
     uintptr_t ptr_as_int;
     filc_ptr result;
 
-    filc_check_access_ptr(ptr_ptr, origin);
+    filc_check_write_ptr(ptr_ptr, origin);
     filc_ptr* ptr = (filc_ptr*)filc_ptr_ptr(ptr_ptr);
 
     ptr_value = filc_ptr_load_with_manual_tracking(ptr);
@@ -1655,7 +1668,7 @@ static void prepare_allocate_object(size_t* size, size_t* num_words, size_t* bas
 }
 
 static void initialize_object_with_existing_data(filc_object* result, void* data, size_t size,
-                                                 size_t num_words, int8_t object_flags,
+                                                 size_t num_words, filc_object_flags object_flags,
                                                  filc_word_type initial_word_type)
 {
     result->lower = data;
@@ -1668,7 +1681,8 @@ static void initialize_object_with_existing_data(filc_object* result, void* data
 }
 
 filc_object* filc_allocate_with_existing_data(
-    filc_thread* my_thread, void* data, size_t size, int8_t object_flags, filc_word_type initial_word_type)
+    filc_thread* my_thread, void* data, size_t size, filc_object_flags object_flags,
+    filc_word_type initial_word_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -1751,7 +1765,8 @@ static filc_object* finish_allocate(
     return result;
 }
 
-static filc_object* allocate_impl(filc_thread* my_thread, size_t size, filc_word_type initial_word_type)
+static filc_object* allocate_impl(
+    filc_thread* my_thread, size_t size, filc_word_type initial_word_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -2277,7 +2292,7 @@ filc_ptr filc_native_zgetupper(filc_thread* my_thread, filc_ptr ptr)
 bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, NULL);
+    check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return false;
@@ -2289,7 +2304,7 @@ bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
 bool filc_native_zisint(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, NULL);
+    check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return false;
@@ -2301,7 +2316,7 @@ bool filc_native_zisint(filc_thread* my_thread, filc_ptr ptr)
 int filc_native_zptrphase(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, NULL);
+    check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return -1;
@@ -2466,20 +2481,21 @@ static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
     }
 }
 
-void filc_check_access_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
+void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
+                           const filc_origin* origin)
 {
     if (!bytes)
         return;
-    check_access_common(ptr, bytes, origin);
+    check_access_common(ptr, bytes, access_kind, origin);
     check_int(ptr, bytes, origin);
 }
 
-void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin)
+void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const filc_origin* origin)
 {
     uintptr_t offset;
     uintptr_t word_type_index;
 
-    check_access_common(ptr, sizeof(filc_ptr), origin);
+    check_access_common(ptr, sizeof(filc_ptr), access_kind, origin);
 
     offset = filc_ptr_offset(ptr);
     FILC_CHECK(
@@ -2507,6 +2523,26 @@ void filc_check_access_ptr(filc_ptr ptr, const filc_origin* origin)
             FILC_WORD_SIZE, filc_ptr_to_new_string(ptr));
         break;
     }
+}
+
+void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
+{
+    filc_check_access_int(ptr, bytes, filc_read_access, origin);
+}
+
+void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
+{
+    filc_check_access_int(ptr, bytes, filc_write_access, origin);
+}
+
+void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_access_ptr(ptr, filc_read_access, origin);
+}
+
+void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_access_ptr(ptr, filc_write_access, origin);
 }
 
 void filc_check_function_call(filc_ptr ptr)
@@ -2623,7 +2659,7 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     
     if (verbose)
         pas_log("count = %zu\n", count);
-    check_access_common(ptr, count, NULL);
+    check_access_common(ptr, count, filc_write_access, NULL);
     
     if (!value) {
         /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
@@ -2728,8 +2764,8 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     frame->objects[1] = src_object;
     filc_push_frame(my_thread, frame);
     
-    check_access_common(dst, count, NULL);
-    check_access_common(src, count, NULL);
+    check_access_common(dst, count, filc_write_access, NULL);
+    check_access_common(src, count, filc_read_access, NULL);
 
     char* dst_start = filc_ptr_ptr(dst);
     char* src_start = filc_ptr_ptr(src);
@@ -2863,7 +2899,7 @@ char* filc_check_and_get_new_str(filc_ptr str)
 {
     size_t available;
     size_t length;
-    check_access_common(str, 1, NULL);
+    check_access_common(str, 1, filc_read_access, NULL);
     available = filc_ptr_available(str);
     length = strnlen((char*)filc_ptr_ptr(str), available);
     FILC_ASSERT(length < available, NULL);
@@ -3301,65 +3337,65 @@ void filc_native_zcompiler_fence(filc_thread* my_thread)
 bool filc_native_zunfenced_weak_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_unfenced_weak_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 bool filc_native_zweak_cas_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_weak_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 filc_ptr filc_native_zunfenced_strong_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_unfenced_strong_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 filc_ptr filc_native_zstrong_cas_ptr(
     filc_thread* my_thread, filc_ptr ptr, filc_ptr expected, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_strong_cas(my_thread, filc_ptr_ptr(ptr), expected, new_value);
 }
 
 filc_ptr filc_native_zunfenced_xchg_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_unfenced_xchg(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 filc_ptr filc_native_zxchg_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     return filc_ptr_xchg(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 void filc_native_zatomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     filc_ptr_store_fenced(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 void filc_native_zunfenced_atomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_write_ptr(ptr, NULL);
     filc_ptr_store(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 filc_ptr filc_native_zatomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_read_ptr(ptr, NULL);
     return filc_ptr_load_fenced_with_manual_tracking(filc_ptr_ptr(ptr));
 }
 
 filc_ptr filc_native_zunfenced_atomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_ptr(ptr, NULL);
+    filc_check_read_ptr(ptr, NULL);
     return filc_ptr_load_with_manual_tracking(filc_ptr_ptr(ptr));
 }
 
@@ -3571,7 +3607,7 @@ static void set_dlerror(const char* error)
         "dlerror handler not registered when trying to set dlerror = %s.", error);
     filc_thread* my_thread = filc_get_my_thread();
     filc_ptr args = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(filc_ptr)));
-    filc_check_access_ptr(args, NULL);
+    filc_check_write_ptr(args, NULL);
     filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(args), filc_strdup(my_thread, error));
     filc_return_buffer return_buffer;
     filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
@@ -4058,7 +4094,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
             goto error;
         filc_enter(my_thread);
         musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
+        filc_check_write_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
         musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         to_musl_termios(&termios, musl_termios);
         return 0;
@@ -4070,7 +4106,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         struct musl_termios* musl_termios;
         filc_ptr musl_termios_ptr;
         musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
+        filc_check_read_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
         musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         if (!from_musl_termios(musl_termios, &termios)) {
             errno = EINVAL;
@@ -4101,7 +4137,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
     case 0x540E: /* TIOCSCTTY */ {
         filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
         if (filc_ptr_ptr(arg_ptr))
-            filc_check_access_int(arg_ptr, sizeof(int), NULL);
+            filc_check_read_int(arg_ptr, sizeof(int), NULL);
         filc_pin(filc_ptr_object(arg_ptr));
         filc_exit(my_thread);
         int result = ioctl(fd, TIOCSCTTY, filc_ptr_ptr(arg_ptr));
@@ -4121,7 +4157,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
             goto error;
         filc_enter(my_thread);
         musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
+        filc_check_write_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         to_musl_winsize(&winsize, musl_winsize);
         return result;
@@ -4131,7 +4167,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         struct musl_winsize* musl_winsize;
         struct winsize winsize;
         musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
+        filc_check_read_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         from_musl_winsize(musl_winsize, &winsize);
         filc_exit(my_thread);
@@ -4186,7 +4222,8 @@ error_in_filc:
 
 struct musl_iovec { filc_ptr iov_base; size_t iov_len; };
 
-static struct iovec* prepare_iovec(filc_thread* my_thread, filc_ptr musl_iov, int iovcnt)
+static struct iovec* prepare_iovec(filc_thread* my_thread, filc_ptr musl_iov, int iovcnt,
+                                   filc_access_kind access_kind)
 {
     struct iovec* iov;
     size_t iov_size;
@@ -4205,15 +4242,15 @@ static struct iovec* prepare_iovec(filc_thread* my_thread, filc_ptr musl_iov, in
         filc_ptr musl_iov_base;
         size_t iov_len;
         musl_iov_entry = filc_ptr_with_offset(musl_iov, sizeof(struct musl_iovec) * index);
-        filc_check_access_ptr(
+        filc_check_read_ptr(
             filc_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_base)), NULL);
-        filc_check_access_int(
+        filc_check_read_int(
             filc_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_len)),
             sizeof(size_t), NULL);
         musl_iov_base = filc_ptr_load(
             my_thread, &((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_base);
         iov_len = ((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_len;
-        filc_check_access_int(musl_iov_base, iov_len, NULL);
+        filc_check_access_int(musl_iov_base, iov_len, access_kind, NULL);
         filc_pin(filc_ptr_object(musl_iov_base));
         iov[index].iov_base = filc_ptr_ptr(musl_iov_base);
         iov[index].iov_len = iov_len;
@@ -4228,7 +4265,7 @@ static void unprepare_iovec(struct iovec* iov, filc_ptr musl_iov, int iovcnt)
         filc_ptr musl_iov_entry;
         filc_ptr musl_iov_base;
         musl_iov_entry = filc_ptr_with_offset(musl_iov, sizeof(struct musl_iovec) * index);
-        filc_check_access_ptr(
+        filc_check_read_ptr(
             filc_ptr_with_offset(musl_iov_entry, PAS_OFFSETOF(struct musl_iovec, iov_base)), NULL);
         musl_iov_base = filc_ptr_load_with_manual_tracking(
             &((struct musl_iovec*)filc_ptr_ptr(musl_iov_entry))->iov_base);
@@ -4240,7 +4277,7 @@ static void unprepare_iovec(struct iovec* iov, filc_ptr musl_iov, int iovcnt)
 ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr musl_iov, int iovcnt)
 {
     ssize_t result;
-    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt);
+    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt, filc_read_access);
     filc_exit(my_thread);
     result = writev(fd, iov, iovcnt);
     int my_errno = errno;
@@ -4253,7 +4290,7 @@ ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr musl_io
 
 ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_check_access_int(buf, size, NULL);
+    filc_check_write_int(buf, size, NULL);
     filc_pin(filc_ptr_object(buf));
     filc_exit(my_thread);
     ssize_t result = read(fd, filc_ptr_ptr(buf), size);
@@ -4268,7 +4305,7 @@ ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size
 ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr musl_iov, int iovcnt)
 {
     ssize_t result;
-    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt);
+    struct iovec* iov = prepare_iovec(my_thread, musl_iov, iovcnt, filc_write_access);
     filc_exit(my_thread);
     result = readv(fd, iov, iovcnt);
     int my_errno = errno;
@@ -4281,7 +4318,7 @@ ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr musl_iov
 
 ssize_t filc_native_zsys_write(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_check_access_int(buf, size, NULL);
+    filc_check_read_int(buf, size, NULL);
     filc_pin(filc_ptr_object(buf));
     filc_exit(my_thread);
     ssize_t result = write(fd, filc_ptr_ptr(buf), size);
@@ -4499,7 +4536,7 @@ int filc_native_zsys_clock_gettime(filc_thread* my_thread, int musl_clock_id, fi
         set_errno(my_errno);
         return -1;
     }
-    filc_check_access_int(timespec_ptr, sizeof(struct musl_timespec), NULL);
+    filc_check_write_int(timespec_ptr, sizeof(struct musl_timespec), NULL);
     struct musl_timespec* musl_timespec = (struct musl_timespec*)filc_ptr_ptr(timespec_ptr);
     musl_timespec->tv_sec = ts.tv_sec;
     musl_timespec->tv_nsec = ts.tv_nsec;
@@ -4537,7 +4574,7 @@ static bool from_musl_fstatat_flag(int musl_flag, int* result)
 static int handle_fstat_result(filc_ptr musl_stat_ptr, struct stat *st,
                                int result, int my_errno)
 {
-    filc_check_access_int(musl_stat_ptr, sizeof(struct musl_stat), NULL);
+    filc_check_write_int(musl_stat_ptr, sizeof(struct musl_stat), NULL);
     if (result < 0) {
         set_errno(my_errno);
         return -1;
@@ -4665,6 +4702,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
     }
     int arg_int = 0;
     struct flock arg_flock;
+    struct flock saved_flock;
     filc_ptr musl_flock_ptr;
     struct musl_flock* musl_flock;
     pas_zero_memory(&arg_flock, sizeof(arg_flock));
@@ -4672,7 +4710,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
         arg_int = filc_ptr_get_next_int(&args);
     if (have_arg_flock) {
         musl_flock_ptr = filc_ptr_get_next_ptr(my_thread, &args);
-        filc_check_access_int(musl_flock_ptr, sizeof(struct musl_flock), NULL);
+        filc_check_read_int(musl_flock_ptr, sizeof(struct musl_flock), NULL);
         musl_flock = (struct musl_flock*)filc_ptr_ptr(musl_flock_ptr);
         switch (musl_flock->l_type) {
         case 0:
@@ -4692,6 +4730,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
         arg_flock.l_start = musl_flock->l_start;
         arg_flock.l_len = musl_flock->l_len;
         arg_flock.l_pid = musl_flock->l_pid;
+        saved_flock = arg_flock;
     }
     if (!have_cmd) {
         if (verbose)
@@ -4725,9 +4764,16 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
     if (have_arg_int) {
         PAS_ASSERT(!have_arg_flock);
         result = fcntl(fd, cmd, arg_int);
-    } else if (have_arg_flock) {
-        struct flock saved_flock = arg_flock;
+    } else if (have_arg_flock)
         result = fcntl(fd, cmd, &arg_flock);
+    else
+        result = fcntl(fd, cmd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (verbose)
+        pas_log("result = %d\n", result);
+    if (have_arg_flock) {
+        filc_check_write_int(musl_flock_ptr, sizeof(struct musl_flock), NULL);
         if (arg_flock.l_type != saved_flock.l_type) {
             switch (arg_flock.l_type) {
             case F_RDLCK:
@@ -4754,12 +4800,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
         SET_IF_DIFFERENT(l_len);
         SET_IF_DIFFERENT(l_pid);
 #undef SET_IF_DIFFERENT
-    } else
-        result = fcntl(fd, cmd);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (verbose)
-        pas_log("result = %d\n", result);
+    }
     if (result == -1) {
         if (verbose)
             pas_log("error = %s\n", strerror(my_errno));
@@ -4790,7 +4831,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
 static struct filc_ptr to_musl_passwd(filc_thread* my_thread, struct passwd* passwd)
 {
     filc_ptr result_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(struct musl_passwd)));
-    check_musl_passwd(result_ptr);
+    check_musl_passwd(result_ptr, filc_write_access);
 
     struct musl_passwd* result = (struct musl_passwd*)filc_ptr_ptr(result_ptr);
 
@@ -4966,9 +5007,7 @@ int filc_native_zsys_sigaction(filc_thread* my_thread, int musl_signum, filc_ptr
         return -1;
     }
     if (filc_ptr_ptr(act_ptr))
-        check_musl_sigaction(act_ptr);
-    if (filc_ptr_ptr(oact_ptr))
-        check_musl_sigaction(oact_ptr);
+        check_musl_sigaction(act_ptr, filc_read_access);
     struct musl_sigaction* musl_act = (struct musl_sigaction*)filc_ptr_ptr(act_ptr);
     struct musl_sigaction* musl_oact = (struct musl_sigaction*)filc_ptr_ptr(oact_ptr);
     struct sigaction act;
@@ -5009,6 +5048,7 @@ int filc_native_zsys_sigaction(filc_thread* my_thread, int musl_signum, filc_ptr
         return -1;
     }
     if (musl_oact) {
+        check_musl_sigaction(oact_ptr, filc_write_access);
         if (is_unsafe_signal(signum))
             PAS_ASSERT(oact.sa_handler == SIG_DFL);
         if (is_special_signal_handler(oact.sa_handler))
@@ -5053,7 +5093,7 @@ int filc_native_zsys_pipe(filc_thread* my_thread, filc_ptr fds_ptr)
         set_errno(my_errno);
         return -1;
     }
-    filc_check_access_int(fds_ptr, sizeof(int) * 2, NULL);
+    filc_check_write_int(fds_ptr, sizeof(int) * 2, NULL);
     ((int*)filc_ptr_ptr(fds_ptr))[0] = fds[0];
     ((int*)filc_ptr_ptr(fds_ptr))[1] = fds[1];
     return 0;
@@ -5075,13 +5115,13 @@ int filc_native_zsys_select(filc_thread* my_thread, int nfds,
         "attempt to select with nfds = %d (should be 1024 or less).",
         nfds);
     if (filc_ptr_ptr(readfds_ptr))
-        filc_check_access_int(readfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(readfds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(writefds_ptr))
-        filc_check_access_int(writefds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(writefds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(exceptfds_ptr))
-        filc_check_access_int(exceptfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(exceptfds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(timeout_ptr))
-        filc_check_access_int(timeout_ptr, sizeof(struct musl_timeval), NULL);
+        filc_check_write_int(timeout_ptr, sizeof(struct musl_timeval), NULL);
     fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
     fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
     fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
@@ -5104,6 +5144,7 @@ int filc_native_zsys_select(filc_thread* my_thread, int nfds,
     if (result < 0)
         set_errno(my_errno);
     if (musl_timeout) {
+        filc_check_write_int(timeout_ptr, sizeof(struct musl_timeval), NULL);
         musl_timeout->tv_sec = timeout.tv_sec;
         musl_timeout->tv_usec = timeout.tv_usec;
     }
@@ -5378,7 +5419,7 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         goto einval;
     int optname;
     /* for now, all of the possible arguments are primitives. */
-    filc_check_access_int(optval_ptr, optlen, NULL);
+    filc_check_read_int(optval_ptr, optlen, NULL);
     /* and most of them make sense to pass through without conversion. */
     void* optval = filc_ptr_ptr(optval_ptr);
     switch (level) {
@@ -5669,7 +5710,7 @@ int filc_native_zsys_bind(filc_thread* my_thread, int sockfd, filc_ptr musl_addr
 {
     static const bool verbose = false;
     
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+    filc_check_read_int(musl_addr_ptr, musl_addrlen, NULL);
     if (musl_addrlen < sizeof(struct musl_sockaddr))
         goto einval;
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
@@ -5774,7 +5815,7 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
 {
     struct musl_addrinfo* musl_hints = filc_ptr_ptr(hints_ptr);
     if (musl_hints)
-        check_musl_addrinfo(hints_ptr);
+        check_musl_addrinfo(hints_ptr, filc_read_access);
     struct addrinfo hints;
     pas_zero_memory(&hints, sizeof(hints));
     if (musl_hints) {
@@ -5805,13 +5846,13 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
         musl_result = to_musl_eai(result);
         goto done;
     }
-    filc_check_access_ptr(res_ptr, NULL);
+    filc_check_write_ptr(res_ptr, NULL);
     filc_ptr* addrinfo_ptr = (filc_ptr*)filc_ptr_ptr(res_ptr);
     struct addrinfo* current;
     for (current = res; current; current = current->ai_next) {
         filc_ptr musl_current_ptr = filc_ptr_create(
             my_thread, filc_allocate(my_thread, sizeof(struct musl_addrinfo)));
-        check_musl_addrinfo(musl_current_ptr);
+        check_musl_addrinfo(musl_current_ptr, filc_write_access);
         struct musl_addrinfo* musl_current = (struct musl_addrinfo*)filc_ptr_ptr(musl_current_ptr);
         filc_ptr_store(my_thread, addrinfo_ptr, musl_current_ptr);
         PAS_ASSERT(to_musl_ai_flags(current->ai_flags, &musl_current->ai_flags));
@@ -5842,7 +5883,7 @@ int filc_native_zsys_connect(filc_thread* my_thread,
 {
     static const bool verbose = false;
     
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+    filc_check_read_int(musl_addr_ptr, musl_addrlen, NULL);
     if (musl_addrlen < sizeof(struct musl_sockaddr))
         goto einval;
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
@@ -5873,7 +5914,7 @@ int filc_native_zsys_getsockname(filc_thread* my_thread,
 {
     static const bool verbose = false;
     
-    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_read_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
     unsigned musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
 
     unsigned addrlen = MAX_SOCKADDRLEN;
@@ -5889,8 +5930,8 @@ int filc_native_zsys_getsockname(filc_thread* my_thread,
     
     PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
 
-    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+    filc_check_write_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write_int(musl_addr_ptr, musl_addrlen, NULL);
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     /* pass our own copy of musl_addrlen to avoid TOCTOU. */
     PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -5905,7 +5946,7 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
 {
     static const bool verbose = false;
     
-    filc_check_access_int(optlen_ptr, sizeof(unsigned), NULL);
+    filc_check_read_int(optlen_ptr, sizeof(unsigned), NULL);
     unsigned musl_optlen = *(unsigned*)filc_ptr_ptr(optlen_ptr);
     int level;
     if (verbose)
@@ -5914,7 +5955,7 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         goto einval;
     int optname;
     /* everything is primitive, for now */
-    filc_check_access_int(optval_ptr, musl_optlen, NULL);
+    filc_check_write_int(optval_ptr, musl_optlen, NULL);
     void* musl_optval = filc_ptr_ptr(optval_ptr);
     void* optval = musl_optval;
     unsigned optlen = musl_optlen;
@@ -6013,6 +6054,7 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
     }
     if (verbose)
         pas_log("all good here!\n");
+    filc_check_write_int(optlen_ptr, sizeof(unsigned), NULL);
     *(unsigned*)filc_ptr_ptr(optlen_ptr) = musl_optlen;
     return 0;
 
@@ -6034,7 +6076,7 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr mu
 {
     static const bool verbose = false;
     
-    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_read_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
     unsigned musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
 
     unsigned addrlen = MAX_SOCKADDRLEN;
@@ -6050,8 +6092,8 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr mu
     
     PAS_ASSERT(addrlen <= MAX_SOCKADDRLEN);
 
-    filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+    filc_check_write_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write_int(musl_addr_ptr, musl_addrlen, NULL);
     struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
     /* pass our own copy of musl_addrlen to avoid TOCTOU. */
     PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6112,8 +6154,8 @@ static bool to_musl_msg_flags(int flags, int* result)
 ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
                                 int musl_flags, filc_ptr musl_addr_ptr, unsigned musl_addrlen)
 {
-    filc_check_access_int(buf_ptr, len, NULL);
-    filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+    filc_check_read_int(buf_ptr, len, NULL);
+    filc_check_read_int(musl_addr_ptr, musl_addrlen, NULL);
     int flags;
     if (!from_musl_msg_flags(musl_flags, &flags))
         goto einval;
@@ -6142,10 +6184,10 @@ einval:
 ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
                                   int musl_flags, filc_ptr musl_addr_ptr, filc_ptr musl_addrlen_ptr)
 {
-    filc_check_access_int(buf_ptr, len, NULL);
+    filc_check_write_int(buf_ptr, len, NULL);
     unsigned musl_addrlen;
     if (filc_ptr_ptr(musl_addrlen_ptr)) {
-        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_read_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
         musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
     } else
         musl_addrlen = 0;
@@ -6171,8 +6213,8 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
     if (result < 0)
         set_errno(my_errno);
     else if (filc_ptr_ptr(musl_addrlen_ptr)) {
-        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
-        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+        filc_check_write_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_write_int(musl_addr_ptr, musl_addrlen, NULL);
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
         /* pass our own copy of musl_addrlen to avoid TOCTOU. */
         PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6246,7 +6288,7 @@ int filc_native_zsys_getrlimit(filc_thread* my_thread, int musl_resource, filc_p
         set_errno(my_errno);
     else {
         PAS_ASSERT(!result);
-        filc_check_access_int(rlim_ptr, sizeof(struct musl_rlimit), NULL);
+        filc_check_write_int(rlim_ptr, sizeof(struct musl_rlimit), NULL);
         struct musl_rlimit* musl_rlim = (struct musl_rlimit*)filc_ptr_ptr(rlim_ptr);
         musl_rlim->rlim_cur = to_musl_rlimit_value(rlim.rlim_cur);
         musl_rlim->rlim_max = to_musl_rlimit_value(rlim.rlim_max);
@@ -6277,7 +6319,7 @@ struct musl_utsname {
 
 int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
 {
-    filc_check_access_int(buf_ptr, sizeof(struct musl_utsname), NULL);
+    filc_check_write_int(buf_ptr, sizeof(struct musl_utsname), NULL);
     struct musl_utsname* musl_buf = (struct musl_utsname*)filc_ptr_ptr(buf_ptr);
     struct utsname buf;
     filc_pin(filc_ptr_object(buf_ptr));
@@ -6311,7 +6353,7 @@ int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr musl_
         set_errno(my_errno);
         return -1;
     }
-    filc_check_access_int(musl_value_ptr, sizeof(struct musl_itimerval), NULL);
+    filc_check_write_int(musl_value_ptr, sizeof(struct musl_itimerval), NULL);
     struct musl_itimerval* musl_value = (struct musl_itimerval*)filc_ptr_ptr(musl_value_ptr);
     musl_value->it_interval.tv_sec = value.it_interval.tv_sec;
     musl_value->it_interval.tv_usec = value.it_interval.tv_usec;
@@ -6323,7 +6365,7 @@ int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr musl_
 int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr musl_new_value_ptr,
                                filc_ptr musl_old_value_ptr)
 {
-    filc_check_access_int(musl_new_value_ptr, sizeof(struct musl_itimerval), NULL);
+    filc_check_write_int(musl_new_value_ptr, sizeof(struct musl_itimerval), NULL);
     struct itimerval new_value;
     struct musl_itimerval* musl_new_value = (struct musl_itimerval*)filc_ptr_ptr(musl_new_value_ptr);
     new_value.it_interval.tv_sec = musl_new_value->it_interval.tv_sec;
@@ -6341,7 +6383,7 @@ int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr musl_
     }
     struct musl_itimerval* musl_old_value = (struct musl_itimerval*)filc_ptr_ptr(musl_old_value_ptr);
     if (musl_old_value) {
-        filc_check_access_int(musl_old_value_ptr, sizeof(struct musl_itimerval), NULL);
+        filc_check_read_int(musl_old_value_ptr, sizeof(struct musl_itimerval), NULL);
         musl_old_value->it_interval.tv_sec = old_value.it_interval.tv_sec;
         musl_old_value->it_interval.tv_usec = old_value.it_interval.tv_usec;
         musl_old_value->it_value.tv_sec = old_value.it_value.tv_sec;
@@ -6372,15 +6414,15 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
         "attempt to select with nfds = %d (should be 1024 or less).",
         nfds);
     if (filc_ptr_ptr(readfds_ptr))
-        filc_check_access_int(readfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(readfds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(writefds_ptr))
-        filc_check_access_int(writefds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(writefds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(exceptfds_ptr))
-        filc_check_access_int(exceptfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write_int(exceptfds_ptr, sizeof(fd_set), NULL);
     if (filc_ptr_ptr(timeout_ptr))
-        filc_check_access_int(timeout_ptr, sizeof(struct musl_timespec), NULL);
+        filc_check_read_int(timeout_ptr, sizeof(struct musl_timespec), NULL);
     if (filc_ptr_ptr(sigmask_ptr))
-        filc_check_access_int(sigmask_ptr, sizeof(struct musl_sigset), NULL);
+        filc_check_read_int(sigmask_ptr, sizeof(struct musl_sigset), NULL);
     fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
     fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
     fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
@@ -6421,8 +6463,8 @@ int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr
     filc_enter(my_thread);
     PAS_ASSERT(result == -1 || !result);
     if (!result) {
-        filc_check_access_int(uid_ptr, sizeof(unsigned), NULL);
-        filc_check_access_int(gid_ptr, sizeof(unsigned), NULL);
+        filc_check_write_int(uid_ptr, sizeof(unsigned), NULL);
+        filc_check_write_int(gid_ptr, sizeof(unsigned), NULL);
         *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
         *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
         return 0;
@@ -6508,7 +6550,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int musl_how, filc_ptr 
     sigset_t* set;
     sigset_t* oldset;
     if (filc_ptr_ptr(musl_set_ptr)) {
-        filc_check_access_int(musl_set_ptr, sizeof(struct musl_sigset), NULL);
+        filc_check_read_int(musl_set_ptr, sizeof(struct musl_sigset), NULL);
         set = alloca(sizeof(sigset_t));
         from_musl_sigset((struct musl_sigset*)filc_ptr_ptr(musl_set_ptr), set);
     } else
@@ -6531,7 +6573,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int musl_how, filc_ptr 
     }
     if (filc_ptr_ptr(musl_oldset_ptr)) {
         PAS_ASSERT(oldset);
-        filc_check_access_int(musl_oldset_ptr, sizeof(struct musl_sigset), NULL);
+        filc_check_write_int(musl_oldset_ptr, sizeof(struct musl_sigset), NULL);
         to_musl_sigset(oldset, (struct musl_sigset*)filc_ptr_ptr(musl_oldset_ptr));
     }
     return 0;
@@ -6561,7 +6603,7 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
         NULL,
         "size argument too big, causes overflow; size = %zu.",
         size);
-    filc_check_access_int(list_ptr, total_size, NULL);
+    filc_check_read_int(list_ptr, total_size, NULL);
     filc_pin(filc_ptr_object(list_ptr));
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
@@ -6944,7 +6986,7 @@ int filc_native_zsys_waitpid(filc_thread* my_thread, int pid, filc_ptr status_pt
         return -1;
     }
     if (filc_ptr_ptr(status_ptr)) {
-        filc_check_access_int(status_ptr, sizeof(int), NULL);
+        filc_check_write_int(status_ptr, sizeof(int), NULL);
         *(int*)filc_ptr_ptr(status_ptr) = to_musl_wait_status(status);
     }
     return result;
@@ -6966,7 +7008,7 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_ad
 {
     unsigned musl_addrlen;
     if (filc_ptr_ptr(musl_addrlen_ptr)) {
-        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_read_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
         musl_addrlen = *(unsigned*)filc_ptr_ptr(musl_addrlen_ptr);
     } else
         musl_addrlen = 0;
@@ -6983,8 +7025,8 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_ad
     if (result < 0)
         set_errno(my_errno);
     else {
-        filc_check_access_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
-        filc_check_access_int(musl_addr_ptr, musl_addrlen, NULL);
+        filc_check_write_int(musl_addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_write_int(musl_addr_ptr, musl_addrlen, NULL);
         struct musl_sockaddr* musl_addr = (struct musl_sockaddr*)filc_ptr_ptr(musl_addr_ptr);
         /* pass our own copy of musl_addrlen to avoid TOCTOU. */
         PAS_ASSERT(to_musl_sockaddr(my_thread, addr, addrlen, musl_addr, &musl_addrlen));
@@ -6996,7 +7038,7 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_ad
 int filc_native_zsys_socketpair(filc_thread* my_thread, int musl_domain, int musl_type, int protocol,
                                 filc_ptr sv_ptr)
 {
-    filc_check_access_int(sv_ptr, sizeof(int) * 2, NULL);
+    filc_check_write_int(sv_ptr, sizeof(int) * 2, NULL);
     int domain;
     if (!from_musl_domain(musl_domain, &domain)) {
         set_errno(EINVAL);
@@ -7033,7 +7075,7 @@ static size_t length_of_null_terminated_ptr_array(filc_ptr array_ptr)
 {
     size_t result = 0;
     for (;; result++) {
-        filc_check_access_ptr(array_ptr, NULL);
+        filc_check_read_ptr(array_ptr, NULL);
         if (!filc_ptr_ptr(filc_ptr_load_with_manual_tracking((filc_ptr*)filc_ptr_ptr(array_ptr))))
             return result;
         array_ptr = filc_ptr_with_offset(array_ptr, sizeof(filc_ptr));
@@ -7164,7 +7206,7 @@ int filc_native_zsys_setregid(filc_thread* my_thread, unsigned rgid, unsigned eg
 
 int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr musl_req_ptr, filc_ptr musl_rem_ptr)
 {
-    filc_check_access_int(musl_req_ptr, sizeof(struct musl_timespec), NULL);
+    filc_check_read_int(musl_req_ptr, sizeof(struct musl_timespec), NULL);
     struct timespec req;
     struct timespec rem;
     req.tv_sec = ((struct musl_timespec*)filc_ptr_ptr(musl_req_ptr))->tv_sec;
@@ -7176,7 +7218,7 @@ int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr musl_req_ptr, fi
     if (result < 0) {
         set_errno(my_errno);
         if (my_errno == EINTR && filc_ptr_ptr(musl_rem_ptr)) {
-            filc_check_access_int(musl_rem_ptr, sizeof(struct musl_timespec), NULL);
+            filc_check_write_int(musl_rem_ptr, sizeof(struct musl_timespec), NULL);
             ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_sec = rem.tv_sec;
             ((struct musl_timespec*)filc_ptr_ptr(musl_rem_ptr))->tv_nsec = rem.tv_nsec;
         }
@@ -7192,7 +7234,7 @@ int filc_native_zsys_getgroups(filc_thread* my_thread, int size, filc_ptr list_p
         NULL,
         "size argument too big, causes overflow; size = %d.",
         size);
-    filc_check_access_int(list_ptr, total_size, NULL);
+    filc_check_write_int(list_ptr, total_size, NULL);
     filc_pin(filc_ptr_object(list_ptr));
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
@@ -7211,7 +7253,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
     static const bool verbose = false;
     
     char* user = filc_check_and_get_new_str(user_ptr);
-    filc_check_access_int(ngroups_ptr, sizeof(int), NULL);
+    filc_check_read_int(ngroups_ptr, sizeof(int), NULL);
     int ngroups = *(int*)filc_ptr_ptr(ngroups_ptr);
     size_t total_size;
     FILC_CHECK(
@@ -7219,7 +7261,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
         NULL,
         "ngroups argument too big, causes overflow; ngroups = %d.",
         ngroups);
-    filc_check_access_int(groups_ptr, total_size, NULL);
+    filc_check_write_int(groups_ptr, total_size, NULL);
     filc_pin(filc_ptr_object(groups_ptr));
     filc_exit(my_thread);
     if (verbose)
@@ -7235,7 +7277,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
         set_errno(my_errno);
-    filc_check_access_int(ngroups_ptr, sizeof(int), NULL);
+    filc_check_write_int(ngroups_ptr, sizeof(int), NULL);
     *(int*)filc_ptr_ptr(ngroups_ptr) = ngroups;
     return result;
 }
@@ -7258,7 +7300,7 @@ int filc_native_zsys_initgroups(filc_thread* my_thread, filc_ptr user_ptr, unsig
 long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr buf_ptr, size_t bufsize)
 {
     char* path = filc_check_and_get_new_str(path_ptr);
-    filc_check_access_int(buf_ptr, bufsize, NULL);
+    filc_check_write_int(buf_ptr, bufsize, NULL);
     filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     long result = readlink(path, (char*)filc_ptr_ptr(buf_ptr), bufsize);
@@ -7274,18 +7316,18 @@ long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_p
 int filc_native_zsys_openpty(filc_thread* my_thread, filc_ptr masterfd_ptr, filc_ptr slavefd_ptr,
                              filc_ptr name_ptr, filc_ptr musl_term_ptr, filc_ptr musl_win_ptr)
 {
-    filc_check_access_int(masterfd_ptr, sizeof(int), NULL);
-    filc_check_access_int(slavefd_ptr, sizeof(int), NULL);
+    filc_check_write_int(masterfd_ptr, sizeof(int), NULL);
+    filc_check_write_int(slavefd_ptr, sizeof(int), NULL);
     FILC_ASSERT(!filc_ptr_ptr(name_ptr), NULL);
     struct termios* term = NULL;
     if (filc_ptr_ptr(musl_term_ptr)) {
-        filc_check_access_int(musl_term_ptr, sizeof(struct musl_termios), NULL);
+        filc_check_read_int(musl_term_ptr, sizeof(struct musl_termios), NULL);
         term = alloca(sizeof(struct termios));
         from_musl_termios((struct musl_termios*)filc_ptr_ptr(musl_term_ptr), term);
     }
     struct winsize* win = NULL;
     if (filc_ptr_ptr(musl_win_ptr)) {
-        filc_check_access_int(musl_win_ptr, sizeof(struct musl_winsize), NULL);
+        filc_check_read_int(musl_win_ptr, sizeof(struct musl_winsize), NULL);
         win = alloca(sizeof(struct winsize));
         from_musl_winsize((struct musl_winsize*)filc_ptr_ptr(musl_win_ptr), win);
     }
@@ -7305,7 +7347,7 @@ int filc_native_zsys_openpty(filc_thread* my_thread, filc_ptr masterfd_ptr, filc
 
 int filc_native_zsys_ttyname_r(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t buflen)
 {
-    filc_check_access_int(buf_ptr, buflen, NULL);
+    filc_check_write_int(buf_ptr, buflen, NULL);
     filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     int result = ttyname_r(fd, (char*)filc_ptr_ptr(buf_ptr), buflen);
@@ -7320,7 +7362,7 @@ int filc_native_zsys_ttyname_r(filc_thread* my_thread, int fd, filc_ptr buf_ptr,
 static struct filc_ptr to_musl_group(filc_thread* my_thread, struct group* group)
 {
     filc_ptr result_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(struct musl_group)));
-    check_musl_group(result_ptr);
+    check_musl_group(result_ptr, filc_write_access);
     struct musl_group* result = (struct musl_group*)filc_ptr_ptr(result_ptr);
 
     filc_ptr_store(my_thread, &result->gr_name, filc_strdup(my_thread, group->gr_name));
@@ -7337,7 +7379,7 @@ static struct filc_ptr to_musl_group(filc_thread* my_thread, struct group* group
         filc_ptr* musl_mem = (filc_ptr*)filc_ptr_ptr(musl_mem_ptr);
         size_t index;
         for (index = 0; index < size; ++index) {
-            filc_check_access_ptr(filc_ptr_with_ptr(musl_mem_ptr, musl_mem + index), NULL);
+            filc_check_write_ptr(filc_ptr_with_ptr(musl_mem_ptr, musl_mem + index), NULL);
             filc_ptr_store(my_thread, musl_mem + index, filc_strdup(my_thread, group->gr_mem[index]));
         }
         filc_ptr_store(my_thread, &result->gr_mem, musl_mem_ptr);
@@ -7610,7 +7652,7 @@ filc_ptr filc_native_zsys_getutxent(filc_thread* my_thread)
 
 filc_ptr filc_native_zsys_getutxid(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
-    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
+    filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
     from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in);
@@ -7621,7 +7663,7 @@ filc_ptr filc_native_zsys_getutxid(filc_thread* my_thread, filc_ptr musl_utmpx_p
 
 filc_ptr filc_native_zsys_getutxline(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
-    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
+    filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
     from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in);
@@ -7632,7 +7674,7 @@ filc_ptr filc_native_zsys_getutxline(filc_thread* my_thread, filc_ptr musl_utmpx
 
 filc_ptr filc_native_zsys_pututxline(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
-    filc_check_access_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
+    filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
     from_musl_utmpx((struct musl_utmpx*)filc_ptr_ptr(musl_utmpx_ptr), &utmpx_in);
@@ -7695,7 +7737,7 @@ static filc_ptr handle_lastlogx_result(filc_thread* my_thread,
 filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc_ptr musl_lastlogx_ptr)
 {
     if (filc_ptr_ptr(musl_lastlogx_ptr))
-        filc_check_access_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
+        filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct lastlogx lastlogx;
     filc_ptr result = handle_lastlogx_result(my_thread, musl_lastlogx_ptr, getlastlogx(uid, &lastlogx));
@@ -7708,7 +7750,7 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
 {
     char* name = filc_check_and_get_new_str(name_ptr);
     if (filc_ptr_ptr(musl_lastlogx_ptr))
-        filc_check_access_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
+        filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct lastlogx lastlogx;
     filc_ptr result = handle_lastlogx_result(
@@ -7734,12 +7776,14 @@ static void destroy_msghdr(struct msghdr* msghdr, struct musl_msghdr* musl_msghd
 }
 
 static void from_musl_msghdr_base(filc_thread* my_thread,
-                                  struct musl_msghdr* musl_msghdr, struct msghdr* msghdr)
+                                  struct musl_msghdr* musl_msghdr, struct msghdr* msghdr,
+                                  filc_access_kind access_kind)
 {
     pas_zero_memory(msghdr, sizeof(struct msghdr));
 
     int iovlen = musl_msghdr->msg_iovlen;
-    msghdr->msg_iov = prepare_iovec(my_thread, filc_ptr_load(my_thread, &musl_msghdr->msg_iov), iovlen);
+    msghdr->msg_iov = prepare_iovec(
+        my_thread, filc_ptr_load(my_thread, &musl_msghdr->msg_iov), iovlen, access_kind);
     msghdr->msg_iovlen = iovlen;
 
     msghdr->msg_flags = 0; /* This field is ignored so just zero-init it. */
@@ -7753,12 +7797,12 @@ static bool from_musl_msghdr_for_send(filc_thread* my_thread,
     if (verbose)
         pas_log("In from_musl_msghdr_for_send\n");
     
-    from_musl_msghdr_base(my_thread, musl_msghdr, msghdr);
+    from_musl_msghdr_base(my_thread, musl_msghdr, msghdr, filc_read_access);
 
     unsigned msg_namelen = musl_msghdr->msg_namelen;
     if (msg_namelen) {
         filc_ptr msg_name = filc_ptr_load(my_thread, &musl_msghdr->msg_name);
-        filc_check_access_int(msg_name, msg_namelen, NULL);
+        filc_check_read_int(msg_name, msg_namelen, NULL);
         if (!from_musl_sockaddr((struct musl_sockaddr*)filc_ptr_ptr(msg_name), msg_namelen,
                                 (struct sockaddr**)&msghdr->msg_name, &msghdr->msg_namelen))
             goto error;
@@ -7767,7 +7811,7 @@ static bool from_musl_msghdr_for_send(filc_thread* my_thread,
     unsigned musl_controllen = musl_msghdr->msg_controllen;
     if (musl_controllen) {
         filc_ptr musl_control = filc_ptr_load(my_thread, &musl_msghdr->msg_control);
-        filc_check_access_int(musl_control, musl_controllen, NULL);
+        filc_check_read_int(musl_control, musl_controllen, NULL);
         unsigned offset = 0;
         size_t cmsg_total_size = 0;
         for (;;) {
@@ -7867,11 +7911,11 @@ error:
 static bool from_musl_msghdr_for_recv(filc_thread* my_thread,
                                       struct musl_msghdr* musl_msghdr, struct msghdr* msghdr)
 {
-    from_musl_msghdr_base(my_thread, musl_msghdr, msghdr);
+    from_musl_msghdr_base(my_thread, musl_msghdr, msghdr, filc_write_access);
 
     unsigned musl_namelen = musl_msghdr->msg_namelen;
     if (musl_namelen) {
-        filc_check_access_int(filc_ptr_load(my_thread, &musl_msghdr->msg_name), musl_namelen, NULL);
+        filc_check_read_int(filc_ptr_load(my_thread, &musl_msghdr->msg_name), musl_namelen, NULL);
         msghdr->msg_namelen = MAX_SOCKADDRLEN;
         msghdr->msg_name = bmalloc_allocate_zeroed(MAX_SOCKADDRLEN);
     }
@@ -7893,7 +7937,7 @@ static void to_musl_msghdr_for_recv(filc_thread* my_thread,
     if (msghdr->msg_namelen) {
         unsigned musl_namelen = musl_msghdr->msg_namelen;
         filc_ptr musl_name_ptr = filc_ptr_load(my_thread, &musl_msghdr->msg_name);
-        filc_check_access_int(musl_name_ptr, musl_namelen, NULL);
+        filc_check_write_int(musl_name_ptr, musl_namelen, NULL);
         struct musl_sockaddr* musl_name = (struct musl_sockaddr*)filc_ptr_ptr(musl_name_ptr);
         PAS_ASSERT(to_musl_sockaddr(my_thread, msghdr->msg_name, msghdr->msg_namelen,
                                     musl_name, &musl_namelen));
@@ -7902,7 +7946,7 @@ static void to_musl_msghdr_for_recv(filc_thread* my_thread,
     
     unsigned musl_controllen = musl_msghdr->msg_controllen;
     filc_ptr musl_control = filc_ptr_load(my_thread, &musl_msghdr->msg_control);
-    filc_check_access_int(musl_control, musl_controllen, NULL);
+    filc_check_write_int(musl_control, musl_controllen, NULL);
     char* musl_control_raw = (char*)filc_ptr_ptr(musl_control);
     pas_zero_memory(musl_control_raw, musl_controllen);
 
@@ -7956,7 +8000,7 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     if (verbose)
         pas_log("In sendmsg\n");
 
-    check_musl_msghdr(msg_ptr);
+    check_musl_msghdr(msg_ptr, filc_read_access);
     struct musl_msghdr* musl_msg = (struct musl_msghdr*)filc_ptr_ptr(msg_ptr);
     int flags;
     if (!from_musl_msg_flags(musl_flags, &flags))
@@ -7988,7 +8032,7 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
 {
     static const bool verbose = false;
 
-    check_musl_msghdr(msg_ptr);
+    check_musl_msghdr(msg_ptr, filc_write_access);
     struct musl_msghdr* musl_msg = (struct musl_msghdr*)filc_ptr_ptr(msg_ptr);
     int flags;
     if (verbose)
@@ -8450,7 +8494,7 @@ int filc_native_zsys_ftruncate(filc_thread* my_thread, int fd, long length)
 
 int filc_native_zsys_getentropy(filc_thread* my_thread, filc_ptr buf_ptr, size_t len)
 {
-    filc_check_access_int(buf_ptr, len, NULL);
+    filc_check_write_int(buf_ptr, len, NULL);
     filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     int result = getentropy(filc_ptr_ptr(buf_ptr), len);
@@ -8464,7 +8508,7 @@ int filc_native_zsys_getentropy(filc_thread* my_thread, filc_ptr buf_ptr, size_t
 
 filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_t size)
 {
-    filc_check_access_int(buf_ptr, size, NULL);
+    filc_check_write_int(buf_ptr, size, NULL);
     filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
     char* result = getcwd((char*)filc_ptr_ptr(buf_ptr), size);
@@ -8675,7 +8719,7 @@ int filc_native_zsys_poll(
         !pas_mul_uintptr_overflow(nfds, sizeof(struct musl_pollfd), &total_size),
         NULL,
         "nfds so big that pollfds size calculation overflowed.");
-    filc_check_access_int(musl_pollfds_ptr, total_size, NULL);
+    filc_check_read_int(musl_pollfds_ptr, total_size, NULL);
     struct musl_pollfd* musl_pollfds = filc_ptr_ptr(musl_pollfds_ptr);
     struct pollfd* pollfds = from_musl_pollfds(musl_pollfds, nfds);
     if (!pollfds) {
@@ -8689,7 +8733,7 @@ int filc_native_zsys_poll(
     if (result < 0)
         set_errno(errno);
     else {
-        filc_check_access_int(musl_pollfds_ptr, total_size, NULL);
+        filc_check_write_int(musl_pollfds_ptr, total_size, NULL);
         to_musl_pollfds(pollfds, musl_pollfds, nfds);
     }
     bmalloc_deallocate(pollfds);
@@ -8717,7 +8761,7 @@ int filc_native_zsys_faccessat(filc_thread* my_thread, int musl_dirfd, filc_ptr 
 
 int filc_native_zsys_sigwait(filc_thread* my_thread, filc_ptr sigmask_ptr, filc_ptr sig_ptr)
 {
-    filc_check_access_int(sigmask_ptr, sizeof(struct musl_sigset), NULL);
+    filc_check_read_int(sigmask_ptr, sizeof(struct musl_sigset), NULL);
     sigset_t sigmask;
     from_musl_sigset((struct musl_sigset*)filc_ptr_ptr(sigmask_ptr), &sigmask);
     filc_exit(my_thread);
@@ -8726,7 +8770,7 @@ int filc_native_zsys_sigwait(filc_thread* my_thread, filc_ptr sigmask_ptr, filc_
     filc_enter(my_thread);
     if (result)
         return result;
-    filc_check_access_int(sig_ptr, sizeof(int), NULL);
+    filc_check_write_int(sig_ptr, sizeof(int), NULL);
     *(int*)filc_ptr_ptr(sig_ptr) = to_musl_signum(signum);
     return 0;
 }
@@ -8830,7 +8874,7 @@ static void* start_thread(void* arg)
     filc_ptr rets = filc_ptr_for_ptr_return_buffer(&return_buffer);
 
     filc_ptr args = filc_ptr_create(thread, filc_allocate(thread, sizeof(filc_ptr)));
-    filc_check_access_ptr(args, NULL);
+    filc_check_write_ptr(args, NULL);
     filc_ptr_store(thread, (filc_ptr*)filc_ptr_ptr(args), filc_ptr_load(thread, &thread->arg_ptr));
     filc_ptr_store(thread, &thread->arg_ptr, filc_ptr_forge_null());
 
@@ -8943,8 +8987,6 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
 bool filc_native_zthread_join(filc_thread* my_thread, filc_ptr thread_ptr, filc_ptr result_ptr)
 {
     check_zthread(thread_ptr);
-    if (filc_ptr_ptr(result_ptr))
-        filc_check_access_ptr(result_ptr, NULL);
     filc_thread* thread = (filc_thread*)filc_ptr_ptr(thread_ptr);
     /* Should never happen because we'd never vend such a thread to the user. */
     PAS_ASSERT(thread->has_started);
@@ -8962,6 +9004,7 @@ bool filc_native_zthread_join(filc_thread* my_thread, filc_ptr thread_ptr, filc_
     pas_system_mutex_unlock(&thread->lock);
     filc_enter(my_thread);
     if (filc_ptr_ptr(result_ptr)) {
+        filc_check_write_ptr(result_ptr, NULL);
         filc_ptr_store(
             my_thread, (filc_ptr*)filc_ptr_ptr(result_ptr),
             filc_ptr_load_with_manual_tracking(&thread->result_ptr));
@@ -8985,7 +9028,7 @@ static bool zpark_if_validate_callback(void* arg)
 
     filc_ptr args = filc_ptr_create(
         data->my_thread, filc_allocate(data->my_thread, sizeof(filc_ptr)));
-    filc_check_access_ptr(args, NULL);
+    filc_check_write_ptr(args, NULL);
     filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
 
     filc_lock_top_native_frame(data->my_thread);
@@ -9004,7 +9047,7 @@ static void zpark_if_before_sleep_callback(void* arg)
 
     filc_ptr args = filc_ptr_create(
         data->my_thread, filc_allocate(data->my_thread, sizeof(filc_ptr)));
-    filc_check_access_ptr(args, NULL);
+    filc_check_write_ptr(args, NULL);
     filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
 
     filc_lock_top_native_frame(data->my_thread);
@@ -9056,9 +9099,9 @@ static void zunpark_one_callback(filc_unpark_result result, void* arg)
 
     filc_ptr args = filc_ptr_create(
         data->my_thread, filc_allocate(data->my_thread, sizeof(zunpark_one_callback_args)));
-    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, did_unpark_thread);
-    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, may_have_more_threads);
-    FILC_CHECK_PTR_FIELD(args, zunpark_one_callback_args, arg_ptr);
+    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, did_unpark_thread, filc_write_access);
+    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, may_have_more_threads, filc_write_access);
+    FILC_CHECK_PTR_FIELD(args, zunpark_one_callback_args, arg_ptr, filc_write_access);
     zunpark_one_callback_args* raw_args = (zunpark_one_callback_args*)filc_ptr_ptr(args);
     raw_args->did_unpark_thread = result.did_unpark_thread;
     raw_args->may_have_more_threads = result.may_have_more_threads;
