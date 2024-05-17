@@ -11054,6 +11054,11 @@ public:
   bool Success(const llvm::APInt &I, const Expr *E, APValue &Result) {
     assert(E->getType()->isIntegralOrEnumerationType() &&
            "Invalid evaluation result.");
+    //llvm::errs() << "I = " << I << ", I.getBitWidth() = " << I.getBitWidth() << ", E->getType() = "
+    //             << E->getType() << "\n";
+    //llvm::errs() << "E is at: ";
+    //E->getExprLoc().print(llvm::errs(), Info.Ctx.getSourceManager());
+    //llvm::errs() << "\n";
     assert(I.getBitWidth() == Info.Ctx.getIntWidth(E->getType()) &&
            "Invalid evaluation result.");
     Result = APValue(APSInt(I));

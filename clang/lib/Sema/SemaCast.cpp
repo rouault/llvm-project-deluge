@@ -2361,8 +2361,8 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
     //   type large enough to hold it. A value of std::nullptr_t can be
     //   converted to an integral type; the conversion has the same meaning
     //   and validity as a conversion of (void*)0 to the integral type.
-    if (Self.Context.getTypeSize(SrcType) >
-        Self.Context.getTypeSize(DestType)) {
+    if (Self.Context.getConstexprTypeSize(SrcType) >
+        Self.Context.getConstexprTypeSize(DestType)) {
       msg = diag::err_bad_reinterpret_cast_small_int;
       return TC_Failed;
     }
@@ -2457,8 +2457,8 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
     // C++ 5.2.10p4: A pointer can be explicitly converted to any integral
     //   type large enough to hold it; except in Microsoft mode, where the
     //   integral type size doesn't matter (except we don't allow bool).
-    if ((Self.Context.getTypeSize(SrcType) >
-         Self.Context.getTypeSize(DestType))) {
+    if ((Self.Context.getConstexprTypeSize(SrcType) >
+         Self.Context.getConstexprTypeSize(DestType))) {
       bool MicrosoftException =
           Self.getLangOpts().MicrosoftExt && !DestType->isBooleanType();
       if (MicrosoftException) {

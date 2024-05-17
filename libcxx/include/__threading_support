@@ -37,6 +37,7 @@
 // module with <math.h> and makes atomic_wide_counter.h invisible.
 // Include <math.h> here to work around that.
 # include <math.h>
+# include <time.h>
 
 # include <pthread.h>
 # include <sched.h>

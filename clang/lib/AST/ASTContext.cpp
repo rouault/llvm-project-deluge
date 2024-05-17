@@ -2196,7 +2196,7 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       break;
     case BuiltinType::NullPtr:
       // C++ 3.9.1p11: sizeof(nullptr_t) == sizeof(void*)
-      ConstexprWidth = Width = Target->getPointerWidth(LangAS::Default);
+      ConstexprWidth = Width = Target->getConstexprPointerWidth(LangAS::Default);
       ConstexprAlign = Align = Target->getPointerAlign(LangAS::Default);
       break;
     case BuiltinType::ObjCId:
