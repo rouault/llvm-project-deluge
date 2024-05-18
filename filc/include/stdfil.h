@@ -9,10 +9,60 @@ extern "C" {
 } /* tell emacs what's up */
 #endif
 
+/* Allocate `count` bytes of memory zero-initialized and with all word types set to the unset type.
+   May allocate slightly more than `count`, based on the runtime's minalign (which is currently 16).
+   
+   This is a GC allocation, so freeing it is optional. Also, if you free it and then use it, your
+   program is guaranteed to panic.
+
+   Memory that has the unset type may be used for any type of access, but then the type monotonically
+   transitions. For example, if you access some word in this object using int, then the type of that
+   word becomes int and stays that until the memory is freed.
+
+   libc's malloc just forwards to this. There is no difference between calling `malloc` and `zalloc`. */
 void* zalloc(__SIZE_TYPE__ count);
+
+/* Allocate `count` bytes of memory with the GC, aligned to `alignment`. Supports very large alignments,
+   up to at least 128k (may support even larger ones in the future). Like with `zalloc`, the memory
+   starts out with unset type. */
 void* zaligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+
+/* Reallocates the object pointed at by `old_ptr` to now have `count` bytes, and returns the new
+   pointer. `old_ptr` must satisfy `old_ptr == zgetlower(old_ptr)`, otherwise the runtime panics your
+   process. If `count` is larger than the size of `old_ptr`'s allocation, then the new space is
+   initialized to unset type. For the memory that is copied, the type is preserved.
+
+   libc's realloc just forwards to this. There is no difference between calling `realloc` and
+   `zrealloc`. */
 void* zrealloc(void* old_ptr, __SIZE_TYPE__ count);
+
+/* Just like `zrealloc`, but allows you to specify arbitrary alignment on the newly allocated memory. */
 void* zaligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+
+/* Frees the object pointed to by `ptr`. `ptr` must satisfy `ptr == zgetlower(ptr)`, otherwise the
+   runtime panics your process. `ptr` must point to memory allocated by `zalloc`, `zaligned_alloc`,
+   `zrealloc`, or `zaligned_realloc`, and that memory must not have been freed yet.
+   
+   Freeing objects is optional in Fil-C, since Fil-C is garbage collected.
+   
+   Freeing an object in Fil-C does not cause memory to be reclaimed immediately. Instead, it
+   transitions all of the word types in the object to the free type, preventing any future accesses
+   from working, and also sets the free flag in the object header. This has two GC implications:
+   
+   - The GC doesn't have to scan any outgoing pointers from this object, since those pointers are not
+     reachable to the program (all accesses to them now trap). Hence, freeing an object has the
+     benefit that dangling pointers don't lead to memory leaks, as they would in GC'd systems that
+     don't support freeing.
+     
+   - The GC can replace all pointers to this object with pointers that still have the same integer
+     address but use the free singleton as their capability. This allows the GC to reclaim memory for
+     this object on the next cycle, even if there were still dangling pointers to this object. Those
+     dangling pointers would already have trapped on access even before the next cycle (since the
+     object's capability has the free type in each word, and the free bit set in the header).
+     Switching to the free singleton is not user-visible, except via ptr introspection like `%P` or
+     `zptr_to_new_string`.
+   
+   libc's free just forwards to this. There is no difference between calling `free` and `zfree`. */
 void zfree(void* ptr);
 
 /* Accessors for the bounds.
@@ -186,10 +236,9 @@ int zisdigit(int chr);
 
    The main difference from the libc sprintf is that it uses a different implementation under the hood.
    This is based on the samba snprintf, origindally by Patrick Powell, but it uses the zstrlen/zisdigit/etc
-   functions rather than the libc ones, and it has some additional features:
+   functions rather than the libc ones, and it has one additional feature:
 
-       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
-       - '%T', which prints the filc_type or traps if you give it anything but a ztype.
+       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,...type...).
 
    It's not obvious that this code will do the right thing for floating point formats. But this code is
    pizlonated, so if it goes wrong, at least it'll stop your program from causing any more damage. */
@@ -210,8 +259,7 @@ char* zasprintf(const char* format, ...);
 
    Note that the main reason why you might want to use this for debugging over printf is that it supports:
 
-       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,type{thingy}).
-       - '%T', which prints the filc_type or traps if you give it anything but a ztype.
+       - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,...type...).
 
    But if you want to debug floating point, you should maybe go with printf. */
 void zvprintf(const char* format, __builtin_va_list args);
