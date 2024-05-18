@@ -9,6 +9,12 @@ extern "C" {
 } /* tell emacs what's up */
 #endif
 
+#ifdef __cplusplus
+typedef bool filc_bool;
+#else
+typedef _Bool filc_bool;
+#endif
+
 /* Allocate `count` bytes of memory zero-initialized and with all word types set to the unset type.
    May allocate slightly more than `count`, based on the runtime's minalign (which is currently 16).
    
@@ -92,13 +98,13 @@ void* zgetupper(void* ptr);
 /* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
    succeed, since this does not check type. For example, valid function pointers are zinbounds but
    cannot be "accessed" regardless of type (can only be called if in bounds). */
-_Bool zinbounds(void* ptr);
+filc_bool zinbounds(void* ptr);
 
 /* Tells if a value of the given size is in bounds of the pointer. */
-_Bool zvalinbounds(void* ptr, __SIZE_TYPE__ size);
+filc_bool zvalinbounds(void* ptr, __SIZE_TYPE__ size);
 
 /* Returns true if the pointer points to a byte with unset type. */
-_Bool zisunset(void* ptr);
+filc_bool zisunset(void* ptr);
 
 /* Returns true if the pointer points at an integer byte.
    
@@ -106,7 +112,7 @@ _Bool zisunset(void* ptr);
    or to any other type when we add more types.
  
    Pointer must be in bounds, else your process dies. */
-_Bool zisint(void* ptr);
+filc_bool zisint(void* ptr);
 
 /* Returns the pointer phase of the pointer.
    
@@ -123,12 +129,12 @@ int zptrphase(void* ptr);
 
 /* Returns true if the pointer points at any kind of pointer memory. Equivalent to
    isptrphase(p) != -1. */
-_Bool zisptr(void* ptr);
+filc_bool zisptr(void* ptr);
 
 /* Returns true if the pointer points at pointers or integers.
  
    New types, as well as opaque memory, will return false. */
-_Bool zisintorptr(void* ptr);
+filc_bool zisintorptr(void* ptr);
 
 /* Construct a pointer that has the capability from `object` but the address from `address`. This
    is a memory-safe operation, and it's guaranteed to be equivalent to:
@@ -301,12 +307,12 @@ void zcompiler_fence(void);
    a comparison of your expected value and the old value returned by CAS.
 
    I may add more ptr atomic functions as I find a need for them. */
-_Bool zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value);
-_Bool zweak_cas_ptr(void** ptr, void* expected, void* new_value);
+filc_bool zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value);
+filc_bool zweak_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value);
 void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
-_Bool zunfenced_intense_cas_ptr(void** ptr, void** expected, void* new_value);
-_Bool zintense_cas_ptr(void** ptr, void** expected, void* new_value);
+filc_bool zunfenced_intense_cas_ptr(void** ptr, void** expected, void* new_value);
+filc_bool zintense_cas_ptr(void** ptr, void** expected, void* new_value);
 void* zunfenced_xchg_ptr(void** ptr, void* new_value);
 void* zxchg_ptr(void** ptr, void* new_value);
 void zatomic_store_ptr(void** ptr, void* new_value);
@@ -354,7 +360,7 @@ typedef enum zpark_result zpark_result;
 
    Errors are reported by killing the shit out of your program. */
 zpark_result zpark_if(const void* address,
-                      _Bool (*condition)(void* arg),
+                      filc_bool (*condition)(void* arg),
                       void (*before_sleep)(void* arg),
                       void* arg,
                       double absolute_timeout_in_milliseconds);
@@ -385,7 +391,9 @@ zpark_result zcompare_and_park(const int* address, int expected_value,
    the bucket lock held, an the bucket lock may be shared between your address and any number of
    other addresses. */
 void zunpark_one(const void* address,
-                 void (*callback)(_Bool did_unpark_thread, _Bool may_have_more_threads, void* arg),
+                 void (*callback)(filc_bool did_unpark_thread,
+                                  filc_bool may_have_more_threads,
+                                  void* arg),
                  void* arg);
 
 /* Unparks up to count threads from the queue associated with the given address, which cannot
@@ -396,7 +404,7 @@ unsigned zunpark(const void* address, unsigned count);
    checks.
 
    This is here so that the test suite can assert that it runs with testing asserts enabled. */
-_Bool zis_runtime_testing_enabled(void);
+filc_bool zis_runtime_testing_enabled(void);
 
 /* Asks Fil-C to run additional pointer validation on this pointer. If memory safety holds, then
    these checks will succeed. If they don't, then it's a Fil-C bug, and we should fix it. It could
@@ -584,8 +592,9 @@ void* zthread_self_cookie(void);
 void zthread_set_self_cookie(void* cookie);
 void* zthread_create(void* (*callback)(void* arg), void* arg); /* returns NULL on failure, sets
                                                                   errno. */
-_Bool zthread_join(void* thread, void** result); /* Only fails with ESRCH for forked threads. Returns
-                                                    true on success, false on failure and sets errno. */
+filc_bool zthread_join(void* thread, void** result); /* Only fails with ESRCH for forked threads.
+                                                        Returns true on success, false on failure
+                                                        and sets errno. */
 
 #ifdef __cplusplus
 }

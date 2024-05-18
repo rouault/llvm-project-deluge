@@ -60,6 +60,7 @@
 #include <cstring>
 #include <limits.h>
 #include <stdlib.h>
+#include <stdfil.h>
 
 #ifndef _LIBCXXABI_HAS_NO_THREADS
 #  if defined(__ELF__) && defined(_LIBCXXABI_LINK_PTHREAD_LIB)
@@ -161,7 +162,7 @@ uint32_t PlatformThreadID() {
 #elif defined(SYS_gettid) && defined(_LIBCPP_HAS_THREAD_API_PTHREAD)
 uint32_t PlatformThreadID() {
   static_assert(sizeof(pid_t) == sizeof(uint32_t), "");
-  return static_cast<uint32_t>(syscall(SYS_gettid));
+  return static_cast<uint32_t>(zthread_self_id());
 }
 #else
 constexpr uint32_t (*PlatformThreadID)() = nullptr;
@@ -413,14 +414,12 @@ private:
 
 #if defined(SYS_futex)
 void PlatformFutexWait(int* addr, int expect) {
-  constexpr int WAIT = 0;
-  syscall(SYS_futex, addr, WAIT, expect, 0);
+  zcompare_and_park(addr, expect, 1. / 0.);
   __tsan_acquire(addr);
 }
 void PlatformFutexWake(int* addr) {
-  constexpr int WAKE = 1;
   __tsan_release(addr);
-  syscall(SYS_futex, addr, WAKE, INT_MAX);
+  zunpark(addr, UINT_MAX);
 }
 #else
 constexpr void (*PlatformFutexWait)(int*, int) = nullptr;
