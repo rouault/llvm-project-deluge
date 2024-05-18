@@ -5,7 +5,7 @@ set -x
 
 rm -rf pizfix
 
-(cd build && ninja clang)
+(cd build && ninja)
 
 (cd libpas && ./build.sh)
 

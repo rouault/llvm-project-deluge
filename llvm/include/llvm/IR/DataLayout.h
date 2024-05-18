@@ -508,7 +508,7 @@ public:
   /// returns 12 or 16 for x86_fp80, depending on alignment.
   TypeSize getTypeAllocSize(Type *Ty, FilCMode DM = AfterFilC) const {
     // Round up to the next alignment boundary.
-    return alignTo(getTypeStoreSize(Ty, DM), getABITypeAlign(Ty).value());
+    return alignTo(getTypeStoreSize(Ty, DM), getABITypeAlign(Ty, DM).value());
   }
   TypeSize getTypeAllocSizeBeforeFilC(Type *Ty) const { return getTypeAllocSize(Ty, BeforeFilC); }
 

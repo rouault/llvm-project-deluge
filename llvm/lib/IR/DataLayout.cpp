@@ -793,12 +793,12 @@ Align DataLayout::getAlignment(Type *Ty, bool abi_or_pref, FilCMode DM) const {
   // Early escape for the non-numeric types.
   case Type::LabelTyID:
     if (DM == BeforeFilC)
-      return Align(128);
+      return Align(16);
     return abi_or_pref ? getPointerABIAlignment(0) : getPointerPrefAlignment(0);
   case Type::PointerTyID: {
     unsigned AS = cast<PointerType>(Ty)->getAddressSpace();
     if (AS == 0 && DM == BeforeFilC)
-      return Align(128);
+      return Align(16);
     return abi_or_pref ? getPointerABIAlignment(AS)
                        : getPointerPrefAlignment(AS);
     }
