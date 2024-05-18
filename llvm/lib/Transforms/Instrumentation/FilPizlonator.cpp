@@ -345,8 +345,15 @@ class Pizlonator {
 
     Type* LowT = lowerTypeImpl(T);
     assert(T->isSized() == LowT->isSized());
-    if (T->isSized())
+    if (T->isSized()) {
+      if (DL.getTypeStoreSizeBeforeFilC(T) != DL.getTypeStoreSize(LowT)) {
+        errs() << "Error lowering type: " << *T << "\n"
+               << "Type after lowering: " << *LowT << "\n"
+               << "Predicted lowered size: " << DL.getTypeStoreSizeBeforeFilC(T) << "\n"
+               << "Actual lowered size: " << DL.getTypeStoreSize(LowT) << "\n";
+      }
       assert(DL.getTypeStoreSizeBeforeFilC(T) == DL.getTypeStoreSize(LowT));
+    }
     LoweredTypes[T] = LowT;
     return LowT;
   }
