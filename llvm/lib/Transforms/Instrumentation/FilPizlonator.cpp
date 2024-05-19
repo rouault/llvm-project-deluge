@@ -2104,7 +2104,8 @@ class Pizlonator {
 
   bool shouldPassThrough(GlobalVariable* G) {
     return (G->getName() == "llvm.global_ctors" ||
-            G->getName() == "llvm.global_dtors");
+            G->getName() == "llvm.global_dtors" ||
+            G->getName() == "llvm.used");
   }
 
   bool shouldPassThrough(GlobalValue* G) {
@@ -2429,6 +2430,18 @@ public:
         Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
       }
       GlobalDtors->setInitializer(ConstantArray::get(Array->getType(), Args));
+    }
+
+    if (GlobalVariable* Used = M.getGlobalVariable("llvm.used")) {
+      ConstantArray* Array = cast<ConstantArray>(Used->getInitializer());
+      std::vector<Constant*> Args;
+      for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
+        // NOTE: This could have a GEP, supposedly. Pretend it can't for now.
+        Function* GetterF = GlobalToGetter[cast<GlobalValue>(Array->getOperand(Index))];
+        assert(GetterF);
+        Args.push_back(GetterF);
+      }
+      Used->setInitializer(ConstantArray::get(Array->getType(), Args));
     }
 
     for (GlobalVariable* G : Globals) {

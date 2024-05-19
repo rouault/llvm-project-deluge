@@ -75,7 +75,7 @@ $testDirectory.each_entry {
         outp.print "xcrun build/bin/clang -o #{Shellwords.shellescape(binary)}"
         fullPath.each_entry {
             | entry |
-            next unless entry.extname == ".c"
+            next unless entry.extname == ".c" or entry.extname == ".ll"
             next if libraryFiles[entry.to_s]
             outp.print " "
             outp.print Shellwords.shellescape(fullPath + entry)
