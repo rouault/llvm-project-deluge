@@ -1,5 +1,6 @@
 #include "llvm/Transforms/Instrumentation/FilPizlonator.h"
 
+#include <llvm/Demangle/Demangle.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Operator.h>
 #include <llvm/IR/TypedPointerType.h>
@@ -260,6 +261,16 @@ class Pizlonator {
     return Result;
   }
 
+  std::string getFunctionName(Function *F) {
+    std::string FunctionName;
+    if (char* DemangledName = itaniumDemangle(F->getName())) {
+      FunctionName = DemangledName;
+      free(DemangledName);
+    } else
+      FunctionName = F->getName();
+    return FunctionName;
+  }
+
   Value* getOriginForFunction(Function* F) {
     auto iter = OriginsForFunctions.find(F);
     if (iter != OriginsForFunctions.end())
@@ -267,7 +278,7 @@ class Pizlonator {
 
     Constant* C = ConstantStruct::get(
       OriginTy,
-      { getString(F->getName()), getString(F->getSubprogram()->getFilename()),
+      { getString(getFunctionName(F)), getString(F->getSubprogram()->getFilename()),
         ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) });
     GlobalVariable* Result = new GlobalVariable(
       M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_function_origin");
@@ -2572,7 +2583,7 @@ public:
         errs() << "Function before lowering: " << *F << "\n";
 
       if (!F->isDeclaration()) {
-        FunctionName = F->getName();
+        FunctionName = getFunctionName(F);
         OldF = F;
         NewF = FunctionToHiddenFunction[F];
         assert(NewF);
