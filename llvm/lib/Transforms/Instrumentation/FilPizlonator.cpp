@@ -57,6 +57,7 @@ static constexpr size_t WordSize = 16;
 // This has to match the FilC runtime.
 typedef uint8_t WordType;
 
+static constexpr WordType WordTypeUnset = 0;
 static constexpr WordType WordTypeInt = 1;
 static constexpr WordType WordTypePtr = 2;
 static constexpr WordType WordTypeFunction = 4;
@@ -1167,12 +1168,30 @@ class Pizlonator {
       { Lower, Upper, ConstantInt::get(Int16Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
   }
 
-  Constant* objectConstantForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
+  bool isConstantZero(Constant* C) {
+    if (isa<ConstantAggregateZero>(C))
+      return true;
+    if (ConstantInt* CI = dyn_cast<ConstantInt>(C))
+      return CI->isZero();
+    if (ConstantFP* CF = dyn_cast<ConstantFP>(C))
+      return CF->isZero();
+    if (ConstantAggregate* CA = dyn_cast<ConstantAggregate>(C)) {
+      for (size_t Index = CA->getNumOperands(); Index--;) {
+        if (!isConstantZero(CA->getOperand(Index)))
+          return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  GlobalVariable* objectGlobalForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
     if (verbose)
       errs() << "Creating object constant for global = " << *G << "\n";
     std::vector<WordType> WordTypes;
     size_t ObjectSize;
     int16_t ObjectFlags = ObjectFlagGlobal;
+    bool ObjectIsConstant = true;
     if (isa<Function>(G)) {
       WordTypes.push_back(WordTypeFunction);
       ObjectSize = WordSize;
@@ -1184,19 +1203,24 @@ class Pizlonator {
       assert(Size == DL.getTypeStoreSize(LowT));
       assert(!(Size % WordSize));
       ObjectSize = Size;
-      if (cast<GlobalVariable>(OriginalG)->isConstant())
+      GlobalVariable* OriginalGV = cast<GlobalVariable>(OriginalG);
+      if (OriginalGV->isConstant())
         ObjectFlags |= ObjectFlagReadonly;
+      else if (isConstantZero(OriginalGV->getInitializer())) {
+        // Read-write globals that have a zero initializer get to have unset type. This allows for
+        // the C++ idiom where you allocate storage of char type to hold room for a class in order
+        // to avoid the class's constructor or destructor from running.
+        ObjectIsConstant = false;
+        for (size_t Index = WordTypes.size(); Index--;)
+          WordTypes[Index] = WordTypeUnset;
+      }
     }
     assert(!(ObjectSize % WordSize));
-    return objectConstant(
+    Constant* NewObjectC = objectConstant(
       G, ConstantExpr::getGetElementPtr(Int8Ty, G, ConstantInt::get(IntPtrTy, ObjectSize)),
       ObjectFlags, WordTypes);
-  }
-
-  GlobalVariable* objectGlobalForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
-    Constant* NewObjectC = objectConstantForGlobal(G, OriginalG);
     return new GlobalVariable(
-      M, NewObjectC->getType(), true, GlobalValue::InternalLinkage, NewObjectC,
+      M, NewObjectC->getType(), ObjectIsConstant, GlobalValue::InternalLinkage, NewObjectC,
       "Jo_" + OriginalG->getName());
   }
 
@@ -2465,6 +2489,10 @@ public:
         M, NewC->getType(), false, GlobalValue::InternalLinkage, NewC,
         "Jg_" + G->getName());
       assert(NewDataG);
+      if (G->getAlign().valueOrOne() < WordSize)
+        NewDataG->setAlignment(Align(WordSize));
+      else
+        NewDataG->setAlignment(G->getAlign().valueOrOne());
 
       GlobalVariable* NewObjectG = objectGlobalForGlobal(NewDataG, G);
       
