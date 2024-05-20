@@ -2610,11 +2610,18 @@ void DarwinClang::AddCXXStdlibLibArgs(const ArgList &Args,
   CXXStdlibType Type = GetCXXStdlibType(Args);
 
   switch (Type) {
-  case ToolChain::CST_Libcxx:
+  case ToolChain::CST_Libcxx: {
+    SmallString<128> P(getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+    
     CmdArgs.push_back("-lc++");
     if (Args.hasArg(options::OPT_fexperimental_library))
       CmdArgs.push_back("-lc++experimental");
     break;
+  }
 
   case ToolChain::CST_Libstdcxx:
     // Unfortunately, -lstdc++ doesn't always exist in the standard search path;
