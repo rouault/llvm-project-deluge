@@ -628,7 +628,7 @@ class Pizlonator {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
+          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
         checkRecurse(InnerT, HighP, InnerP, AK, InsertBefore);
       }
@@ -702,7 +702,7 @@ class Pizlonator {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
+          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
         Value* V = loadValueRecurse(InnerT, HighP, InnerP, isVolatile, A, AO, SS, InsertBefore);
         Result = InsertValueInst::Create(Result, V, Index, "filc_insert_struct", InsertBefore);
@@ -790,7 +790,7 @@ class Pizlonator {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(IntPtrTy, Index) },
+          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
         Value* InnerV = ExtractValueInst::Create(
           InnerT, V, { Index }, "filc_extract_struct", InsertBefore);

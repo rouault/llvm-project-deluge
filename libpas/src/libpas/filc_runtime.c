@@ -3110,16 +3110,38 @@ static void (**deferred_global_ctors)(PIZLONATED_SIGNATURE) = NULL;
 static size_t num_deferred_global_ctors = 0;
 static size_t deferred_global_ctors_capacity = 0;
 
+static void run_global_ctor(filc_thread* my_thread, void (*global_ctor)(PIZLONATED_SIGNATURE))
+{
+    static const filc_origin origin = {
+        .filename = "<runtime>",
+        .function = "run_global_ctor",
+        .line = 0,
+        .column = 0
+    };
+
+    struct {
+        FILC_FRAME_BODY;
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    filc_push_frame(my_thread, frame);
+    
+    filc_return_buffer return_buffer;
+    filc_lock_top_native_frame(my_thread);
+    global_ctor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
+    filc_unlock_top_native_frame(my_thread);
+
+    filc_pop_frame(my_thread, frame);
+}
+
 void filc_defer_or_run_global_ctor(void (*global_ctor)(PIZLONATED_SIGNATURE))
 {
     filc_thread* my_thread = filc_get_my_thread();
     
     if (did_run_deferred_global_ctors) {
         filc_enter(my_thread);
-        filc_return_buffer return_buffer;
-        filc_lock_top_native_frame(my_thread);
-        global_ctor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
-        filc_unlock_top_native_frame(my_thread);
+        run_global_ctor(my_thread, global_ctor);
         filc_exit(my_thread);
         return;
     }
@@ -3155,13 +3177,8 @@ void filc_run_deferred_global_ctors(filc_thread* my_thread)
     did_run_deferred_global_ctors = true;
     /* It's important to run the destructors in exactly the order in which they were deferred, since
        this allows us to match the priority semantics despite not having the priority. */
-    for (size_t index = 0; index < num_deferred_global_ctors; ++index) {
-        filc_return_buffer return_buffer;
-        filc_lock_top_native_frame(my_thread);
-        deferred_global_ctors[index](
-            my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
-        filc_unlock_top_native_frame(my_thread);
-    }
+    for (size_t index = 0; index < num_deferred_global_ctors; ++index)
+        run_global_ctor(my_thread, deferred_global_ctors[index]);
     bmalloc_deallocate(deferred_global_ctors);
     num_deferred_global_ctors = 0;
     deferred_global_ctors_capacity = 0;
@@ -3172,10 +3189,28 @@ void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE))
     filc_thread* my_thread = filc_get_my_thread();
     
     filc_enter(my_thread);
+
+    static const filc_origin origin = {
+        .filename = "<runtime>",
+        .function = "run_global_dtor",
+        .line = 0,
+        .column = 0
+    };
+
+    struct {
+        FILC_FRAME_BODY;
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    filc_push_frame(my_thread, frame);
+
     filc_return_buffer return_buffer;
     filc_lock_top_native_frame(my_thread);
     global_dtor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
     filc_unlock_top_native_frame(my_thread);
+
+    filc_pop_frame(my_thread, frame);
     filc_exit(my_thread);
 }
 

@@ -227,11 +227,15 @@ public:
     const TargetInfo &Target = Context.getTargetInfo();
     TargetInfo::IntType PtrDiff = Target.getPtrDiffType(LangAS::Default);
     MemberPointerInfo MPI;
-    MPI.Width = Target.getTypeWidth(PtrDiff);
-    MPI.Align = Target.getTypeAlign(PtrDiff);
+    MPI.ConstexprWidth = MPI.Width = Target.getTypeWidth(PtrDiff);
+    MPI.ConstexprAlign = MPI.Align = Target.getTypeAlign(PtrDiff);
     MPI.HasPadding = false;
-    if (MPT->isMemberFunctionPointer())
-      MPI.Width *= 2;
+    if (MPT->isMemberFunctionPointer()) {
+      MPI.Width = Target.getPointerWidth(LangAS::Default) * 2;
+      MPI.Align = Target.getPointerAlign(LangAS::Default);
+      MPI.ConstexprWidth *= 2;
+      MPI.HasPadding = true;
+    }
     return MPI;
   }
 

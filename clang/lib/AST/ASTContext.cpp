@@ -2306,9 +2306,9 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     const auto *MPT = cast<MemberPointerType>(T);
     CXXABI::MemberPointerInfo MPI = ABI->getMemberPointerInfo(MPT);
     Width = MPI.Width;
-    ConstexprWidth = MPI.Width; // FIXME ???
+    ConstexprWidth = MPI.ConstexprWidth;
     Align = MPI.Align;
-    ConstexprAlign = MPI.Align; // FIXME ????
+    ConstexprAlign = MPI.ConstexprAlign;
     break;
   }
   case Type::Complex: {
