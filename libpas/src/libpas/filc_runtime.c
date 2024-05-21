@@ -2887,6 +2887,29 @@ done:
     filc_pop_frame(my_thread, frame);
 }
 
+int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)
+{
+    if (!count)
+        return 0;
+
+    check_access_common(ptr1, count, filc_read_access, NULL);
+    check_access_common(ptr2, count, filc_read_access, NULL);
+    check_accessible(ptr1, NULL);
+    check_accessible(ptr2, NULL);
+
+    if (count <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
+        return memcmp(filc_ptr_ptr(ptr1), filc_ptr_ptr(ptr2), count);
+
+    filc_pin(filc_ptr_object(ptr1));
+    filc_pin(filc_ptr_object(ptr2));
+    filc_exit(my_thread);
+    int result = memcmp(filc_ptr_ptr(ptr1), filc_ptr_ptr(ptr2), count);
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(ptr1));
+    filc_unpin(filc_ptr_object(ptr2));
+    return result;
+}
+
 static char* finish_check_and_get_new_str(char* base, size_t length)
 {
     char* result = bmalloc_allocate(length + 1);

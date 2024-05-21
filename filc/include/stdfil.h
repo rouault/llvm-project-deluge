@@ -179,6 +179,10 @@ void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
    This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);
 
+/* Mostly type-oblivious memcmp implementation. This works for any two ranges so long as they contain
+   ints, ptrs, or unset words. It's fine to compare ints to ptrs, for example. */
+int zmemcmp(const void* ptr1, const void* ptr2, __SIZE_TYPE__ count);
+
 /* The zptrtable can be used to encode pointers as integers. The integers are __SIZE_TYPE__ but
    tend to be small; you can usually get away with storing them in 32 bits.
    
