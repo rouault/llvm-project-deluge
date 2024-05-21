@@ -431,6 +431,8 @@ static filc_signal_handler* signal_table[FILC_MAX_MUSL_SIGNUM + 1];
 static bool is_initialized = false; /* Useful for assertions. */
 static bool exit_on_panic = false;
 static bool dump_errnos = false;
+static bool run_global_ctors = true;
+static bool run_global_dtors = true;
 
 void filc_initialize(void)
 {
@@ -470,12 +472,16 @@ void filc_initialize(void)
 
     exit_on_panic = filc_get_bool_env("FILC_EXIT_ON_PANIC", false);
     dump_errnos = filc_get_bool_env("FILC_DUMP_ERRNOS", false);
+    run_global_ctors = filc_get_bool_env("FILC_RUN_GLOBAL_CTORS", true);
+    run_global_dtors = filc_get_bool_env("FILC_RUN_GLOBAL_DTORS", true);
     
     if (filc_get_bool_env("FILC_DUMP_SETUP", false)) {
         pas_log("filc setup:\n");
         pas_log("    testing library: %s\n", PAS_ENABLE_TESTING ? "yes" : "no");
         pas_log("    exit on panic: %s\n", exit_on_panic ? "yes" : "no");
         pas_log("    dump errnos: %s\n", dump_errnos ? "yes" : "no");
+        pas_log("    run global ctors: %s\n", run_global_ctors ? "yes" : "no");
+        pas_log("    run global dtors: %s\n", run_global_dtors ? "yes" : "no");
         fugc_dump_setup();
     }
     
@@ -3135,6 +3141,11 @@ static size_t deferred_global_ctors_capacity = 0;
 
 static void run_global_ctor(filc_thread* my_thread, void (*global_ctor)(PIZLONATED_SIGNATURE))
 {
+    if (!run_global_ctors) {
+        pas_log("filc: skipping global ctor.\n");
+        return;
+    }
+    
     static const filc_origin origin = {
         .filename = "<runtime>",
         .function = "run_global_ctor",
@@ -3209,6 +3220,11 @@ void filc_run_deferred_global_ctors(filc_thread* my_thread)
 
 void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE))
 {
+    if (!run_global_dtors) {
+        pas_log("filc: skipping global dtor.\n");
+        return;
+    }
+    
     filc_thread* my_thread = filc_get_my_thread();
     
     filc_enter(my_thread);

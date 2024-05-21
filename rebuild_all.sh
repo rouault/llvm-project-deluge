@@ -5,11 +5,19 @@ set -x
 
 rm -rf pizfix
 
-(cd build && ninja clang)
+(cd build &&
+     cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang \
+           -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON \
+           -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" -DLIBCXXABI_HAS_PTHREAD_API=ON \
+           -DLIBCXX_ENABLE_EXCEPTIONS=OFF -DLIBCXXABI_ENABLE_EXCEPTIONS=OFF -DLIBCXX_HAS_PTHREAD_API=ON \
+           -DLIBCXX_HAS_MUSL_LIBC=ON &&
+     ninja clang)
 
 (cd libpas && ./build.sh)
 
 (cd musl && make clean && make -j `sysctl -n hw.ncpu` && make install)
+
+(cd build && ninja runtimes-clean && ninja runtimes)
 
 filc/run-tests
 

@@ -6,13 +6,15 @@ set -x
 mkdir -p build
 mkdir -p runtime-build
 
-(cd build && cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES= && ninja)
+(cd build && cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=OFF -DLIBCXXABI_ENABLE_EXCEPTIONS=OFF -DLIBCXX_HAS_PTHREAD_API=ON -DLIBCXX_HAS_MUSL_LIBC=ON && ninja clang)
 
 (cd runtime-build && cmake -S ../llvm-project-clean/llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt && ninja)
 
 (cd libpas && ./build.sh)
 
 (cd musl && CC=$PWD/../build/bin/clang ./configure --target=aarch64 --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
+
+(cd build && ninja runtimes)
 
 filc/run-tests
 
