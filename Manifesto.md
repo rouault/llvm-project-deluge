@@ -3,15 +3,16 @@
 (The previous version, which used isoheaps instead of  GC, is obsolete. If you want to read about it,
 [see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
 
-The C programming language is wonderful. There is a ton of amazing code written in C. But C is
-an unsafe language. Simple logic errors may result in an attacker controlling where a pointer points
-and what is written into it, which leads to an easy path to exploitation. Lots of other languages
-(Rust, Java, Haskell, even JavaScript) don't have this problem!
+The C and C++ programming languages are wonderful. There is a ton of amazing code written in both of
+them. But C and C++ are unsafe languages. Simple logic errors may result in an attacker controlling
+where a pointer points and what is written into it, which leads to an easy path to exploitation. Lots
+of other languages (Rust, Java, Haskell, even JavaScript) don't have this problem!
 
-But I love C. I grew up on it. It's such a joy for me to use! Therefore, in my spare time, I decided
-to make my own memory-safe C. This is a personal project and an expression of my love for C.
+But I love C. And I also almost love C++ just as much. I grew up on them. It's such a joy for me to
+use both of them! Therefore, in my spare time, I decided
+to make my own memory-safe C and C++. This is a personal project and an expression of my love for C.
 
-Fil-C introduces memory safety at the core of C:
+Fil-C introduces memory safety at the core of C and C++:
  
 - All pointers carry a *capability*, which tracks the bounds and type of the pointed-to memory. Fil-C
   use a novel pointer encoding called *MonoCap*, which is a 16-byte atomic tuple of object pointer
@@ -51,7 +52,11 @@ Fil-C is already powerful enough to run a [memory-safe curl](https://github.com/
 and a [memory-safe OpenSSH (both client and server)](https://github.com/pizlonator/deluded-openssh-portable)
 on top of a [memory-safe OpenSSL](https://github.com/pizlonator/deluded-openssl-3.2.0),
 [memory-safe zlib](https://github.com/pizlonator/deluded-zlib-1.3),
-[memory-safe pcre](https://github.com/pizlonator/pizlonated-pcre-8.39) (which required no changes), and
+[memory-safe pcre](https://github.com/pizlonator/pizlonated-pcre-8.39) (which required no changes),
+[memory-safe CPython](https://github.com/pizlonator/pizlonated-cpython) (which required some changes
+and even [found a bug](https://github.com/python/cpython/issues/118534)),
+[memory-safe SQLite](https://github.com/pizlonator/pizlonated-sqlite),
+[memory-safe libcxx and libcxxabi](https://github.com/pizlonator/llvm-project-deluge/tree/deluge), and
 [memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
 me on my Apple Silicon Mac:
 
@@ -158,7 +163,9 @@ that your linker will understand. Some caveats:
   uses assert() as its error checking for now, so you must compile llvm with assertions enabled (the
   build_all.sh script does this).
 
-Fil-C requires almost no changes to C code. Inline assembly is currently disallowed. Some configure
+- C++ support doesn't include exceptions, yet. So, you have to compile C++ code with `-fno-exceptions`.
+
+Fil-C requires almost no changes to C or C++ code. Inline assembly is currently disallowed. Some configure
 script jank has to change. Other than that, I only had to make a couple one-line changes in OpenSSL
 and OpenSSH to get them to work.
 
@@ -205,8 +212,8 @@ and then making it super fast.
 
 ### Growing the Corpus
 
-Fil-C can already run most of musl, zlib, OpenSSL, curl, OpenSSH, and pcre. My goal
-is to grow the corpus until I have a small UNIX-like userland that comprises only pizlonated
+Fil-C can already run a bunch of stuff, but not enough to be able to do meaningful optimizations, yet.
+My goal is to grow the corpus until I have a small UNIX-like userland that comprises only pizlonated
 programs.
 
 Corpus growth should proceed as follows:
@@ -214,14 +221,13 @@ Corpus growth should proceed as follows:
 - First get to at least 10 large, real-world C libaries or programs compiling with Fil-C.
   I don't consider musl to be part of the corpus,
   since I'm making lots of internal changes to it (and I'm willing to even completely rewrite it
-  if it makes adding more programs easier). So, right now, I'm somewhere around and 5/10 on this goal.
+  if it makes adding more programs easier). I'm close to this goal already, depending on whether
+  you believe that the things I've gotten to work actually work well enough for meaningful performance
+  benchmarking.
 
 - Then add C++ support and add at least 10 large, real-world C++ libraries or programs.
 
-Once we have such a corpus, then it'll make sense to start thinking about some optimizations. The
-hardest part of this will be expanding Fil-C to support C++, since C++ has its own allocation
-story - namely, that you can overload `operator new` and `operator new` does not take a type. This
-will have to change in Fil-C++ and that will require some more compiler surgery.
+Once we have such a corpus, then it'll make sense to start thinking about some optimizations.
 
 Even after the corpus grows to 10 C programs and 10 C++ programs, we will still want to keep
 growing the corpus. But hopefully, it'll get easier to grow the corpus as the corpus grows. For
