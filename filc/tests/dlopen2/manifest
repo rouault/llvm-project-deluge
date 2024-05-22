@@ -1,0 +1,8 @@
+return:
+  success
+libraries:
+  libtest.so:
+    - library.c
+output-includes:
+  - "called foo."
+  - "calling dlopen.thingy called.done calling dlopen."
