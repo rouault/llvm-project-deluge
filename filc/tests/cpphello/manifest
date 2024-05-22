@@ -1,0 +1,4 @@
+return:
+  success
+output-includes:
+  - "Fil-C++ is the best C++."

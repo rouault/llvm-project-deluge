@@ -335,7 +335,7 @@ AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadic,
   }
 
   // Aggregates <= 16 bytes are passed directly in registers or on the stack.
-  if (Size <= 128) {
+  if ((false) && Size <= 128) {
     // On RenderScript, coerce Aggregates <= 16 bytes to an integer array of
     // same size and alignment.
     if (getTarget().isRenderScriptTarget()) {
@@ -405,7 +405,7 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy,
     return ABIArgInfo::getDirect();
 
   // Aggregates <= 16 bytes are returned directly in registers or on the stack.
-  if (Size <= 128) {
+  if ((false) && Size <= 128) {
     // On RenderScript, coerce Aggregates <= 16 bytes to an integer array of
     // same size and alignment.
     if (getTarget().isRenderScriptTarget()) {
