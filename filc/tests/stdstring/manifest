@@ -1,0 +1,4 @@
+return:
+  success
+output-includes:
+  - "The message is: hello world!"
