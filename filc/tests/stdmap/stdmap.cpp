@@ -14,6 +14,8 @@ int main(int argc, char** argv)
     ZASSERT(m.count(42) == 1);
     ZASSERT(m.count(1410) == 1);
     ZASSERT(m.count(666) == 1);
+    ZASSERT(!m.count(0));
+    ZASSERT(!m.count(100));
 
     ZASSERT(m[42] == 666);
     ZASSERT(m[1410] == 9000);
@@ -37,6 +39,36 @@ int main(int argc, char** argv)
             ZASSERT(entry.second == 11);
             break;
         case 3:
+            ZASSERT(entry.first == 1410);
+            ZASSERT(entry.second == 9000);
+            break;
+        default:
+            ZASSERT(!"Should not get here");
+            break;
+        }
+        count++;
+    }
+
+    m.erase(42);
+    m.erase(666);
+
+    ZASSERT(!m.count(42));
+    ZASSERT(m.count(1410) == 1);
+    ZASSERT(!m.count(666));
+    ZASSERT(!m.count(0));
+    ZASSERT(m.count(100) == 1);
+    
+    ZASSERT(m[1410] == 9000);
+    ZASSERT(!m[100]);
+
+    count = 0;
+    for (auto& entry : m) {
+        switch (count) {
+        case 0:
+            ZASSERT(entry.first == 100);
+            ZASSERT(!entry.second);
+            break;
+        case 1:
             ZASSERT(entry.first == 1410);
             ZASSERT(entry.second == 9000);
             break;
