@@ -1,8 +1,5 @@
 return:
   success
-# This is only needed so long as we don't have libcxx startup working right.
-extra-env:
-  - "FILC_RUN_GLOBAL_CTORS=0"
 output-includes:
   - "foo:thingy:foo::thingy(666)"
   - "foo:stuff:foo::stuff(666)"
