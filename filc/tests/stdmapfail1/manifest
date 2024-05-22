@@ -1,0 +1,8 @@
+return:
+  failure
+output-includes:
+  - "(good) ref = value = 250000"
+  - "Got this far."
+  - "filc panic"
+output-excludes:
+  - "(bad) ref = value = 250000"
