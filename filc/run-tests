@@ -53,17 +53,29 @@ $testDirectory.each_entry {
         libraryFiles = {}
         outp.puts "rm -f #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "touch #{Shellwords.shellescape(compilerOutput)}"
+        isCpp = false
+        fullPath.each_entry {
+            | entry |
+            isCpp = true if entry.extname == ".cpp"
+        }
+        if isCpp
+            clang = "clang++"
+            extraOpts = "-fno-exceptions"
+        else
+            clang = "clang"
+            extraOpts = ""
+        end
         if libraries
             libraries.each_pair {
                 | libname, files |
-                outp.print "xcrun build/bin/clang -bundle -o #{Shellwords.shellescape(fullPath + libname)}"
+                outp.print "xcrun build/bin/#{clang} -bundle -o #{Shellwords.shellescape(fullPath + libname)}"
                 files.each {
                     | file |
                     libraryFiles[file] = true
                     outp.print " "
                     outp.print Shellwords.shellescape(fullPath + file)
                 }
-                outp.puts " -Ifilc/tests -O2 -g >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+                outp.puts " -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
                 outp.puts "if [ $? -ne 0 ]"
                 outp.puts "then"
                 outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile #{libname}"))
@@ -72,15 +84,15 @@ $testDirectory.each_entry {
                 outp.puts "fi"
             }
         end
-        outp.print "xcrun build/bin/clang -o #{Shellwords.shellescape(binary)}"
+        outp.print "xcrun build/bin/#{clang} -o #{Shellwords.shellescape(binary)}"
         fullPath.each_entry {
             | entry |
-            next unless entry.extname == ".c" or entry.extname == ".ll"
+            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
             next if libraryFiles[entry.to_s]
             outp.print " "
             outp.print Shellwords.shellescape(fullPath + entry)
         }
-        outp.puts " filc/tests/legacy_utils.o filc/tests/utils.o -Ifilc/tests -O2 -g >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+        outp.puts " filc/tests/legacy_utils.o filc/tests/utils.o -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
         outp.puts "if [ $? -ne 0 ]"
         outp.puts "then"
         outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile"))
@@ -92,12 +104,21 @@ $testDirectory.each_entry {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
-        outp.puts "DYLD_LIBRARY_PATH=pizfix/lib_test #{Shellwords.shellescape(binary)}"
+        outp.print "DYLD_LIBRARY_PATH=pizfix/lib_test "
+        handleArray(manifest["extra-env"]).each {
+            | entry |
+            outp.print "#{entry} "
+        }
+        outp.puts "#{Shellwords.shellescape(binary)}"
     }
     File.open(justRunReleaseScript, "w") {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
+        handleArray(manifest["extra-env"]).each {
+            | entry |
+            outp.print "#{entry} "
+        }
         outp.puts "#{Shellwords.shellescape(binary)}"
     }
     [{:script => subRunScript,

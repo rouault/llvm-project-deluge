@@ -1621,8 +1621,9 @@ llvm::Value *ItaniumCXXABI::emitDynamicCastToVoid(CodeGenFunction &CGF,
     // Get the offset-to-top from the vtable.
     OffsetToTop =
         CGF.Builder.CreateConstInBoundsGEP1_64(PtrDiffLTy, VTable, -2ULL);
-    OffsetToTop = CGF.Builder.CreateAlignedLoad(
-        PtrDiffLTy, OffsetToTop, CGF.getPointerAlign(), "offset.to.top");
+    llvm::Value* OffsetToTopAsPtr = CGF.Builder.CreateAlignedLoad(
+        CGF.VoidPtrTy, OffsetToTop, CGF.getPointerAlign(), "offset.to.top.ptr");
+    OffsetToTop = CGF.Builder.CreatePtrToInt(OffsetToTopAsPtr, PtrDiffLTy, "offset.to.top");
   }
   // Finally, add the offset to the pointer.
   return CGF.Builder.CreateInBoundsGEP(CGF.Int8Ty, ThisAddr.getPointer(),
@@ -1657,8 +1658,9 @@ ItaniumCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
         CGF.Int32Ty, VBaseOffsetPtr, CharUnits::fromQuantity(4),
         "vbase.offset");
   } else {
-    VBaseOffset = CGF.Builder.CreateAlignedLoad(
-        CGM.PtrDiffTy, VBaseOffsetPtr, CGF.getPointerAlign(), "vbase.offset");
+    llvm::Value* VBaseOffsetAsPtr = CGF.Builder.CreateAlignedLoad(
+        CGM.VoidPtrTy, VBaseOffsetPtr, CGF.getPointerAlign(), "vbase.offset.ptr");
+    VBaseOffset = CGF.Builder.CreatePtrToInt(VBaseOffsetAsPtr, CGM.PtrDiffTy, "vbase.offset");
   }
   return VBaseOffset;
 }
@@ -2197,8 +2199,10 @@ static llvm::Value *performTypeAdjustment(CodeGenFunction &CGF,
           CGF.ConvertType(CGF.getContext().getPointerDiffType());
 
       // Load the adjustment offset from the vtable.
-      Offset = CGF.Builder.CreateAlignedLoad(PtrDiffTy, OffsetPtr,
-                                             CGF.getPointerAlign());
+      llvm::Value* OffsetAsPtr =
+        CGF.Builder.CreateAlignedLoad(CGF.VoidPtrTy, OffsetPtr,
+                                      CGF.getPointerAlign());
+      Offset = CGF.Builder.CreatePtrToInt(OffsetAsPtr, PtrDiffTy);
     }
     // Adjust our pointer.
     ResultPtr = CGF.Builder.CreateInBoundsGEP(

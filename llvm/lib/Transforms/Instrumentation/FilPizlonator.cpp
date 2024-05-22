@@ -1357,6 +1357,8 @@ class Pizlonator {
         ConstantTarget Target = constexprRecurse(CE->getOperand(0));
         APInt OffsetAP(64, 0, false);
         GetElementPtrInst* GEP = cast<GetElementPtrInst>(CE->getAsInstruction());
+        GEP->setSourceElementType(lowerType(GEP->getSourceElementType()));
+        GEP->setResultElementType(lowerType(GEP->getResultElementType()));
         bool result = GEP->accumulateConstantOffset(DL, OffsetAP);
         delete GEP;
         if (!result)

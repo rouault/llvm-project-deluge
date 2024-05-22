@@ -1,0 +1,12 @@
+return:
+  success
+# This is only needed so long as we don't have libcxx startup working right.
+extra-env:
+  - "FILC_RUN_GLOBAL_CTORS=0"
+output-includes:
+  - "foo:thingy:baz::thingy(1410)"
+  - "foo:stuff:baz::stuff(1410)"
+  - "foo:delete:baz::~baz(1410)bar::~bar(666)foo::~foo(42)"
+  - "bar:blah:baz::blah(1410)"
+  - "bar:bleh:baz::bleh(1410)"
+  - "bar:delete:baz::~baz(1410)bar::~bar(666)foo::~foo(42)"
