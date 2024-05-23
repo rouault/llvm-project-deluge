@@ -9,8 +9,8 @@ rm -rf pizfix
      cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang \
            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON \
            -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" -DLIBCXXABI_HAS_PTHREAD_API=ON \
-           -DLIBCXX_ENABLE_EXCEPTIONS=OFF -DLIBCXXABI_ENABLE_EXCEPTIONS=OFF -DLIBCXX_HAS_PTHREAD_API=ON \
-           -DLIBCXX_HAS_MUSL_LIBC=ON &&
+           -DLIBCXX_ENABLE_EXCEPTIONS=OFF -DLIBCXXABI_ENABLE_EXCEPTIONS=OFF \
+           -DLIBCXX_HAS_PTHREAD_API=ON -DLIBCXX_HAS_MUSL_LIBC=ON -DLLVM_ENABLE_ZSTD=OFF &&
      ninja clang)
 
 (cd libpas && ./build.sh)
@@ -18,6 +18,20 @@ rm -rf pizfix
 (cd musl && make clean && make -j `sysctl -n hw.ncpu` && make install)
 
 (cd build && ninja runtimes-clean && ninja runtimes)
+
+cp build/lib/libc++.1.0.dylib pizfix/lib
+cp build/lib/libc++abi.1.0.dylib pizfix/lib
+cp build/lib/libc++.a pizfix/lib
+cp build/lib/libc++abi.a pizfix/lib
+(cd pizfix/lib &&
+     ln -s libc++.1.0.dylib libc++.1.dylib &&
+     ln -s libc++.1.dylib libc++.dylib &&
+     ln -s libc++abi.1.0.dylib libc++abi.1.dylib &&
+     ln -s libc++abi.1.dylib libc++abi.dylib)
+install_name_tool -id $PWD/pizfix/lib/libc++.1.dylib pizfix/lib/libc++.1.0.dylib
+install_name_tool -id $PWD/pizfix/lib/libc++abi.1.dylib pizfix/lib/libc++abi.1.0.dylib
+install_name_tool -change @rpath/libc++abi.1.dylib $PWD/pizfix/lib/libc++abi.1.dylib \
+                  pizfix/lib/libc++.1.0.dylib
 
 filc/run-tests
 

@@ -2612,7 +2612,7 @@ void DarwinClang::AddCXXStdlibLibArgs(const ArgList &Args,
   switch (Type) {
   case ToolChain::CST_Libcxx: {
     SmallString<128> P(getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "lib");
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-rpath");
     CmdArgs.push_back(Args.MakeArgString(P));
