@@ -3,27 +3,32 @@
 set -e
 set -x
 
-rm -rf filc-build
+build_name=filc-0.666
 
-mkdir -p filc-build/build/bin
-cp build/bin/clang-17 filc-build/build/bin/
-(cd filc-build/build/bin/ &&
+rm -rf $build_name
+
+mkdir $build_name
+cp README.md $build_name/
+
+mkdir -p $build_name/build/bin
+cp build/bin/clang-17 $build_name/build/bin/
+(cd $build_name/build/bin/ &&
      ln -s clang-17 clang &&
      ln -s clang-17 clang++)
 
-mkdir -p filc-build/build/include/
-cp -R build/include/c++ filc-build/build/include/
+mkdir -p $build_name/build/include/
+cp -R build/include/c++ $build_name/build/include/
 
-mkdir -p filc-build/runtime-build/lib/clang/17/lib/
-cp -R runtime-build/lib/clang/17/lib/darwin filc-build/runtime-build/lib/clang/17/lib/
+mkdir -p $build_name/runtime-build/lib/clang/17/lib/
+cp -R runtime-build/lib/clang/17/lib/darwin $build_name/runtime-build/lib/clang/17/lib/
 
-cp -R pizfix filc-build/
-rm filc-build/pizfix/etc/moduli
-rm filc-build/pizfix/etc/ssh_host*
+cp -R pizfix $build_name/
+rm $build_name/pizfix/etc/moduli
+rm $build_name/pizfix/etc/ssh_host*
 
 sourcedir=$PWD
 
-cd filc-build
+cd $build_name
 
 echo '#!/bin/sh' > setup.sh
 echo 'set -e' >> setup.sh
@@ -77,11 +82,11 @@ echo 'echo "or:"' >> setup.sh
 echo 'echo' >> setup.sh
 echo 'echo "    pizfix/bin/ssh foo@bar.com"' >> setup.sh
 echo 'echo' >> setup.sh
-echo 'echo "Anyway, have fun."' >> setup.sh
+echo "echo \"Have fun and thank you for trying $build_name.\"" >> setup.sh
 
 chmod 755 setup.sh
 
 cd ..
 
-tar -czvf filc-build.tar.gz filc-build
+tar -czvf $build_name.tar.gz $build_name
 

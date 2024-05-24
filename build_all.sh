@@ -14,6 +14,8 @@ mkdir -p runtime-build
            -DLIBCXX_HAS_PTHREAD_API=ON -DLIBCXX_HAS_MUSL_LIBC=ON -DLLVM_ENABLE_ZSTD=OFF &&
      ninja clang)
 
+(cd runtime-build && cmake -S ../llvm-project-clean/llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt && ninja)
+
 (cd libpas && ./build.sh)
 
 (cd musl && CC=$PWD/../build/bin/clang ./configure --target=aarch64 --prefix=$PWD/../pizfix && make -j `sysctl -n hw.ncpu` && make install)
