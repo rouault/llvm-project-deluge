@@ -1625,7 +1625,7 @@ static inline int pas_getpid(void) { return _getpid(); }
 typedef pthread_t pas_system_thread_id;
 #define PAS_NULL_SYSTEM_THREAD_ID NULL
 static inline pas_system_thread_id pas_get_current_system_thread_id(void) { return pthread_self(); }
-#if PAS_OS(DARWIN)
+#if PAS_OS(DARWIN) || PAS_OS(FREEBSD)
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%p"
 #else
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%" PRIxPTR
