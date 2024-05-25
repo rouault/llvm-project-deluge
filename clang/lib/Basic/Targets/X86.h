@@ -706,6 +706,10 @@ public:
     bool IsWinCOFF =
         getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
     LongWidth = LongAlign = PointerWidth = PointerAlign = IsX32 ? 32 : 64;
+    ConstexprPointerWidth = PointerWidth;
+    ConstexprPointerAlign = PointerAlign;
+    PointerWidth *= 2;
+    PointerAlign *= 2;
     LongDoubleWidth = 128;
     LongDoubleAlign = 128;
     LargeArrayMinWidth = 128;
