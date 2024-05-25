@@ -1,5 +1,5 @@
-PASCC = clang
-PASCXX = clang++
+PASCC = clang -march=x86-64-v2
+PASCXX = clang++ -march=x86-64-v2
 FILCC = ../build/bin/clang
 
 all: \
