@@ -1,10 +1,12 @@
 #!/bin/sh
 
+. common.sh
+
 set -e
 set -x
 
 mkdir -p build
-make -f Makefile-macosx check-pas -j `sysctl -n hw.ncpu`
+$MAKE -f Makefile-$OS check-pas -j `sysctl -n hw.ncpu`
 
 set +x
 

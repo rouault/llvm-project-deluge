@@ -1,5 +1,7 @@
 #!/bin/sh
 
+. common.sh
+
 set -e
 set -x
 
@@ -13,8 +15,8 @@ mkdir -p ../pizfix/libexec
 mkdir -p ../pizfix/share
 mkdir -p ../pizfix/lib
 mkdir -p ../pizfix/lib_test
-make -f Makefile-setup
-make -f Makefile-macosx -j `sysctl -n hw.ncpu`
+$MAKE -f Makefile-setup
+$MAKE -f Makefile-$OS -j `sysctl -n hw.ncpu`
 
 set +x
 

@@ -1,10 +1,12 @@
 #!/bin/sh
 
+. common.sh
+
 set -e
 set -x
 
-make -f Makefile-setup clean
-make -f Makefile-macosx clean
+$MAKE -f Makefile-setup clean
+$MAKE -f Makefile-$OS clean
 
 set +x
 
