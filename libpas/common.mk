@@ -1,17 +1,24 @@
-LEGACYCFLAGS = -g -O3 -W -Werror -MD
+PASCFLAGS = -g -O3 -W -Werror -MD
+PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare -MD
 FILCFLAGS = -O3 -g -W -Werror -Wno-pointer-to-int-cast -MD
 
-LEGACYSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
+PASSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
 MAINSRCS = $(wildcard ../filc/main/*.c)
 FILSRCS = $(wildcard ../filc/src/*.c)
+TESTPASSRCS = $(wildcard src/test/*.cpp)
+VERIFIERSRCS = $(wildcard src/verifier/*.cpp)
 
-LEGACYOBJS = $(patsubst %.c,build/release-legacy-%.o,$(notdir $(LEGACYSRCS)))
-LEGACYTESTOBJS = $(patsubst %.c,build/test-legacy-%.o,$(notdir $(LEGACYSRCS)))
+PASPIZLOOBJS = $(patsubst %.c,build/pas-pizlo-release-%.o,$(notdir $(PASSRCS)))
+PASPIZLOTESTOBJS = $(patsubst %.c,build/pas-pizlo-test-%.o,$(notdir $(PASSRCS)))
+PASTESTOBJS = $(patsubst %.c,build/pas-test-%.o,$(notdir $(PASSRCS)))
 
-MAINOBJS = $(patsubst %.c,build/release-main-%.o,$(notdir $(MAINSRCS)))
-MAINTESTOBJS = $(patsubst %.c,build/test-main-%.o,$(notdir $(MAINSRCS)))
+MAINOBJS = $(patsubst %.c,build/main-release-%.o,$(notdir $(MAINSRCS)))
+MAINTESTOBJS = $(patsubst %.c,build/main-test-%.o,$(notdir $(MAINSRCS)))
 
-FILOBJS = $(patsubst %.c,build/fil-%.o,$(notdir $(FILSRCS)))
+FILPIZLOOBJS = $(patsubst %.c,build/fil-pizlo-%.o,$(notdir $(FILSRCS)))
+
+TESTPASOBJS = $(patsubst %.cpp,build/test_pas-%.o,$(notdir $(TESTPASSRCS)))
+VERIFIEROBJS = $(patsubst %.cpp,build/verifier-%.o,$(notdir $(VERIFIERSRCS)))
 
 GENHEADERS = src/libpas/filc_native.h
 
@@ -22,20 +29,29 @@ clean:
 	rm -f src/libpas/filc_native_forwarders.c
 	rm -f src/libpas/filc_native.h
 
-build/release-legacy-%.o: src/libpas/%.c $(GENHEADERS)
-	$(LEGACYCC) $(LEGACYCFLAGS) -c -o $@ $< -DPAS_FILC=1
+build/pas-pizlo-release-%.o: src/libpas/%.c $(GENHEADERS)
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1
 
-build/test-legacy-%.o: src/libpas/%.c $(GENHEADERS)
-	$(LEGACYCC) $(LEGACYCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1
+build/pas-pizlo-test-%.o: src/libpas/%.c $(GENHEADERS)
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1
 
-build/release-main-%.o: ../filc/main/%.c
-	$(LEGACYCC) $(LEGACYCFLAGS) -c -o $@ $< -DPAS_FILC=1 -Isrc/libpas
+build/pas-test-%.o: src/libpas/%.c $(GENHEADERS)
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1
 
-build/test-main-%.o: ../filc/main/%.c
-	$(LEGACYCC) $(LEGACYCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1 -Isrc/libpas
+build/main-release-%.o: ../filc/main/%.c
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -Isrc/libpas
 
-build/fil-%.o: ../filc/src/%.c ../build/bin/clang $(ALLHEADERS)
+build/main-test-%.o: ../filc/main/%.c
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1 -Isrc/libpas
+
+build/fil-pizlo-%.o: ../filc/src/%.c ../build/bin/clang
 	$(FILCC) $(FILCFLAGS) -c -o $@ $<
+
+build/test_pas-%.o: src/test/%.cpp
+	$(PASCXX) $(PASCXXFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1 -Isrc/libpas -Isrc/verifier
+
+build/verifier-%.o: src/verifier/%.cpp
+	$(PASCXX) $(PASCXXFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1 -Isrc/libpas
 
 src/libpas/filc_native.h: src/libpas/filc_native_forwarders.c
 src/libpas/filc_native_forwarders.c: src/libpas/generate_pizlonated_forwarders.rb

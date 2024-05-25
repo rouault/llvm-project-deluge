@@ -7,6 +7,7 @@ ALLHEADERS = $(FILHEADERS) $(BUILTINHEADERS)
 all: $(ALLHEADERS)
 
 clean:
+	rm -f $(ALLHEADERS)
 
 ../pizfix/stdfil-include/%.h: ../filc/include/%.h
 	cp $< $@

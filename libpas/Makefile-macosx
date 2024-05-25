@@ -1,4 +1,5 @@
-LEGACYCC = xcrun clang
+PASCC = xcrun clang
+PASCXX = xcrun clang++
 FILCC = xcrun ../build/bin/clang
 
 all: \
@@ -7,13 +8,13 @@ all: \
 
 include common.mk
 
-../pizfix/lib/libpizlo.dylib: $(LEGACYOBJS) $(FILOBJS)
+../pizfix/lib/libpizlo.dylib: $(PASPIZLOOBJS) $(FILPIZLOOBJS)
 	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib/libpizlo.dylib \
-		-o ../pizfix/lib/libpizlo.dylib $(LEGACYOBJS) $(FILOBJS)
+		-o ../pizfix/lib/libpizlo.dylib $(PASPIZLOOBJS) $(FILPIZLOOBJS)
 
-../pizfix/lib_test/libpizlo.dylib: $(LEGACYTESTOBJS) $(FILOBJS)
+../pizfix/lib_test/libpizlo.dylib: $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS)
 	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libpizlo.dylib \
-		-o ../pizfix/lib_test/libpizlo.dylib $(LEGACYTESTOBJS) $(FILOBJS)
+		-o ../pizfix/lib_test/libpizlo.dylib $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS)
 
 ../pizfix/lib/libfilc_crt.dylib: $(MAINOBJS)
 	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib/libfilc_crt.dylib \
@@ -22,4 +23,13 @@ include common.mk
 ../pizfix/lib_test/libfilc_crt.dylib: $(MAINTESTOBJS)
 	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libfilc_crt.dylib \
 		-o ../pizfix/lib_test/libfilc_crt.dylib $(MAINTESTOBJS) -undefined dynamic_lookup
+
+check-pas: build/test_pas
+	DYLD_LIBRARY_PATH=build build/test_pas
+
+build/test_pas: build/libpas.dylib $(TESTPASOBJS) $(VERIFIEROBJS)
+	xcrun clang++ -o build/test_pas $(TESTPASOBJS) $(VERIFIEROBJS) -Lbuild -lpas
+
+build/libpas.dylib: $(PASTESTOBJS)
+	xcrun clang -dynamiclib -o build/libpas.dylib $(PASTESTOBJS)
 
