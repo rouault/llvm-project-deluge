@@ -5,6 +5,19 @@ set -x
 
 rm -rf pizfix
 
+mkdir -p build
+mkdir -p runtime-build
+
+if test ! -f runtime-build/runtime-build-ok1
+then
+   (cd runtime-build &&
+        cmake -S ../llvm-project-clean/llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON \
+              -DLLVM_ENABLE_RUNTIMES=compiler-rt &&
+        ninja &&
+        touch runtime-build-ok1)
+fi
+
 (cd build &&
      cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang \
            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON \
@@ -15,7 +28,11 @@ rm -rf pizfix
 
 (cd libpas && ./build.sh)
 
-(cd musl && make clean && make -j `sysctl -n hw.ncpu` && make install)
+(cd musl && \
+     CC=$PWD/../build/bin/clang ./configure --target=aarch64 --prefix=$PWD/../pizfix && \
+     make clean && \
+     make -j `sysctl -n hw.ncpu` && \
+     make install)
 
 (cd build && ninja runtimes-clean && ninja runtimes)
 
