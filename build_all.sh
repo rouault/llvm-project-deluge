@@ -83,6 +83,7 @@ filc/run-tests
 
 (cd pcre-8.39 &&
      (make distclean || echo whatever) &&
-     CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties --enable-pcregrep-libz &&
+     CC="xcrun $PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix --disable-cpp \
+         --enable-pcre16 --enable-pcre32 --enable-unicode-properties --enable-pcregrep-libz &&
      make -j `sysctl -n hw.ncpu` &&
      make install)

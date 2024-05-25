@@ -32,7 +32,7 @@ int main(int argc, char** argv)
     int* exit_args;
     filc_ptr pizlonated_argv;
     int index;
-    size_t environ_size;
+    int environ_size;
     filc_ptr environ_ptr;
     filc_ptr __init_libc_ptr;
     filc_ptr main_ptr;

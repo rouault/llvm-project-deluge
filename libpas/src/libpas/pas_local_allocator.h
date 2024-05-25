@@ -57,6 +57,7 @@ struct pas_local_allocator {
     uint8_t alignment_shift;
     pas_local_allocator_config_kind config_kind : 8;
     bool current_word_is_valid; /* This is just used by enumeration. */
+    bool is_stashing_alloc_bits;
 
     /* This has to have a pointer to our index within the view. We can get to the view using
        page_ish. Maybe worth reconsidering that, but then again maybe it's good enough. 

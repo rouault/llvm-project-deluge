@@ -438,7 +438,7 @@ static PAS_ALWAYS_INLINE void pas_local_allocator_scan_bits_to_set_up_free_bits(
 }
 
 static PAS_ALWAYS_INLINE void
-pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
+pas_local_allocator_set_up_free_bits(pas_local_allocator** allocator_ptr,
                                      pas_segregated_view_kind view_kind,
                                      void* view,
                                      pas_segregated_size_directory* directory,
@@ -450,6 +450,9 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
     
     pas_full_alloc_bits full_alloc_bits;
     pas_segregated_view partial_view_as_view;
+    pas_local_allocator* allocator;
+
+    allocator = *allocator_ptr;
 
     PAS_ASSERT(page_config.base.is_enabled);
     PAS_ASSERT(view_kind == pas_segregated_exclusive_view_kind
@@ -515,6 +518,7 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
 			   Sweeping cannot happen because heap state says we're iterating, and we never sweep and iterate at the same time. Allocator stop
 			   cannot happen because this allocator is still in use. Allocation cannot happen because this page is ineligible. */
 
+            allocator->is_stashing_alloc_bits = true;
 			verse_heap_page_header_for_segregated_page(page)->is_stashing_alloc_bits = true;
 			
 			pas_lock_unlock(&exclusive_view->ownership_lock);
@@ -543,7 +547,9 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator* allocator,
 				PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
 			}
 
-			pas_thread_local_cache_update_after_possible_realloc(&cache, (void**)&allocator);
+			pas_thread_local_cache_update_after_possible_realloc(&cache, (void**)allocator_ptr);
+            allocator = *allocator_ptr;
+            allocator->is_stashing_alloc_bits = false;
         }
     }
     
@@ -634,7 +640,7 @@ static PAS_ALWAYS_INLINE bool pas_local_allocator_set_full_mark_bits_callback(pa
 
 static PAS_ALWAYS_INLINE void
 pas_local_allocator_prepare_to_allocate(
-    pas_local_allocator* allocator,
+    pas_local_allocator** allocator_ptr,
     pas_segregated_view_kind view_kind,
     void* view,
     pas_segregated_page* page,
@@ -644,6 +650,9 @@ pas_local_allocator_prepare_to_allocate(
     static const bool verbose = false;
     
     uintptr_t page_boundary;
+    pas_local_allocator* allocator;
+
+    allocator = *allocator_ptr;
 
     PAS_ASSERT(page_config.base.is_enabled);
     PAS_ASSERT(view_kind == pas_segregated_exclusive_view_kind
@@ -805,7 +814,7 @@ pas_local_allocator_prepare_to_allocate(
     if (verbose)
         pas_log("Refilling with %p using free_bits\n", page);
     pas_local_allocator_set_up_free_bits(
-        allocator,
+        allocator_ptr,
         view_kind,
         view,
         directory,
@@ -1497,13 +1506,13 @@ pas_local_allocator_refill_with_known_config(
     
 prepare_exclusive:
     pas_local_allocator_prepare_to_allocate(
-        allocator, pas_segregated_exclusive_view_kind, exclusive, new_page, size_directory,
+        &allocator, pas_segregated_exclusive_view_kind, exclusive, new_page, size_directory,
         page_config);
     goto done;
 
 prepare_partial:
     pas_local_allocator_prepare_to_allocate(
-        allocator, pas_segregated_partial_view_kind, partial, new_page, size_directory,
+        &allocator, pas_segregated_partial_view_kind, partial, new_page, size_directory,
         page_config);
 
 done:

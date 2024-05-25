@@ -1,0 +1,25 @@
+LEGACYCC = xcrun clang
+FILCC = xcrun ../build/bin/clang
+
+all: \
+	../pizfix/lib/libpizlo.dylib ../pizfix/lib_test/libpizlo.dylib \
+	../pizfix/lib/libfilc_crt.dylib ../pizfix/lib_test/libfilc_crt.dylib
+
+include common.mk
+
+../pizfix/lib/libpizlo.dylib: $(LEGACYOBJS) $(FILOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib/libpizlo.dylib \
+		-o ../pizfix/lib/libpizlo.dylib $(LEGACYOBJS) $(FILOBJS)
+
+../pizfix/lib_test/libpizlo.dylib: $(LEGACYTESTOBJS) $(FILOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libpizlo.dylib \
+		-o ../pizfix/lib_test/libpizlo.dylib $(LEGACYTESTOBJS) $(FILOBJS)
+
+../pizfix/lib/libfilc_crt.dylib: $(MAINOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib/libfilc_crt.dylib \
+		-o ../pizfix/lib/libfilc_crt.dylib $(MAINOBJS) -undefined dynamic_lookup
+
+../pizfix/lib_test/libfilc_crt.dylib: $(MAINTESTOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libfilc_crt.dylib \
+		-o ../pizfix/lib_test/libfilc_crt.dylib $(MAINTESTOBJS) -undefined dynamic_lookup
+

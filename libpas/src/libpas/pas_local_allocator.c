@@ -90,6 +90,7 @@ void pas_local_allocator_construct(pas_local_allocator* allocator,
     }
     
     allocator->current_word_is_valid = false;
+    allocator->is_stashing_alloc_bits = false;
 }
 
 void pas_local_allocator_construct_unselected(pas_local_allocator* allocator)
@@ -122,7 +123,7 @@ void pas_local_allocator_move(pas_local_allocator* dst,
     pas_heap_lock_assert_held(); /* Needed to modify a lenient_compact_ptr. */
 
     PAS_ASSERT(!dst->scavenger_data.is_in_use);
-    PAS_ASSERT(!src->scavenger_data.is_in_use);
+    PAS_ASSERT(!src->scavenger_data.is_in_use || src->is_stashing_alloc_bits);
 
     directory = pas_segregated_view_get_size_directory(src->view);
     
