@@ -7797,6 +7797,7 @@ void filc_native_zsys_setutxent(filc_thread* my_thread)
     pas_lock_unlock(&utmpx_lock);
 }
 
+#if PAS_OS(DARWIN)
 struct musl_lastlogx {
     struct musl_timeval ll_tv;
     char ll_line[32];
@@ -7834,9 +7835,11 @@ static filc_ptr handle_lastlogx_result(filc_thread* my_thread,
     to_musl_lastlogx(result, musl_result);
     return result_ptr;
 }
+#endif /* PAS_OS(DARWIN) */
 
 filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc_ptr musl_lastlogx_ptr)
 {
+#if PAS_OS(DARWIN)
     if (filc_ptr_ptr(musl_lastlogx_ptr))
         filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
     pas_lock_lock(&utmpx_lock);
@@ -7844,11 +7847,16 @@ filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc
     filc_ptr result = handle_lastlogx_result(my_thread, musl_lastlogx_ptr, getlastlogx(uid, &lastlogx));
     pas_lock_unlock(&utmpx_lock);
     return result;
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
 }
 
 filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr name_ptr,
                                             filc_ptr musl_lastlogx_ptr)
 {
+#if PAS_OS(DARWIN)
     char* name = filc_check_and_get_new_str(name_ptr);
     if (filc_ptr_ptr(musl_lastlogx_ptr))
         filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
@@ -7859,6 +7867,10 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
     pas_lock_unlock(&utmpx_lock);
     bmalloc_deallocate(name);
     return result;
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
 }
 
 struct musl_cmsghdr {

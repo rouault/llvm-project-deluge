@@ -560,8 +560,8 @@ void* zsys_getutxid(const void* utmpx);
 void* zsys_getutxline(const void* utmpx);
 void* zsys_pututxline(const void* utmpx);
 void zsys_setutxent(void);
-void* zsys_getlastlogx(unsigned uid, void* lastlogx);
-void* zsys_getlastlogxbyname(const char* name, void* lastlogx);
+void* zsys_getlastlogx(unsigned uid, void* lastlogx); /* Only available on Darwin. */
+void* zsys_getlastlogxbyname(const char* name, void* lastlogx); /* Only available on Darwin. */
 long zsys_sendmsg(int sockfd, const void* msg, int flags);
 long zsys_recvmsg(int sockfd, void* msg, int flags);
 int zsys_fchmod(int fd, unsigned mode);
