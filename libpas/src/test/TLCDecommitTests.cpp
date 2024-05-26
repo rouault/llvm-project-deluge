@@ -442,7 +442,7 @@ void testAllocateFromStoppedBaselineDuringThreadDestruction()
 
 void addTLCDecommitTests()
 {
-#if PAS_ENABLE_BMALLOC
+#if PAS_ENABLE_BMALLOC && !PAS_OS(FREEBSD)
     {
         DecommitZeroFill decommitZeroFill;
     

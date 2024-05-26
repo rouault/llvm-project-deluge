@@ -1785,7 +1785,7 @@ void testDecommitMarkBits()
 	CHECK(verse_heap_object_is_allocated(mediumObject));
 	CHECK(verse_heap_object_is_allocated(largeObject));
 
-#if !PAS_OS(DARWIN)
+#if !PAS_OS(DARWIN) && !PAS_OS(FREEBSD)
 	auto areMarkBitsCommitted = [&] (void* object) -> bool {
 		void* pageBase = reinterpret_cast<void*>(pas_round_down_to_power_of_2(reinterpret_cast<uintptr_t>(object), VERSE_HEAP_CHUNK_SIZE));
         pas_log("Checking commit status of %p with size %zu\n", pageBase, static_cast<size_t>(VERSE_HEAP_PAGE_SIZE));
@@ -1793,15 +1793,19 @@ void testDecommitMarkBits()
 		CHECK(!numCommittedPages || numCommittedPages == (VERSE_HEAP_PAGE_SIZE >> pas_page_malloc_alignment_shift()));
 		return !!numCommittedPages;
 	};
-#endif // !PAS_OS(DARWIN)
+    bool hasCommitCheck = true;
+#else // !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) -> so PAS_OS(DARWIN) || PAS_OS(FREEBSD)
+    auto areMarkBitsCommitted = [&] (void* object) -> bool { return true; };
+    bool hasCommitCheck = false;
+#endif // !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) -> so end of PAS_OS(DARWIN) || PAS_OS(FREEBSD)
 
 	verse_heap_mark_bits_page_commit_controller_lock();
 
-#if !PAS_OS(DARWIN)
-	CHECK(areMarkBitsCommitted(smallObject));
-	CHECK(areMarkBitsCommitted(mediumObject));
-	CHECK(areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(areMarkBitsCommitted(smallObject));
+        CHECK(areMarkBitsCommitted(mediumObject));
+        CHECK(areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(verse_heap_object_is_allocated(smallObject));
 	CHECK(verse_heap_object_is_allocated(mediumObject));
@@ -1810,11 +1814,11 @@ void testDecommitMarkBits()
 	verse_heap_mark_bits_page_commit_controller_unlock();
     pas_scavenger_decommit_verse_heap_mark_bits();
 
-#if !PAS_OS(DARWIN)
-	CHECK(!areMarkBitsCommitted(smallObject));
-	CHECK(!areMarkBitsCommitted(mediumObject));
-	CHECK(!areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(!areMarkBitsCommitted(smallObject));
+        CHECK(!areMarkBitsCommitted(mediumObject));
+        CHECK(!areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(verse_heap_object_is_allocated(smallObject));
 	CHECK(verse_heap_object_is_allocated(mediumObject));
@@ -1822,11 +1826,11 @@ void testDecommitMarkBits()
 
 	verse_heap_mark_bits_page_commit_controller_lock();
 
-#if !PAS_OS(DARWIN)
-	CHECK(areMarkBitsCommitted(smallObject));
-	CHECK(areMarkBitsCommitted(mediumObject));
-	CHECK(areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(areMarkBitsCommitted(smallObject));
+        CHECK(areMarkBitsCommitted(mediumObject));
+        CHECK(areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(verse_heap_object_is_allocated(smallObject));
 	CHECK(verse_heap_object_is_allocated(mediumObject));
@@ -1835,11 +1839,11 @@ void testDecommitMarkBits()
 	verse_heap_mark_bits_page_commit_controller_unlock();
 	waitForScavengerShutdown();
 
-#if !PAS_OS(DARWIN)
-	CHECK(!areMarkBitsCommitted(smallObject));
-	CHECK(!areMarkBitsCommitted(mediumObject));
-	CHECK(!areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(!areMarkBitsCommitted(smallObject));
+        CHECK(!areMarkBitsCommitted(mediumObject));
+        CHECK(!areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(verse_heap_object_is_allocated(smallObject));
 	CHECK(verse_heap_object_is_allocated(mediumObject));
@@ -1847,11 +1851,11 @@ void testDecommitMarkBits()
 	
 	verse_heap_mark_bits_page_commit_controller_lock();
 
-#if !PAS_OS(DARWIN)
-	CHECK(areMarkBitsCommitted(smallObject));
-	CHECK(areMarkBitsCommitted(mediumObject));
-	CHECK(areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(areMarkBitsCommitted(smallObject));
+        CHECK(areMarkBitsCommitted(mediumObject));
+        CHECK(areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(verse_heap_object_is_allocated(smallObject));
 	CHECK(verse_heap_object_is_allocated(mediumObject));
@@ -1862,11 +1866,11 @@ void testDecommitMarkBits()
 	sweepOnOneThread();
 	waitForScavengerShutdown();
 
-#if !PAS_OS(DARWIN)
-	CHECK(areMarkBitsCommitted(smallObject));
-	CHECK(areMarkBitsCommitted(mediumObject));
-	CHECK(!areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(areMarkBitsCommitted(smallObject));
+        CHECK(areMarkBitsCommitted(mediumObject));
+        CHECK(!areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(!verse_heap_object_is_allocated(smallObject));
 	CHECK(!verse_heap_object_is_allocated(mediumObject));
@@ -1875,11 +1879,11 @@ void testDecommitMarkBits()
 	verse_heap_mark_bits_page_commit_controller_unlock();
 	waitForScavengerShutdown();
 	
-#if !PAS_OS(DARWIN)
-	CHECK(!areMarkBitsCommitted(smallObject));
-	CHECK(!areMarkBitsCommitted(mediumObject));
-	CHECK(!areMarkBitsCommitted(largeObject));
-#endif // !PAS_OS(DARWIN)
+    if (hasCommitCheck) {
+        CHECK(!areMarkBitsCommitted(smallObject));
+        CHECK(!areMarkBitsCommitted(mediumObject));
+        CHECK(!areMarkBitsCommitted(largeObject));
+    }
 
 	CHECK(!verse_heap_object_is_allocated(smallObject));
 	CHECK(!verse_heap_object_is_allocated(mediumObject));

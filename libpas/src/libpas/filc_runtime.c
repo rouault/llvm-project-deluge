@@ -5562,9 +5562,9 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#else
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
         case TCP_KEEPIDLE:
-#endif
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
         case TCP_KEEPINTVL:
             break;
         default:
@@ -6106,9 +6106,9 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#else
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
         case TCP_KEEPIDLE:
-#endif
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
         case TCP_KEEPINTVL:
             break;
         default:

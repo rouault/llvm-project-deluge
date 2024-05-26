@@ -651,8 +651,7 @@ void testAllocationChaos(unsigned numThreads, unsigned numIsolatedHeaps,
                 kern_return_t result = thread_suspend(pthread_mach_thread_np(thread));
                 PAS_ASSERT(result == KERN_SUCCESS);
             }
-#endif
-#ifdef _WIN32
+#elif defined(_WIN32)
             for (DWORD threadId : runningThreads) {
                 HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadId);
                 PAS_ASSERT(thread);
@@ -661,6 +660,8 @@ void testAllocationChaos(unsigned numThreads, unsigned numIsolatedHeaps,
                 BOOL closeResult = CloseHandle(thread);
                 PAS_ASSERT(closeResult);
             }
+#else
+            PAS_ASSERT(!"No suspension support");
 #endif
 
             pageRanges.clear();
@@ -854,8 +855,7 @@ void testAllocationChaos(unsigned numThreads, unsigned numIsolatedHeaps,
                 kern_return_t result = thread_resume(pthread_mach_thread_np(thread));
                 PAS_ASSERT(result == KERN_SUCCESS);
             }
-#endif
-#ifdef _WIN32
+#elif defined(_WIN32)
             for (DWORD threadId : runningThreads) {
                 HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, threadId);
                 PAS_ASSERT(thread);
@@ -864,6 +864,8 @@ void testAllocationChaos(unsigned numThreads, unsigned numIsolatedHeaps,
                 BOOL closeResult = CloseHandle(thread);
                 PAS_ASSERT(closeResult);
             }
+#else
+            PAS_ASSERT(!"No suspension support");
 #endif
 
             lock.unlock();
@@ -979,8 +981,9 @@ void testAllocationChaos(unsigned numThreads, unsigned numIsolatedHeaps,
 
 void addTheTests(unsigned multiplier, bool testEnumerator)
 {
-#if PAS_OS(LINUX)
-    // FIXME: thread suspension/resume in libpas, required for enumerator tests, is missing on Linux
+#if !PAS_OS(DARWIN) && !defined(_WIN32)
+    // FIXME: thread suspension/resume in libpas, required for enumerator tests, is missing if we're
+    // not on Darwin or Win32.
     // http://webkit.org/b/234071
     testEnumerator = false;
 #endif
