@@ -2935,15 +2935,7 @@ Generic_GCC::getDefaultUnwindTableLevel(const ArgList &Args) const {
 }
 
 bool Generic_GCC::isPICDefault() const {
-  switch (getArch()) {
-  case llvm::Triple::x86_64:
-    return getTriple().isOSWindows();
-  case llvm::Triple::mips64:
-  case llvm::Triple::mips64el:
-    return true;
-  default:
-    return false;
-  }
+  return true;
 }
 
 bool Generic_GCC::isPIEDefault(const llvm::opt::ArgList &Args) const {

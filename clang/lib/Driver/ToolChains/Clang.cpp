@@ -6492,7 +6492,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fstrict_flex_arrays_EQ);
 
-  Args.AddLastArg(CmdArgs, options::OPT_pthread);
+  CmdArgs.push_back("-pthread");
 
   Args.addOptInFlag(CmdArgs, options::OPT_mspeculative_load_hardening,
                     options::OPT_mno_speculative_load_hardening);
@@ -8034,6 +8034,8 @@ void ClangAs::AddX86TargetArgs(const ArgList &Args,
   addX86AlignBranchArgs(getToolChain().getDriver(), Args, CmdArgs,
                         /*IsLTO=*/false);
 
+  CmdArgs.push_back("-march=x86-64-v2");
+  
   if (Arg *A = Args.getLastArg(options::OPT_masm_EQ)) {
     StringRef Value = A->getValue();
     if (Value == "intel" || Value == "att") {

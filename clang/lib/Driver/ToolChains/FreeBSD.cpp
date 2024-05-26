@@ -239,8 +239,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     assert(Output.isNothing() && "Invalid output.");
   }
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
+  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
+                             options::OPT_r)) {
     const char *crt1 = nullptr;
     if (!Args.hasArg(options::OPT_shared)) {
       if (Args.hasArg(options::OPT_pg))
@@ -285,74 +285,96 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
-  unsigned Major = ToolChain.getTriple().getOSMajorVersion();
-  bool Profiling = Args.hasArg(options::OPT_pg) && Major != 0 && Major < 14;
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                   options::OPT_r)) {
-    // Use the static OpenMP runtime with -static-openmp
-    bool StaticOpenMP = Args.hasArg(options::OPT_static_openmp) &&
-                        !Args.hasArg(options::OPT_static);
-    addOpenMPRuntime(CmdArgs, ToolChain, Args, StaticOpenMP);
+  if ((true)) {
+    CmdArgs.push_back("-lm");
+    CmdArgs.push_back("-lgcc");
+    CmdArgs.push_back("--as-needed");
+    CmdArgs.push_back("-lgcc_s");
+    CmdArgs.push_back("--no-as-needed");
+    CmdArgs.push_back("-lpthread");
+    CmdArgs.push_back("-lc");
+    CmdArgs.push_back("-lgcc");
+    CmdArgs.push_back("--as-needed");
+    CmdArgs.push_back("-lgcc_s");
+    CmdArgs.push_back("--no-as-needed");
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-Wl,-rpath," + P));
+    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                     options::OPT_r))
+      CmdArgs.push_back("-lpizlonated_c");
+    if (!Args.hasArg(options::OPT_shared))
+      CmdArgs.push_back("-lfilc_crt");
+  } else {
+    unsigned Major = ToolChain.getTriple().getOSMajorVersion();
+    bool Profiling = Args.hasArg(options::OPT_pg) && Major != 0 && Major < 14;
+    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                     options::OPT_r)) {
+      // Use the static OpenMP runtime with -static-openmp
+      bool StaticOpenMP = Args.hasArg(options::OPT_static_openmp) &&
+        !Args.hasArg(options::OPT_static);
+      addOpenMPRuntime(CmdArgs, ToolChain, Args, StaticOpenMP);
 
-    if (D.CCCIsCXX()) {
-      if (ToolChain.ShouldLinkCXXStdlib(Args))
-        ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (D.CCCIsCXX()) {
+        if (ToolChain.ShouldLinkCXXStdlib(Args))
+          ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+        if (Profiling)
+          CmdArgs.push_back("-lm_p");
+        else
+          CmdArgs.push_back("-lm");
+      }
+      if (NeedsSanitizerDeps)
+        linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
+      if (NeedsXRayDeps)
+        linkXRayRuntimeDeps(ToolChain, CmdArgs);
+      // FIXME: For some reason GCC passes -lgcc and -lgcc_s before adding
+      // the default system libraries. Just mimic this for now.
       if (Profiling)
-        CmdArgs.push_back("-lm_p");
+        CmdArgs.push_back("-lgcc_p");
       else
-        CmdArgs.push_back("-lm");
-    }
-    if (NeedsSanitizerDeps)
-      linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
-    if (NeedsXRayDeps)
-      linkXRayRuntimeDeps(ToolChain, CmdArgs);
-    // FIXME: For some reason GCC passes -lgcc and -lgcc_s before adding
-    // the default system libraries. Just mimic this for now.
-    if (Profiling)
-      CmdArgs.push_back("-lgcc_p");
-    else
-      CmdArgs.push_back("-lgcc");
-    if (Args.hasArg(options::OPT_static)) {
-      CmdArgs.push_back("-lgcc_eh");
-    } else if (Profiling) {
-      CmdArgs.push_back("-lgcc_eh_p");
-    } else {
-      CmdArgs.push_back("--as-needed");
-      CmdArgs.push_back("-lgcc_s");
-      CmdArgs.push_back("--no-as-needed");
-    }
+        CmdArgs.push_back("-lgcc");
+      if (Args.hasArg(options::OPT_static)) {
+        CmdArgs.push_back("-lgcc_eh");
+      } else if (Profiling) {
+        CmdArgs.push_back("-lgcc_eh_p");
+      } else {
+        CmdArgs.push_back("--as-needed");
+        CmdArgs.push_back("-lgcc_s");
+        CmdArgs.push_back("--no-as-needed");
+      }
 
-    if (Args.hasArg(options::OPT_pthread)) {
-      if (Profiling)
-        CmdArgs.push_back("-lpthread_p");
-      else
-        CmdArgs.push_back("-lpthread");
-    }
+      if (Args.hasArg(options::OPT_pthread)) {
+        if (Profiling)
+          CmdArgs.push_back("-lpthread_p");
+        else
+          CmdArgs.push_back("-lpthread");
+      }
 
-    if (Profiling) {
-      if (Args.hasArg(options::OPT_shared))
+      if (Profiling) {
+        if (Args.hasArg(options::OPT_shared))
+          CmdArgs.push_back("-lc");
+        else
+          CmdArgs.push_back("-lc_p");
+        CmdArgs.push_back("-lgcc_p");
+      } else {
         CmdArgs.push_back("-lc");
-      else
-        CmdArgs.push_back("-lc_p");
-      CmdArgs.push_back("-lgcc_p");
-    } else {
-      CmdArgs.push_back("-lc");
-      CmdArgs.push_back("-lgcc");
-    }
+        CmdArgs.push_back("-lgcc");
+      }
 
-    if (Args.hasArg(options::OPT_static)) {
-      CmdArgs.push_back("-lgcc_eh");
-    } else if (Profiling) {
-      CmdArgs.push_back("-lgcc_eh_p");
-    } else {
-      CmdArgs.push_back("--as-needed");
-      CmdArgs.push_back("-lgcc_s");
-      CmdArgs.push_back("--no-as-needed");
+      if (Args.hasArg(options::OPT_static)) {
+        CmdArgs.push_back("-lgcc_eh");
+      } else if (Profiling) {
+        CmdArgs.push_back("-lgcc_eh_p");
+      } else {
+        CmdArgs.push_back("--as-needed");
+        CmdArgs.push_back("-lgcc_s");
+        CmdArgs.push_back("--no-as-needed");
+      }
     }
   }
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
+  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
+                             options::OPT_r)) {
     if (Args.hasArg(options::OPT_shared) || IsPIE)
       CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtendS.o")));
     else
@@ -394,6 +416,27 @@ void FreeBSD::AddClangSystemIncludeArgs(
     const llvm::opt::ArgList &DriverArgs,
     llvm::opt::ArgStringList &CC1Args) const {
   const Driver &D = getDriver();
+
+  if ((true)) {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+
+    if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)) {
+      if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+        SmallString<128> P(D.InstalledDir);
+        llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
+        addSystemInclude(DriverArgs, CC1Args, P);
+      }
+      
+      if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
+        SmallString<128> P(D.InstalledDir);
+        llvm::sys::path::append(P, "..", "..", "pizfix", "include");
+        addSystemInclude(DriverArgs, CC1Args, P);
+      }
+    }
+    return;
+  }
 
   if (DriverArgs.hasArg(clang::driver::options::OPT_nostdinc))
     return;
