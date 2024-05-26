@@ -72,7 +72,7 @@ uint64_t pas_get_current_monotonic_time_nanoseconds(void)
     return result;
 }
 
-#elif PAS_OS(LINUX)
+#elif PAS_OS(LINUX) || PAS_OS(FREEBSD)
 
 uint64_t pas_get_current_monotonic_time_nanoseconds(void)
 {

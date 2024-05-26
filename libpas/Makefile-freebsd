@@ -1,8 +1,8 @@
 # NOTE: This is really assuming FreeBSD on X86_64. And not just any X86_64, but a recent enough one.
 
-PASCC = clang -march=x86-64-v2
-PASCXX = clang++ -march=x86-64-v2
-FILCC = ../build/bin/clang
+PASCC = clang -march=x86-64-v2 -fPIC -pthread
+PASCXX = clang++ -march=x86-64-v2 -fPIC -pthread
+FILCC = ../build/bin/clang -fPIC
 
 all: \
 	../pizfix/lib/libpizlo.so ../pizfix/lib_test/libpizlo.so \
@@ -26,7 +26,7 @@ check-pas: build/test_pas
 	LD_LIBRARY_PATH=build build/test_pas
 
 build/test_pas: build/libpas.so $(TESTPASOBJS) $(VERIFIEROBJS)
-	clang++ -o build/test_pas $(TESTPASOBJS) $(VERIFIEROBJS) -Lbuild -lpas
+	clang++ -o build/test_pas $(TESTPASOBJS) $(VERIFIEROBJS) -Lbuild -lpas -pthread -lutil
 
 build/libpas.so: $(PASTESTOBJS)
 	clang -shared -o build/libpas.so $(PASTESTOBJS)

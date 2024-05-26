@@ -54,6 +54,10 @@
 #include <util.h>
 #endif /* PAS_OS(DARWIN) */
 
+#if PAS_OS(FREEBSD)
+#include <libutil.h>
+#endif /* PAS_OS(FREEBSD) */
+
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
     \
@@ -7367,7 +7371,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
     filc_exit(my_thread);
     if (verbose)
         pas_log("ngroups = %d\n", ngroups);
-    int result = getgrouplist(user, group, (int*)filc_ptr_ptr(groups_ptr), &ngroups);
+    int result = getgrouplist(user, group, filc_ptr_ptr(groups_ptr), &ngroups);
     if (verbose)
         pas_log("ngroups after = %d\n", ngroups);
     int my_errno = errno;
@@ -7622,9 +7626,11 @@ static void from_musl_utmpx(struct musl_utmpx* musl_utmpx, struct utmpx* utmpx)
     case 0:
         utmpx->ut_type = EMPTY;
         break;
+#if PAS_OS(DARWIN)
     case 1:
         utmpx->ut_type = RUN_LVL;
         break;
+#endif /* PAS_OS(DARWIN) */
     case 2:
         utmpx->ut_type = BOOT_TIME;
         break;
@@ -7676,9 +7682,11 @@ static void to_musl_utmpx(struct utmpx* utmpx, struct musl_utmpx* musl_utmpx)
     case EMPTY:
         musl_utmpx->ut_type = 0;
         break;
+#if PAS_OS(DARWIN)
     case RUN_LVL:
         musl_utmpx->ut_type = 1;
         break;
+#endif /* PAS_OS(DARWIN) */
     case BOOT_TIME:
         musl_utmpx->ut_type = 2;
         break;
@@ -7848,6 +7856,9 @@ filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc
     pas_lock_unlock(&utmpx_lock);
     return result;
 #else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(uid);
+    PAS_UNUSED_PARAM(musl_lastlogx_ptr);
     filc_internal_panic(NULL, "not implemented.");
     return filc_ptr_forge_null();
 #endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
@@ -7868,6 +7879,9 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
     bmalloc_deallocate(name);
     return result;
 #else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(musl_lastlogx_ptr);
     filc_internal_panic(NULL, "not implemented.");
     return filc_ptr_forge_null();
 #endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
@@ -8430,9 +8444,11 @@ long filc_native_zsys_sysconf_override(filc_thread* my_thread, int musl_name)
     case 85:
         name = _SC_PHYS_PAGES;
         break;
+#if PAS_OS(DARWIN)
     case 87:
         name = _SC_PASS_MAX;
         break;
+#endif /* PAS_OS(DARWIN) */
     case 89:
         name = _SC_XOPEN_VERSION;
         break;
@@ -8478,7 +8494,11 @@ int filc_native_zsys_numcores(filc_thread* my_thread)
     size_t length = sizeof(result);
     int name[] = {
         CTL_HW,
+#if PAS_OS(DARWIN)
         HW_AVAILCPU
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+        HW_NCPU
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
     };
     int sysctl_result = sysctl(name, sizeof(name) / sizeof(int), &result, &length, 0, 0);
     int my_errno = errno;
