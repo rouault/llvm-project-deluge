@@ -288,10 +288,10 @@ static void wait_and_start_marking(void)
     live_bytes_at_start = verse_heap_live_bytes;
 
     if (verbose >= VERBOSE_PHASES) {
-        pas_log("[%d] fugc: starting cycle %llu with %zu live bytes\n",
+        pas_log("[%d] fugc: starting cycle %" PRIu64 " with %zu live bytes\n",
                 pas_getpid(), completed_cycle + 1, live_bytes_at_start);
     } else if (verbose >= VERBOSE_BEGIN) {
-        pas_log("[%d] fugc: starting cycle %llu with %zu kb\n",
+        pas_log("[%d] fugc: starting cycle %" PRIu64 " with %zu kb\n",
                 pas_getpid(), completed_cycle + 1, live_bytes_at_start / 1024);
     }
 
@@ -426,8 +426,8 @@ static void sweep_and_end(void)
     if (verbose >= VERBOSE_CYCLES) {
         overall_end_time = pas_get_time_in_milliseconds();
         if (verbose >= VERBOSE_PHASES) {
-            pas_log("[%d] fugc: destructing and sweeping took %lf ms; completed cycle %llu in %lf ms, "
-                    "swept %zu bytes, "
+            pas_log("[%d] fugc: destructing and sweeping took %lf ms; completed cycle %" PRIu64
+                    " in %lf ms, swept %zu bytes, "
                     "survived %zu bytes, have %zu live bytes\n",
                     pas_getpid(), overall_end_time - mark_end_time, completed_cycle,
                     overall_end_time - overall_start_time,

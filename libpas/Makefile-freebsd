@@ -1,3 +1,5 @@
+# NOTE: This is really assuming FreeBSD on X86_64. And not just any X86_64, but a recent enough one.
+
 PASCC = clang -march=x86-64-v2
 PASCXX = clang++ -march=x86-64-v2
 FILCC = ../build/bin/clang

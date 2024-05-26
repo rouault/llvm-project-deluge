@@ -42,7 +42,6 @@
 #include <dirent.h>
 #include <syslog.h>
 #include <sys/wait.h>
-#include <util.h>
 #include <grp.h>
 #include <utmpx.h>
 #include <sys/sysctl.h>
@@ -50,6 +49,10 @@
 #include <sys/random.h>
 #include <dlfcn.h>
 #include <poll.h>
+
+#if PAS_OS(DARWIN)
+#include <util.h>
+#endif /* PAS_OS(DARWIN) */
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -3607,10 +3610,12 @@ static int to_musl_errno(int errno_value)
     case ELOOP          : return 40;
     case ENOMSG         : return 42;
     case EIDRM          : return 43;
+#if PAS_OS(DARWIN)
     case ENOSTR         : return 60;
     case ENODATA        : return 61;
     case ETIME          : return 62;
     case ENOSR          : return 63;
+#endif /* PAS_OS(DARWIN) */
     case EREMOTE        : return 66;
     case ENOLINK        : return 67;
     case EPROTO         : return 71;
@@ -3627,7 +3632,9 @@ static int to_musl_errno(int errno_value)
     case EPROTONOSUPPORT: return 93;
     case ESOCKTNOSUPPORT: return 94;
     case EOPNOTSUPP     : return 95;
+#if PAS_OS(DARWIN)
     case ENOTSUP        : return 95;
+#endif /* PAS_OS(DARWIN) */
     case EPFNOSUPPORT   : return 96;
     case EAFNOSUPPORT   : return 97;
     case EADDRINUSE     : return 98;
@@ -4580,9 +4587,11 @@ static bool from_musl_clock_id(int musl_clock_id, clockid_t* result)
     case 3:
         *result = CLOCK_THREAD_CPUTIME_ID;
         return true;
+#if PAS_OS(DARWIN)
     case 4:
         *result = CLOCK_MONOTONIC_RAW;
         return true;
+#endif /* PAS_OS(DARWIN) */
     default:
         *result = 0;
         return false;
@@ -5268,9 +5277,11 @@ static bool from_musl_domain(int musl_domain, int* result)
     case 34:
         *result = PF_ISDN;
         return true;
+#if PAS_OS(DARWIN)
     case 40:
         *result = PF_VSOCK;
         return true;
+#endif /* PAS_OS(DARWIN) */
     default:
         return false;
     }
@@ -5312,9 +5323,11 @@ static bool to_musl_domain(int domain, int* result)
     case PF_ISDN:
         *result = 34;
         return true;
+#if PAS_OS(DARWIN)
     case PF_VSOCK:
         *result = 40;
         return true;
+#endif /* PAS_OS(DARWIN) */
     default:
         return false;
     }
@@ -5474,9 +5487,15 @@ static bool from_musl_tcp_optname(int musl_optname, int* result)
     case 1:
         *result = TCP_NODELAY;
         return true;
+#if PAS_OS(DARWIN)
     case 4:
         *result = TCP_KEEPALIVE; /* musl says KEEPIDLE, Darwin says KEEPALIVE. coooool. */
         return true;
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+    case 4:
+        *result = TCP_KEEPIDLE;
+        return true;
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
     case 5:
         *result = TCP_KEEPINTVL;
         return true;
@@ -5537,7 +5556,11 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
             goto enoprotoopt;
         switch (optname) {
         case TCP_NODELAY:
+#if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
+#else
+        case TCP_KEEPIDLE:
+#endif
         case TCP_KEEPINTVL:
             break;
         default:
@@ -6077,7 +6100,11 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
             goto enoprotoopt;
         switch (optname) {
         case TCP_NODELAY:
+#if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
+#else
+        case TCP_KEEPIDLE:
+#endif
         case TCP_KEEPINTVL:
             break;
         default:
