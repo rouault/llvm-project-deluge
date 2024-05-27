@@ -213,7 +213,8 @@ protected:
     if (CCVersion == 0U)
       CCVersion = Release * 100000U + 1U;
 
-    Builder.defineMacro("__FreeBSD__", Twine(Release));
+    // So long as we're using musl as the libc on FreeBSD, this needs to be like so.
+    Builder.defineMacro("__PIZLONATED_FreeBSD__", Twine(Release));
     Builder.defineMacro("__FreeBSD_cc_version", Twine(CCVersion));
     Builder.defineMacro("__KPRINTF_ATTRIBUTE__");
     DefineStd(Builder, "unix", Opts);
