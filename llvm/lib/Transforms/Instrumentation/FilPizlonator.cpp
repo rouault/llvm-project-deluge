@@ -1211,13 +1211,13 @@ class Pizlonator {
       size_t Size = 0;
       Type* LowT = G->getValueType();
       buildWordTypesRecurse(LowT, LowT, Size, WordTypes);
-      if (Size != DL.getTypeStoreSize(LowT)) {
+      if (Size != DL.getTypeAllocSize(LowT)) {
         errs() << "Size mismatch for global type: " << *OriginalG->getValueType() << "\n"
                << "Type after lowering: " << *LowT << "\n"
                << "Size according to word type builder: " << Size << "\n"
-               << "Size according to DataLayout: " << DL.getTypeStoreSize(LowT) << "\n";
+               << "Size according to DataLayout: " << DL.getTypeAllocSize(LowT) << "\n";
       }
-      assert(Size == DL.getTypeStoreSize(LowT));
+      assert(Size == DL.getTypeAllocSize(LowT));
       assert(!(Size % WordSize));
       ObjectSize = Size;
       GlobalVariable* OriginalGV = cast<GlobalVariable>(OriginalG);
@@ -1412,7 +1412,7 @@ class Pizlonator {
       return true;
 
     if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
-      size_t ElementSize = DL.getTypeStoreSize(cast<ArrayType>(lowerType(CA->getType()))->getElementType());
+      size_t ElementSize = DL.getTypeAllocSize(cast<ArrayType>(lowerType(CA->getType()))->getElementType());
       for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(CA->getOperand(Index), Result, Offset + Index * ElementSize))
           return false;
@@ -1431,7 +1431,7 @@ class Pizlonator {
       return true;
     }
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
-      size_t ElementSize = DL.getTypeStoreSize(
+      size_t ElementSize = DL.getTypeAllocSize(
         cast<VectorType>(lowerType(CV->getType()))->getElementType());
       for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(CV->getOperand(Index), Result, Offset + Index * ElementSize))
@@ -1772,7 +1772,7 @@ class Pizlonator {
         Length = ZExt;
       }
       Instruction* Size = BinaryOperator::Create(
-        Instruction::Mul, Length, ConstantInt::get(IntPtrTy, DL.getTypeStoreSize(LowT)),
+        Instruction::Mul, Length, ConstantInt::get(IntPtrTy, DL.getTypeAllocSize(LowT)),
         "filc_alloca_size", AI);
       Size->setDebugLoc(AI->getDebugLoc());
       AI->replaceAllUsesWith(allocate(Size, DL.getABITypeAlign(LowT).value(), AI));
@@ -1915,7 +1915,7 @@ class Pizlonator {
         size_t Alignment = 1;
         for (size_t Index = 0; Index < CI->arg_size(); ++Index) {
           Type* LowT = ArgTypes[Index];
-          size_t ThisSize = DL.getTypeStoreSize(LowT);
+          size_t ThisSize = DL.getTypeAllocSize(LowT);
           size_t ThisAlignment = DL.getABITypeAlign(LowT).value();
           Size = (Size + ThisAlignment - 1) / ThisAlignment * ThisAlignment;
           Alignment = std::max(Alignment, ThisAlignment);
@@ -1954,7 +1954,7 @@ class Pizlonator {
         RetPayloadSize = 0;
         RetAlign = 1;
       } else {
-        RetPayloadSize = DL.getTypeStoreSize(LowRetT);
+        RetPayloadSize = DL.getTypeAllocSize(LowRetT);
         RetAlign = DL.getABITypeAlign(LowRetT).value();
       }
       if (!hasPtrsForCheck(LowRetT))
@@ -2014,7 +2014,7 @@ class Pizlonator {
     if (VAArgInst* VI = dyn_cast<VAArgInst>(I)) {
       Type* T = VI->getType();
       Type* LowT = lowerType(T);
-      size_t Size = DL.getTypeStoreSize(LowT);
+      size_t Size = DL.getTypeAllocSize(LowT);
       size_t Alignment = DL.getABITypeAlign(LowT).value();
       CallInst* Call = CallInst::Create(
         GetNextBytesForVAArg,
@@ -2215,7 +2215,7 @@ class Pizlonator {
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_thread_local_initializer_root", Initializer);
         Value* Result = CallInst::Create(
           Malloc,
-          { ConstantInt::get(IntPtrTy, DL.getTypeStoreSizeBeforeFilC(G->getInitializer()->getType())) },
+          { ConstantInt::get(IntPtrTy, DL.getTypeAllocSizeBeforeFilC(G->getInitializer()->getType())) },
           "filc_thread_local_allocate", RootBB);
         new StoreInst(G->getInitializer(), Result, RootBB);
         ReturnInst::Create(C, Result, RootBB);
@@ -2688,7 +2688,7 @@ public:
         for (unsigned Index = 0; Index < F->getFunctionType()->getNumParams(); ++Index) {
           Type* T = F->getFunctionType()->getParamType(Index);
           Type* LowT = lowerType(T);
-          size_t Size = DL.getTypeStoreSize(LowT);
+          size_t Size = DL.getTypeAllocSize(LowT);
           size_t Alignment = DL.getABITypeAlign(LowT).value();
           ArgOffset = (ArgOffset + Alignment - 1) / Alignment * Alignment;
           Instruction* ArgPtr = GetElementPtrInst::Create(
