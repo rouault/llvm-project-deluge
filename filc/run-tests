@@ -5,8 +5,16 @@ require 'pathname'
 require 'shellwords'
 require 'yaml'
 
-raise unless system("xcrun clang -c -o filc/tests/legacy_utils.o filc/tests/legacy_utils.c -Ilibpas/src/libpas -g")
-raise unless system("xcrun build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
+if RUBY_PLATFORM =~ /darwin/
+    $compilerPrefix = "xcrun "
+    $bundleOpt = "-bundle"
+else
+    $compilerPrefix = ""
+    $bundleOpt = "-shared"
+end
+
+raise unless system("#{$compilerPrefix}clang -c -o filc/tests/legacy_utils.o filc/tests/legacy_utils.c -Ilibpas/src/libpas -g")
+raise unless system("#{$compilerPrefix}build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
 
@@ -68,7 +76,7 @@ $testDirectory.each_entry {
         if libraries
             libraries.each_pair {
                 | libname, files |
-                outp.print "xcrun build/bin/#{clang} -bundle -o #{Shellwords.shellescape(fullPath + libname)}"
+                outp.print "#{$compilerPrefix}build/bin/#{clang} #{$bundleOpt} -o #{Shellwords.shellescape(fullPath + libname)}"
                 files.each {
                     | file |
                     libraryFiles[file] = true
@@ -84,7 +92,7 @@ $testDirectory.each_entry {
                 outp.puts "fi"
             }
         end
-        outp.print "xcrun build/bin/#{clang} -o #{Shellwords.shellescape(binary)}"
+        outp.print "#{$compilerPrefix}build/bin/#{clang} -o #{Shellwords.shellescape(binary)}"
         fullPath.each_entry {
             | entry |
             next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
