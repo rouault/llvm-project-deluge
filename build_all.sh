@@ -29,7 +29,8 @@ fi
 (cd libpas && ./build.sh)
 
 (cd musl && \
-     CC="xcrun $PWD/../build/bin/clang" ./configure --target=aarch64 --prefix=$PWD/../pizfix && \
+     CC="xcrun $PWD/../build/bin/clang" ./configure --target=aarch64 --prefix=$PWD/../pizfix \
+         --dylib-opt=-dynamiclib --dylib-ext=dylib && \
      make clean && \
      make -j `sysctl -n hw.ncpu` && \
      make install)
