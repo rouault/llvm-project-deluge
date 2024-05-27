@@ -1211,6 +1211,12 @@ class Pizlonator {
       size_t Size = 0;
       Type* LowT = G->getValueType();
       buildWordTypesRecurse(LowT, LowT, Size, WordTypes);
+      if (Size != DL.getTypeStoreSize(LowT)) {
+        errs() << "Size mismatch for global type: " << *OriginalG->getValueType() << "\n"
+               << "Type after lowering: " << *LowT << "\n"
+               << "Size according to word type builder: " << Size << "\n"
+               << "Size according to DataLayout: " << DL.getTypeStoreSize(LowT) << "\n";
+      }
       assert(Size == DL.getTypeStoreSize(LowT));
       assert(!(Size % WordSize));
       ObjectSize = Size;
