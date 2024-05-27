@@ -477,8 +477,10 @@ void FreeBSD::AddClangSystemIncludeArgs(
 
 void FreeBSD::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                                     llvm::opt::ArgStringList &CC1Args) const {
-  addSystemInclude(DriverArgs, CC1Args,
-                   concat(getDriver().SysRoot, "/usr/include/c++/v1"));
+  llvm::SmallString<128> InstallBin =
+    llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
+  llvm::sys::path::append(InstallBin, "..", "include", "c++", "v1");
+  addSystemInclude(DriverArgs, CC1Args, InstallBin);
 }
 
 void FreeBSD::AddCXXStdlibLibArgs(const ArgList &Args,
