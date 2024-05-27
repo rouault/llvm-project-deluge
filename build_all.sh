@@ -29,7 +29,7 @@ fi
 (cd libpas && ./build.sh)
 
 (cd musl && \
-     CC=$PWD/../build/bin/clang ./configure --target=aarch64 --prefix=$PWD/../pizfix && \
+     CC="xcrun $PWD/../build/bin/clang" ./configure --target=aarch64 --prefix=$PWD/../pizfix && \
      make clean && \
      make -j `sysctl -n hw.ncpu` && \
      make install)
