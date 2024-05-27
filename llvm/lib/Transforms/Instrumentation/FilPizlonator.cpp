@@ -2477,7 +2477,7 @@ public:
       GlobalDtors->setInitializer(ConstantArray::get(Array->getType(), Args));
     }
 
-    if (GlobalVariable* Used = M.getGlobalVariable("llvm.used")) {
+    auto HandleUsed = [&] (GlobalVariable* Used) {
       ConstantArray* Array = cast<ConstantArray>(Used->getInitializer());
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
@@ -2487,7 +2487,11 @@ public:
         Args.push_back(GetterF);
       }
       Used->setInitializer(ConstantArray::get(Array->getType(), Args));
-    }
+    };
+    if (GlobalVariable* Used = M.getGlobalVariable("llvm.used"))
+      HandleUsed(Used);
+    if (GlobalVariable* Used = M.getGlobalVariable("llvm.compiler.used"))
+      HandleUsed(Used);
 
     for (GlobalVariable* G : Globals) {
       // FIXME: We can probably make this work, but who gives a fugc for now?
