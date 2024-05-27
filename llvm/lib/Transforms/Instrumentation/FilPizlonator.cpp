@@ -2149,7 +2149,8 @@ class Pizlonator {
   bool shouldPassThrough(GlobalVariable* G) {
     return (G->getName() == "llvm.global_ctors" ||
             G->getName() == "llvm.global_dtors" ||
-            G->getName() == "llvm.used");
+            G->getName() == "llvm.used" ||
+            G->getName() == "llvm.compiler.used");
   }
 
   bool shouldPassThrough(GlobalValue* G) {
