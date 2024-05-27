@@ -1165,7 +1165,7 @@ class Pizlonator {
       return;
     }
 
-    Size += DL.getTypeStoreSize(LowT);
+    Size += DL.getTypeAllocSize(LowT);
     while ((Size + WordSize - 1) / WordSize > WordTypes.size())
       WordTypes.push_back(WordTypeInt);
   }
