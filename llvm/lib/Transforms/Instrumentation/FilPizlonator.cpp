@@ -2142,7 +2142,8 @@ class Pizlonator {
     return (F->getName() == "__divdc3" ||
             F->getName() == "__muldc3" ||
             F->getName() == "__divsc3" ||
-            F->getName() == "__mulsc3");
+            F->getName() == "__mulsc3" ||
+            F->getName() == "__mulxc3");
   }
 
   bool shouldPassThrough(GlobalVariable* G) {
