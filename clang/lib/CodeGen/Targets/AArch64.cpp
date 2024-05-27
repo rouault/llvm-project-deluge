@@ -766,35 +766,7 @@ Address AArch64ABIInfo::EmitAAPCSVAArg(Address VAListAddr, QualType Ty,
 
 Address AArch64ABIInfo::EmitDarwinVAArg(Address VAListAddr, QualType Ty,
                                         CodeGenFunction &CGF) const {
-  // The backend's lowering doesn't support va_arg for aggregates or
-  // illegal vector types.  Lower VAArg here for these cases and use
-  // the LLVM va_arg instruction for everything else.
-  if (!isAggregateTypeForABI(Ty) && !isIllegalVectorType(Ty))
-    return EmitVAArgInstr(CGF, VAListAddr, Ty, ABIArgInfo::getDirect());
-
-  uint64_t PointerSize = getTarget().getPointerWidth(LangAS::Default) / 8;
-  CharUnits SlotSize = CharUnits::fromQuantity(PointerSize);
-
-  // Empty records are ignored for parameter passing purposes.
-  if (isEmptyRecord(getContext(), Ty, true))
-    return Address(CGF.Builder.CreateLoad(VAListAddr, "ap.cur"),
-                   CGF.ConvertTypeForMem(Ty), SlotSize);
-
-  // The size of the actual thing passed, which might end up just
-  // being a pointer for indirect types.
-  auto TyInfo = getContext().getTypeInfoInChars(Ty);
-
-  // Arguments bigger than 16 bytes which aren't homogeneous
-  // aggregates should be passed indirectly.
-  bool IsIndirect = false;
-  if (TyInfo.Width.getQuantity() > 16) {
-    const Type *Base = nullptr;
-    uint64_t Members = 0;
-    IsIndirect = !isHomogeneousAggregate(Ty, Base, Members);
-  }
-
-  return emitVoidPtrVAArg(CGF, VAListAddr, Ty, IsIndirect,
-                          TyInfo, SlotSize, /*AllowHigherAlign*/ true);
+  return EmitVAArgInstr(CGF, VAListAddr, Ty, ABIArgInfo::getDirect());
 }
 
 Address AArch64ABIInfo::EmitMSVAArg(CodeGenFunction &CGF, Address VAListAddr,
