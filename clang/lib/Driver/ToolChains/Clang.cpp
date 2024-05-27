@@ -2332,7 +2332,7 @@ void Clang::AddX86TargetArgs(const ArgList &Args,
 
   // Default to "generic" unless -march is present or targetting the PS4/PS5.
   std::string TuneCPU;
-  if (!Args.hasArg(clang::driver::options::OPT_march_EQ) &&
+  if ((false) && !Args.hasArg(clang::driver::options::OPT_march_EQ) &&
       !getToolChain().getTriple().isPS())
     TuneCPU = "generic";
 
@@ -8034,8 +8034,6 @@ void ClangAs::AddX86TargetArgs(const ArgList &Args,
   addX86AlignBranchArgs(getToolChain().getDriver(), Args, CmdArgs,
                         /*IsLTO=*/false);
 
-  CmdArgs.push_back("-march=x86-64-v2");
-  
   if (Arg *A = Args.getLastArg(options::OPT_masm_EQ)) {
     StringRef Value = A->getValue();
     if (Value == "intel" || Value == "att") {

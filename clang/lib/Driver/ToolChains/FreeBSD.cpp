@@ -299,12 +299,20 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("--no-as-needed");
     SmallString<128> P(ToolChain.getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-    CmdArgs.push_back(Args.MakeArgString("-Wl,-rpath," + P));
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+    CmdArgs.push_back("-lpizlo");
+    CmdArgs.push_back("-lutil");
     if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                     options::OPT_r))
+                     options::OPT_r)) {
       CmdArgs.push_back("-lpizlonated_c");
-    if (!Args.hasArg(options::OPT_shared))
-      CmdArgs.push_back("-lfilc_crt");
+      if (!Args.hasArg(options::OPT_shared))
+        CmdArgs.push_back("-lfilc_crt");
+    } else {
+      if (!Args.hasArg(options::OPT_shared))
+        CmdArgs.push_back("-lfilc_mincrt");
+    }
   } else {
     unsigned Major = ToolChain.getTriple().getOSMajorVersion();
     bool Profiling = Args.hasArg(options::OPT_pg) && Major != 0 && Major < 14;

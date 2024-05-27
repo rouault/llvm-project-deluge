@@ -4,7 +4,8 @@ FILCC = xcrun ../build/bin/clang
 
 all: \
 	../pizfix/lib/libpizlo.dylib ../pizfix/lib_test/libpizlo.dylib \
-	../pizfix/lib/libfilc_crt.dylib ../pizfix/lib_test/libfilc_crt.dylib
+	../pizfix/lib/libfilc_crt.dylib ../pizfix/lib_test/libfilc_crt.dylib \
+	../pizfix/lib/libfilc_mincrt.dylib ../pizfix/lib_test/libfilc_mincrt.dylib
 
 include common.mk
 
@@ -23,6 +24,15 @@ include common.mk
 ../pizfix/lib_test/libfilc_crt.dylib: $(MAINTESTOBJS)
 	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libfilc_crt.dylib \
 		-o ../pizfix/lib_test/libfilc_crt.dylib $(MAINTESTOBJS) -undefined dynamic_lookup
+
+../pizfix/lib/libfilc_mincrt.dylib: $(MINMAINOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib/libfilc_mincrt.dylib \
+		-o ../pizfix/lib/libfilc_mincrt.dylib $(MINMAINOBJS) -undefined dynamic_lookup
+
+../pizfix/lib_test/libfilc_mincrt.dylib: $(MINMAINTESTOBJS)
+	xcrun clang -dynamiclib -install_name $(PWD)/../pizfix/lib_test/libfilc_mincrt.dylib \
+		-o ../pizfix/lib_test/libfilc_mincrt.dylib $(MINMAINTESTOBJS) \
+		-undefined dynamic_lookup
 
 check-pas: build/test_pas
 	DYLD_LIBRARY_PATH=build build/test_pas

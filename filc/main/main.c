@@ -5,14 +5,22 @@
 
 extern char** environ;
 
-filc_ptr pizlonated___init_libc(filc_global_initialization_context*);
-filc_ptr pizlonated_main(filc_global_initialization_context*);
-filc_ptr pizlonated_exit(filc_global_initialization_context*);
+#ifndef USE_LIBC
+#error "Must define USE_LIBC"
+#endif
 
+#if USE_LIBC
+filc_ptr pizlonated___init_libc(filc_global_initialization_context*);
+filc_ptr pizlonated_exit(filc_global_initialization_context*);
+#endif /* USE_LIBC */
+filc_ptr pizlonated_main(filc_global_initialization_context*);
+
+#if USE_LIBC
 struct init_libc_args {
     filc_ptr environ;
     filc_ptr program_name;
 };
+#endif /* USE_LIBC */
 
 struct main_args {
     int argc;
@@ -24,19 +32,21 @@ int main(int argc, char** argv)
     static const bool verbose = false;
     
     filc_return_buffer return_buffer;
-    filc_ptr init_libc_args_ptr;
-    struct init_libc_args* init_libc_args;
     filc_ptr main_args_ptr;
     struct main_args* main_args;
-    filc_ptr exit_args_ptr;
-    int* exit_args;
     filc_ptr pizlonated_argv;
     int index;
+    filc_ptr main_ptr;
+#if USE_LIBC
+    filc_ptr init_libc_args_ptr;
+    struct init_libc_args* init_libc_args;
+    filc_ptr exit_args_ptr;
+    int* exit_args;
     int environ_size;
     filc_ptr environ_ptr;
     filc_ptr __init_libc_ptr;
-    filc_ptr main_ptr;
     filc_ptr exit_ptr;
+#endif /* USE_LIBC */
 
     PAS_ASSERT(argc >= 1);
 
@@ -45,7 +55,11 @@ int main(int argc, char** argv)
     filc_enter(my_thread);
 
     static const filc_origin origin = {
+#if USE_LIBC
         .filename = "<crt>",
+#else /* USE_LIBC -> so !USE_LIBC */
+        .filename = "<mincrt>",
+#endif /* USE_LIBC -> so end of !USE_LIBC */
         .function = "main",
         .line = 0,
         .column = 0
@@ -81,6 +95,7 @@ int main(int argc, char** argv)
     filc_check_write_ptr(arg_ptr, NULL);
     filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(arg_ptr), filc_ptr_forge_null());
 
+#if USE_LIBC
     for (environ_size = 0; environ[environ_size]; ++environ_size);
     environ_size++;
 
@@ -125,6 +140,7 @@ int main(int argc, char** argv)
     ((void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(__init_libc_ptr))(
         my_thread, init_libc_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer));
     filc_unlock_top_native_frame(my_thread);
+#endif /* USE_LIBC */
 
     filc_run_deferred_global_ctors(my_thread);
 
@@ -146,15 +162,21 @@ int main(int argc, char** argv)
     if (verbose)
         pas_log("Exiting!\n");
 
+    int exit_status = *(int*)filc_ptr_ptr(rets);
+
+#if USE_LIBC
     exit_args_ptr = filc_ptr_create(my_thread, filc_allocate_int(my_thread, sizeof(int)));
     exit_args = (int*)filc_ptr_ptr(exit_args_ptr);
-    *exit_args = *(int*)filc_ptr_ptr(rets);
+    *exit_args = exit_status;
     exit_ptr = pizlonated_exit(NULL);
     filc_thread_track_object(my_thread, filc_ptr_object(exit_ptr));
     filc_lock_top_native_frame(my_thread);
     ((void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(exit_ptr))(
         my_thread, exit_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer));
     filc_unlock_top_native_frame(my_thread);
+#else /* USE_LIBC -> so !USE_LIBC */
+    _exit(exit_status);
+#endif /* USE_LIBC- > so end of !USE_LIBC */
 
     PAS_ASSERT(!"Should not get here");
     return 1;

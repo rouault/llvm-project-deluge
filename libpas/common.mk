@@ -14,6 +14,8 @@ PASTESTOBJS = $(patsubst %.c,build/pas-test-%.o,$(notdir $(PASSRCS)))
 
 MAINOBJS = $(patsubst %.c,build/main-release-%.o,$(notdir $(MAINSRCS)))
 MAINTESTOBJS = $(patsubst %.c,build/main-test-%.o,$(notdir $(MAINSRCS)))
+MINMAINOBJS = $(patsubst %.c,build/min-main-release-%.o,$(notdir $(MAINSRCS)))
+MINMAINTESTOBJS = $(patsubst %.c,build/min-main-test-%.o,$(notdir $(MAINSRCS)))
 
 FILPIZLOOBJS = $(patsubst %.c,build/fil-pizlo-%.o,$(notdir $(FILSRCS)))
 
@@ -39,10 +41,18 @@ build/pas-test-%.o: src/libpas/%.c $(GENHEADERS)
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1
 
 build/main-release-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -Isrc/libpas
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=1 -Isrc/libpas
 
 build/main-test-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1 -Isrc/libpas
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=1 -DENABLE_PAS_TESTING=1 \
+		-Isrc/libpas
+
+build/min-main-release-%.o: ../filc/main/%.c
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=0 -Isrc/libpas
+
+build/min-main-test-%.o: ../filc/main/%.c
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=0 -DENABLE_PAS_TESTING=1 \
+		-Isrc/libpas
 
 build/fil-pizlo-%.o: ../filc/src/%.c ../build/bin/clang
 	$(FILCC) $(FILCFLAGS) -c -o $@ $<

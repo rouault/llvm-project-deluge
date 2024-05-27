@@ -2,11 +2,12 @@
 
 PASCC = clang -march=x86-64-v2 -fPIC -pthread
 PASCXX = clang++ -march=x86-64-v2 -fPIC -pthread
-FILCC = ../build/bin/clang -fPIC
+FILCC = ../build/bin/clang
 
 all: \
 	../pizfix/lib/libpizlo.so ../pizfix/lib_test/libpizlo.so \
-	../pizfix/lib/libfilc_crt.so ../pizfix/lib_test/libfilc_crt.so
+	../pizfix/lib/libfilc_crt.so ../pizfix/lib_test/libfilc_crt.so \
+	../pizfix/lib/libfilc_mincrt.so ../pizfix/lib_test/libfilc_mincrt.so
 
 include common.mk
 
@@ -21,6 +22,12 @@ include common.mk
 
 ../pizfix/lib_test/libfilc_crt.so: $(MAINTESTOBJS)
 	clang -shared -o ../pizfix/lib_test/libfilc_crt.so $(MAINTESTOBJS)
+
+../pizfix/lib/libfilc_mincrt.so: $(MINMAINOBJS)
+	clang -shared -o ../pizfix/lib/libfilc_mincrt.so $(MINMAINOBJS)
+
+../pizfix/lib_test/libfilc_mincrt.so: $(MINMAINTESTOBJS)
+	clang -shared -o ../pizfix/lib_test/libfilc_mincrt.so $(MINMAINTESTOBJS)
 
 check-pas: build/test_pas
 	LD_LIBRARY_PATH=build build/test_pas
