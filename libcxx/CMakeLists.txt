@@ -6,6 +6,8 @@
 #===============================================================================
 cmake_minimum_required(VERSION 3.20.0)
 
+message(STATUS "Settup up libcxx")
+
 set(LLVM_COMMON_CMAKE_UTILS "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
 # Add path for custom modules
@@ -205,12 +207,18 @@ set(LIBCXX_EXTRA_SITE_DEFINES "" CACHE STRING "Extra defines to add into __confi
 option(LIBCXX_USE_COMPILER_RT "Use compiler-rt instead of libgcc" OFF)
 
 # ABI Library options ---------------------------------------------------------
-if (MSVC)
-  set(LIBCXX_DEFAULT_ABI_LIBRARY "vcruntime")
-elseif (${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
-  set(LIBCXX_DEFAULT_ABI_LIBRARY "libcxxrt")
-else()
+if (LIBCXX_FORCE_LIBCXXABI)
+  message(STATUS "Forcing libcxxabi")
   set(LIBCXX_DEFAULT_ABI_LIBRARY "libcxxabi")
+else()
+  message(STATUS "NOT forcing libcxxabi")
+  if (MSVC)
+    set(LIBCXX_DEFAULT_ABI_LIBRARY "vcruntime")
+  elseif (${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD")
+    set(LIBCXX_DEFAULT_ABI_LIBRARY "libcxxrt")
+  else()
+    set(LIBCXX_DEFAULT_ABI_LIBRARY "libcxxabi")
+  endif()
 endif()
 
 set(LIBCXX_SUPPORTED_ABI_LIBRARIES none libcxxabi system-libcxxabi libcxxrt libstdc++ libsupc++ vcruntime)
@@ -307,6 +315,7 @@ if (WIN32)
 endif()
 option(LIBCXX_HERMETIC_STATIC_LIBRARY
   "Do not export any symbols from the static library." ${LIBCXX_HERMETIC_STATIC_LIBRARY_DEFAULT})
+option(LIBCXX_FORCE_LIBCXXABI "Force use of libcxxabi." OFF)
 
 #===============================================================================
 # Check option configurations
