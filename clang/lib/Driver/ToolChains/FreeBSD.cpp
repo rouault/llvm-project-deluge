@@ -313,6 +313,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (!Args.hasArg(options::OPT_shared))
         CmdArgs.push_back("-lfilc_mincrt");
     }
+    if (ToolChain.ShouldLinkCXXStdlib(Args))
+      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
   } else {
     unsigned Major = ToolChain.getTriple().getOSMajorVersion();
     bool Profiling = Args.hasArg(options::OPT_pg) && Major != 0 && Major < 14;
@@ -477,10 +479,19 @@ void FreeBSD::AddClangSystemIncludeArgs(
 
 void FreeBSD::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                                     llvm::opt::ArgStringList &CC1Args) const {
-  llvm::SmallString<128> InstallBin =
-    llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
-  llvm::sys::path::append(InstallBin, "..", "include", "c++", "v1");
-  addSystemInclude(DriverArgs, CC1Args, InstallBin);
+  {
+    llvm::SmallString<128> P =
+      llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
+    llvm::sys::path::append(P, "..", "include", getTripleString());
+    llvm::sys::path::append(P, "c++", "v1");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+  {
+    llvm::SmallString<128> P =
+      llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
+    llvm::sys::path::append(P, "..", "include", "c++", "v1");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
 }
 
 void FreeBSD::AddCXXStdlibLibArgs(const ArgList &Args,
