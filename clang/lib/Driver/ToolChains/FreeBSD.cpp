@@ -291,6 +291,7 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("--as-needed");
     CmdArgs.push_back("-lgcc_s");
     CmdArgs.push_back("--no-as-needed");
+    Args.ClaimAllArgs(options::OPT_pthread);
     CmdArgs.push_back("-lpthread");
     CmdArgs.push_back("-lc");
     CmdArgs.push_back("-lgcc");

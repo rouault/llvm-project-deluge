@@ -6492,6 +6492,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fstrict_flex_arrays_EQ);
 
+  // Claim the -pthread arg even though we make it unconditional.
+  Args.ClaimAllArgs(options::OPT_pthread);
   CmdArgs.push_back("-pthread");
 
   Args.addOptInFlag(CmdArgs, options::OPT_mspeculative_load_hardening,

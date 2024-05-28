@@ -53,7 +53,7 @@ filc/run-tests
 
 (cd openssl-3.2.0 &&
      ($MAKE distclean || echo whatever) &&
-     CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./Configure zlib no-asm \
+     CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./Configure zlib no-asm no-devcryptoeng \
          --prefix=$PWD/../pizfix &&
      $MAKE -j `sysctl -n hw.ncpu` &&
      $MAKE install_sw &&
