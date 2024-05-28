@@ -35,9 +35,9 @@ fi
 (cd musl && \
      CC="$CCPREFIX$PWD/../build/bin/clang" ./configure --target=$ARCH \
          --prefix=$PWD/../pizfix --dylib-opt=$DYLIB_OPT --dylib-ext=$DYLIB_EXT && \
-     make clean && \
-     make -j `sysctl -n hw.ncpu` && \
-     make install)
+     $MAKE clean && \
+     $MAKE -j `sysctl -n hw.ncpu` && \
+     $MAKE install)
 
 (cd build && ninja runtimes-clean && ninja runtimes)
 ./install-cxx-$OS.sh
@@ -45,41 +45,41 @@ fi
 filc/run-tests
 
 (cd zlib-1.3 &&
-     (make distclean || echo whatever) &&
+     ($MAKE distclean || echo whatever) &&
      CC="$CCPREFIX$PWD/../build/bin/clang" CFLAGS="-O3 -g" ./configure \
          --prefix=$PWD/../pizfix &&
-     make -j `sysctl -n hw.ncpu` &&
-     make install)
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install)
 
 (cd openssl-3.2.0 &&
-     (make distclean || echo whatever) &&
+     ($MAKE distclean || echo whatever) &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./Configure zlib no-asm \
          --prefix=$PWD/../pizfix &&
-     make -j `sysctl -n hw.ncpu` &&
-     make install_sw &&
-     make install_ssldirs)
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install_sw &&
+     $MAKE install_ssldirs)
 
 (cd curl-8.5.0 &&
-     (make distclean || echo whatever) &&
+     ($MAKE distclean || echo whatever) &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --with-openssl \
          --prefix=$PWD/../pizfix &&
-     make -j `sysctl -n hw.ncpu` &&
-     make install)
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install)
 
 (cd deluded-openssh-portable &&
      (if test ! -f configure
       then
           autoreconf
       fi) &&
-     (make distclean || echo whatever) &&
+     ($MAKE distclean || echo whatever) &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix &&
-     make -j `sysctl -n hw.ncpu` &&
-     make install)
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install)
 
 (cd pcre-8.39 &&
-     (make distclean || echo whatever) &&
+     ($MAKE distclean || echo whatever) &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
        --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
        --enable-pcregrep-libz &&
-     make -j `sysctl -n hw.ncpu` &&
-     make install)
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install)
