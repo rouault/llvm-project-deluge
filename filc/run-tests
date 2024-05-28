@@ -13,6 +13,12 @@ else
     $bundleOpt = "-shared"
 end
 
+if RUBY_PLATFORM =~ /freebsd/
+    $make = "gmake"
+else
+    $make = "make"
+end
+
 raise unless system("#{$compilerPrefix}clang -c -o filc/tests/legacy_utils.o filc/tests/legacy_utils.c -Ilibpas/src/libpas -g")
 raise unless system("#{$compilerPrefix}build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
@@ -224,6 +230,6 @@ File.open("filc/tests/testmakefile", "w") {
     }
 }
 
-raise unless system("make -f filc/tests/testmakefile -j #{Etc.nprocessors}")
+raise unless system("#{$make} -f filc/tests/testmakefile -j #{Etc.nprocessors}")
 puts "SUCCESS"
 

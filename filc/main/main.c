@@ -175,7 +175,7 @@ int main(int argc, char** argv)
         my_thread, exit_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer));
     filc_unlock_top_native_frame(my_thread);
 #else /* USE_LIBC -> so !USE_LIBC */
-    _exit(exit_status);
+    exit(exit_status);
 #endif /* USE_LIBC- > so end of !USE_LIBC */
 
     PAS_ASSERT(!"Should not get here");

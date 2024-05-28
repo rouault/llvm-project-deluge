@@ -4440,7 +4440,7 @@ long filc_native_zsys_lseek(filc_thread* my_thread, int fd, long offset, int whe
 void filc_native_zsys_exit(filc_thread* my_thread, int return_code)
 {
     filc_exit(my_thread);
-    _exit(return_code);
+    exit(return_code);
     PAS_ASSERT(!"Should not be reached");
 }
 
