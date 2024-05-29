@@ -1,3 +1,18 @@
+//===- FilPizlonator.cpp - coolest fugcing pass ever written --------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file is a part of Fil-C, a Phil Pizlo Special (TM).
+//
+// See here:
+// https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto.md
+//
+//===----------------------------------------------------------------------===//
+
 #include "llvm/Transforms/Instrumentation/FilPizlonator.h"
 
 #include <llvm/Demangle/Demangle.h>
