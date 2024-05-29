@@ -266,6 +266,14 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtbegin)));
   }
 
+  {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+
   Args.AddAllArgs(CmdArgs, options::OPT_L);
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
   Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
@@ -298,11 +306,6 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("--as-needed");
     CmdArgs.push_back("-lgcc_s");
     CmdArgs.push_back("--no-as-needed");
-    SmallString<128> P(ToolChain.getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-    CmdArgs.push_back(Args.MakeArgString("-L" + P));
-    CmdArgs.push_back("-rpath");
-    CmdArgs.push_back(Args.MakeArgString(P));
     CmdArgs.push_back("-lpizlo");
     CmdArgs.push_back("-lutil");
     if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
