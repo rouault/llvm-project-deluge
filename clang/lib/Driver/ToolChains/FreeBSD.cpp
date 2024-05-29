@@ -266,6 +266,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtbegin)));
   }
 
+  Args.AddAllArgs(CmdArgs, options::OPT_L);
+  
   {
     SmallString<128> P(ToolChain.getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
@@ -274,8 +276,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(P));
   }
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
+
   Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
   Args.AddAllArgs(CmdArgs, options::OPT_s);
   Args.AddAllArgs(CmdArgs, options::OPT_t);
