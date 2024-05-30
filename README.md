@@ -16,13 +16,18 @@ compatibility with classic C or C++.
 
 ## Requirements
 
-Fil-C only works on Apple Silicon Macs, for now.
+Fil-C only works on Apple Silicon Macs and FreeBSD 14 on X86_64, for now.
 
 ## Getting Started
 
-Run:
+If you downloaded Fil-C binaries, run:
 
     ./setup.sh
+
+If you downloaded Fil-C source, run:
+
+    ./setup_gits.sh
+    ./build_all.sh
 
 Then you'll be able to use Fil-C from within this directory. There is no way to
 "install" it, because that would be a crazy thing to do for such an
@@ -57,6 +62,8 @@ like:
 - Type errors arising from misuse of va_lists.
 
 - Lots of other stuff.
+
+Fil-C supports tricky features like threads, signal handling, and even mmap.
 
 ## Things That Don't Work
 

@@ -41,6 +41,11 @@ Fil-C introduces memory safety at the core of C and C++:
   that pointer's rules by trying to access out-of-bounds, or read an int as a pointer or vice-versa, or
   access a freed object, Fil-C will thwart your program's further execution.
 
+- Fil-C supports tricky features like threads, signal handling, and even mmap. All of these features
+  are memory-safe. Fil-C pointers are atomic, so lock-free algorithms using pointers work just fine.
+  It's even possible to allocate memory using `malloc` from within a signal handler (which is necessary
+  because Fil-C heap-allocates stack allocations).
+
 - Fil-C's protections are designed to be comprehensive. There's no escape hatch short of [delightful
   hacks that also break all memory-safe languages](https://blog.yossarian.net/2021/03/16/totally_safe_transmute-line-by-line).
   There's no `unsafe` keyword. Even data races result in memory-safe outcomes. Fil-C operates on the
@@ -58,7 +63,7 @@ and even [found a bug](https://github.com/python/cpython/issues/118534)),
 [memory-safe SQLite](https://github.com/pizlonator/pizlonated-sqlite),
 [memory-safe libcxx and libcxxabi](https://github.com/pizlonator/llvm-project-deluge/tree/deluge), and
 [memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
-me on my Apple Silicon Mac:
+me on my Apple Silicon Mac and on my FreeBSD 14 X86_64 box:
 
     pizfix/bin/curl https://www.google.com/
 
@@ -91,7 +96,7 @@ First I'll tell you how to build Fil-C and then I'll tell you how to use it.
 
 ### Building Fil-C
 
-Fil-C currently only works on Apple Silicon Macs. Upon getting Fil-C from
+Fil-C currently only works on Apple Silicon Macs and FreeBSD 14 on X86_64. Upon getting Fil-C from
 https://github.com/pizlonator/llvm-project-deluge.git, and making sure you're on the `deluge` branch,
 simply do:
 
@@ -113,7 +118,8 @@ And then even connect to it:
 
 You'll probably encounter bugs. For example, password auth is broken, so logging into your ssh server will
 only work if you have authorized_keys set up. That's mostly because of my hacks to get musl (a Linux libc)
-to work on Darwin.
+to work on Darwin. For now, Fil-C also uses musl on FreeBSD (but I'll replace it with FreeBSD's own libc
+soon).
 
 ### Using Fil-C
 
