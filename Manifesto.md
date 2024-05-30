@@ -81,7 +81,7 @@ but it'll be easiest to make it fast once there is a large corpus of code that c
 
 Note that the very first prototype of Fil-C used isoheaps instead of GC. The isoheap version is obsolete,
 since it's slower and requires more changes to C code. If you want to read about it,
-[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
+[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).
 
 This document goes into the details of Fil-C and is organized as follows. First, I show you how to
 use Fil-C. Then, I describe the Fil-C development plan, which explains my views on growing the set
