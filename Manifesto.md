@@ -75,9 +75,7 @@ which exposes all of the API that musl needs (low-level
 which themselves perform comprehensive safety checking).
 
 On the other hand, Fil-C is quite slow. It's ~50x slower than legacy C right now. I have not done any
-optimizations to it at all (though switching from
-[isoheaps](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md) to
-FUGC resulted in a ~4x speed-up). I am focusing entirely on correctness and ergonomics and converting as
+optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
 much code to it as I personally can in my spare time. It's important for Fil-C to be fast eventually,
 but it'll be easiest to make it fast once there is a large corpus of code that can run on it.
 
