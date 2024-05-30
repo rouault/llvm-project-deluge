@@ -90,17 +90,15 @@ filc/run-tests
      $MAKE install)
 
 (cd deluded-openssh-portable &&
-     (if test ! -f configure
-      then
-          autoreconf
-      fi) &&
      ($MAKE distclean || echo whatever) &&
+     autoreconf &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix &&
      $MAKE -j `sysctl -n hw.ncpu` &&
      $MAKE install)
 
 (cd pcre-8.39 &&
      ($MAKE distclean || echo whatever) &&
+     autoreconf &&
      CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
        --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
        --enable-pcregrep-libz &&

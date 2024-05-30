@@ -7642,8 +7642,8 @@ static void from_musl_utmpx(struct musl_utmpx* musl_utmpx, struct utmpx* utmpx)
     snprintf(utmpx->ut_line, sizeof(utmpx->ut_line), "%s", line);
     snprintf(utmpx->ut_user, sizeof(utmpx->ut_user), "%s", user);
     snprintf(utmpx->ut_host, sizeof(utmpx->ut_host), "%s", host);
-    PAS_ASSERT(sizeof(utmpx->ut_id) == sizeof(musl_utmpx->ut_id));
-    memcpy(utmpx->ut_id, musl_utmpx->ut_id, sizeof(musl_utmpx->ut_id));
+    memcpy(utmpx->ut_id, musl_utmpx->ut_id, pas_min_uintptr(sizeof(utmpx->ut_id),
+                                                            sizeof(musl_utmpx->ut_id)));
     utmpx->ut_tv.tv_sec = musl_utmpx->ut_tv.tv_sec;
     utmpx->ut_tv.tv_usec = musl_utmpx->ut_tv.tv_usec;
     utmpx->ut_pid = musl_utmpx->ut_pid;
@@ -7699,7 +7699,8 @@ static void to_musl_utmpx(struct utmpx* utmpx, struct musl_utmpx* musl_utmpx)
     snprintf(musl_utmpx->ut_line, sizeof(musl_utmpx->ut_line), "%s", utmpx->ut_line);
     snprintf(musl_utmpx->ut_user, sizeof(musl_utmpx->ut_user), "%s", utmpx->ut_user);
     snprintf(musl_utmpx->ut_host, sizeof(musl_utmpx->ut_host), "%s", utmpx->ut_host);
-    snprintf(musl_utmpx->ut_id, sizeof(musl_utmpx->ut_id), "%s", utmpx->ut_id);
+    memcpy(musl_utmpx->ut_id, utmpx->ut_id, pas_min_uintptr(sizeof(utmpx->ut_id),
+                                                            sizeof(musl_utmpx->ut_id)));
     musl_utmpx->ut_tv.tv_sec = utmpx->ut_tv.tv_sec;
     musl_utmpx->ut_tv.tv_usec = utmpx->ut_tv.tv_usec;
     musl_utmpx->ut_pid = utmpx->ut_pid;
