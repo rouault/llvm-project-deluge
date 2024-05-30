@@ -5,7 +5,7 @@ them. But C and C++ are unsafe languages. Simple logic errors may result in an a
 where a pointer points and what is written into it, which leads to an easy path to exploitation. Lots
 of other languages (Rust, Java, Haskell, even JavaScript) don't have this problem!
 
-But I love C. And I also almost love C++ just as much. I grew up on them. It's such a joy for me to
+But I love C. And I love C++ almost as much. I grew up on them. It's such a joy for me to
 use both of them! Therefore, in my spare time, I decided
 to make my own memory-safe C and C++. This is a personal project and an expression of my love for C.
 
