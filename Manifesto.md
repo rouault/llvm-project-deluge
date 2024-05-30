@@ -1,8 +1,5 @@
 # The Fil-C Memory Safety Manifesto: FUGC Yeah!
 
-(The previous version, which used isoheaps instead of  GC, is obsolete. If you want to read about it,
-[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
-
 The C and C++ programming languages are wonderful. There is a ton of amazing code written in both of
 them. But C and C++ are unsafe languages. Simple logic errors may result in an attacker controlling
 where a pointer points and what is written into it, which leads to an easy path to exploitation. Lots
@@ -84,6 +81,10 @@ FUGC resulted in a ~4x speed-up). I am focusing entirely on correctness and ergo
 much code to it as I personally can in my spare time. It's important for Fil-C to be fast eventually,
 but it'll be easiest to make it fast once there is a large corpus of code that can run on it.
 
+Note that the very first prototype of Fil-C used isoheaps instead of GC. The isoheap version is obsolete,
+since it's slower and requires more changes to C code. If you want to read about it,
+[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).)
+
 This document goes into the details of Fil-C and is organized as follows. First, I show you how to
 use Fil-C. Then, I describe the Fil-C development plan, which explains my views on growing the set
 of things Fil-C can run and how to make it run fast. The section about making it run fast also delves
@@ -131,6 +132,10 @@ Let's start with the basics. Fil-C works like any C compiler. Take this program:
 Say it's named hello.c. We can do:
 
     xcrun build/bin/clang -o hello hello.c -g -O
+
+Or, on FreeBSD, we can skip the `xcrun` and just do:
+
+    build/bin/clang -o hello hello.c -g -O
 
 Note that without -g, the Fil-C runtime errors will not be as helpful, and if you don't add -O to
 -g, the compiler will currently crash.
