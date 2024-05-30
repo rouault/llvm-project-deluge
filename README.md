@@ -48,8 +48,7 @@ build_all.sh) is:
 
 - A version of clang that you can use to compile C or C++ programs.
 
-Fil-C really does catch all of the stuff that makes memory safety in C hard,
-like:
+Fil-C catches all of the stuff that makes memory safety in C hard, like:
 
 - Out-of-bounds on the heap or stack.
 
@@ -61,9 +60,15 @@ like:
 
 - Type errors arising from misuse of va_lists.
 
+- Pointer races.
+
+- System calls. All buffers passed to system calls are checked for bounds and
+  type.
+
 - Lots of other stuff.
 
-Fil-C supports tricky features like threads, signal handling, and even mmap.
+Fil-C comes with a reasonably complete POSIX libc and even supports tricky
+features like threads, signal handling, and `mmap`/`munmap`.
 
 ## Things That Don't Work
 
