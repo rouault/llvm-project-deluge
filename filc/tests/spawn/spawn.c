@@ -10,11 +10,8 @@
 
 extern char** environ;
 
-static void spawn_and_wait(const char* path, const posix_spawn_file_actions_t* actions,
-                           const posix_spawnattr_t* attrp, char*const* argv, char*const* envp)
+static void mywait(int pid)
 {
-    int pid;
-    ZASSERT(!posix_spawn(&pid, path, actions, attrp, argv, envp));
     for (;;) {
         int status;
         int result = waitpid(pid, &status, 0);
@@ -26,6 +23,22 @@ static void spawn_and_wait(const char* path, const posix_spawn_file_actions_t* a
         ZASSERT(result == -1);
         ZASSERT(errno == EINTR);
     }
+}
+
+static void spawn_and_wait(const char* path, const posix_spawn_file_actions_t* actions,
+                           const posix_spawnattr_t* attrp, char*const* argv, char*const* envp)
+{
+    int pid;
+    ZASSERT(!posix_spawn(&pid, path, actions, attrp, argv, envp));
+    mywait(pid);
+}
+
+static void spawnp_and_wait(const char* path, const posix_spawn_file_actions_t* actions,
+                            const posix_spawnattr_t* attrp, char*const* argv, char*const* envp)
+{
+    int pid;
+    ZASSERT(!posix_spawnp(&pid, path, actions, attrp, argv, envp));
+    mywait(pid);
 }
 
 static size_t readloop(int fd, char* data, size_t size)
@@ -77,6 +90,9 @@ int main()
     ZASSERT(result == strlen("/\n"));
     ZASSERT(!strcmp(buf, "/\n"));
     
+    zprintf("Spawn4: ");
+    spawnp_and_wait("sh", NULL, NULL, argv, environ);
+
     return 0;
 }
 
