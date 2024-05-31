@@ -8925,6 +8925,7 @@ int filc_native_zsys_faccessat(filc_thread* my_thread, int musl_dirfd, filc_ptr 
     int result = faccessat(dirfd, pathname, mode, flags);
     int my_errno = errno;
     filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
     if (result < 0)
         set_errno(my_errno);
     return result;
@@ -9197,6 +9198,7 @@ int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
     int result = rmdir(path);
     int my_errno = errno;
     filc_enter(my_thread);
+    bmalloc_deallocate(path);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         set_errno(my_errno);
