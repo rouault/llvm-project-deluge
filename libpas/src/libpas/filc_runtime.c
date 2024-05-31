@@ -9005,8 +9005,10 @@ static bool from_musl_posix_spawnattr(filc_ptr musl_spawnattr_ptr,
         flags |= POSIX_SPAWN_SETSIGDEF;
     if (check_and_clear(&musl_flags, 8))
         flags |= POSIX_SPAWN_SETSIGMASK;
+#if PAS_OS(DARWIN)
     if (check_and_clear(&musl_flags, 128))
         flags |= POSIX_SPAWN_SETSID;
+#endif
     if (musl_flags)
         return false;
     PAS_ASSERT(!posix_spawnattr_setflags(spawnattr, flags));
