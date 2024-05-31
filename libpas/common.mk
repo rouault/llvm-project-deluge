@@ -45,6 +45,7 @@ FILPIZLOOBJS = $(patsubst %.c,build/fil-pizlo-%.o,$(notdir $(FILSRCS)))
 TESTPASOBJS = $(patsubst %.cpp,build/test_pas-%.o,$(notdir $(TESTPASSRCS)))
 VERIFIEROBJS = $(patsubst %.cpp,build/verifier-%.o,$(notdir $(VERIFIERSRCS)))
 
+# FIXME: Should make sure that only the things that include this depend on it.
 GENHEADERS = src/libpas/filc_native.h
 
 -include $(wildcard build/*.d)

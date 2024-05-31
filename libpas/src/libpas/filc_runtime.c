@@ -9163,6 +9163,33 @@ int filc_native_zsys_posix_spawnp(filc_thread* my_thread, filc_ptr pid_ptr, filc
         my_thread, pid_ptr, path_ptr, actions_ptr, attr_ptr, argv_ptr, envp_ptr, is_p);
 }
 
+int filc_native_zsys_shutdown(filc_thread* my_thread, int fd, int musl_how)
+{
+    int how;
+    switch (musl_how) {
+    case 0:
+        how = SHUT_RD;
+        break;
+    case 1:
+        how = SHUT_WR;
+        break;
+    case 2:
+        how = SHUT_RDWR;
+        break;
+    default:
+        set_errno(EINVAL);
+        return -1;
+    }
+    filc_exit(my_thread);
+    int result = shutdown(fd, how);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;
