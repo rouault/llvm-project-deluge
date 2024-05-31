@@ -74,6 +74,7 @@
 #include <sys/random.h>
 #include <dlfcn.h>
 #include <poll.h>
+#include <spawn.h>
 
 #if PAS_OS(DARWIN)
 #include <util.h>
@@ -4977,7 +4978,7 @@ static void from_musl_sigset(struct musl_sigset* musl_sigset,
     static const unsigned num_active_words = 2;
     static const unsigned num_active_bits = 2 * 64;
 
-    pas_reasonably_fill_sigset(sigset);
+    PAS_ASSERT(!sigemptyset(sigset));
     
     unsigned musl_sigindex;
     for (musl_sigindex = num_active_bits; musl_sigindex--;) {
@@ -4986,7 +4987,7 @@ static void from_musl_sigset(struct musl_sigset* musl_sigset,
                             & PAS_BITVECTOR_BIT_MASK64(musl_sigindex));
         if (verbose)
             pas_log("musl_signum %u: %s\n", musl_signum, bit_value ? "yes" : "no");
-        if (bit_value)
+        if (!bit_value)
             continue;
         int signum = from_musl_signum(musl_signum);
         if (signum < 0) {
@@ -4994,7 +4995,7 @@ static void from_musl_sigset(struct musl_sigset* musl_sigset,
                 pas_log("no conversion, skipping.\n");
             continue;
         }
-        sigdelset(sigset, signum);
+        sigaddset(sigset, signum);
     }
     if (verbose) {
         for (int sig = 1; sig < 32; ++sig)
@@ -7212,37 +7213,48 @@ static size_t length_of_null_terminated_ptr_array(filc_ptr array_ptr)
     }
 }
 
+static void check_and_get_null_terminated_string_array(filc_thread* my_thread,
+                                                       filc_ptr musl_array_ptr,
+                                                       size_t* array_length,
+                                                       char*** array)
+{
+    *array_length = length_of_null_terminated_ptr_array(musl_array_ptr);
+    *array = (char**)bmalloc_allocate_zeroed((*array_length + 1) * sizeof(char*));
+    (*array)[*array_length] = NULL;
+    size_t index;
+    for (index = *array_length; index--;) {
+        (*array)[index] = filc_check_and_get_new_str(
+            filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(musl_array_ptr) + index));
+    }
+}
+
+static void deallocate_null_terminated_string_array(size_t array_length,
+                                                    char** array)
+{
+    size_t index;
+    for (index = array_length; index--;)
+        bmalloc_deallocate(array[index]);
+    bmalloc_deallocate(array);
+}
+
 int filc_native_zsys_execve(filc_thread* my_thread, filc_ptr pathname_ptr, filc_ptr argv_ptr,
                             filc_ptr envp_ptr)
 {
     char* pathname = filc_check_and_get_new_str(pathname_ptr);
-    size_t argv_len = length_of_null_terminated_ptr_array(argv_ptr);
-    size_t envp_len = length_of_null_terminated_ptr_array(envp_ptr);
-    char** argv = (char**)bmalloc_allocate_zeroed((argv_len + 1) * sizeof(char*));
-    char** envp = (char**)bmalloc_allocate_zeroed((envp_len + 1) * sizeof(char*));
-    argv[argv_len] = NULL;
-    envp[envp_len] = NULL;
-    size_t index;
-    for (index = argv_len; index--;) {
-        argv[index] = filc_check_and_get_new_str(
-            filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(argv_ptr) + index));
-    }
-    for (index = envp_len; index--;) {
-        envp[index] = filc_check_and_get_new_str(
-            filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(envp_ptr) + index));
-    }
+    size_t argv_len;
+    size_t envp_len;
+    char** argv;
+    char** envp;
+    check_and_get_null_terminated_string_array(my_thread, argv_ptr, &argv_len, &argv);
+    check_and_get_null_terminated_string_array(my_thread, envp_ptr, &envp_len, &envp);
     filc_exit(my_thread);
     int result = execve(pathname, argv, envp);
     int my_errno = errno;
     filc_enter(my_thread);
     PAS_ASSERT(result == -1);
     set_errno(my_errno);
-    for (index = argv_len; index--;)
-        bmalloc_deallocate(argv[index]);
-    for (index = envp_len; index--;)
-        bmalloc_deallocate(envp[index]);
-    bmalloc_deallocate(argv);
-    bmalloc_deallocate(envp);
+    deallocate_null_terminated_string_array(argv_len, argv);
+    deallocate_null_terminated_string_array(envp_len, envp);
     bmalloc_deallocate(pathname);
     return -1;
 }
@@ -8944,6 +8956,209 @@ int filc_native_zsys_fsync(filc_thread* my_thread, int fd)
     if (result < 0)
         set_errno(my_errno);
     return result;
+}
+
+struct musl_posix_spawnattr {
+    int flags;
+    int pgrp;
+    struct musl_sigset def;
+    struct musl_sigset mask;
+    int prio;
+    int pol;
+};
+
+struct musl_posix_spawn_file_actions {
+    int pad0[2];
+    filc_ptr actions;
+};
+
+struct musl_fdop {
+    filc_ptr next;
+    filc_ptr prev;
+    int cmd;
+    int fd;
+    int srcfd;
+    int oflag;
+    unsigned mode;
+    char path[];
+};
+
+static bool from_musl_posix_spawnattr(filc_ptr musl_spawnattr_ptr,
+                                      posix_spawnattr_t* spawnattr)
+{
+    PAS_ASSERT(!posix_spawnattr_init(spawnattr));
+
+    if (!filc_ptr_ptr(musl_spawnattr_ptr))
+        return true;
+
+    filc_check_read_int(musl_spawnattr_ptr, sizeof(struct musl_posix_spawnattr), NULL);
+    struct musl_posix_spawnattr* musl_spawnattr =
+        (struct musl_posix_spawnattr*)filc_ptr_ptr(musl_spawnattr_ptr);
+    
+    unsigned musl_flags = musl_spawnattr->flags;
+    unsigned flags = 0;
+    if (check_and_clear(&musl_flags, 1))
+        flags |= POSIX_SPAWN_RESETIDS;
+    if (check_and_clear(&musl_flags, 2))
+        flags |= POSIX_SPAWN_SETPGROUP;
+    if (check_and_clear(&musl_flags, 4))
+        flags |= POSIX_SPAWN_SETSIGDEF;
+    if (check_and_clear(&musl_flags, 8))
+        flags |= POSIX_SPAWN_SETSIGMASK;
+    if (check_and_clear(&musl_flags, 128))
+        flags |= POSIX_SPAWN_SETSID;
+    if (musl_flags)
+        return false;
+    PAS_ASSERT(!posix_spawnattr_setflags(spawnattr, flags));
+
+    sigset_t sigset;
+    from_musl_sigset(&musl_spawnattr->def, &sigset);
+    PAS_ASSERT(!posix_spawnattr_setsigdefault(spawnattr, &sigset));
+
+    from_musl_sigset(&musl_spawnattr->mask, &sigset);
+    PAS_ASSERT(!posix_spawnattr_setsigmask(spawnattr, &sigset));
+
+    PAS_ASSERT(!posix_spawnattr_setpgroup(spawnattr, musl_spawnattr->pgrp));
+    return true;
+}
+
+static bool from_musl_posix_spawn_file_actions(filc_thread* my_thread,
+                                               filc_ptr musl_actions_ptr,
+                                               posix_spawn_file_actions_t* actions)
+{
+    PAS_ASSERT(!posix_spawn_file_actions_init(actions));
+
+    if (!filc_ptr_ptr(musl_actions_ptr))
+        return true;
+
+    FILC_CHECK_PTR_FIELD(musl_actions_ptr, struct musl_posix_spawn_file_actions, actions,
+                         filc_read_access);
+    struct musl_posix_spawn_file_actions* musl_actions =
+        (struct musl_posix_spawn_file_actions*)filc_ptr_ptr(musl_actions_ptr);
+    filc_ptr fdop_ptr = filc_ptr_load(my_thread, &musl_actions->actions);
+    if (!filc_ptr_ptr(fdop_ptr))
+        return true;
+    
+    for (;;) {
+        FILC_CHECK_PTR_FIELD(fdop_ptr, struct musl_fdop, next, filc_read_access);
+        struct musl_fdop* fdop = (struct musl_fdop*)filc_ptr_ptr(fdop_ptr);
+        filc_ptr next_ptr = filc_ptr_load(my_thread, &fdop->next);
+        if (!filc_ptr_ptr(next_ptr))
+            break;
+        fdop_ptr = next_ptr;
+    }
+    do {
+        FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, cmd, filc_read_access);
+        struct musl_fdop* fdop = (struct musl_fdop*)filc_ptr_ptr(fdop_ptr);
+        switch (fdop->cmd) {
+        case 1: /* FDOP_CLOSE */ {
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, fd, filc_read_access);
+            PAS_ASSERT(!posix_spawn_file_actions_addclose(actions, fdop->fd));
+            break;
+        }
+        case 2: /* FDOP_DUP2 */ {
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, srcfd, filc_read_access);
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, fd, filc_read_access);
+            PAS_ASSERT(!posix_spawn_file_actions_adddup2(actions, fdop->srcfd, fdop->fd));
+            break;
+        }
+        case 3: /* FDOP_OPEN */ {
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, fd, filc_read_access);
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, oflag, filc_read_access);
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, mode, filc_read_access);
+            int flags = from_musl_open_flags(fdop->oflag);
+            if (flags < 0)
+                goto error;
+            char* path = filc_check_and_get_new_str(
+                filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
+            PAS_ASSERT(!posix_spawn_file_actions_addopen(actions, fdop->fd, path, flags, fdop->mode));
+            bmalloc_deallocate(path);
+            break;
+        }
+        case 4: /* FDOP_CHDIR */ {
+            char* path = filc_check_and_get_new_str(
+                filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
+            PAS_ASSERT(!posix_spawn_file_actions_addchdir_np(actions, path));
+            bmalloc_deallocate(path);
+            break;
+        }
+        case 5: /* FDOP_FCHDIR */ {
+            FILC_CHECK_INT_FIELD(fdop_ptr, struct musl_fdop, fd, filc_read_access);
+            PAS_ASSERT(!posix_spawn_file_actions_addfchdir_np(actions, fdop->fd));
+            break;
+        }
+        default:
+            goto error;
+        }
+        FILC_CHECK_PTR_FIELD(fdop_ptr, struct musl_fdop, prev, filc_read_access);
+        fdop_ptr = filc_ptr_load(my_thread, &fdop->prev);
+    } while (filc_ptr_ptr(fdop_ptr));
+
+    return true;
+
+error:
+    posix_spawn_file_actions_destroy(actions);
+    return false;
+}
+
+static int posix_spawn_impl(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr path_ptr,
+                            filc_ptr actions_ptr, filc_ptr attr_ptr, filc_ptr argv_ptr,
+                            filc_ptr envp_ptr, bool is_p)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    posix_spawn_file_actions_t actions;
+    if (!from_musl_posix_spawn_file_actions(my_thread, actions_ptr, &actions)) {
+        set_errno(EINVAL);
+        return -1;
+    }
+    posix_spawnattr_t spawnattr;
+    if (!from_musl_posix_spawnattr(attr_ptr, &spawnattr)) {
+        posix_spawn_file_actions_destroy(&actions);
+        set_errno(EINVAL);
+        return -1;
+    }
+    size_t argv_len;
+    size_t envp_len;
+    char** argv;
+    char** envp;
+    check_and_get_null_terminated_string_array(my_thread, argv_ptr, &argv_len, &argv);
+    check_and_get_null_terminated_string_array(my_thread, envp_ptr, &envp_len, &envp);
+    int pid;
+    filc_exit(my_thread);
+    int result;
+    if (is_p)
+        result = posix_spawnp(&pid, path, &actions, &spawnattr, argv, envp);
+    else
+        result = posix_spawn(&pid, path, &actions, &spawnattr, argv, envp);
+    filc_enter(my_thread);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&spawnattr);
+    deallocate_null_terminated_string_array(argv_len, argv);
+    deallocate_null_terminated_string_array(envp_len, envp);
+    bmalloc_deallocate(path);
+    if (result)
+        return to_musl_errno(result);
+    filc_check_write_int(pid_ptr, sizeof(int), NULL);
+    *(int*)filc_ptr_ptr(pid_ptr) = pid;
+    return 0;
+}
+
+int filc_native_zsys_posix_spawn(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr path_ptr,
+                                 filc_ptr actions_ptr, filc_ptr attr_ptr, filc_ptr argv_ptr,
+                                 filc_ptr envp_ptr)
+{
+    bool is_p = false;
+    return posix_spawn_impl(
+        my_thread, pid_ptr, path_ptr, actions_ptr, attr_ptr, argv_ptr, envp_ptr, is_p);
+}
+
+int filc_native_zsys_posix_spawnp(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr path_ptr,
+                                  filc_ptr actions_ptr, filc_ptr attr_ptr, filc_ptr argv_ptr,
+                                  filc_ptr envp_ptr)
+{
+    bool is_p = true;
+    return posix_spawn_impl(
+        my_thread, pid_ptr, path_ptr, actions_ptr, attr_ptr, argv_ptr, envp_ptr, is_p);
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

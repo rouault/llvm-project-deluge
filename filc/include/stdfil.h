@@ -587,6 +587,10 @@ int zsys_poll(void* pollfds, unsigned long nfds, int timeout);
 int zsys_faccessat(int dirfd, const char* pathname, int mode, int flags);
 int zsys_sigwait(const void* sigmask, int* sig);
 int zsys_fsync(int fd);
+int zsys_posix_spawn(int* pid, const char* path, const void* file_actions, const void* attrp,
+                     char*const* argv, char*const* envp);
+int zsys_posix_spawnp(int* pid, const char* path, const void* file_actions, const void* attrp,
+                      char*const* argv, char*const* envp);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
