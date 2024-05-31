@@ -9190,6 +9190,19 @@ int filc_native_zsys_shutdown(filc_thread* my_thread, int fd, int musl_how)
     return result;
 }
 
+int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    filc_exit(my_thread);
+    int result = rmdir(path);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

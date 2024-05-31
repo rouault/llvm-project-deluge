@@ -617,6 +617,7 @@ int zsys_posix_spawn(int* pid, const char* path, const void* file_actions, const
 int zsys_posix_spawnp(int* pid, const char* path, const void* file_actions, const void* attrp,
                       char*const* argv, char*const* envp);
 int zsys_shutdown(int fd, int how);
+int zsys_rmdir(const char* path);
 
 void* zthread_self(void);
 unsigned zthread_get_id(void* thread);
