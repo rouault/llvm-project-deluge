@@ -31,16 +31,20 @@ set -x
 rm -rf pizfix
 
 mkdir -p build
-mkdir -p runtime-build
 
-if test ! -f runtime-build/runtime-build-ok1
+if test $OS = macosx
 then
-   (cd runtime-build &&
-        cmake -S ../llvm-project-clean/llvm -B . -G Ninja \
-              -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-              -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt &&
-        ninja &&
-        touch runtime-build-ok1)
+    mkdir -p runtime-build
+    
+    if test ! -f runtime-build/runtime-build-ok1
+    then
+        (cd runtime-build &&
+             cmake -S ../llvm-project-clean/llvm -B . -G Ninja \
+                   -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                   -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt &&
+             ninja &&
+             touch runtime-build-ok1)
+    fi
 fi
 
 (cd build &&
@@ -50,7 +54,7 @@ fi
            -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=OFF \
            -DLIBCXXABI_ENABLE_EXCEPTIONS=OFF -DLIBCXX_HAS_PTHREAD_API=ON \
            -DLIBCXX_HAS_MUSL_LIBC=ON -DLLVM_ENABLE_ZSTD=OFF \
-           -DLIBCXX_FORCE_LIBCXXABI=ON &&
+           -DLIBCXX_FORCE_LIBCXXABI=ON -DLLVM_TARGETS_TO_BUILD=$LLVMARCH &&
      ninja clang)
 
 (cd libpas && ./build.sh)
