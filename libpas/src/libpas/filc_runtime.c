@@ -9205,6 +9205,51 @@ int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
     return result;
 }
 
+static void from_musl_utime_timespec(struct musl_timespec* musl_tv, struct timespec* tv)
+{
+    if (musl_tv->tv_nsec == 0x3fffffff) {
+        tv->tv_sec = 0;
+        tv->tv_nsec = UTIME_NOW;
+        return;
+    }
+    if (musl_tv->tv_nsec == 0x3ffffffe) {
+        tv->tv_sec = 0;
+        tv->tv_nsec = UTIME_OMIT;
+        return;
+    }
+    tv->tv_sec = musl_tv->tv_sec;
+    tv->tv_nsec = musl_tv->tv_nsec;
+}
+
+int filc_native_zsys_futimens(filc_thread* my_thread, int fd, filc_ptr times_ptr)
+{
+    filc_check_read_int(times_ptr, sizeof(struct musl_timespec) * 2, NULL);
+    struct musl_timespec* musl_times = (struct musl_timespec*)filc_ptr_ptr(times_ptr);
+    struct timespec times[2];
+    from_musl_utime_timespec(musl_times + 0, times + 0);
+    from_musl_utime_timespec(musl_times + 1, times + 1);
+    filc_exit(my_thread);
+    int result = futimens(fd, times);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_fchown(filc_thread* my_thread, int fd, unsigned uid, unsigned gid)
+{
+    filc_exit(my_thread);
+    int result = fchown(fd, uid, gid);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

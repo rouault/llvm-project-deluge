@@ -45,9 +45,6 @@ FILPIZLOOBJS = $(patsubst %.c,build/fil-pizlo-%.o,$(notdir $(FILSRCS)))
 TESTPASOBJS = $(patsubst %.cpp,build/test_pas-%.o,$(notdir $(TESTPASSRCS)))
 VERIFIEROBJS = $(patsubst %.cpp,build/verifier-%.o,$(notdir $(VERIFIERSRCS)))
 
-# FIXME: Should make sure that only the things that include this depend on it.
-GENHEADERS = src/libpas/filc_native.h
-
 -include $(wildcard build/*.d)
 
 clean:
@@ -55,13 +52,13 @@ clean:
 	rm -f src/libpas/filc_native_forwarders.c
 	rm -f src/libpas/filc_native.h
 
-build/pas-pizlo-release-%.o: src/libpas/%.c $(GENHEADERS)
+build/pas-pizlo-release-%.o: src/libpas/%.c
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1
 
-build/pas-pizlo-test-%.o: src/libpas/%.c $(GENHEADERS)
+build/pas-pizlo-test-%.o: src/libpas/%.c
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DENABLE_PAS_TESTING=1
 
-build/pas-test-%.o: src/libpas/%.c $(GENHEADERS)
+build/pas-test-%.o: src/libpas/%.c
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1
 
 build/main-release-%.o: ../filc/main/%.c
@@ -87,7 +84,12 @@ build/test_pas-%.o: src/test/%.cpp
 build/verifier-%.o: src/verifier/%.cpp
 	$(PASCXX) $(PASCXXFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1 -Isrc/libpas
 
-src/libpas/filc_native.h: src/libpas/filc_native_forwarders.c
+build/pas-pizlo-release-filc_runtime.o: src/libpas/filc_native.h
+build/pas-pizlo-test-filc_runtime.o: src/libpas/filc_native.h
+build/pas-test-filc_runtime.o: src/libpas/filc_native.h
+
+src/libpas/filc_native.h: src/libpas/generate_pizlonated_forwarders.rb
+	ruby src/libpas/generate_pizlonated_forwarders.rb src/libpas/filc_native.h
 src/libpas/filc_native_forwarders.c: src/libpas/generate_pizlonated_forwarders.rb
-	ruby src/libpas/generate_pizlonated_forwarders.rb
+	ruby src/libpas/generate_pizlonated_forwarders.rb src/libpas/filc_native_forwarders.c
 
