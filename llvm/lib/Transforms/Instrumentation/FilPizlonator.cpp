@@ -719,7 +719,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
-        Value* V = loadValueRecurse(InnerT, HighP, InnerP, isVolatile, A, AO, SS, InsertBefore);
+        Value* V = loadValueRecurseAfterCheck(InnerT, HighP, InnerP, isVolatile, A, AO, SS, InsertBefore);
         Result = InsertValueInst::Create(Result, V, Index, "filc_insert_struct", InsertBefore);
       }
       return Result;
@@ -732,7 +732,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
-        Value* V = loadValueRecurse(
+        Value* V = loadValueRecurseAfterCheck(
           AT->getElementType(), HighP, InnerP, isVolatile, A, AO, SS, InsertBefore);
         Result = InsertValueInst::Create(Result, V, Index, "filc_insert_array", InsertBefore);
       }
@@ -745,7 +745,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
-        Value* V = loadValueRecurse(
+        Value* V = loadValueRecurseAfterCheck(
           VT->getElementType(), HighP, InnerP, isVolatile, A, AO, SS, InsertBefore);
         Result = InsertElementInst::Create(
           Result, V, ConstantInt::get(IntPtrTy, Index), "filc_insert_vector", InsertBefore);
@@ -809,7 +809,8 @@ class Pizlonator {
           "filc_InnerP_struct", InsertBefore);
         Value* InnerV = ExtractValueInst::Create(
           InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
-        storeValueRecurse(InnerT, HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK, InsertBefore);
+        storeValueRecurseAfterCheck(
+            InnerT, HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK, InsertBefore);
       }
       return;
     }
@@ -822,8 +823,9 @@ class Pizlonator {
           "filc_InnerP_array", InsertBefore);
         Value* InnerV = ExtractValueInst::Create(
           AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
-        storeValueRecurse(AT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
-                          InsertBefore);
+        storeValueRecurseAfterCheck(
+            AT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
+            InsertBefore);
       }
       return;
     }
@@ -835,8 +837,9 @@ class Pizlonator {
           "filc_InnerP_vector", InsertBefore);
         Value* InnerV = ExtractElementInst::Create(
           V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
-        storeValueRecurse(VT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
-                          InsertBefore);
+        storeValueRecurseAfterCheck(
+            VT->getElementType(), HighP, InnerV, InnerP, isVolatile, A, AO, SS, SK,
+            InsertBefore);
       }
       return;
     }
