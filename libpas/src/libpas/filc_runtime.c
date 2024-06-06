@@ -68,21 +68,33 @@
 #include <syslog.h>
 #include <sys/wait.h>
 #include <grp.h>
-#include <utmpx.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
-#include <sys/random.h>
 #include <dlfcn.h>
 #include <poll.h>
 #include <spawn.h>
 
-#if PAS_OS(DARWIN)
+#if PAS_OS(DARWIN) || PAS_OS(OPENBSD)
 #include <util.h>
 #endif /* PAS_OS(DARWIN) */
 
 #if PAS_OS(FREEBSD)
 #include <libutil.h>
 #endif /* PAS_OS(FREEBSD) */
+
+#if !PAS_OS(OPENBSD)
+#include <utmpx.h>
+#include <sys/random.h>
+#define HAVE_UTMPX 1
+#else /* !PAS_OS(OPENBSD) -> so PAS_OS(OPENBSD) */
+#define HAVE_UTMPX 0
+#endif /* !PAS_OS(OPENBSD) -> so end of PAS_OS(OPENBSD) */
+
+#if PAS_OS(DARWIN)
+#define HAVE_LASTLOGX 1
+#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#define HAVE_LASTLOGX 0
+#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -3647,9 +3659,13 @@ static int to_musl_errno(int errno_value)
     case ENOSR          : return 63;
 #endif /* PAS_OS(DARWIN) */
     case EREMOTE        : return 66;
+#if !PAS_OS(OPENBSD)
     case ENOLINK        : return 67;
+#endif /* !PAS_OS(OPENBSD) */
     case EPROTO         : return 71;
+#if !PAS_OS(OPENBSD)
     case EMULTIHOP      : return 72;
+#endif /* !PAS_OS(OPENBSD) */
     case EBADMSG        : return 74;
     case EOVERFLOW      : return 75;
     case EILSEQ         : return 84;
@@ -3778,8 +3794,10 @@ static unsigned to_musl_ciflag(unsigned iflag)
         result |= 010000;
     if (check_and_clear(&iflag, IMAXBEL))
         result |= 020000;
+#if !PAS_OS(OPENBSD)
     if (check_and_clear(&iflag, IUTF8))
         result |= 040000;
+#endif /* !PAS_OS(OPENBSD) */
     PAS_ASSERT(!iflag);
     return result;
 }
@@ -3813,8 +3831,10 @@ static bool from_musl_ciflag(unsigned musl_iflag, tcflag_t* result)
         *result |= IXOFF;
     if (check_and_clear(&musl_iflag, 020000))
         *result |= IMAXBEL;
+#if !PAS_OS(OPENBSD)
     if (check_and_clear(&musl_iflag, 040000))
         *result |= IUTF8;
+#endif /* !PAS_OS(OPENBSD) */
     return !musl_iflag;
 }
 
@@ -5521,14 +5541,15 @@ static bool from_musl_tcp_optname(int musl_optname, int* result)
     case 4:
         *result = TCP_KEEPALIVE; /* musl says KEEPIDLE, Darwin says KEEPALIVE. coooool. */
         return true;
-#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#endif /* PAS_OS(DARWIN) */
+#if !PAS_OS(OPENBSD)
     case 4:
         *result = TCP_KEEPIDLE;
         return true;
-#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
     case 5:
         *result = TCP_KEEPINTVL;
         return true;
+#endif /* !PAS_OS(OPENBSD) */
     default:
         return false;
     }
@@ -5588,11 +5609,12 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#endif /* PAS_OS(DARWIN) */
+#if !PAS_OS(OPENBSD)
         case TCP_KEEPIDLE:
-#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
         case TCP_KEEPINTVL:
             break;
+#endif /* !PAS_OS(OPENBSD) */
         default:
             goto enoprotoopt;
         }
@@ -5872,10 +5894,12 @@ static bool from_musl_ai_flags(int musl_flags, int* result)
         *result |= AI_CANONNAME;
     if (check_and_clear(&musl_flags, 0x04))
         *result |= AI_NUMERICHOST;
+#if !PAS_OS(OPENBSD)
     if (check_and_clear(&musl_flags, 0x08))
         *result |= AI_V4MAPPED;
     if (check_and_clear(&musl_flags, 0x10))
         *result |= AI_ALL;
+#endif /* !PAS_OS(OPENBSD) */
     if (check_and_clear(&musl_flags, 0x20))
         *result |= AI_ADDRCONFIG;
     if (check_and_clear(&musl_flags, 0x400))
@@ -5892,10 +5916,12 @@ static bool to_musl_ai_flags(int flags, int* result)
         *result |= 0x02;
     if (check_and_clear(&flags, AI_NUMERICHOST))
         *result |= 0x04;
+#if !PAS_OS(OPENBSD)
     if (check_and_clear(&flags, AI_V4MAPPED))
         *result |= 0x08;
     if (check_and_clear(&flags, AI_ALL))
         *result |= 0x10;
+#endif /* !PAS_OS(OPENBSD) */
     if (check_and_clear(&flags, AI_ADDRCONFIG))
         *result |= 0x20;
     if (check_and_clear(&flags, AI_NUMERICSERV))
@@ -6132,11 +6158,12 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#endif /* PAS_OS(DARWIN) */
+#if !PAS_OS(OPENBSD)
         case TCP_KEEPIDLE:
-#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
         case TCP_KEEPINTVL:
             break;
+#endif /* !PAS_OS(OPENBSD) */
         default:
             goto enoprotoopt;
         }
@@ -6390,9 +6417,11 @@ static bool from_musl_resource(int musl_resource, int* result)
     case 8:
         *result = RLIMIT_MEMLOCK;
         return true;
+#if !PAS_OS(OPENBSD)
     case 9:
         *result = RLIMIT_AS;
         return true;
+#endif /* !PAS_OS(OPENBSD) */
     default:
         return false;
     }
@@ -7574,6 +7603,7 @@ int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
     return result;
 }
 
+#if HAVE_UTMPX
 /* If me or someone else decides to give a shit then maybe like this whole thing, and other things like it
    in this file, would die in a fire.
    
@@ -7781,24 +7811,38 @@ static filc_ptr handle_utmpx_result(filc_thread* my_thread, struct utmpx* utmpx)
     return result;
 }
 
+#endif /* HAVE_UTMPX */
+
 void filc_native_zsys_endutxent(filc_thread* my_thread)
 {
+#if HAVE_UTMPX
     PAS_UNUSED_PARAM(my_thread);
     pas_lock_lock(&utmpx_lock);
     endutxent();
     pas_lock_unlock(&utmpx_lock);
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "not implemented.");
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
 filc_ptr filc_native_zsys_getutxent(filc_thread* my_thread)
 {
+#if HAVE_UTMPX
     pas_lock_lock(&utmpx_lock);
     filc_ptr result = handle_utmpx_result(my_thread, getutxent());
     pas_lock_unlock(&utmpx_lock);
     return result;
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
 filc_ptr filc_native_zsys_getutxid(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
+#if HAVE_UTMPX
     filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
@@ -7806,10 +7850,17 @@ filc_ptr filc_native_zsys_getutxid(filc_thread* my_thread, filc_ptr musl_utmpx_p
     filc_ptr result = handle_utmpx_result(my_thread, getutxid(&utmpx_in));
     pas_lock_unlock(&utmpx_lock);
     return result;
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(musl_utmpx_ptr);
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
 filc_ptr filc_native_zsys_getutxline(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
+#if HAVE_UTMPX
     filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
@@ -7817,10 +7868,17 @@ filc_ptr filc_native_zsys_getutxline(filc_thread* my_thread, filc_ptr musl_utmpx
     filc_ptr result = handle_utmpx_result(my_thread, getutxline(&utmpx_in));
     pas_lock_unlock(&utmpx_lock);
     return result;
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(musl_utmpx_ptr);
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
 filc_ptr filc_native_zsys_pututxline(filc_thread* my_thread, filc_ptr musl_utmpx_ptr)
 {
+#if HAVE_UTMPX
     filc_check_write_int(musl_utmpx_ptr, sizeof(struct musl_utmpx), NULL);
     pas_lock_lock(&utmpx_lock);
     struct utmpx utmpx_in;
@@ -7833,17 +7891,28 @@ filc_ptr filc_native_zsys_pututxline(filc_thread* my_thread, filc_ptr musl_utmpx
         result = handle_utmpx_result(my_thread, utmpx_out);
     pas_lock_unlock(&utmpx_lock);
     return result;
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(musl_utmpx_ptr);
+    filc_internal_panic(NULL, "not implemented.");
+    return filc_ptr_forge_null();
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
 void filc_native_zsys_setutxent(filc_thread* my_thread)
 {
+#if HAVE_UTMPX
     PAS_UNUSED_PARAM(my_thread);
     pas_lock_lock(&utmpx_lock);
     setutxent();
     pas_lock_unlock(&utmpx_lock);
+#else /* HAVE_UTMPX -> so !HAVE_UTMPX */
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "not implemented.");
+#endif /* HAVE_UTMPX -> so end of !HAVE_UTMPX */
 }
 
-#if PAS_OS(DARWIN)
+#if HAVE_LASTLOGX
 struct musl_lastlogx {
     struct musl_timeval ll_tv;
     char ll_line[32];
@@ -7881,11 +7950,11 @@ static filc_ptr handle_lastlogx_result(filc_thread* my_thread,
     to_musl_lastlogx(result, musl_result);
     return result_ptr;
 }
-#endif /* PAS_OS(DARWIN) */
+#endif /* HAVE_LASTLOGX */
 
 filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc_ptr musl_lastlogx_ptr)
 {
-#if PAS_OS(DARWIN)
+#if HAVE_LASTLOGX
     if (filc_ptr_ptr(musl_lastlogx_ptr))
         filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
     pas_lock_lock(&utmpx_lock);
@@ -7893,19 +7962,19 @@ filc_ptr filc_native_zsys_getlastlogx(filc_thread* my_thread, unsigned uid, filc
     filc_ptr result = handle_lastlogx_result(my_thread, musl_lastlogx_ptr, getlastlogx(uid, &lastlogx));
     pas_lock_unlock(&utmpx_lock);
     return result;
-#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#else /* HAVE_LASTLOGX -> so !HAVE_LASTLOGX */
     PAS_UNUSED_PARAM(my_thread);
     PAS_UNUSED_PARAM(uid);
     PAS_UNUSED_PARAM(musl_lastlogx_ptr);
     filc_internal_panic(NULL, "not implemented.");
     return filc_ptr_forge_null();
-#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
+#endif /* HAVE_LASTLOGX -> so end of !HAVE_LASTLOGX */
 }
 
 filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr name_ptr,
                                             filc_ptr musl_lastlogx_ptr)
 {
-#if PAS_OS(DARWIN)
+#if HAVE_LASTLOGX
     char* name = filc_check_and_get_new_str(name_ptr);
     if (filc_ptr_ptr(musl_lastlogx_ptr))
         filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
@@ -7916,13 +7985,13 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
     pas_lock_unlock(&utmpx_lock);
     bmalloc_deallocate(name);
     return result;
-#else /* PAS_OS(DARWIN) -> so !PAS_OS(DARWIN) */
+#else /* HAVE_LASTLOGX -> so !HAVE_LASTLOGX */
     PAS_UNUSED_PARAM(my_thread);
     PAS_UNUSED_PARAM(name_ptr);
     PAS_UNUSED_PARAM(musl_lastlogx_ptr);
     filc_internal_panic(NULL, "not implemented.");
     return filc_ptr_forge_null();
-#endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
+#endif /* HAVE_LASTLOGX -> so end of !HAVE_LASTLOGX */
 }
 
 struct musl_cmsghdr {
@@ -8219,7 +8288,7 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
         pas_log("msg.msg_iov = %p\n", msg.msg_iov);
         pas_log("msg.msg_iovlen = %d\n", msg.msg_iovlen);
         int index;
-        for (index = 0; index < msg.msg_iovlen; ++index)
+        for (index = 0; index < (int)msg.msg_iovlen; ++index)
             pas_log("msg.msg_iov[%d].iov_len = %zu\n", index, msg.msg_iov[index].iov_len);
     }
     ssize_t result = recvmsg(sockfd, &msg, flags);
@@ -8490,9 +8559,11 @@ long filc_native_zsys_sysconf_override(filc_thread* my_thread, int musl_name)
     case 89:
         name = _SC_XOPEN_VERSION;
         break;
+#if !PAS_OS(OPENBSD)
     case 90:
         name = _SC_XOPEN_XCU_VERSION;
         break;
+#endif /* !PAS_OS(OPENBSD) */
     case 91:
         name = _SC_XOPEN_UNIX;
         break;
@@ -9078,6 +9149,7 @@ static bool from_musl_posix_spawn_file_actions(filc_thread* my_thread,
             bmalloc_deallocate(path);
             break;
         }
+#if !PAS_OS(OPENBSD)
         case 4: /* FDOP_CHDIR */ {
             char* path = filc_check_and_get_new_str(
                 filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
@@ -9090,6 +9162,7 @@ static bool from_musl_posix_spawn_file_actions(filc_thread* my_thread,
             PAS_ASSERT(!posix_spawn_file_actions_addfchdir_np(actions, fdop->fd));
             break;
         }
+#endif /* !PAS_OS(OPENBSD) */
         default:
             goto error;
         }

@@ -40,8 +40,10 @@ PAS_BEGIN_EXTERN_C;
 /* PAS_COMMITTED_PAGES_VECTOR_WORKS tells us if this really counts committed pages the way we like.
    
    On Windows, this will count some decommitted pages as committed, if they are decommitted using the asymmetric (pas_may_not_mmap)
-   style. */
-#ifdef _WIN32
+   style.
+
+   On OpenBSD, there isn't even a mincore(). */
+#if defined(_WIN32) || PAS_OS(OPENBSD)
 #define PAS_COMMITTED_PAGES_VECTOR_WORKS 0
 #else
 #define PAS_COMMITTED_PAGES_VECTOR_WORKS 1
@@ -74,7 +76,7 @@ static inline bool pas_committed_pages_vector_is_committed(pas_committed_pages_v
         pas_log("vector->raw_data[%zu] = %u\n",
                 page_index, (unsigned)(unsigned char)vector->raw_data[page_index]);
     }
-#if PAS_OS(LINUX) || defined(_WIN32)
+#if PAS_OS(LINUX) || defined(_WIN32) || PAS_OS(OPENBSD)
     return vector->raw_data[page_index];
 #else
     return vector->raw_data[page_index] & (MINCORE_REFERENCED |

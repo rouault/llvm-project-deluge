@@ -29,8 +29,19 @@ case `uname -s` in
         DYLIB_OPT=-dynamiclib
         DYLIB_EXT=dylib
         ;;
-    FreeBSD)
-        OS=freebsd
+    FreeBSD|OpenBSD)
+        case `uname -s` in
+            FreeBSD)
+                OS=freebsd
+                ;;
+            OpenBSD)
+                OS=openbsd
+                ;;
+            *)
+                echo "Should not get here"
+                exit 1
+                ;;
+        esac
         MAKE=gmake
         CCPREFIX=""
         DYLIB_OPT=-shared
@@ -53,6 +64,19 @@ case `uname -m` in
         ;;
     *)
         echo "Unsupported arch"
+        exit 1
+        ;;
+esac
+
+case $OS in
+    *bsd)
+        MAKESUFFIX=bsd
+        ;;
+    macosx)
+        MAKESUFFIX=macosx
+        ;;
+    *)
+        echo "Should not get here"
         exit 1
         ;;
 esac

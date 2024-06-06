@@ -39,7 +39,7 @@ mkdir -p ../pizfix/share
 mkdir -p ../pizfix/lib
 mkdir -p ../pizfix/lib_test
 $MAKE -f Makefile-setup
-$MAKE -f Makefile-$OS -j `sysctl -n hw.ncpu`
+$MAKE -f Makefile-$MAKESUFFIX -j `sysctl -n hw.ncpu`
 
 set +x
 

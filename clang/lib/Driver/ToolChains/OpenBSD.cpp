@@ -173,8 +173,8 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     assert(Output.isNothing() && "Invalid output.");
   }
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
+  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
+                             options::OPT_r)) {
     const char *crt0 = nullptr;
     const char *crtbegin = nullptr;
     if (!Shared) {
@@ -195,6 +195,15 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
+
+  {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
   Args.AddAllArgs(CmdArgs,
                   {options::OPT_T_Group, options::OPT_s, options::OPT_t,

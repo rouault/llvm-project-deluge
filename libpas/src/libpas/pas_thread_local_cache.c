@@ -211,13 +211,14 @@ static pas_thread_local_cache* allocate_cache(unsigned allocator_index_capacity)
     return result;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32)
 static void dump_thread_diagnostics(HANDLE thread)
 {
 }
-#else /* _WIN32 -> so !_WIN32 */
+#else /* defined(_WIN32) -> so !defined(_WIN32) */
 static void dump_thread_diagnostics(pthread_t thread)
 {
+#if !PAS_OS(OPENBSD)
     uint64_t thread_id;
     char thread_name[256];
     int getname_result;
@@ -237,8 +238,11 @@ static void dump_thread_diagnostics(pthread_t thread)
         pas_log("[%d] thread %p has name %s\n", pas_getpid(), (void*)thread, thread_name);
     else
         pas_log("[%d] thread %p does not have name\n", pas_getpid(), (void*)thread);
+#else /* !PAS_OS(OPENBSD) -> so PAS_OS(OPENBSD) */
+    PAS_UNUSED_PARAM(thread);
+#endif /* !PAS_OS(OPENBSD) -> so end of PAS_OS(OPENBSD) */
 }
-#endif /* !_WIN32 */
+#endif /* defined(_WIN32) -> so end of !defined(_WIN32) */
 
 pas_thread_local_cache* pas_thread_local_cache_create(void)
 {

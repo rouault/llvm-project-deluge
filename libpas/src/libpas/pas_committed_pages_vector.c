@@ -95,8 +95,10 @@ void pas_committed_pages_vector_construct(pas_committed_pages_vector* vector,
     }
 #elif PAS_OS(LINUX)
     PAS_SYSCALL(mincore(object, size, (unsigned char*)vector->raw_data));
-#else
+#elif !PAS_OS(OPENBSD)
     PAS_SYSCALL(mincore(object, size, vector->raw_data));
+#else
+    memset(vector->raw_data, 1, num_pages);
 #endif
 }
 

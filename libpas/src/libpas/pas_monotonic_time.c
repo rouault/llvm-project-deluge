@@ -81,6 +81,15 @@ uint64_t pas_get_current_monotonic_time_nanoseconds(void)
     return ts.tv_sec * 1.0e9 + ts.tv_nsec;
 }
 
+#elif PAS_OS(OPENBSD)
+
+uint64_t pas_get_current_monotonic_time_nanoseconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1.0e9 + ts.tv_nsec;
+}
+
 #elif PAS_PLATFORM(PLAYSTATION)
 
 uint64_t pas_get_current_monotonic_time_nanoseconds(void)

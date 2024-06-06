@@ -457,7 +457,7 @@ protected:
                     MacroBuilder &Builder) const override {
     // OpenBSD defines; list based off of gcc output
 
-    Builder.defineMacro("__OpenBSD__");
+    Builder.defineMacro("__PIZLONATED_OpenBSD__");
     DefineStd(Builder, "unix", Opts);
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");

@@ -23,13 +23,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-. common.sh
+. ./common.sh
 
 set -e
 set -x
 
 mkdir -p build
-$MAKE -f Makefile-$OS check-pas -j `sysctl -n hw.ncpu`
+$MAKE -f Makefile-$MAKESUFFIX check-pas -j `sysctl -n hw.ncpu`
 
 set +x
 
