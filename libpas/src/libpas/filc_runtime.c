@@ -5541,11 +5541,12 @@ static bool from_musl_tcp_optname(int musl_optname, int* result)
     case 4:
         *result = TCP_KEEPALIVE; /* musl says KEEPIDLE, Darwin says KEEPALIVE. coooool. */
         return true;
-#endif /* PAS_OS(DARWIN) */
-#if !PAS_OS(OPENBSD)
+#elif !PAS_OS(OPENBSD)
     case 4:
         *result = TCP_KEEPIDLE;
         return true;
+#endif /* !PAS_OS(OPENBSD) */
+#if !PAS_OS(OPENBSD)
     case 5:
         *result = TCP_KEEPINTVL;
         return true;
@@ -5609,9 +5610,12 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#endif /* PAS_OS(DARWIN) */
-#if !PAS_OS(OPENBSD)
+            break;
+#elif !PAS_OS(OPENBSD)
         case TCP_KEEPIDLE:
+            break;
+#endif /* !PAS_OS(OPENBSD) */
+#if !PAS_OS(OPENBSD)
         case TCP_KEEPINTVL:
             break;
 #endif /* !PAS_OS(OPENBSD) */
@@ -6158,9 +6162,12 @@ int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int musl_lev
         case TCP_NODELAY:
 #if PAS_OS(DARWIN)
         case TCP_KEEPALIVE:
-#endif /* PAS_OS(DARWIN) */
-#if !PAS_OS(OPENBSD)
+            break;
+#elif !PAS_OS(OPENBSD)
         case TCP_KEEPIDLE:
+            break;
+#endif /* !PAS_OS(OPENBSD) */
+#if !PAS_OS(OPENBSD)
         case TCP_KEEPINTVL:
             break;
 #endif /* !PAS_OS(OPENBSD) */
