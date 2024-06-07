@@ -8,12 +8,14 @@ require 'yaml'
 if RUBY_PLATFORM =~ /darwin/
     $compilerPrefix = "xcrun "
     $bundleOpt = "-bundle"
+    $libraryPathEnv = "DYLD_LIBRARY_PATH"
 else
     $compilerPrefix = ""
     $bundleOpt = "-shared"
+    $libraryPathEnv = "LD_LIBRARY_PATH"
 end
 
-if RUBY_PLATFORM =~ /freebsd/
+if RUBY_PLATFORM =~ /freebsd/ or RUBY_PLATFORM =~ /openbsd/
     $make = "gmake"
 else
     $make = "make"
@@ -118,7 +120,7 @@ $testDirectory.each_entry {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
-        outp.print "DYLD_LIBRARY_PATH=pizfix/lib_test "
+        outp.print "#{$libraryPathEnv}=pizfix/lib_test "
         handleArray(manifest["extra-env"]).each {
             | entry |
             outp.print "#{entry} "

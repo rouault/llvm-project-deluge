@@ -23,14 +23,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-. ./common.sh
-
 set -e
 set -x
 
-$MAKE -f Makefile-setup clean
-$MAKE -f Makefile-$MAKESUFFIX clean
+VERSION=`uname -r`
 
-set +x
-
-echo Pizlonator Approves.
+cp build/lib/amd64-unknown-openbsd$VERSION/libc++.so pizfix/lib
+cp build/lib/amd64-unknown-openbsd$VERSION/libc++.so.1.0 pizfix/lib
+cp build/lib/amd64-unknown-openbsd$VERSION/libc++abi.so.1.0 pizfix/lib
+cp build/lib/amd64-unknown-openbsd$VERSION/libc++.a pizfix/lib
+cp build/lib/amd64-unknown-openbsd$VERSION/libc++abi.a pizfix/lib
+(cd pizfix/lib &&
+     rm -f libc++.so.1 &&
+     rm -f libc++abi.so.1 &&
+     rm -f libc++abi.so &&
+     ln -s libc++.so.1.0 libc++.so.1 &&
+     ln -s libc++abi.so.1.0 libc++abi.so.1 &&
+     ln -s libc++abi.so.1 libc++abi.so)
