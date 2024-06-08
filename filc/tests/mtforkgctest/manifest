@@ -1,0 +1,7 @@
+return:
+  success
+output-includes:
+  - "Forking!"
+  - "Forked, now in pid ="
+  - "Success!"
+  - "Total victory!"

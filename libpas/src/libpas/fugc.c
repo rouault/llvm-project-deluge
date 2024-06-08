@@ -105,7 +105,6 @@ static double overall_end_time;
 
 static unsigned verbose;
 static bool should_stop_the_world;
-bool fugc_world_is_stopped;
 
 enum collector_state {
     collector_waiting,
@@ -284,10 +283,8 @@ static void wait_and_start_marking(void)
     if (verbose >= VERBOSE_CYCLES)
         overall_start_time = pas_get_time_in_milliseconds();
 
-    if (should_stop_the_world) {
+    if (should_stop_the_world)
         filc_stop_the_world();
-        fugc_world_is_stopped = true;
-    }
     
     pas_system_mutex_lock(&collector_thread_state_lock);
     PAS_ASSERT(completed_cycle <= requested_cycle);
@@ -469,10 +466,8 @@ static void sweep_and_end(void)
     pas_system_condition_broadcast(&collector_thread_state_cond);
     pas_system_mutex_unlock(&collector_thread_state_lock);
 
-    if (should_stop_the_world) {
+    if (should_stop_the_world)
         filc_resume_the_world();
-        fugc_world_is_stopped = false;
-    }
 
     current_collector_state = collector_waiting;
 }

@@ -482,6 +482,9 @@ FILC_FOR_EACH_LOCK(FILC_DECLARE_LOCK);
 PAS_DECLARE_LOCK(filc_soft_handshake);
 PAS_DECLARE_LOCK(filc_global_initialization);
 
+PAS_API extern unsigned filc_stop_the_world_count;
+PAS_API extern pas_system_condition filc_stop_the_world_cond;
+
 PAS_API extern filc_thread* filc_first_thread;
 PAS_API extern pthread_key_t filc_thread_key;
 
@@ -564,6 +567,8 @@ PAS_API void filc_soft_handshake(void (*callback)(filc_thread* my_thread, void* 
 
 PAS_API void filc_stop_the_world(void);
 PAS_API void filc_resume_the_world(void);
+
+PAS_API void filc_wait_for_world_resumption_holding_lock(void);
 
 /* Begin execution in Fil-C. Executing Fil-C comes with the promise that you'll periodically do
    a pollcheck and that all signals will be deferred to pollchecks. */

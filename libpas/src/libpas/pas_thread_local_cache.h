@@ -120,6 +120,10 @@ PAS_API pas_thread_local_cache* pas_thread_local_cache_create(void);
 
 PAS_API void pas_thread_local_cache_destroy(pas_lock_hold_mode heap_lock_hold_mode);
 
+/* This is a special function to support fork(). It's called in a case where the scavenger and the
+   victim thread are definitely not running. */
+PAS_API void pas_thread_local_cache_destroy_remote_from_node(pas_thread_local_cache* cache);
+
 PAS_API pas_thread_local_cache* pas_thread_local_cache_get_slow(
     const pas_heap_config* config, pas_lock_hold_mode heap_lock_hold_mode);
 

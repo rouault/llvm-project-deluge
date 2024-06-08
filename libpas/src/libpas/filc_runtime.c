@@ -120,6 +120,9 @@ FILC_FOR_EACH_LOCK(DEFINE_LOCK);
 PAS_DEFINE_LOCK(filc_soft_handshake);
 PAS_DEFINE_LOCK(filc_global_initialization);
 
+unsigned filc_stop_the_world_count;
+pas_system_condition filc_stop_the_world_cond;
+
 filc_thread* filc_first_thread;
 pthread_key_t filc_thread_key;
 bool filc_is_marking;
@@ -509,6 +512,8 @@ void filc_initialize(void)
     FILC_FOR_EACH_LOCK(INITIALIZE_LOCK);
 #undef INITIALIZE_LOCK
 
+    pas_system_condition_construct(&filc_stop_the_world_cond);
+
     filc_default_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
     filc_destructor_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
     filc_destructor_set = verse_heap_object_set_create();
@@ -615,6 +620,10 @@ void filc_stop_the_world(void)
     
     filc_assert_my_thread_is_not_entered();
     filc_stop_the_world_lock_lock();
+    if (filc_stop_the_world_count++) {
+        filc_stop_the_world_lock_unlock();
+        return;
+    }
     
     sigset_t fullset;
     sigset_t oldset;
@@ -660,6 +669,8 @@ void filc_stop_the_world(void)
     if (verbose)
         pas_log("%s: unblocking signals\n", __PRETTY_FUNCTION__);
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
+
+    filc_stop_the_world_lock_unlock();
 }
 
 void filc_resume_the_world(void)
@@ -667,6 +678,11 @@ void filc_resume_the_world(void)
     static const bool verbose = false;
     
     filc_assert_my_thread_is_not_entered();
+    filc_stop_the_world_lock_lock();
+    if (--filc_stop_the_world_count) {
+        filc_stop_the_world_lock_unlock();
+        return;
+    }
 
     sigset_t fullset;
     sigset_t oldset;
@@ -701,7 +717,15 @@ void filc_resume_the_world(void)
     if (verbose)
         pas_log("%s: unblocking signals\n", __PRETTY_FUNCTION__);
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
+    pas_system_condition_broadcast(&filc_stop_the_world_cond);
     filc_stop_the_world_lock_unlock();
+}
+
+void filc_wait_for_world_resumption_holding_lock(void)
+{
+    filc_stop_the_world_lock_assert_held();
+    while (filc_stop_the_world_count)
+        pas_system_condition_wait(&filc_stop_the_world_cond, &filc_stop_the_world_lock);
 }
 
 static void run_pollcheck_callback(filc_thread* thread)
@@ -7091,11 +7115,9 @@ int filc_native_zsys_fork(filc_thread* my_thread)
     if (verbose)
         pas_log("suspending GC\n");
     fugc_suspend();
-    if (!fugc_world_is_stopped) {
-        if (verbose)
-            pas_log("stopping world\n");
-        filc_stop_the_world();
-    }
+    if (verbose)
+        pas_log("stopping world\n");
+    filc_stop_the_world();
     /* NOTE: We don't have to lock the soft handshake lock, since now that the world is stopped and the
        FUGC is suspended, nobody could be using it. */
     if (verbose)
@@ -7120,8 +7142,12 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             filc_thread* next_thread = thread->next_thread;
             thread->prev_thread = NULL;
             thread->next_thread = NULL;
-            if (thread != my_thread)
+            if (thread != my_thread) {
                 thread->forked = true;
+
+                if (thread->tlc_node->version == thread->tlc_node_version)
+                    pas_thread_local_cache_destroy_remote_from_node(thread->tlc_node->cache);
+            }
             pas_system_mutex_unlock(&thread->lock);
             thread = next_thread;
         }
@@ -7137,8 +7163,7 @@ int filc_native_zsys_fork(filc_thread* my_thread)
     }
     filc_thread_list_lock_unlock();
     filc_parking_lot_unlock(parking_lot_cookie);
-    if (!fugc_world_is_stopped)
-        filc_resume_the_world();
+    filc_resume_the_world();
     fugc_resume();
     pas_scavenger_resume();
     filc_enter(my_thread);
@@ -9523,6 +9548,7 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
     /* Make sure we don't create threads while in a handshake. This will hold the thread in the
        !has_started && !thread state, so if the soft handshake doesn't see it, that's fine. */
     filc_stop_the_world_lock_lock();
+    filc_wait_for_world_resumption_holding_lock();
     filc_soft_handshake_lock_lock();
     thread->has_started = true;
     pthread_t ignored_thread;

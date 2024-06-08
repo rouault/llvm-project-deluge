@@ -112,7 +112,8 @@ static void deallocate(pas_thread_local_cache* thread_local_cache)
     pas_large_utility_free_heap_deallocate(begin, size);
 }
 
-static void destroy(pas_thread_local_cache* thread_local_cache, pas_lock_hold_mode heap_lock_hold_mode)
+static void destroy(pas_thread_local_cache* thread_local_cache,
+                    pas_lock_hold_mode heap_lock_hold_mode)
 {
     static const bool verbose = false;
 
@@ -123,6 +124,7 @@ static void destroy(pas_thread_local_cache* thread_local_cache, pas_lock_hold_mo
 #endif
     
     pas_heap_lock_lock_conditionally(heap_lock_hold_mode);
+    pas_heap_lock_assert_held();
 
     if (verbose)
         pas_log("[%d] Destroying TLC %p\n", pas_getpid(), thread_local_cache);
@@ -309,6 +311,11 @@ void pas_thread_local_cache_destroy(pas_lock_hold_mode heap_lock_hold_mode)
     if (verbose)
         pas_log("[%d] TLC %p getting destroyed\n", pas_getpid(), thread_local_cache);
     destroy(thread_local_cache, heap_lock_hold_mode);
+}
+
+void pas_thread_local_cache_destroy_remote_from_node(pas_thread_local_cache* cache)
+{
+    destroy(cache, pas_lock_is_not_held);
 }
 
 pas_thread_local_cache* pas_thread_local_cache_get_slow(const pas_heap_config* config,

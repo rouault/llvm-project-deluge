@@ -35,8 +35,6 @@
    how Fil-C works. Examples: pollchecks, enter/exit, filc_thread, using the verse_heap, store barriers,
    etc. */
 
-PAS_API extern bool fugc_world_is_stopped;
-
 PAS_API void fugc_initialize(void);
 
 /* Needed for fork(). Has no other purpose. */
