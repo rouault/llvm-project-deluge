@@ -179,17 +179,6 @@ static void mark_outgoing_signal_handler_ptrs(filc_object_array* stack, filc_sig
     fugc_mark_or_free(stack, &signal_handler->function_ptr);
 }
 
-static void mark_outgoing_thread_ptrs(filc_object_array* stack, filc_thread* thread)
-{
-    /* There's a bunch of other stuff that threads "point" to that is part of their roots, and we
-       mark those as part of marking thread roots. The things here are the ones that are treated
-       as normal outgoing object ptrs rather than roots. */
-    
-    fugc_mark_or_free(stack, &thread->arg_ptr);
-    fugc_mark_or_free(stack, &thread->cookie_ptr);
-    fugc_mark_or_free(stack, &thread->result_ptr);
-}
-
 static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* object)
 {
     PAS_TESTING_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
@@ -201,23 +190,19 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
     case FILC_WORD_TYPE_DL_HANDLE:
         break;
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
-        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
         mark_outgoing_signal_handler_ptrs(
-            stack, (filc_signal_handler*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+            stack, (filc_signal_handler*)filc_object_special_payload(object));
         break;
     case FILC_WORD_TYPE_THREAD:
-        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
-        mark_outgoing_thread_ptrs(stack, (filc_thread*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+        filc_thread_mark_outgoing_ptrs((filc_thread*)filc_object_special_payload(object), stack);
         break;
     case FILC_WORD_TYPE_PTR_TABLE:
-        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
         filc_ptr_table_mark_outgoing_ptrs(
-            (filc_ptr_table*)((char*)object + FILC_SPECIAL_OBJECT_SIZE), stack);
+            (filc_ptr_table*)filc_object_special_payload(object), stack);
         break;
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
-        PAS_TESTING_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
         filc_ptr_table_array_mark_outgoing_ptrs(
-            (filc_ptr_table_array*)((char*)object + FILC_SPECIAL_OBJECT_SIZE), stack);
+            (filc_ptr_table_array*)filc_object_special_payload(object), stack);
         break;
     default:
         pas_log("Got a bad special ptr type: ");
@@ -257,9 +242,11 @@ static void destruct_object_callback(void* raw_object, void* arg)
     PAS_ASSERT(object->flags & FILC_OBJECT_FLAG_SPECIAL);
     PAS_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
     switch (object->word_types[0]) {
+    case FILC_WORD_TYPE_THREAD:
+        filc_thread_destruct((filc_thread*)filc_object_special_payload(object));
+        break;
     case FILC_WORD_TYPE_PTR_TABLE:
-        PAS_ASSERT(object->lower = (char*)object + FILC_SPECIAL_OBJECT_SIZE);
-        filc_ptr_table_destruct((filc_ptr_table*)((char*)object + FILC_SPECIAL_OBJECT_SIZE));
+        filc_ptr_table_destruct((filc_ptr_table*)filc_object_special_payload(object));
         break;
     default:
         PAS_ASSERT(!"Encountered object in destructor space that should not have destructor.");

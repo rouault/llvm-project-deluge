@@ -287,8 +287,6 @@ struct filc_thread {
 
     filc_object_array mark_stack;
 
-    /* We currently assume that system_mutex and system_condition do not need destruction. That
-       happens to be true on every reasonable POSIX impl. */
     pas_system_mutex lock; /* We grab all of these during fork(). */
     pas_system_condition cond;
     bool has_started; /* set to true when we actually commence starting the thread, after grabbing
@@ -541,6 +539,9 @@ PAS_API void filc_initialize(void);
 
 PAS_API filc_thread* filc_thread_create(void);
 
+PAS_API void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stack);
+PAS_API void filc_thread_destruct(filc_thread* thread);
+
 /* Gives the thread's tid back. Has to be done while still entered. */
 PAS_API void filc_thread_relinquish_tid(filc_thread* thread);
 
@@ -792,6 +793,12 @@ static inline filc_object* filc_object_for_special_payload(void* payload)
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY);
     return result;
+}
+
+static inline void* filc_object_special_payload(filc_object* object)
+{
+    PAS_TESTING_ASSERT(object->lower == (char*)object + FILC_SPECIAL_OBJECT_SIZE);
+    return (char*)object + FILC_SPECIAL_OBJECT_SIZE;
 }
 
 static inline filc_object* filc_ptr_object(filc_ptr ptr)
@@ -1118,10 +1125,10 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
 static inline bool filc_special_word_type_has_destructor(filc_word_type word_type)
 {
     switch (word_type) {
+    case FILC_WORD_TYPE_THREAD:
     case FILC_WORD_TYPE_PTR_TABLE:
         return true;
     case FILC_WORD_TYPE_FUNCTION:
-    case FILC_WORD_TYPE_THREAD:
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:

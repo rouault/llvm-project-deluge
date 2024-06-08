@@ -349,6 +349,27 @@ filc_thread* filc_thread_create(void)
     return thread;
 }
 
+void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stack)
+{
+    /* There's a bunch of other stuff that threads "point" to that is part of their roots, and we
+       mark those as part of marking thread roots. The things here are the ones that are treated
+       as normal outgoing object ptrs rather than roots. */
+    
+    fugc_mark_or_free(stack, &thread->arg_ptr);
+    fugc_mark_or_free(stack, &thread->cookie_ptr);
+    fugc_mark_or_free(stack, &thread->result_ptr);
+}
+
+void filc_thread_destruct(filc_thread* thread)
+{
+    PAS_ASSERT(thread->has_stopped || thread->error_starting || thread->forked);
+
+    /* Shockingly, the BSDs use a pthread_mutex/pthread_cond implementation that actually requires
+       destruction. What the fugc. */
+    pas_system_mutex_destruct(&thread->lock);
+    pas_system_condition_destruct(&thread->cond);
+}
+
 void filc_thread_relinquish_tid(filc_thread* thread)
 {
     PAS_ASSERT(filc_thread_is_entered(thread));
