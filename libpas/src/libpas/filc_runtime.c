@@ -7145,7 +7145,12 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             if (thread != my_thread) {
                 thread->forked = true;
 
-                if (thread->tlc_node->version == thread->tlc_node_version)
+                /* We can inspect the thread's TLC without any locks, since the thread is dead and
+                   stopped. Also, start_thread (and other parts of the runtime) ensure that we only
+                   call into libpas while entered - so the fact that we stop the world before
+                   forking ensures that the dead thread is definitely not in the middle of a call
+                   into libpas. */
+                if (thread->tlc_node && thread->tlc_node->version == thread->tlc_node_version)
                     pas_thread_local_cache_destroy_remote_from_node(thread->tlc_node->cache);
             }
             pas_system_mutex_unlock(&thread->lock);
