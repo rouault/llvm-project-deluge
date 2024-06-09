@@ -1,3 +1,5 @@
+#!/bin/sh
+#
 # Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,5 +23,12 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
-include setup-common.mk
+set -e
+set -x
+
+gmake -f Makefile-setup-filbsd clean
+gmake -f Makefile-filbsd clean
+
+set +x
+
+echo Pizlonator Approves.

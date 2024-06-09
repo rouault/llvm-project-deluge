@@ -23,43 +23,5 @@
 
 # NOTE: This is really assuming *BSD on X86_64. And not just any X86_64, but a recent enough one.
 
-PASCC = clang -march=x86-64-v2 -fPIC -pthread
-PASCXX = clang++ -march=x86-64-v2 -fPIC -pthread
-FILCC = ../build/bin/clang
-
-all: \
-	../pizfix/lib/libpizlo.so ../pizfix/lib_test/libpizlo.so \
-	../pizfix/lib/libfilc_crt.so ../pizfix/lib_test/libfilc_crt.so \
-	../pizfix/lib/libfilc_mincrt.so ../pizfix/lib_test/libfilc_mincrt.so
-
-include common.mk
-
-../pizfix/lib/libpizlo.so: $(PASPIZLOOBJS) $(FILPIZLOOBJS)
-	clang -shared -o ../pizfix/lib/libpizlo.so $(PASPIZLOOBJS) $(FILPIZLOOBJS) \
-		-pthread -lm -lutil
-
-../pizfix/lib_test/libpizlo.so: $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS)
-	clang -shared -o ../pizfix/lib_test/libpizlo.so $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS) \
-		-pthread -lm -lutil
-
-../pizfix/lib/libfilc_crt.so: $(MAINOBJS)
-	clang -shared -o ../pizfix/lib/libfilc_crt.so $(MAINOBJS) -pthread
-
-../pizfix/lib_test/libfilc_crt.so: $(MAINTESTOBJS)
-	clang -shared -o ../pizfix/lib_test/libfilc_crt.so $(MAINTESTOBJS) -pthread
-
-../pizfix/lib/libfilc_mincrt.so: $(MINMAINOBJS)
-	clang -shared -o ../pizfix/lib/libfilc_mincrt.so $(MINMAINOBJS) -pthread
-
-../pizfix/lib_test/libfilc_mincrt.so: $(MINMAINTESTOBJS)
-	clang -shared -o ../pizfix/lib_test/libfilc_mincrt.so $(MINMAINTESTOBJS) -pthread
-
-check-pas: build/test_pas
-	LD_LIBRARY_PATH=build build/test_pas
-
-build/test_pas: build/libpas.so $(TESTPASOBJS) $(VERIFIEROBJS)
-	clang++ -o build/test_pas $(TESTPASOBJS) $(VERIFIEROBJS) -Lbuild -lpas -pthread -lutil
-
-build/libpas.so: $(PASTESTOBJS)
-	clang -shared -o build/libpas.so $(PASTESTOBJS)
-
+include musl.mk
+include bsd-common.mk

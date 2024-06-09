@@ -1,3 +1,5 @@
+#!/bin/sh
+#
 # Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -21,5 +23,17 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
-include setup-common.mk
+set -e
+set -x
+
+mkdir -p build
+mkdir -p ../filbsd/stdfil-include
+mkdir -p ../filbsd/builtins-include
+mkdir -p ../filbsd/lib
+mkdir -p ../filbsd/lib_test
+gmake -f Makefile-setup-filbsd
+gmake -f Makefile-filbsd -j `sysctl -n hw.ncpu`
+
+set +x
+
+echo Pizlonator Approves.

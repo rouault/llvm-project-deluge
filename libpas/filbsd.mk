@@ -21,5 +21,11 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
-include setup-common.mk
+# This sets up the configuration for building a FilBSD userland. The resulting libpizlo.so will
+# be configured to expose the appropriate syscall API for FilBSD's libc, and the resulting
+# library will be placed in a location suitable for FilBSD buildworld staging.
+
+LIBCMODEFLAGS = -DFILC_FILBSD=1
+OBJPREFIX = filbsd
+PREFIXDIR = filbsd
+

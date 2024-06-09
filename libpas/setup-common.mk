@@ -21,5 +21,22 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
-include setup-common.mk
+FILSRCHEADERS = $(wildcard ../filc/include/*.h)
+BUILTINSRCHEADERS = $(wildcard ../filc/builtins/*.h)
+FILHEADERS = \
+	$(patsubst %.h,../$(PREFIXDIR)/stdfil-include/%.h,$(notdir $(FILSRCHEADERS)))
+BUILTINHEADERS = \
+	$(patsubst %.h,../$(PREFIXDIR)/builtins-include/%.h,$(notdir $(BUILTINSRCHEADERS)))
+ALLHEADERS = $(FILHEADERS) $(BUILTINHEADERS)
+
+all: $(ALLHEADERS)
+
+clean:
+	rm -f $(ALLHEADERS)
+
+../$(PREFIXDIR)/stdfil-include/%.h: ../filc/include/%.h
+	cp $< $@
+
+../$(PREFIXDIR)/builtins-include/%.h: ../filc/builtins/%.h
+	cp $< $@
+

@@ -21,5 +21,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
-include setup-common.mk
+# This sets up the configuration for building a pizlonated musl mini userland.
+
+LIBCMODEFLAGS = -DFILC_MUSL=1
+OBJPREFIX = musl
+PREFIXDIR = pizfix
