@@ -8077,6 +8077,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
                            const char *LinkingOutput) const {
   ArgStringList CmdArgs;
 
+  llvm_unreachable("Assembling is not supported. Memory safety, remember?");
+
   assert(Inputs.size() == 1 && "Unexpected number of inputs.");
   const InputInfo &Input = Inputs[0];
 
