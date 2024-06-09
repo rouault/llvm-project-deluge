@@ -50,6 +50,7 @@ public:
 namespace toolchains {
 
 class LLVM_LIBRARY_VISIBILITY FreeBSD : public Generic_ELF {
+  bool IsFilBSD;
 public:
   FreeBSD(const Driver &D, const llvm::Triple &Triple,
           const llvm::opt::ArgList &Args);
@@ -57,6 +58,8 @@ public:
 
   bool IsMathErrnoDefault() const override { return false; }
   bool IsObjCNonFragileABIDefault() const override { return true; }
+
+  bool getIsFilBSD() const { return IsFilBSD; }
 
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,

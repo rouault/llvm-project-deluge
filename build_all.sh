@@ -29,6 +29,7 @@ set -e
 set -x
 
 rm -rf pizfix
+rm -rf filbsdrt
 
 mkdir -p build
 

@@ -27,5 +27,5 @@
 
 LIBCMODEFLAGS = -DFILC_FILBSD=1
 OBJPREFIX = filbsd
-PREFIXDIR = filbsd
+PREFIXDIR = filbsdrt
 

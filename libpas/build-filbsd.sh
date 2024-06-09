@@ -27,10 +27,10 @@ set -e
 set -x
 
 mkdir -p build
-mkdir -p ../filbsd/stdfil-include
-mkdir -p ../filbsd/builtins-include
-mkdir -p ../filbsd/lib
-mkdir -p ../filbsd/lib_test
+mkdir -p ../filbsdrt/stdfil-include
+mkdir -p ../filbsdrt/builtins-include
+mkdir -p ../filbsdrt/lib
+mkdir -p ../filbsdrt/lib_test
 gmake -f Makefile-setup-filbsd
 gmake -f Makefile-filbsd -j `sysctl -n hw.ncpu`
 

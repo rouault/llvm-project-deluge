@@ -239,6 +239,12 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     assert(Output.isNothing() && "Invalid output.");
   }
 
+  auto GetLegacyFilePath = [&] (const char* Name) -> std::string {
+    if (ToolChain.getIsFilBSD()) 
+      return std::string("/usr/lib/") + Name;
+    return ToolChain.GetFilePath(Name);
+  };
+
   if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
                              options::OPT_r)) {
     const char *crt1 = nullptr;
@@ -251,9 +257,9 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         crt1 = "crt1.o";
     }
     if (crt1)
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crt1)));
+      CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath(crt1)));
 
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
+    CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath("crti.o")));
 
     const char *crtbegin = nullptr;
     if (Args.hasArg(options::OPT_static))
@@ -263,12 +269,12 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     else
       crtbegin = "crtbegin.o";
 
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtbegin)));
+    CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath(crtbegin)));
   }
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
   
-  {
+  if (!ToolChain.getIsFilBSD()) {
     SmallString<128> P(ToolChain.getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
@@ -295,7 +301,31 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
-  if ((true)) {
+  if (ToolChain.getIsFilBSD()) {
+    CmdArgs.push_back("/usr/lib/libgcc.a");
+    CmdArgs.push_back("/usr/lib/libc.so");
+    {
+      SmallString<128> P(ToolChain.getDriver().InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "filbsdrt", "lib");
+      llvm::sys::path::append(P, "libpizlo.so");
+      CmdArgs.push_back(Args.MakeArgString(P));
+    }
+    if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                     options::OPT_r)) {
+      if (D.CCCIsCXX())
+        CmdArgs.push_back("-lm");
+      CmdArgs.push_back("-lc");
+      if (Args.hasArg(options::OPT_pthread))
+        CmdArgs.push_back("-lpthread");
+      if (!Args.hasArg(options::OPT_shared))
+        CmdArgs.push_back("-lfilc_crt");
+    } else {
+      if (!Args.hasArg(options::OPT_shared))
+        CmdArgs.push_back("-lfilc_mincrt");
+    }
+    if (ToolChain.ShouldLinkCXXStdlib(Args))
+      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+  } else if ((true)) {
     CmdArgs.push_back("-lgcc");
     // Once we switch to using the FreeBSD libc, then we'll have to actually emit -lpthread as
     // necessary, and we'll probably have to emit -lm for C++, too.
@@ -384,10 +414,10 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
                              options::OPT_r)) {
     if (Args.hasArg(options::OPT_shared) || IsPIE)
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtendS.o")));
+      CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath("crtendS.o")));
     else
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtend.o")));
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
+      CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath("crtend.o")));
+    CmdArgs.push_back(Args.MakeArgString(GetLegacyFilePath("crtn.o")));
   }
 
   ToolChain.addProfileRTLibs(Args, CmdArgs);
@@ -404,6 +434,24 @@ FreeBSD::FreeBSD(const Driver &D, const llvm::Triple &Triple,
                  const ArgList &Args)
     : Generic_ELF(D, Triple, Args) {
 
+  bool HasPizfixPath;
+  bool HasFilBSDRTPath;
+  {
+    SmallString<128> P(getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix");
+    HasPizfixPath = llvm::sys::fs::is_directory(P);
+  }
+  {
+    SmallString<128> P(getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "filbsdrt");
+    HasFilBSDRTPath = llvm::sys::fs::is_directory(P);
+  }
+  if (!HasPizfixPath && !HasFilBSDRTPath)
+    llvm_unreachable("Must have at least a pizfix or a filbsdrt.");
+  if (HasPizfixPath && HasFilBSDRTPath)
+    llvm_unreachable("Cannot have both a pizfix and a filbsdrt. Pick one!");
+  IsFilBSD = HasFilBSDRTPath;
+  
   // When targeting 32-bit platforms, look for '/usr/lib32/crt1.o' and fall
   // back to '/usr/lib' if it doesn't exist.
   if (Triple.isArch32Bit() &&
@@ -425,23 +473,25 @@ void FreeBSD::AddClangSystemIncludeArgs(
     llvm::opt::ArgStringList &CC1Args) const {
   const Driver &D = getDriver();
 
-  if ((true)) {
+  const char* FilPrefix = IsFilBSD ? "filbsdrt" : "pizfix";
+  
+  SmallString<128> P(D.InstalledDir);
+  llvm::sys::path::append(P, "..", "..", FilPrefix, "stdfil-include");
+  addSystemInclude(DriverArgs, CC1Args, P);
+  
+  if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
+      && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {
     SmallString<128> P(D.InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
+    llvm::sys::path::append(P, "..", "..", FilPrefix, "builtins-include");
     addSystemInclude(DriverArgs, CC1Args, P);
+  }
 
-    if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)) {
-      if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
-        SmallString<128> P(D.InstalledDir);
-        llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
-        addSystemInclude(DriverArgs, CC1Args, P);
-      }
-      
-      if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
-        SmallString<128> P(D.InstalledDir);
-        llvm::sys::path::append(P, "..", "..", "pizfix", "include");
-        addSystemInclude(DriverArgs, CC1Args, P);
-      }
+  if (!IsFilBSD) {
+    if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
+        && !DriverArgs.hasArg(options::OPT_nostdlibinc)) {
+      SmallString<128> P(D.InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "include");
+      addSystemInclude(DriverArgs, CC1Args, P);
     }
     return;
   }
@@ -449,7 +499,7 @@ void FreeBSD::AddClangSystemIncludeArgs(
   if (DriverArgs.hasArg(clang::driver::options::OPT_nostdinc))
     return;
 
-  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+  if ((false) && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {
     SmallString<128> Dir(D.ResourceDir);
     llvm::sys::path::append(Dir, "include");
     addSystemInclude(DriverArgs, CC1Args, Dir.str());
@@ -564,4 +614,6 @@ void FreeBSD::addClangTargetOptions(const ArgList &DriverArgs,
                           options::OPT_fno_use_init_array,
                           (Major >= 12 || Major == 0)))
     CC1Args.push_back("-fno-use-init-array");
+  if (IsFilBSD)
+    CC1Args.push_back("-ffilbsd");
 }
