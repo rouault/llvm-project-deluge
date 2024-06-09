@@ -21,15 +21,17 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+LIBC_PREFIX=pizlonated_
+
 case `uname -s` in
     Darwin)
         OS=macosx
         MAKE=make
         CCPREFIX="xcrun "
-        DYLIB_OPT=-dynamiclib
-        DYLIB_EXT=dylib
         ;;
     FreeBSD|OpenBSD)
+        MAKE=gmake
+        CCPREFIX=""
         case `uname -s` in
             FreeBSD)
                 OS=freebsd
@@ -42,10 +44,6 @@ case `uname -s` in
                 exit 1
                 ;;
         esac
-        MAKE=gmake
-        CCPREFIX=""
-        DYLIB_OPT=-shared
-        DYLIB_EXT=so
         ;;
     *)
         echo "Unsupported OS"

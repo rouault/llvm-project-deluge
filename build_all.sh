@@ -59,12 +59,40 @@ fi
 
 (cd libpas && ./build.sh)
 
+case $OS in
+    macosx)
+        MUSL_DYLIB_OPT=-dynamiclib
+        MUSL_DYLIB_EXT=dylib
+        MUSL_PREFIX=pizlonated_
+        ;;
+    freebsd)
+        MUSL_DYLIB_OPT="-shared -Wl,-soname,libc.so.666"
+        MUSL_DYLIB_EXT=so.666
+        MUSL_PREFIX=
+        ;;
+    openbsd)
+        MUSL_DYLIB_OPT=-shared
+        MUSL_DYLIB_EXT=so
+        MUSL_PREFIX=pizlonated_
+        ;;
+    *)
+        echo "Should not get here"
+        exit 1
+        ;;
+esac
+
 (cd musl && \
      CC="$CCPREFIX$PWD/../build/bin/clang" ./configure --target=$ARCH \
-         --prefix=$PWD/../pizfix --dylib-opt=$DYLIB_OPT --dylib-ext=$DYLIB_EXT && \
+         --prefix=$PWD/../pizfix --dylib-opt="$MUSL_DYLIB_OPT" \
+         --dylib-ext=$MUSL_DYLIB_EXT --libc-prefix=$MUSL_PREFIX && \
      $MAKE clean && \
      $MAKE -j `sysctl -n hw.ncpu` && \
      $MAKE install)
+
+if test $OS = freebsd
+then
+    (cd pizfix/lib && ln -s libc.so.666 libc.so)
+fi
 
 (cd build && ninja runtimes-clean && ninja runtimes)
 ./install-cxx-$OS.sh

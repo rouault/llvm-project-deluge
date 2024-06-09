@@ -296,23 +296,15 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
   if ((true)) {
-    CmdArgs.push_back("-lm");
     CmdArgs.push_back("-lgcc");
-    CmdArgs.push_back("--as-needed");
-    CmdArgs.push_back("-lgcc_s");
-    CmdArgs.push_back("--no-as-needed");
+    // Once we switch to using the FreeBSD libc, then we'll have to actually emit -lpthread as
+    // necessary, and we'll probably have to emit -lm for C++, too.
     Args.ClaimAllArgs(options::OPT_pthread);
-    CmdArgs.push_back("-lpthread");
-    CmdArgs.push_back("-lc");
-    CmdArgs.push_back("-lgcc");
-    CmdArgs.push_back("--as-needed");
-    CmdArgs.push_back("-lgcc_s");
-    CmdArgs.push_back("--no-as-needed");
+    CmdArgs.push_back("/usr/lib/libc.so");
     CmdArgs.push_back("-lpizlo");
-    CmdArgs.push_back("-lutil");
     if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                      options::OPT_r)) {
-      CmdArgs.push_back("-lpizlonated_c");
+      CmdArgs.push_back("-lc");
       if (!Args.hasArg(options::OPT_shared))
         CmdArgs.push_back("-lfilc_crt");
     } else {
