@@ -23,7 +23,8 @@
 
 PASCFLAGS = -g -O3 -W -Werror -MD $(LIBCMODEFLAGS)
 PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare \
-	-Wno-missing-field-initializers -Wno-vla-cxx-extension -MD $(LIBCMODEFLAGS)
+	-Wno-missing-field-initializers -Wno-vla-cxx-extension -Wno-unknown-warning-option \
+	-MD $(LIBCMODEFLAGS)
 FILCFLAGS = -O3 -g -W -Werror -Wno-pointer-to-int-cast -MD $(LIBCMODEFLAGS)
 
 PASSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
