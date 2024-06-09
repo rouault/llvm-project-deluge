@@ -29,7 +29,13 @@ set -e
 set -x
 
 rm -rf pizfix
-rm -rf filbsdrt
+
+# Stash filbsdrt instead of deleting it, in case we want to quickly recover it.
+if test -d filbsdrt
+then
+    rm -rf filbsdrt-saved
+    mv filbsdrt filbsdrt-saved
+fi
 
 mkdir -p build
 
