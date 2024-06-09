@@ -1027,6 +1027,8 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   DefineTypeSizeof("__SIZEOF_LONG_LONG__", TI.getLongLongWidth(), TI, Builder);
   DefineTypeSizeof("__SIZEOF_POINTER__", TI.getPointerWidth(LangAS::Default),
                    TI, Builder);
+  DefineTypeSizeof("__SIZEOF_INT_POINTER__", TI.getConstexprPointerWidth(LangAS::Default),
+                   TI, Builder);
   DefineTypeSizeof("__SIZEOF_SHORT__", TI.getShortWidth(), TI, Builder);
   DefineTypeSizeof("__SIZEOF_PTRDIFF_T__",
                    TI.getTypeWidth(TI.getPtrDiffType(LangAS::Default)), TI,

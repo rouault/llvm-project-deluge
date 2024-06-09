@@ -2200,8 +2200,8 @@ static void checkIntToPointerCast(bool CStyle, const SourceRange &OpRange,
       && !SrcType->isBooleanType()
       && !SrcType->isEnumeralType()
       && !SrcExpr->isIntegerConstantExpr(Self.Context)
-      && Self.Context.getTypeSize(DestType) >
-         Self.Context.getTypeSize(SrcType)) {
+      && Self.Context.getConstexprTypeSize(DestType) >
+         Self.Context.getConstexprTypeSize(SrcType)) {
     // Separate between casts to void* and non-void* pointers.
     // Some APIs use (abuse) void* for something like a user context,
     // and often that value is an integer even if it isn't a pointer itself.
@@ -3157,8 +3157,8 @@ void CastOperation::CheckCStyleCast() {
       return;
     }
 
-    if ((Self.Context.getTypeSize(SrcType) >
-         Self.Context.getTypeSize(DestType)) &&
+    if ((Self.Context.getConstexprTypeSize(SrcType) >
+         Self.Context.getConstexprTypeSize(DestType)) &&
         !DestType->isBooleanType()) {
       // C 6.3.2.3p6: Any pointer type may be converted to an integer type.
       // Except as previously specified, the result is implementation-defined.
