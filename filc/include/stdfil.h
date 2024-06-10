@@ -318,14 +318,10 @@ void zfence(void);
 void zstore_store_fence(void);
 void zcompiler_fence(void);
 
-/* Currently, the compiler builtins for ptr CAS don't work for silly clang reasons. So, Fil-C
-   offers these functions instead.
-
-   Eventually, I'll even fix the clang bugs and then you'll be able to just use whatever your
-   favorite compiler builtin for CAS is, instead of this junk. And those builtins will have
-   identical semantics to these functions.
-
-   If you want to CAS primitives, then just use the builtins, those work today.
+/* These functions are deprecated. I added them back when the clang builtin atomics didn't work
+   for pointers. I have since fixed that. Therefore, you don't need to use these functions.
+   However, I have already written code that uses these functions, so I am keeping these around
+   for now.
 
    I have simplified the memory ordering approach based on pretty good data that only a tiny
    fraction of algorithms ever benefit from unfenced CAS on modern CPUs, and the fact that CPUs

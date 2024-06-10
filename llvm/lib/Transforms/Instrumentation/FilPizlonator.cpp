@@ -552,15 +552,22 @@ class Pizlonator {
   Value* loadPtr(Value* P, Instruction* InsertBefore) {
     return loadPtr(P, false, Align(WordSize), AtomicOrdering::Monotonic, InsertBefore);
   }
+
+  void storeBarrierForObject(Value* Object, Instruction* InsertBefore) {
+    assert(MyThread);
+    CallInst::Create(StoreBarrier, { MyThread, Object }, "", InsertBefore)
+      ->setDebugLoc(InsertBefore->getDebugLoc());
+  }
+  
+  void storeBarrierForValue(Value* V, Instruction* InsertBefore) {
+    storeBarrierForObject(ptrObject(V, InsertBefore), InsertBefore);
+  }
   
   void storePtr(
     Value* V, Value* P, bool isVolatile, Align A, AtomicOrdering AO, StoreKind SK,
     Instruction* InsertBefore) {
-    if (SK == StoreKind::Barriered) {
-      assert(MyThread);
-      CallInst::Create(StoreBarrier, { MyThread, ptrObject(V, InsertBefore) }, "", InsertBefore)
-        ->setDebugLoc(InsertBefore->getDebugLoc());
-    }
+    if (SK == StoreKind::Barriered)
+      storeBarrierForValue(V, InsertBefore);
     (new StoreInst(
       ptrWord(V, InsertBefore), P, isVolatile, std::max(A, Align(WordSize)),
       getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO), SyncScope::System, InsertBefore))
@@ -1826,16 +1833,51 @@ class Pizlonator {
     }
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      assert(!hasPtrsForCheck(InstLowTypes[AI]));
       Value* LowP = prepareForAccess(InstLowTypes[AI], AI->getPointerOperand(), AccessKind::Write, AI);
+      if (InstLowTypes[AI] == LowWidePtrTy) {
+        storeBarrierForValue(AI->getNewValOperand(), AI);
+        Value* ExpectedWord = ptrWord(AI->getCompareOperand(), AI);
+        Value* NewValueWord = ptrWord(AI->getNewValOperand(), AI);
+        Instruction* NewAI = new AtomicCmpXchgInst(
+          LowP, ExpectedWord, NewValueWord, AI->getAlign(), AI->getSuccessOrdering(),
+          AI->getFailureOrdering(), AI->getSyncScopeID(), AI);
+        NewAI->setDebugLoc(AI->getDebugLoc());
+        Instruction* ResultWord = ExtractValueInst::Create(
+          Int128Ty, NewAI, { 0 }, "filc_cas_result_word", AI);
+        ResultWord->setDebugLoc(AI->getDebugLoc());
+        Instruction* ResultBit = ExtractValueInst::Create(
+          Int1Ty, NewAI, { 1 }, "filc_cas_result_bit", AI);
+        ResultBit->setDebugLoc(AI->getDebugLoc());
+        StructType* ResultTy = StructType::get(C, { LowWidePtrTy, Int1Ty });
+        Instruction* Result = InsertValueInst::Create(
+          UndefValue::get(ResultTy), wordToPtr(ResultWord, AI), { 0 }, "filc_cas_create_result_word", AI);
+        Result->setDebugLoc(AI->getDebugLoc());
+        Result = InsertValueInst::Create(Result, ResultBit, { 1 }, "filc_cas_create_result_bit", AI);
+        Result->setDebugLoc(AI->getDebugLoc());
+        AI->replaceAllUsesWith(Result);
+        AI->eraseFromParent();
+        return;
+      }
+      assert(!hasPtrsForCheck(InstLowTypes[AI]));
       AI->getOperandUse(AtomicCmpXchgInst::getPointerOperandIndex()) = LowP;
       return;
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      assert(!hasPtrsForCheck(InstLowTypes[AI]));
-      AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) =
+      Value* LowP =
         prepareForAccess(AI->getValOperand()->getType(), AI->getPointerOperand(), AccessKind::Write, AI);
+      if (InstLowTypes[AI] == LowWidePtrTy) {
+        storeBarrierForValue(AI->getValOperand(), AI);
+        Instruction* NewAI = new AtomicRMWInst(
+          AI->getOperation(), LowP, ptrWord(AI->getValOperand(), AI), AI->getAlign(), AI->getOrdering(),
+          AI->getSyncScopeID(), AI);
+        NewAI->setDebugLoc(AI->getDebugLoc());
+        AI->replaceAllUsesWith(wordToPtr(NewAI, AI));
+        AI->eraseFromParent();
+        return;
+      }
+      AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) = LowP;
+      assert(!hasPtrsForCheck(InstLowTypes[AI]));
       return;
     }
 
