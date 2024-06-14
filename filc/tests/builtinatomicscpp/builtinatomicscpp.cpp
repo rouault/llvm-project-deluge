@@ -1,59 +1,57 @@
 #include <stdfil.h>
 #include <stdlib.h>
+#include <atomic>
 
 #define unfenced_weak_cas_ptr(ptr, expected, new_value) ({ \
         void* tmp = expected; \
-        __c11_atomic_compare_exchange_weak( \
-            (void*_Atomic*)ptr, &tmp, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED); \
+        reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_weak( \
+            tmp, new_value, std::memory_order::relaxed); \
     })
 
 #define weak_cas_ptr(ptr, expected, new_value) ({ \
         void* tmp = expected; \
-        __c11_atomic_compare_exchange_weak( \
-            (void*_Atomic*)ptr, &tmp, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); \
+        reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_weak(tmp, new_value); \
     })
 
 #define unfenced_strong_cas_ptr(ptr, expected, new_value) ({ \
         void* result = expected; \
-        __c11_atomic_compare_exchange_strong( \
-            (void*_Atomic*)ptr, &result, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED); \
+        reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_strong( \
+            result, new_value, std::memory_order::relaxed); \
         result; \
     })
 
 #define strong_cas_ptr(ptr, expected, new_value) ({ \
         void* result = expected; \
-        __c11_atomic_compare_exchange_strong( \
-            (void*_Atomic*)ptr, &result, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); \
+        reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_strong(result, new_value); \
         result; \
     })
 
 #define unfenced_intense_cas_ptr(ptr, expected, new_value) \
-    __c11_atomic_compare_exchange_strong( \
-        (void*_Atomic*)ptr, expected, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_strong( \
+        *(expected), new_value, std::memory_order::relaxed)
 
 #define intense_cas_ptr(ptr, expected, new_value) \
-    __c11_atomic_compare_exchange_strong( \
-        (void*_Atomic*)ptr, expected, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->compare_exchange_strong(*(expected), new_value)
 
 #define unfenced_xchg_ptr(ptr, new_value) \
-    __c11_atomic_exchange((void*_Atomic*)ptr, new_value, __ATOMIC_RELAXED)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->exchange(new_value, std::memory_order::relaxed)
 
 #define xchg_ptr(ptr, new_value) \
-    __c11_atomic_exchange((void*_Atomic*)ptr, new_value, __ATOMIC_SEQ_CST)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->exchange(new_value)
 
 #define unfenced_atomic_store_ptr(ptr, new_value) \
-    __c11_atomic_store((void*_Atomic*)ptr, new_value, __ATOMIC_RELAXED)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->store(new_value, std::memory_order::relaxed)
 
 #define atomic_store_ptr(ptr, new_value) \
-    __c11_atomic_store((void*_Atomic*)ptr, new_value, __ATOMIC_SEQ_CST)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->store(new_value)
 
 #define unfenced_atomic_load_ptr(ptr) \
-    __c11_atomic_load((void*_Atomic*)ptr, __ATOMIC_RELAXED)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->load(std::memory_order::relaxed)
 
 #define atomic_load_ptr(ptr) \
-    __c11_atomic_load((void*_Atomic*)ptr, __ATOMIC_SEQ_CST)
+    reinterpret_cast<std::atomic<void*>*>(ptr)->load()
 
-int main()
+int main(int argc, char** argv)
 {
     void* ptr;
     void* a = malloc(1);

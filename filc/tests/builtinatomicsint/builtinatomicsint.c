@@ -29,11 +29,11 @@
 
 #define unfenced_intense_cas_int(ptr, expected, new_value) \
     __c11_atomic_compare_exchange_strong( \
-        (_Atomic int*)ptr, expected, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED) \
+        (_Atomic int*)ptr, expected, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED)
 
 #define intense_cas_int(ptr, expected, new_value) \
     __c11_atomic_compare_exchange_strong( \
-        (_Atomic int*)ptr, expected, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) \
+        (_Atomic int*)ptr, expected, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)
 
 #define unfenced_xchg_int(ptr, new_value) \
     __c11_atomic_exchange((_Atomic int*)ptr, new_value, __ATOMIC_RELAXED)
