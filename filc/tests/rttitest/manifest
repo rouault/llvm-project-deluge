@@ -1,0 +1,10 @@
+return:
+  success
+output-includes:
+  - "FooFoo::thingy42"
+  - "Foocastfail"
+  - "Footype: 3Foo"
+  - "BarBar::thingy666, 1410"
+  - "BarBar::stuff666, 1410"
+  - "Bartype: 3Bar"
+
