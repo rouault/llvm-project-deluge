@@ -281,9 +281,9 @@ struct filc_thread {
     pas_thread_local_cache_node* tlc_node;
     uint64_t tlc_node_version;
 
-    /* This is an allocated but not constructed object. It should be marked, but must not be put on
-       any mark stack. This allows allocation to pollcheck and/or exit if it needs to. */
-    filc_object* allocation_root;
+    /* Array of allocated but not constructed objects. This needs to be an array, since we could
+       get a signal in the middle of allocation and have more than one of these. */
+    filc_object_array allocation_roots;
 
     filc_object_array mark_stack;
 
@@ -548,6 +548,10 @@ PAS_API void filc_thread_destruct(filc_thread* thread);
 /* Gives the thread's tid back. Has to be done while still entered. */
 PAS_API void filc_thread_relinquish_tid(filc_thread* thread);
 
+/* This undoes thread creation. It destroys the things that are normally destroyed by end of
+   start_thread, or in the case where the thread had an error starting. */
+PAS_API void filc_thread_undo_create(filc_thread* thread);
+
 /* This removes the thread from the thread list and reuses its tid. */
 PAS_API void filc_thread_dispose(filc_thread* thread);
 
@@ -585,21 +589,6 @@ PAS_API void filc_exit(filc_thread* my_thread);
    handle_deferred_signals. */
 PAS_API void filc_increase_special_signal_deferral_depth(filc_thread* my_thread);
 PAS_API void filc_decrease_special_signal_deferral_depth(filc_thread* my_thread);
-
-static inline void filc_set_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
-{
-    PAS_ASSERT(!my_thread->allocation_root);
-    my_thread->allocation_root = allocation_root;
-}
-
-static inline void filc_clear_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
-{
-    PAS_ASSERT(my_thread->allocation_root == allocation_root);
-    my_thread->allocation_root = NULL;
-}
-
-PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
-PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
 
 /* It's hilarious that these are outline function calls right now. It's also hilarious that pop_frame
    takes the frame. In the future, it'll only use it for assertions. */
@@ -642,6 +631,21 @@ PAS_API void filc_object_array_reset(filc_object_array* array);
 PAS_API void filc_object_array_push_all(filc_object_array* to, filc_object_array* from);
 PAS_API void filc_object_array_pop_all_from_and_push_to(filc_object_array* from,
                                                         filc_object_array* to);
+
+static inline void filc_push_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+{
+    PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    filc_object_array_push(&my_thread->allocation_roots, allocation_root);
+}
+
+static inline void filc_pop_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+{
+    PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_ASSERT(filc_object_array_pop(&my_thread->allocation_roots) == allocation_root);
+}
+
+PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
+PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
 
 /* Locking the native frame prevents us from accidentally adding stuff to the top_native_frame if
    it doesn't belong to us. */

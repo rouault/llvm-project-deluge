@@ -371,6 +371,9 @@ static PAS_ALWAYS_INLINE void pas_assertion_failed_noreturn_silencer(
     pas_assertion_failed(filename, line, function, expression);
 }
 
+/* NOTE: PAS_ASSERT *must* run the expression and *must* assert on it.
+
+   If you remove PAS_ASSERTs, then you'll get incorrect behavior. */
 #define PAS_ASSERT(exp, ...) \
     do { \
         if (PAS_LIKELY(exp)) \

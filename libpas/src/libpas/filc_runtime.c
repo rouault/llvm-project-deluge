@@ -335,6 +335,7 @@ filc_thread* filc_thread_create(void)
 
     pas_system_mutex_construct(&thread->lock);
     pas_system_condition_construct(&thread->cond);
+    filc_object_array_construct(&thread->allocation_roots);
     filc_object_array_construct(&thread->mark_stack);
 
     /* The rest of the fields are initialized to zero already. */
@@ -350,6 +351,23 @@ filc_thread* filc_thread_create(void)
     filc_thread_list_lock_unlock();
     
     return thread;
+}
+
+void filc_thread_undo_create(filc_thread* thread)
+{
+    PAS_ASSERT(thread->is_stopping || thread->error_starting);
+    if (thread->is_stopping) {
+        PAS_ASSERT(!thread->error_starting);
+        PAS_ASSERT(thread == filc_get_my_thread());
+        PAS_ASSERT(thread->state & FILC_THREAD_STATE_ENTERED);
+    } else {
+        PAS_ASSERT(thread->error_starting);
+        PAS_ASSERT(thread != filc_get_my_thread());
+    }
+    PAS_ASSERT(!thread->allocation_roots.num_objects);
+    PAS_ASSERT(!thread->mark_stack.num_objects);
+    filc_object_array_destruct(&thread->allocation_roots);
+    filc_object_array_destruct(&thread->mark_stack);
 }
 
 void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stack)
@@ -1116,12 +1134,12 @@ void filc_decrease_special_signal_deferral_depth(filc_thread* my_thread)
 void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
 {
     filc_enter(my_thread);
-    filc_clear_allocation_root(my_thread, allocation_root);
+    filc_pop_allocation_root(my_thread, allocation_root);
 }
 
 void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
 {
-    filc_set_allocation_root(my_thread, allocation_root);
+    filc_push_allocation_root(my_thread, allocation_root);
     filc_exit(my_thread);
 }
 
@@ -1243,9 +1261,9 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     
     assert_participates_in_pollchecks(my_thread);
 
-    filc_object* allocation_root;
-    allocation_root = my_thread->allocation_root;
-    if (allocation_root) {
+    size_t index;
+    for (index = my_thread->allocation_roots.num_objects; index--;) {
+        filc_object* allocation_root = my_thread->allocation_roots.objects[index];
         /* Allocation roots have to have the mark bit set without being put on any mark stack, since
            they have no outgoing references and they are not ready for scanning. */
         verse_heap_set_is_marked_relaxed(allocation_root, true);
@@ -1253,7 +1271,6 @@ void filc_thread_mark_roots(filc_thread* my_thread)
 
     filc_frame* frame;
     for (frame = my_thread->top_frame; frame; frame = frame->parent) {
-        size_t index;
         for (index = frame->num_objects; index--;) {
             if (verbose)
                 pas_log("Marking thread root %p\n", frame->objects[index]);
@@ -1263,7 +1280,6 @@ void filc_thread_mark_roots(filc_thread* my_thread)
 
     filc_native_frame* native_frame;
     for (native_frame = my_thread->top_native_frame; native_frame; native_frame = native_frame->parent) {
-        size_t index;
         for (index = native_frame->array.num_objects; index--;)
             fugc_mark(&my_thread->mark_stack, native_frame->array.objects[index]);
     }
@@ -1919,18 +1935,19 @@ static filc_object* finish_reallocate(
     size_t common_size = pas_min_uintptr(new_size, old_size);
 
     filc_object* result = (filc_object*)allocation;
-    filc_set_allocation_root(my_thread, result);
     result->lower = (char*)result + offset_to_payload;
     result->upper = (char*)result + offset_to_payload + new_size;
     result->flags = 0;
     if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        filc_exit(my_thread);
+        filc_exit_with_allocation_root(my_thread, result);
     size_t index;
-    for (index = num_words; index-- > common_num_words;)
+    for (index = num_words; index--;)
         result->word_types[index] = FILC_WORD_TYPE_UNSET;
-    pas_zero_memory((char*)result + offset_to_payload + common_size, new_size - common_size);
-    if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        filc_enter(my_thread);
+    pas_zero_memory((char*)result + offset_to_payload, new_size);
+    if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
+        filc_enter_with_allocation_root(my_thread, result);
+        filc_thread_track_object(my_thread, result);
+    }
     pas_uint128* dst = (pas_uint128*)((char*)result + offset_to_payload);
     pas_uint128* src = (pas_uint128*)old_object->lower;
     for (index = common_num_words; index--;) {
@@ -1961,10 +1978,10 @@ static filc_object* finish_reallocate(
             __c11_atomic_store((_Atomic pas_uint128*)(dst + index), word, __ATOMIC_RELAXED);
             break;
         }
-        filc_pollcheck(my_thread, NULL);
+        if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
+            filc_pollcheck(my_thread, NULL);
     }
 
-    filc_clear_allocation_root(my_thread, result);
     pas_store_store_fence();
     filc_free(my_thread, old_object);
 
@@ -9505,10 +9522,9 @@ static void* start_thread(void* arg)
     fugc_donate(&thread->mark_stack);
     filc_thread_stop_allocators(thread);
     filc_thread_relinquish_tid(thread);
-    PAS_ASSERT(!thread->mark_stack.num_objects);
-    filc_object_array_destruct(&thread->mark_stack);
-    pas_thread_local_cache_destroy(pas_lock_is_not_held);
     thread->is_stopping = true;
+    filc_thread_undo_create(thread);
+    pas_thread_local_cache_destroy(pas_lock_is_not_held);
     filc_exit(thread);
 
     pas_system_mutex_lock(&thread->lock);
@@ -9571,6 +9587,7 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
         pas_system_mutex_lock(&thread->lock);
         PAS_ASSERT(!thread->thread);
         thread->error_starting = true;
+        filc_thread_undo_create(thread);
         pas_system_mutex_unlock(&thread->lock);
         filc_thread_dispose(thread);
         set_errno(result);
