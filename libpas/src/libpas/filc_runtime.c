@@ -379,6 +379,11 @@ void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stac
     fugc_mark_or_free(stack, &thread->arg_ptr);
     fugc_mark_or_free(stack, &thread->cookie_ptr);
     fugc_mark_or_free(stack, &thread->result_ptr);
+
+    /* These need to be marked because phase2 of unwinding calls the personality function multiple
+       times before finishing using them. */
+    fugc_mark_or_free(stack, &thread->unwind_context_ptr);
+    fugc_mark_or_free(stack, &thread->exception_object_ptr);
 }
 
 void filc_thread_destruct(filc_thread* thread)
@@ -957,12 +962,7 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
     if (was_top_native_frame_unlocked)
         filc_lock_top_native_frame(my_thread);
 
-    static const filc_origin origin = {
-        .filename = "<runtime>",
-        .function = "call_signal_handler",
-        .line = 0,
-        .column = 0
-    };
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "call_signal_handler");
 
     struct {
         FILC_FRAME_BODY;
@@ -985,9 +985,9 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
     *(int*)filc_ptr_ptr(args) = signum;
     /* This check shouldn't be necessary; we do it out of an abundance of paranoia! */
     filc_check_function_call(function_ptr);
-    void (*function)(PIZLONATED_SIGNATURE) = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(function_ptr);
+    bool (*function)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(function_ptr);
     filc_lock_top_native_frame(my_thread);
-    function(my_thread, args, rets);
+    PAS_ASSERT(!function(my_thread, args, rets));
     filc_unlock_top_native_frame(my_thread);
 
     filc_pop_native_frame(my_thread, &native_frame);
@@ -1283,6 +1283,9 @@ void filc_thread_mark_roots(filc_thread* my_thread)
         for (index = native_frame->array.num_objects; index--;)
             fugc_mark(&my_thread->mark_stack, native_frame->array.objects[index]);
     }
+
+    for (index = FILC_NUM_UNWIND_REGISTERS; index--;)
+        PAS_ASSERT(filc_ptr_is_totally_null(my_thread->unwind_registers[index]));
 }
 
 void filc_thread_sweep_mark_stack(filc_thread* my_thread)
@@ -1390,14 +1393,15 @@ static void signal_pizlonator(int signum)
 void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
 {
     if (origin) {
-        pas_stream_printf(stream, "%s", origin->filename);
+        PAS_ASSERT(origin->function_origin);
+        pas_stream_printf(stream, "%s", origin->function_origin->filename);
         if (origin->line) {
             pas_stream_printf(stream, ":%u", origin->line);
             if (origin->column)
                 pas_stream_printf(stream, ":%u", origin->column);
         }
-        if (origin->function)
-            pas_stream_printf(stream, ": %s", origin->function);
+        if (origin->function_origin->function)
+            pas_stream_printf(stream, ": %s", origin->function_origin->function);
     } else
         pas_stream_printf(stream, "<somewhere>");
 }
@@ -1583,6 +1587,9 @@ void filc_word_type_dump(filc_word_type type, pas_stream* stream)
         return;
     case FILC_WORD_TYPE_DL_HANDLE:
         pas_stream_printf(stream, "dl_handle");
+        return;
+    case FILC_WORD_TYPE_JMP_BUF:
+        pas_stream_printf(stream, "jmp_buf");
         return;
     default:
         pas_stream_printf(stream, "?%u", type);
@@ -2487,7 +2494,8 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
                     object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
-                    object->word_types[0] == FILC_WORD_TYPE_DL_HANDLE,
+                    object->word_types[0] == FILC_WORD_TYPE_DL_HANDLE ||
+                    object->word_types[0] == FILC_WORD_TYPE_JMP_BUF,
                     origin);
         if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION &&
             object->word_types[0] != FILC_WORD_TYPE_DL_HANDLE)
@@ -2750,13 +2758,8 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     
     if (passed_origin)
         my_thread->top_frame->origin = passed_origin;
-    
-    static const filc_origin origin = {
-        .function = "memset",
-        .filename = "<runtime>",
-        .line = 0,
-        .column = 0
-    };
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset");
     struct {
         FILC_FRAME_BODY;
         filc_object* objects[1];
@@ -2859,12 +2862,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     filc_object* dst_object = filc_ptr_object(dst);
     filc_object* src_object = filc_ptr_object(src);
 
-    static const filc_origin origin = {
-        .function = "memmove",
-        .filename = "<runtime>",
-        .line = 0,
-        .column = 0
-    };
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove");
     struct {
         FILC_FRAME_BODY;
         filc_object* objects[2];
@@ -3242,23 +3240,18 @@ void filc_execute_constant_relocations(
 }
 
 static bool did_run_deferred_global_ctors = false;
-static void (**deferred_global_ctors)(PIZLONATED_SIGNATURE) = NULL; 
+static bool (**deferred_global_ctors)(PIZLONATED_SIGNATURE) = NULL; 
 static size_t num_deferred_global_ctors = 0;
 static size_t deferred_global_ctors_capacity = 0;
 
-static void run_global_ctor(filc_thread* my_thread, void (*global_ctor)(PIZLONATED_SIGNATURE))
+static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONATED_SIGNATURE))
 {
     if (!run_global_ctors) {
         pas_log("filc: skipping global ctor.\n");
         return;
     }
-    
-    static const filc_origin origin = {
-        .filename = "<runtime>",
-        .function = "run_global_ctor",
-        .line = 0,
-        .column = 0
-    };
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_ctor");
 
     struct {
         FILC_FRAME_BODY;
@@ -3270,13 +3263,14 @@ static void run_global_ctor(filc_thread* my_thread, void (*global_ctor)(PIZLONAT
     
     filc_return_buffer return_buffer;
     filc_lock_top_native_frame(my_thread);
-    global_ctor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
+    PAS_ASSERT(
+        !global_ctor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer)));
     filc_unlock_top_native_frame(my_thread);
 
     filc_pop_frame(my_thread, frame);
 }
 
-void filc_defer_or_run_global_ctor(void (*global_ctor)(PIZLONATED_SIGNATURE))
+void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE))
 {
     filc_thread* my_thread = filc_get_my_thread();
     
@@ -3288,17 +3282,17 @@ void filc_defer_or_run_global_ctor(void (*global_ctor)(PIZLONATED_SIGNATURE))
     }
 
     if (num_deferred_global_ctors >= deferred_global_ctors_capacity) {
-        void (**new_deferred_global_ctors)(PIZLONATED_SIGNATURE);
+        bool (**new_deferred_global_ctors)(PIZLONATED_SIGNATURE);
         size_t new_deferred_global_ctors_capacity;
 
         PAS_ASSERT(num_deferred_global_ctors == deferred_global_ctors_capacity);
 
         new_deferred_global_ctors_capacity = (deferred_global_ctors_capacity + 1) * 2;
-        new_deferred_global_ctors = (void (**)(PIZLONATED_SIGNATURE))bmalloc_allocate(
-            new_deferred_global_ctors_capacity * sizeof(void (*)(PIZLONATED_SIGNATURE)));
+        new_deferred_global_ctors = (bool (**)(PIZLONATED_SIGNATURE))bmalloc_allocate(
+            new_deferred_global_ctors_capacity * sizeof(bool (*)(PIZLONATED_SIGNATURE)));
 
         memcpy(new_deferred_global_ctors, deferred_global_ctors,
-               num_deferred_global_ctors * sizeof(void (*)(PIZLONATED_SIGNATURE)));
+               num_deferred_global_ctors * sizeof(bool (*)(PIZLONATED_SIGNATURE)));
 
         bmalloc_deallocate(deferred_global_ctors);
 
@@ -3325,7 +3319,7 @@ void filc_run_deferred_global_ctors(filc_thread* my_thread)
     deferred_global_ctors_capacity = 0;
 }
 
-void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE))
+void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE))
 {
     if (!run_global_dtors) {
         pas_log("filc: skipping global dtor.\n");
@@ -3336,12 +3330,7 @@ void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE))
     
     filc_enter(my_thread);
 
-    static const filc_origin origin = {
-        .filename = "<runtime>",
-        .function = "run_global_dtor",
-        .line = 0,
-        .column = 0
-    };
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_dtor");
 
     struct {
         FILC_FRAME_BODY;
@@ -3353,7 +3342,8 @@ void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE))
 
     filc_return_buffer return_buffer;
     filc_lock_top_native_frame(my_thread);
-    global_dtor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer));
+    PAS_ASSERT(
+        !global_dtor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer)));
     filc_unlock_top_native_frame(my_thread);
 
     filc_pop_frame(my_thread, frame);
@@ -3625,7 +3615,413 @@ void filc_native_zscavenger_resume(filc_thread* my_thread)
     filc_enter(my_thread);
 }
 
-static void (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
+struct stack_frame_description {
+    filc_ptr function_name;
+    filc_ptr filename;
+    unsigned line;
+    unsigned column;
+    bool can_throw;
+    bool can_catch;
+    filc_ptr personality_function;
+    filc_ptr eh_data;
+};
+
+typedef struct stack_frame_description stack_frame_description;
+
+static void check_stack_frame_description(
+    filc_ptr stack_frame_description_ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(
+        stack_frame_description_ptr, stack_frame_description, function_name, access_kind);
+    FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, filename, access_kind);
+    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, line, access_kind);
+    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, column, access_kind);
+    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, can_throw, access_kind);
+    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, can_catch, access_kind);
+    FILC_CHECK_PTR_FIELD(
+        stack_frame_description_ptr, stack_frame_description, personality_function, access_kind);
+    FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, eh_data, access_kind);
+}
+
+struct stack_scan_callback_args {
+    filc_ptr description_ptr;
+    filc_ptr arg_ptr;
+};
+
+typedef struct stack_scan_callback_args stack_scan_callback_args;
+
+static void check_stack_scan_callback_args(
+    filc_ptr stack_scan_callback_args_ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(
+        stack_scan_callback_args_ptr, stack_scan_callback_args, description_ptr, access_kind);
+    FILC_CHECK_PTR_FIELD(stack_scan_callback_args_ptr, stack_scan_callback_args, arg_ptr, access_kind);
+}
+
+void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr arg_ptr)
+{
+    filc_check_function_call(callback_ptr);
+    bool (*callback)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
+
+    filc_frame* my_frame = my_thread->top_frame;
+    PAS_ASSERT(my_frame->origin);
+    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->function, "zstack_scan"));
+    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->filename, "<runtime>"));
+    PAS_ASSERT(my_frame->parent);
+
+    filc_frame* first_frame = my_frame->parent;
+    filc_frame* current_frame;
+    for (current_frame = first_frame; current_frame; current_frame = current_frame->parent) {
+        PAS_ASSERT(current_frame->origin);
+        filc_ptr description_ptr = filc_ptr_create(
+            my_thread, filc_allocate(my_thread, sizeof(stack_frame_description)));
+        check_stack_frame_description(description_ptr, filc_write_access);
+        stack_frame_description* description = (stack_frame_description*)filc_ptr_ptr(description_ptr);
+        filc_ptr_store(
+            my_thread,
+            &description->function_name,
+            filc_strdup(my_thread, current_frame->origin->function_origin->function));
+        filc_ptr_store(
+            my_thread,
+            &description->filename,
+            filc_strdup(my_thread, current_frame->origin->function_origin->filename));
+        description->line = current_frame->origin->line;
+        description->column = current_frame->origin->column;
+        description->can_throw = current_frame->origin->function_origin->can_throw;
+        description->can_catch = current_frame->origin->function_origin->can_catch;
+        filc_ptr personality_function;
+        bool has_personality;
+        if (current_frame->origin->function_origin->personality_getter) {
+            has_personality = true;
+            personality_function = current_frame->origin->function_origin->personality_getter(NULL);
+        } else {
+            has_personality = false;
+            personality_function = filc_ptr_forge_null();
+        }
+        filc_ptr_store(my_thread, &description->personality_function, personality_function);
+        filc_ptr eh_data;
+        filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)current_frame->origin;
+        if (has_personality && origin_with_eh->eh_data_getter)
+            eh_data = origin_with_eh->eh_data_getter(NULL);
+        else
+            eh_data = filc_ptr_forge_null();
+        filc_ptr_store(my_thread, &description->eh_data, eh_data);
+
+        filc_ptr args_ptr = filc_ptr_create(
+            my_thread, filc_allocate(my_thread, sizeof(stack_scan_callback_args)));
+        check_stack_scan_callback_args(args_ptr, filc_write_access);
+        stack_scan_callback_args* args = (stack_scan_callback_args*)filc_ptr_ptr(args_ptr);
+        filc_ptr_store(my_thread, &args->description_ptr, description_ptr);
+        filc_ptr_store(my_thread, &args->arg_ptr, arg_ptr);
+
+        filc_lock_top_native_frame(my_thread);
+        filc_return_buffer return_buffer;
+        filc_ptr rets_ptr = filc_ptr_for_int_return_buffer(&return_buffer);
+        PAS_ASSERT(!callback(my_thread, args_ptr, rets_ptr));
+        filc_unlock_top_native_frame(my_thread);
+        if (!*(bool*)filc_ptr_ptr(rets_ptr))
+            return;
+    }
+}
+
+enum unwind_reason_code {
+    unwind_reason_none = 0,
+    unwind_reason_ok = 0,
+    unwind_reason_foreign_exception_caught = 1,
+    unwind_reason_fatal_phase2_error = 2,
+    unwind_reason_fatal_phase1_error = 3,
+    unwind_reason_normal_stop = 4,
+    unwind_reason_end_of_stack = 5,
+    unwind_reason_handler_found = 6,
+    unwind_reason_install_context = 7,
+    unwind_reason_continue_unwind = 8,
+};
+
+typedef enum unwind_reason_code unwind_reason_code;
+
+enum unwind_action {
+    unwind_action_search_phase = 1,
+    unwind_action_cleanup_phase = 2,
+    unwind_action_handler_frame = 4,
+    unwind_action_force_unwind = 8,
+    unwind_action_end_of_stack = 16
+};
+
+typedef enum unwind_action unwind_action;
+
+struct unwind_context {
+    filc_ptr language_specific_data;
+    filc_ptr registers[FILC_NUM_UNWIND_REGISTERS];
+};
+
+typedef struct unwind_context unwind_context;
+
+static void check_unwind_context(filc_ptr unwind_context_ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(unwind_context_ptr, unwind_context, language_specific_data, access_kind);
+    unsigned index;
+    for (index = FILC_NUM_UNWIND_REGISTERS; index--;) {
+        filc_check_access_ptr(
+            filc_ptr_with_offset(
+                unwind_context_ptr, PAS_OFFSETOF(unwind_context, registers) + index * sizeof(filc_ptr)),
+            access_kind, NULL);
+    }
+}
+
+typedef unsigned long long unwind_exception_class;
+
+struct unwind_exception {
+    unwind_exception_class exception_class;
+    filc_ptr exception_cleanup;
+};
+
+typedef struct unwind_exception unwind_exception;
+
+static void check_unwind_exception(filc_ptr unwind_exception_ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(unwind_exception_ptr, unwind_exception, exception_class, access_kind);
+    FILC_CHECK_PTR_FIELD(unwind_exception_ptr, unwind_exception, exception_cleanup, access_kind);
+}
+
+struct unwind_personality_args {
+    int version;
+    unwind_action actions;
+    unwind_exception_class exception_class;
+    filc_ptr exception_object;
+    filc_ptr context;
+};
+
+typedef struct unwind_personality_args unwind_personality_args;
+
+static void check_unwind_personality_args(
+    filc_ptr unwind_personality_args_ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(unwind_personality_args_ptr, unwind_personality_args, version, access_kind);
+    FILC_CHECK_INT_FIELD(unwind_personality_args_ptr, unwind_personality_args, actions, access_kind);
+    FILC_CHECK_INT_FIELD(
+        unwind_personality_args_ptr, unwind_personality_args, exception_class, access_kind);
+    FILC_CHECK_PTR_FIELD(
+        unwind_personality_args_ptr, unwind_personality_args, exception_object, access_kind);
+    FILC_CHECK_PTR_FIELD(unwind_personality_args_ptr, unwind_personality_args, context, access_kind);
+}
+
+static unwind_reason_code call_personality(
+    filc_thread* my_thread, filc_frame* current_frame, int version, unwind_action actions,
+    filc_ptr exception_object_ptr, filc_ptr context_ptr)
+{
+    check_unwind_context(context_ptr, filc_write_access);
+    unwind_context* context = (unwind_context*)filc_ptr_ptr(context_ptr);
+
+    filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)current_frame->origin;
+    filc_ptr (*eh_data_getter)(filc_global_initialization_context*) = origin_with_eh->eh_data_getter;
+    filc_ptr eh_data;
+    if (eh_data_getter)
+        eh_data = eh_data_getter(NULL);
+    else
+        eh_data = filc_ptr_forge_null();
+    filc_ptr_store(my_thread, &context->language_specific_data, eh_data);
+    
+    check_unwind_exception(exception_object_ptr, filc_read_access);
+    unwind_exception* exception_object = (unwind_exception*)filc_ptr_ptr(exception_object_ptr);
+    unwind_exception_class exception_class = exception_object->exception_class;
+
+    filc_ptr personality_ptr = current_frame->origin->function_origin->personality_getter(NULL);
+    filc_thread_track_object(my_thread, filc_ptr_object(personality_ptr));
+    filc_check_function_call(personality_ptr);
+    
+    filc_ptr personality_args_ptr = filc_ptr_create(
+        my_thread, filc_allocate(my_thread, sizeof(unwind_personality_args)));
+    check_unwind_personality_args(personality_args_ptr, filc_write_access);
+    unwind_personality_args* personality_args =
+        (unwind_personality_args*)filc_ptr_ptr(personality_args_ptr);
+    
+    personality_args->version = version;
+    personality_args->actions = actions;
+    personality_args->exception_class = exception_class;
+    filc_ptr_store(my_thread, &personality_args->exception_object, exception_object_ptr);
+    filc_ptr_store(my_thread, &personality_args->context, context_ptr);
+    
+    filc_lock_top_native_frame(my_thread);
+    filc_return_buffer return_buffer;
+    filc_ptr personality_rets_ptr = filc_ptr_for_int_return_buffer(&return_buffer);
+    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(personality_ptr))(
+                   my_thread, personality_args_ptr, personality_rets_ptr));
+    filc_unlock_top_native_frame(my_thread);
+    
+    return *(unwind_reason_code*)filc_ptr_ptr(personality_rets_ptr);
+}
+
+filc_exception_and_int filc_native__Unwind_RaiseException(
+    filc_thread* my_thread, filc_ptr exception_object_ptr)
+{
+    filc_ptr context_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(unwind_context)));
+
+    filc_frame* my_frame = my_thread->top_frame;
+    PAS_ASSERT(my_frame->origin);
+    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->function, "_Unwind_RaiseException"));
+    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->filename, "<runtime>"));
+    PAS_ASSERT(my_frame->parent);
+
+    filc_frame* first_frame = my_frame->parent;
+    filc_frame* current_frame;
+
+    /* Phase 1 */
+    for (current_frame = first_frame; current_frame; current_frame = current_frame->parent) {
+        PAS_ASSERT(current_frame->origin);
+        
+        if (!current_frame->origin->function_origin->can_catch)
+            return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
+
+        if (!current_frame->origin->function_origin->personality_getter) {
+            if (!current_frame->origin->function_origin->can_throw)
+                return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
+            continue;
+        }
+
+        unwind_reason_code personality_result = call_personality(
+            my_thread, current_frame, 1, unwind_action_search_phase, exception_object_ptr, context_ptr);
+        if (personality_result == unwind_reason_handler_found) {
+            my_thread->found_frame_for_unwind = current_frame;
+            filc_ptr_store(my_thread, &my_thread->unwind_context_ptr, context_ptr);
+            filc_ptr_store(my_thread, &my_thread->exception_object_ptr, exception_object_ptr);
+            /* This triggers phase 2. */
+            return filc_exception_and_int_with_exception();
+        }
+
+        if (personality_result == unwind_reason_continue_unwind
+            && current_frame->origin->function_origin->can_throw)
+            continue;
+
+        return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
+    }
+
+    return filc_exception_and_int_with_int(unwind_reason_end_of_stack);
+}
+
+static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr, filc_ptr exception_object_ptr,
+                             filc_frame* found_frame, filc_frame* current_frame)
+{
+    /* Middle of Phase 2 */
+    
+    PAS_ASSERT(current_frame->origin);
+
+    /* If the frame didn't support catching, then we wouldn't have gotten here. Only frames that
+       support unwinding call landing_pads. */
+    PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+    
+    if (!current_frame->origin->function_origin->personality_getter)
+        return false;
+
+    unwind_action action = unwind_action_cleanup_phase;
+    if (current_frame == found_frame)
+        action = (unwind_action)(unwind_action_cleanup_phase | unwind_action_handler_frame);
+    
+    unwind_reason_code personality_result = call_personality(
+        my_thread, current_frame, 1, action, exception_object_ptr, context_ptr);
+    if (personality_result == unwind_reason_continue_unwind)
+        return false;
+
+    FILC_CHECK(
+        personality_result == unwind_reason_install_context,
+        NULL,
+        "personality function returned neither continue_unwind nor install_context.");
+
+    check_unwind_context(context_ptr, filc_write_access);
+    unwind_context* context = (unwind_context*)filc_ptr_ptr(context_ptr);
+    unsigned index;
+    for (index = FILC_NUM_UNWIND_REGISTERS; index--;) {
+        PAS_ASSERT(filc_ptr_is_totally_null(my_thread->unwind_registers[index]));
+        my_thread->unwind_registers[index] = filc_ptr_load(my_thread, context->registers + index);
+    }
+    return true;
+}
+
+bool filc_landing_pad(filc_thread* my_thread)
+{
+    filc_frame* current_frame = my_thread->top_frame;
+    PAS_ASSERT(current_frame);
+    
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "landing_pad");
+    struct {
+        FILC_FRAME_BODY;
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    filc_push_frame(my_thread, frame);
+    PAS_ASSERT(current_frame == frame->parent);
+
+    filc_native_frame native_frame;
+    filc_push_native_frame(my_thread, &native_frame);
+
+    filc_ptr context_ptr = filc_ptr_load(my_thread, &my_thread->unwind_context_ptr);
+    filc_ptr exception_object_ptr = filc_ptr_load(my_thread, &my_thread->exception_object_ptr);
+    filc_frame* found_frame = my_thread->found_frame_for_unwind;
+
+    bool result = landing_pad_impl(
+        my_thread, context_ptr, exception_object_ptr, found_frame, current_frame);
+    /* Super important that between here and the return, we do NOT pollcheck or exit. Otherwise, the
+       GC will miss the unwind_registers. */
+    if (!result) {
+        FILC_CHECK(
+            current_frame != found_frame,
+            NULL,
+            "personality function told us to continue phase2 unwinding past the frame found in phase1.");
+        PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+        FILC_CHECK(
+            current_frame->origin->function_origin->can_throw,
+            NULL,
+            "cannot unwind from landing pad, function claims not to throw.");
+        FILC_CHECK(
+            current_frame->parent,
+            NULL,
+            "cannot unwind from landing pad, reached end of stack.");
+        FILC_CHECK(
+            current_frame->parent->origin->function_origin->can_catch,
+            NULL,
+            "cannot unwind from landing pad, parent frame doesn't support catching.");
+    }
+
+    filc_pop_native_frame(my_thread, &native_frame);
+    filc_pop_frame(my_thread, frame);
+
+    return result;
+}
+
+void filc_resume_unwind(filc_thread* my_thread)
+{
+    filc_frame* current_frame = my_thread->top_frame;
+
+    /* The frame has to have an origin. */
+    PAS_ASSERT(current_frame->origin);
+
+    /* It would be weird if we were called from a frame that didn't support unwinding. That would
+       mean that the compiler screwed up. */
+    PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+
+    FILC_CHECK(
+        current_frame->origin->function_origin->can_throw,
+        NULL,
+        "cannot resume unwinding, current frame claims not to throw.");
+    FILC_CHECK(
+        current_frame->parent,
+        NULL,
+        "cannot resume unwinding, reached end of stack.");
+    FILC_CHECK(
+        current_frame->parent->origin->function_origin->can_catch,
+        NULL,
+        "cannot resume unwinding, parent frame doesn't support catching.");
+}
+
+void filc_native_zlongjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(jmp_buf_ptr);
+    PAS_UNUSED_PARAM(value);
+    PAS_ASSERT(!"Not implemented yet");
+}
+
+static bool (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
 
 void filc_native_zregister_sys_errno_handler(filc_thread* my_thread, filc_ptr errno_handler)
 {
@@ -3635,10 +4031,10 @@ void filc_native_zregister_sys_errno_handler(filc_thread* my_thread, filc_ptr er
         NULL,
         "errno handler already registered.");
     filc_check_function_call(errno_handler);
-    pizlonated_errno_handler = (void(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(errno_handler);
+    pizlonated_errno_handler = (bool(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(errno_handler);
 }
 
-static void (*pizlonated_dlerror_handler)(PIZLONATED_SIGNATURE);
+static bool (*pizlonated_dlerror_handler)(PIZLONATED_SIGNATURE);
 
 void filc_native_zregister_sys_dlerror_handler(filc_thread* my_thread, filc_ptr dlerror_handler)
 {
@@ -3648,7 +4044,7 @@ void filc_native_zregister_sys_dlerror_handler(filc_thread* my_thread, filc_ptr 
         NULL,
         "dlerror handler already registered.");
     filc_check_function_call(dlerror_handler);
-    pizlonated_dlerror_handler = (void(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(dlerror_handler);
+    pizlonated_dlerror_handler = (bool(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(dlerror_handler);
 }
 
 static void set_musl_errno(int errno_value)
@@ -3663,7 +4059,7 @@ static void set_musl_errno(int errno_value)
     filc_return_buffer return_buffer;
     filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
     filc_lock_top_native_frame(my_thread);
-    pizlonated_errno_handler(my_thread, args, rets);
+    PAS_ASSERT(!pizlonated_errno_handler(my_thread, args, rets));
     filc_unlock_top_native_frame(my_thread);
 }
 
@@ -3801,7 +4197,7 @@ static void set_dlerror(const char* error)
     filc_return_buffer return_buffer;
     filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
     filc_lock_top_native_frame(my_thread);
-    pizlonated_dlerror_handler(my_thread, args, rets);
+    PAS_ASSERT(!pizlonated_dlerror_handler(my_thread, args, rets));
     filc_unlock_top_native_frame(my_thread);
 }
 
@@ -9462,13 +9858,8 @@ static void* start_thread(void* arg)
 
     thread->tlc_node = verse_heap_get_thread_local_cache_node();
     thread->tlc_node_version = pas_thread_local_cache_node_version(thread->tlc_node);
-    
-    static const filc_origin origin = {
-        .filename = "<runtime>",
-        .function = "start_thread",
-        .line = 0,
-        .column = 0
-    };
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "start_thread");
 
     struct {
         FILC_FRAME_BODY;
@@ -9494,7 +9885,7 @@ static void* start_thread(void* arg)
     if (verbose)
         pas_log("thread %u calling main function\n", thread->tid);
 
-    thread->thread_main(thread, args, rets);
+    PAS_ASSERT(!thread->thread_main(thread, args, rets));
 
     if (verbose)
         pas_log("thread %u main function returned\n", thread->tid);
@@ -9562,7 +9953,7 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
     PAS_ASSERT(filc_ptr_is_totally_null(thread->arg_ptr));
     PAS_ASSERT(filc_ptr_is_totally_null(thread->result_ptr));
     PAS_ASSERT(filc_ptr_is_totally_null(thread->cookie_ptr));
-    thread->thread_main = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
+    thread->thread_main = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
     filc_ptr_store(my_thread, &thread->arg_ptr, arg_ptr);
     pas_system_mutex_unlock(&thread->lock);
     filc_exit(my_thread);
@@ -9626,8 +10017,8 @@ bool filc_native_zthread_join(filc_thread* my_thread, filc_ptr thread_ptr, filc_
 
 typedef struct {
     filc_thread* my_thread;
-    void (*condition)(PIZLONATED_SIGNATURE);
-    void (*before_sleep)(PIZLONATED_SIGNATURE);
+    bool (*condition)(PIZLONATED_SIGNATURE);
+    bool (*before_sleep)(PIZLONATED_SIGNATURE);
     filc_ptr arg_ptr;
 } zpark_if_data;
 
@@ -9644,7 +10035,7 @@ static bool zpark_if_validate_callback(void* arg)
     filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
 
     filc_lock_top_native_frame(data->my_thread);
-    data->condition(data->my_thread, args, rets);
+    PAS_ASSERT(!data->condition(data->my_thread, args, rets));
     filc_unlock_top_native_frame(data->my_thread);
 
     return *(bool*)filc_ptr_ptr(rets);
@@ -9663,7 +10054,7 @@ static void zpark_if_before_sleep_callback(void* arg)
     filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
 
     filc_lock_top_native_frame(data->my_thread);
-    data->before_sleep(data->my_thread, args, rets);
+    PAS_ASSERT(!data->before_sleep(data->my_thread, args, rets));
     filc_unlock_top_native_frame(data->my_thread);
 }
 
@@ -9679,8 +10070,8 @@ int filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr 
     filc_check_function_call(before_sleep_ptr);
     zpark_if_data data;
     data.my_thread = my_thread;
-    data.condition = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(condition_ptr);
-    data.before_sleep = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(before_sleep_ptr);
+    data.condition = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(condition_ptr);
+    data.before_sleep = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(before_sleep_ptr);
     data.arg_ptr = arg_ptr;
     return filc_park_conditionally(my_thread,
                                    filc_ptr_ptr(address_ptr),
@@ -9692,7 +10083,7 @@ int filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr 
 
 typedef struct {
     filc_thread* my_thread;
-    void (*callback)(PIZLONATED_SIGNATURE);
+    bool (*callback)(PIZLONATED_SIGNATURE);
     filc_ptr arg_ptr;
 } zunpark_one_data;
 
@@ -9720,7 +10111,7 @@ static void zunpark_one_callback(filc_unpark_result result, void* arg)
     filc_ptr_store(data->my_thread, &raw_args->arg_ptr, data->arg_ptr);
 
     filc_lock_top_native_frame(data->my_thread);
-    data->callback(data->my_thread, args, rets);
+    PAS_ASSERT(!data->callback(data->my_thread, args, rets));
     filc_unlock_top_native_frame(data->my_thread);
 }
 
@@ -9734,7 +10125,7 @@ void filc_native_zunpark_one(filc_thread* my_thread, filc_ptr address_ptr, filc_
     filc_check_function_call(callback_ptr);
     zunpark_one_data data;
     data.my_thread = my_thread;
-    data.callback = (void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
+    data.callback = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
     data.arg_ptr = arg_ptr;
     filc_unpark_one(my_thread, filc_ptr_ptr(address_ptr), zunpark_one_callback, &data);
 }

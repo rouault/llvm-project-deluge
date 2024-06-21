@@ -17,6 +17,10 @@
 #include "cxxabi.h"
 #include "unwind.h"
 
+#if defined(__PIZLONATOR_WAS_HERE__)
+struct pizlonated_eh_landing_pad;
+#endif // defined(__PIZLONATOR_WAS_HERE__)
+
 namespace __cxxabiv1 {
 
 static const uint64_t kOurExceptionClass          = 0x434C4E47432B2B00; // CLNGC++\0
@@ -57,7 +61,11 @@ struct _LIBCXXABI_HIDDEN __cxa_exception {
 #else
     int handlerSwitchValue;
     const unsigned char *actionRecord;
+#if defined(__PIZLONATOR_WAS_HERE__)
+    const pizlonated_eh_landing_pad *languageSpecificData;
+#else // !defined(__PIZLONATOR_WAS_HERE__)
     const unsigned char *languageSpecificData;
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
     void *catchTemp;
     void *adjustedPtr;
 #endif

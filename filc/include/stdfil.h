@@ -34,6 +34,8 @@ extern "C" {
 } /* tell emacs what's up */
 #endif
 
+/* You shouldn't use the filc_bool type or rely on its existence; I just need it to hack around C++
+   being incompatible with C in this regard. */
 #ifdef __cplusplus
 typedef bool filc_bool;
 #else
@@ -468,6 +470,62 @@ void zscavenge_synchronously(void);
    This is intended to be used only for testing. */
 void zscavenger_suspend(void);
 void zscavenger_resume(void);
+
+struct zstack_frame_description;
+typedef struct zstack_frame_description zstack_frame_description;
+
+struct zstack_frame_description {
+    const char* function_name;
+    const char* filename;
+    unsigned line;
+    unsigned column;
+
+    /* Whether the frame supports throwing (i.e. the llvm::Function did not have the nounwind
+       attribute set).
+    
+       C code by default does not support throwing, but you can enable it with -fexceptions. 
+    
+       Supporting throwing doesn't mean that there's a personality function. It's totally unrelated
+       For example, a C++ function may have a personality function, but since it's throw(), it's got
+       nounwind set, and so it doesn't supporting throwing. */
+    filc_bool can_throw;
+
+    /* Whether the frame supports catching. Only frames that support catching can have personality
+       functions. But not all of them do. */
+    filc_bool can_catch;
+
+    /* personality_function and eh_data are set for frames that can catch exceptions. The eh_data is
+       NULL if the personality_function is NULL. If the personality_function is not NULL, then the
+       eh_data's meaning is up to that function. The signature of the personality_function is up to the
+       compiler. The signature of the eh_data is up to the compiler. When unwinding, you can call the
+       personality_function, or not - up to you. If you call it, you have to know what the signature
+       is. It's expected that only the libunwind implementation calls personality_function, since
+       that's what knows what its signature is supposed to be. */
+    void* personality_function;
+    void* eh_data;
+};
+
+/* Walks the Fil-C stack and calls callback for every frame found. Continues walking so long as the
+   callback returns true. Guaranteed to skip the zstack_scan frame. */
+void zstack_scan(filc_bool (*callback)(
+                     zstack_frame_description description,
+                     void* arg),
+                 void* arg);
+
+/* Memory-safe setjmp/longjmp support. Note that zsetjmp is a compiler intrinsic - you cannot call it
+   by taking a pointer to it, and you will not get a usable jmp_buf if you call it from an abstraction.
+   
+   zsetjmp returns an opaque jmp buffer by stashing it in the slot pointed to by jmp_buf_ptr.
+   
+   zlongjmp confirms that the caller of the jmp_buf's zsetjmp is still on the stack (that EXACT caller,
+   not another frame that happens to be the same function at the same stack height) and that the
+   zlongjmp is called transitively from a position in the zsetjmp caller that is dominated by that
+   exact zsetjmp. If that's true then it does a longjmp, otherwise it kills the shit out of your
+   process. */
+struct zjmp_buf;
+typedef struct zjmp_buf zjmp_buf;
+int zsetjmp(zjmp_buf** jmp_buf_ptr);
+void zlongjmp(zjmp_buf* jmp_buf, int value);
 
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 

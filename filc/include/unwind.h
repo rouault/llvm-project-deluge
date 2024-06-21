@@ -10,6 +10,14 @@
 #ifndef FILC_UNWIND_H
 #define FILC_UNWIND_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if 0
+} /* Tell emacs what's up. */
+#endif
+
 typedef enum {
     _URC_NO_REASON = 0,
     _URC_OK = 0,
@@ -40,38 +48,25 @@ struct _Unwind_Exception {
     _Unwind_Exception_Class exception_class;
     void (*exception_cleanup)(_Unwind_Reason_Code reason,
                               _Unwind_Exception *exc);
-    unsigned long private_1; // non-zero means forced unwind
-    unsigned long private_2; // holds sp that phase1 found for phase2 to use
-    // The Itanium ABI requires that _Unwind_Exception objects are "double-word
-    // aligned".  GCC has interpreted this to mean "use the maximum useful
-    // alignment for the target"; so do we.
-} __attribute__((__aligned__));
+};
 
 typedef _Unwind_Reason_Code (*_Unwind_Personality_Fn)(
-    int version, _Unwind_Action actions, unsigned long long exceptionClass,
+    int version, _Unwind_Action actions, _Unwind_Exception_Class exceptionClass,
     _Unwind_Exception *exceptionObject, struct _Unwind_Context *context);
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#if 0
-} /* Tell emacs what's up. */
-#endif
 
 //
 // The following are the base functions documented by the C++ ABI
 //
 _Unwind_Reason_Code
     _Unwind_RaiseException(_Unwind_Exception *exception_object);
-void _Unwind_Resume(_Unwind_Exception *exception_object);
-void _Unwind_DeleteException(_Unwind_Exception *exception_object);
+void _Unwind_Resume(_Unwind_Exception *exception_object); /* Not needed. */
+void _Unwind_DeleteException(_Unwind_Exception *exception_object); /* Not needed. */
 
-unsigned long _Unwind_GetGR(struct _Unwind_Context *context, int index);
+void* _Unwind_GetGR(struct _Unwind_Context *context, int index);
 void _Unwind_SetGR(struct _Unwind_Context *context, int index,
-                   unsigned long new_value);
-unsigned long _Unwind_GetIP(struct _Unwind_Context *context);
-void _Unwind_SetIP(struct _Unwind_Context *, unsigned long new_value);
+                   void* new_value);
+unsigned long _Unwind_GetIP(struct _Unwind_Context *context); /* Not needed. */
+void _Unwind_SetIP(struct _Unwind_Context *, unsigned long new_value); /* Not needed. */
 
 typedef _Unwind_Reason_Code (*_Unwind_Stop_Fn)
     (int version,
@@ -81,10 +76,14 @@ typedef _Unwind_Reason_Code (*_Unwind_Stop_Fn)
      struct _Unwind_Context* context,
      void* stop_parameter);
 
-unsigned long _Unwind_GetRegionStart(struct _Unwind_Context *context);
-unsigned long _Unwind_GetLanguageSpecificData(struct _Unwind_Context *context);
+unsigned long _Unwind_GetRegionStart(struct _Unwind_Context *context); /* Probably not needed, or
+                                                                          could return 0. */
+const void* _Unwind_GetLanguageSpecificData(struct _Unwind_Context *context);
 _Unwind_Reason_Code _Unwind_ForcedUnwind(_Unwind_Exception *exception_object,
-                                         _Unwind_Stop_Fn stop, void *stop_parameter);
+                                         _Unwind_Stop_Fn stop, void *stop_parameter); /* Kinda needed,
+                                                                                         but we won't
+                                                                                         support it
+                                                                                         yet. */
 
 //
 // The following are semi-supported extensions to the C++ ABI

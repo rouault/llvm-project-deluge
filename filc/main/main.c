@@ -1,3 +1,28 @@
+/*
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ */
+
 #include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,16 +79,11 @@ int main(int argc, char** argv)
     filc_thread* my_thread = filc_get_my_thread();
     filc_enter(my_thread);
 
-    static const filc_origin origin = {
 #if USE_LIBC
-        .filename = "<crt>",
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", "<crt>");
 #else /* USE_LIBC -> so !USE_LIBC */
-        .filename = "<mincrt>",
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", "<mincrt>");
 #endif /* USE_LIBC -> so end of !USE_LIBC */
-        .function = "main",
-        .line = 0,
-        .column = 0
-    };
 
     struct {
         FILC_FRAME_BODY;
@@ -137,8 +157,8 @@ int main(int argc, char** argv)
     filc_thread_track_object(my_thread, filc_ptr_object(__init_libc_ptr));
     filc_check_function_call(__init_libc_ptr);
     filc_lock_top_native_frame(my_thread);
-    ((void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(__init_libc_ptr))(
-        my_thread, init_libc_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer));
+    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(__init_libc_ptr))(
+                   my_thread, init_libc_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer)));
     filc_unlock_top_native_frame(my_thread);
 #endif /* USE_LIBC */
 
@@ -156,7 +176,7 @@ int main(int argc, char** argv)
     filc_check_function_call(main_ptr);
     filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
     filc_lock_top_native_frame(my_thread);
-    ((void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(main_ptr))(my_thread, main_args_ptr, rets);
+    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(main_ptr))(my_thread, main_args_ptr, rets));
     filc_unlock_top_native_frame(my_thread);
 
     if (verbose)
@@ -171,8 +191,8 @@ int main(int argc, char** argv)
     exit_ptr = pizlonated_exit(NULL);
     filc_thread_track_object(my_thread, filc_ptr_object(exit_ptr));
     filc_lock_top_native_frame(my_thread);
-    ((void (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(exit_ptr))(
-        my_thread, exit_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer));
+    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(exit_ptr))(
+                   my_thread, exit_args_ptr, filc_ptr_for_int_return_buffer(&return_buffer)));
     filc_unlock_top_native_frame(my_thread);
 #else /* USE_LIBC -> so !USE_LIBC */
     exit(exit_status);

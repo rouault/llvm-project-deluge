@@ -99,7 +99,7 @@ $testDirectory.each_entry {
         }
         if isCpp
             clang = "clang++"
-            extraOpts = "-fno-exceptions -std=c++20"
+            extraOpts = "-std=c++20"
         else
             clang = "clang"
             extraOpts = ""

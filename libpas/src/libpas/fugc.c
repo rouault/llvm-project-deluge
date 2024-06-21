@@ -187,6 +187,8 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_FREE: /* dirstreams can be freed. */
     case FILC_WORD_TYPE_DL_HANDLE:
+    case FILC_WORD_TYPE_JMP_BUF: /* Maybe we'll have some pointers in the jmp_buf? Probably not,
+                                    though. */
         break;
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
         mark_outgoing_signal_handler_ptrs(

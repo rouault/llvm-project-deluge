@@ -122,7 +122,7 @@ echo "echo \"    ${ccprefix}build/bin/clang -o whatever whatever.c -O -g\"" >> s
 echo 'echo' >> setup.sh
 echo 'echo "or:"' >> setup.sh
 echo 'echo' >> setup.sh
-echo "echo \"    ${ccprefix}build/bin/clang++ -o whatever whatever.cpp -O -g -fno-exceptions\"" >> setup.sh
+echo "echo \"    ${ccprefix}build/bin/clang++ -o whatever whatever.cpp -O -g\"" >> setup.sh
 echo 'echo' >> setup.sh
 echo 'echo "Or, try running something, like:"' >> setup.sh
 echo 'echo' >> setup.sh

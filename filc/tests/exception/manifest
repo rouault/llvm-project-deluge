@@ -1,0 +1,4 @@
+return:
+  success
+output-includes:
+  - "RAII construct.RAII destruct.Caught exception: x = 666.The end"

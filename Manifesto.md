@@ -172,8 +172,6 @@ that your linker will understand. Some caveats:
   uses assert() as its error checking for now, so you must compile llvm with assertions enabled (the
   build_all.sh script does this).
 
-- C++ support doesn't include exceptions, yet. So, you have to compile C++ code with `-fno-exceptions`.
-
 Fil-C requires almost no changes to C or C++ code. Inline assembly is currently disallowed. Some configure
 script jank has to change. Other than that, I only had to make a couple one-line changes in OpenSSL
 and OpenSSH to get them to work.

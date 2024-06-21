@@ -80,8 +80,6 @@ Fil-C is not a complete product. Lots of stuff isn't done!
 - Fil-C doesn't do anything about UB not related to memory, yet. For example,
   dividing by zero may take the compiler down a weird path.
 
-- C++ exception handling. Also, RTTI probably doesn't work yet.
-
 - I haven't even done the most obvious performance optimizations. Fil-C is
   super slow right now!
 

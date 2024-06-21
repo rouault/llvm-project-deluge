@@ -22,6 +22,10 @@
 #include "private_typeinfo.h"
 #include "unwind.h"
 
+#ifdef __PIZLONATOR_WAS_HERE__
+#include <pizlonated_eh_landing_pad.h>
+#endif // __PIZLONATOR_WAS_HERE__
+
 // TODO: This is a temporary workaround for libc++abi to recognize that it's being
 // built against LLVM's libunwind. LLVM's libunwind started reporting _LIBUNWIND_VERSION
 // in LLVM 15 -- we can remove this workaround after shipping LLVM 17. Once we remove
@@ -151,6 +155,9 @@ Notes:
 
 *  A cleanup can also be found under landingPad != 0 and actionEntry != 0 in
      the Action Table with ttypeIndex == 0.
+
+Note about Fil-C: ifdef __PIZLONATOR_WAS_HERE__, we use the API in
+<pizlonated_eh_landing_pad.h> for all language-specific-data parsing.
 */
 
 namespace __cxxabiv1
@@ -339,6 +346,27 @@ call_terminate(bool native_exception, _Unwind_Exception* unwind_exception)
     std::terminate();
 }
 
+#if defined(__PIZLONATOR_WAS_HERE__)
+static bool exception_spec_can_catch(int64_t specIndex,
+                                     const pizlonated_eh_landing_pad* landing_pad,
+                                     const __shim_type_info* excpType,
+                                     void* adjustedPtr,
+                                     _Unwind_Exception* unwind_exception)
+{
+    const pizlonated_eh_filter* filter =
+        pizlonated_eh_landing_pad_get_filter_by_encoded_action(landing_pad, specIndex);
+    for (unsigned index = 0; index < pizlonated_eh_filter_get_num_types(filter); ++index)
+    {
+        const __shim_type_info* catchType =
+            static_cast<const __shim_type_info*>(
+                pizlonated_eh_filter_get_type(filter, index));
+        void* tempPtr = adjustedPtr;
+        if (catchType->can_catch(excpType, tempPtr))
+            return false;
+    }
+    return true;
+}
+#else // !defined(__PIZLONATOR_WAS_HERE__)
 #if defined(_LIBCXXABI_ARM_EHABI)
 static const void* read_target2_value(const void* ptr)
 {
@@ -474,7 +502,7 @@ exception_spec_can_catch(int64_t specIndex, const uint8_t* classInfo,
     }
     return true;
 }
-#else
+#else // !defined(_LIBCXXABI_ARM_EHABI)
 static
 bool
 exception_spec_can_catch(int64_t specIndex, const uint8_t* classInfo,
@@ -510,7 +538,8 @@ exception_spec_can_catch(int64_t specIndex, const uint8_t* classInfo,
     }
     return true;
 }
-#endif
+#endif // !defined(_LIBCXXABI_ARM_EHABI)
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
 
 static
 void*
@@ -531,7 +560,11 @@ struct scan_results
 {
     int64_t        ttypeIndex;   // > 0 catch handler, < 0 exception spec handler, == 0 a cleanup
     const uint8_t* actionRecord;         // Currently unused.  Retained to ease future maintenance.
+#if defined(__PIZLONATOR_WAS_HERE__)
+    const pizlonated_eh_landing_pad* languageSpecificData;  // Needed only for __cxa_call_unexpected
+#else // !defined(__PIZLONATOR_WAS_HERE__)
     const uint8_t* languageSpecificData;  // Needed only for __cxa_call_unexpected
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
     uintptr_t      landingPad;   // null -> nothing found, else something found
     void*          adjustedPtr;  // Used in cxa_exception.cpp
     _Unwind_Reason_Code reason;  // One of _URC_FATAL_PHASE1_ERROR,
@@ -547,6 +580,10 @@ void
 set_registers(_Unwind_Exception* unwind_exception, _Unwind_Context* context,
               const scan_results& results)
 {
+#if defined(__PIZLONATOR_WAS_HERE__)
+  _Unwind_SetGR(context, 0, unwind_exception);
+  _Unwind_SetGR(context, 1, reinterpret_cast<void*>(static_cast<uintptr_t>(results.ttypeIndex)));
+#else // !defined(__PIZLONATOR_WAS_HERE__)
 #if defined(__USING_SJLJ_EXCEPTIONS__)
 #define __builtin_eh_return_data_regno(regno) regno
 #elif defined(__ibmxl__)
@@ -558,6 +595,7 @@ set_registers(_Unwind_Exception* unwind_exception, _Unwind_Context* context,
   _Unwind_SetGR(context, __builtin_eh_return_data_regno(1),
                 static_cast<uintptr_t>(results.ttypeIndex));
   _Unwind_SetIP(context, results.landingPad);
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
 }
 
 /*
@@ -622,6 +660,115 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
         results.reason = _URC_FATAL_PHASE1_ERROR;
         return;
     }
+#if defined(__PIZLONATOR_WAS_HERE__)
+    const pizlonated_eh_landing_pad* lsda = (const pizlonated_eh_landing_pad*)
+        _Unwind_GetLanguageSpecificData(context);
+    if (!lsda)
+    {
+        // There is no exception table
+        results.reason = _URC_CONTINUE_UNWIND;
+        return;
+    }
+    results.languageSpecificData = lsda;
+    bool hasCleanup = false;
+    for (unsigned actionIndex = 0;
+         actionIndex < pizlonated_eh_landing_pad_get_num_actions(lsda);
+         ++actionIndex)
+    {
+        int ttypeIndex = pizlonated_eh_landing_pad_get_encoded_action(lsda, actionIndex);
+        if (ttypeIndex > 0)
+        {
+            const __shim_type_info* catchType =
+                static_cast<const __shim_type_info*>(
+                    pizlonated_eh_landing_pad_get_caught_type_by_encoded_action(lsda, ttypeIndex));
+            if (!catchType)
+            {
+                // Found catch (...) catches everything, including
+                // foreign exceptions. This is search phase, cleanup
+                // phase with foreign exception, or forced unwinding.
+                assert(actions & (_UA_SEARCH_PHASE | _UA_HANDLER_FRAME |
+                                  _UA_FORCE_UNWIND));
+                results.ttypeIndex = ttypeIndex;
+                results.adjustedPtr =
+                    get_thrown_object_ptr(unwind_exception);
+                results.reason = _URC_HANDLER_FOUND;
+                return;
+            }
+            else if (native_exception)
+            {
+                __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+                void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+                const __shim_type_info* excpType =
+                    static_cast<const __shim_type_info*>(exception_header->exceptionType);
+                if (adjustedPtr == 0 || excpType == 0)
+                {
+                    // Something very bad happened
+                    call_terminate(native_exception, unwind_exception);
+                }
+                if (catchType->can_catch(excpType, adjustedPtr))
+                {
+                    // Found a matching handler. This is either search
+                    // phase or forced unwinding.
+                    assert(actions &
+                           (_UA_SEARCH_PHASE | _UA_FORCE_UNWIND));
+                    results.ttypeIndex = ttypeIndex;
+                    results.adjustedPtr = adjustedPtr;
+                    results.reason = _URC_HANDLER_FOUND;
+                    return;
+                }
+            }
+        }
+        else if (ttypeIndex < 0)
+        {
+            // Found an exception specification.
+            if (actions & _UA_FORCE_UNWIND)
+            {
+                // Skip if forced unwinding.
+            }
+            else if (native_exception)
+            {
+                // Does the exception spec catch this native exception?
+                __cxa_exception* exception_header = (__cxa_exception*)(unwind_exception+1) - 1;
+                void* adjustedPtr = get_thrown_object_ptr(unwind_exception);
+                const __shim_type_info* excpType =
+                    static_cast<const __shim_type_info*>(exception_header->exceptionType);
+                if (adjustedPtr == 0 || excpType == 0)
+                {
+                    // Something very bad happened
+                    call_terminate(native_exception, unwind_exception);
+                }
+                if (exception_spec_can_catch(ttypeIndex, lsda,
+                                             excpType, adjustedPtr,
+                                             unwind_exception))
+                {
+                    // Native exception caught by exception
+                    // specification.
+                    assert(actions & _UA_SEARCH_PHASE);
+                    results.ttypeIndex = ttypeIndex;
+                    results.adjustedPtr = adjustedPtr;
+                    results.reason = _URC_HANDLER_FOUND;
+                    return;
+                }
+            }
+            else
+            {
+                // foreign exception caught by exception spec
+                results.ttypeIndex = ttypeIndex;
+                results.adjustedPtr =
+                    get_thrown_object_ptr(unwind_exception);
+                results.reason = _URC_HANDLER_FOUND;
+                return;
+            }
+        }
+        else
+        {
+            hasCleanup = true;
+        }
+    }
+    results.reason = hasCleanup && actions & _UA_CLEANUP_PHASE
+        ? _URC_HANDLER_FOUND
+        : _URC_CONTINUE_UNWIND;
+#else // !defined(__PIZLONATOR_WAS_HERE__)
     // Start scan by getting exception table address.
     const uint8_t *lsda = (const uint8_t *)_Unwind_GetLanguageSpecificData(context);
     if (lsda == 0)
@@ -855,6 +1002,7 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
     // It is possible that no eh table entry specify how to handle
     // this exception. By spec, terminate it immediately.
     call_terminate(native_exception, unwind_exception);
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
 }
 
 // public API
@@ -1175,7 +1323,11 @@ __cxa_call_unexpected(void* arg)
     std::terminate_handler t_handler;
     __cxa_exception* old_exception_header = 0;
     int64_t ttypeIndex;
+#if defined(__PIZLONATOR_WAS_HERE__)
+    const pizlonated_eh_landing_pad* lsda;
+#else
     const uint8_t* lsda;
+#endif
     uintptr_t base = 0;
 
     if (native_old_exception)
@@ -1212,6 +1364,7 @@ __cxa_call_unexpected(void* arg)
         //   from here.
         if (native_old_exception)
         {
+#if !defined(__PIZLONATOR_WAS_HERE__)
             // Have:
             //   old_exception_header->languageSpecificData
             //   old_exception_header->actionRecord
@@ -1228,6 +1381,7 @@ __cxa_call_unexpected(void* arg)
                 std::__terminate(t_handler);
             uintptr_t classInfoOffset = readULEB128(&lsda);
             const uint8_t* classInfo = lsda + classInfoOffset;
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
             // Is this new exception catchable by the exception spec at ttypeIndex?
             // The answer is obviously yes if the new and old exceptions are the same exception
             // If no
@@ -1247,9 +1401,17 @@ __cxa_call_unexpected(void* arg)
                     __getExceptionClass(&new_exception_header->unwindHeader) == kOurDependentExceptionClass ?
                         ((__cxa_dependent_exception*)new_exception_header)->primaryException :
                         new_exception_header + 1;
-                if (!exception_spec_can_catch(ttypeIndex, classInfo, ttypeEncoding,
+                if (
+#if defined(__PIZLONATOR_WAS_HERE__)
+                    !exception_spec_can_catch(ttypeIndex, lsda,
                                               excpType, adjustedPtr,
-                                              unwind_exception, base))
+                                              unwind_exception)
+#else // !defined(__PIZLONATOR_WAS_HERE__)
+                    !exception_spec_can_catch(ttypeIndex, classInfo, ttypeEncoding,
+                                              excpType, adjustedPtr,
+                                              unwind_exception, base)
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
+                    )
                 {
                     // We need to __cxa_end_catch, but for the old exception,
                     //   not the new one.  This is a little tricky ...
@@ -1277,9 +1439,17 @@ __cxa_call_unexpected(void* arg)
                 static_cast<const __shim_type_info*>(&typeid(std::bad_exception));
             std::bad_exception be;
             adjustedPtr = &be;
-            if (!exception_spec_can_catch(ttypeIndex, classInfo, ttypeEncoding,
+            if (
+#if defined(__PIZLONATOR_WAS_HERE__)
+                !exception_spec_can_catch(ttypeIndex, lsda,
                                           excpType, adjustedPtr,
-                                          unwind_exception, base))
+                                          unwind_exception)
+#else // !defined(__PIZLONATOR_WAS_HERE__)
+                !exception_spec_can_catch(ttypeIndex, classInfo, ttypeEncoding,
+                                          excpType, adjustedPtr,
+                                          unwind_exception, base)
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
+                )
             {
                 // We need to __cxa_end_catch for both the old exception and the
                 //   new exception.  Technically we should do it in that order.

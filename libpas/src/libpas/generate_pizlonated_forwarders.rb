@@ -31,6 +31,14 @@ def checkType(type)
     end
 end
 
+def underbarType(type)
+    if type == "filc_ptr"
+        return "ptr"
+    else
+        type.gsub(/ /, '_')
+    end
+end
+
 class Signature
     attr_reader :name, :args, :rets
 
@@ -47,8 +55,28 @@ class Signature
                 checkType(arg)
             end
         }
-        if rets != "void"
-            checkType(rets)
+        if actualRets != "void"
+            checkType(actualRets)
+        end
+    end
+
+    def throwsException
+        rets =~ /^exception\//
+    end
+
+    def actualRets
+        if rets =~ /^exception\//
+            $'
+        else
+            rets
+        end
+    end
+
+    def nativeReturnType
+        if throwsException
+            "filc_exception_and_" + underbarType(actualRets)
+        else
+            rets
         end
     end
 end
@@ -108,6 +136,9 @@ addSig "void", "zgc_request_and_wait"
 addSig "void", "zscavenge_synchronously"
 addSig "void", "zscavenger_suspend"
 addSig "void", "zscavenger_resume"
+addSig "void", "zstack_scan", "filc_ptr", "filc_ptr"
+addSig "exception/int", "_Unwind_RaiseException", "filc_ptr"
+addSig "void", "zlongjmp", "filc_ptr", "int"
 addSig "void", "zregister_sys_errno_handler", "filc_ptr"
 addSig "void", "zregister_sys_dlerror_handler", "filc_ptr"
 addSig "int", "zsys_ioctl", "int", "unsigned long", "..."
@@ -249,7 +280,8 @@ when "src/libpas/filc_native.h"
         outp.puts "#include \"filc_runtime.h\""
         $signatures.each {
             | signature |
-            outp.print "PAS_API #{signature.rets} filc_native_#{signature.name}(filc_thread* my_thread"
+            outp.print "PAS_API #{signature.nativeReturnType} "
+            outp.print "filc_native_#{signature.name}(filc_thread* my_thread"
             unless signature.args.empty?
                 outp.print(", " + signature.args.map.with_index {
                                | arg, index |
@@ -272,14 +304,9 @@ when "src/libpas/filc_native_forwarders.c"
         outp.puts "#include \"filc_native.h\""
         $signatures.each {
             | signature |
-            outp.puts "static void native_thunk_#{signature.name}(PIZLONATED_SIGNATURE)"
+            outp.puts "static bool native_thunk_#{signature.name}(PIZLONATED_SIGNATURE)"
             outp.puts "{"
-            outp.puts "    static const filc_origin origin = {"
-            outp.puts "        .filename = \"<runtime>\","
-            outp.puts "        .function = \"#{signature.name}\","
-            outp.puts "        .line = 0,"
-            outp.puts "        .column = 0,"
-            outp.puts "    };"
+            outp.puts "    FILC_DEFINE_RUNTIME_ORIGIN(origin, \"#{signature.name}\");"
             numObjects = 1
             signature.args.each {
                 | arg |
@@ -307,18 +334,21 @@ when "src/libpas/filc_native_forwarders.c"
                     outp.puts "    frame->objects[#{objectCount}] = filc_ptr_object(arg#{index});"
                     objectCount += 1
                 elsif arg != "..."
-                    outp.puts "    #{arg} arg#{index} = filc_ptr_get_next_#{arg.gsub(/ /, '_')}(&args);"
+                    outp.puts "    #{arg} arg#{index} = filc_ptr_get_next_#{underbarType(arg)}(&args);"
                 end
             }
-            if signature.rets == "void"
+            case signature.rets
+            when "void"
                 outp.print "    "
+            when "exception/void"
+                outp.print "filc_exception_and_void result = "
             else
-                if signature.rets == "filc_ptr"
+                if signature.actualRets == "filc_ptr"
                     outp.puts "    filc_check_write_ptr(rets, NULL);"
                 else
-                    outp.puts "    filc_check_write_int(rets, sizeof(#{signature.rets}), NULL);"
+                    outp.puts "    filc_check_write_int(rets, sizeof(#{signature.actualRets}), NULL);"
                 end
-                outp.print "    #{signature.rets} result = "
+                outp.print "    #{signature.nativeReturnType} result = "
             end
             outp.print "filc_native_#{signature.name}(my_thread"
             unless signature.args.empty?
@@ -332,13 +362,20 @@ when "src/libpas/filc_native_forwarders.c"
                            }.join(", "))
             end
             outp.puts ");"
-            if signature.rets == "void"
+            if signature.actualRets == "void"
                 outp.puts "    PAS_UNUSED_PARAM(rets);"
+            elsif signature.throwsException
+                outp.puts "    *(#{signature.actualRets}*)filc_ptr_ptr(rets) = result.value;"
             else
-                outp.puts "    *(#{signature.rets}*)filc_ptr_ptr(rets) = result;"
+                outp.puts "    *(#{signature.actualRets}*)filc_ptr_ptr(rets) = result;"
             end
             outp.puts "    filc_pop_native_frame(my_thread, &native_frame);"
             outp.puts "    filc_pop_frame(my_thread, frame);"
+            if signature.throwsException
+                outp.puts "    return result.has_exception;"
+            else
+                outp.puts "    return false;"
+            end
             outp.puts "}"
             outp.puts "static filc_object function_object_#{signature.name} = {"
             outp.puts "    .lower = native_thunk_#{signature.name},"

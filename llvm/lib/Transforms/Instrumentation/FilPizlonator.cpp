@@ -83,6 +83,8 @@ static constexpr uint16_t ObjectFlagSpecial = 4;
 static constexpr uint16_t ObjectFlagGlobal = 8;
 static constexpr uint16_t ObjectFlagReadonly = 32;
 
+static constexpr unsigned NumUnwindRegisters = 2;
+
 enum class AccessKind {
   Read,
   Write
@@ -159,6 +161,112 @@ template<> struct std::hash<ValuePtr> {
 
 namespace {
 
+struct FunctionOriginKey {
+  FunctionOriginKey() = default;
+
+  FunctionOriginKey(Function* OldF, bool CanCatch)
+    : OldF(OldF), CanCatch(CanCatch) {
+  }
+
+  Function* OldF { nullptr };
+  bool CanCatch { false };
+
+  bool operator==(const FunctionOriginKey& Other) const {
+    return OldF == Other.OldF && CanCatch == Other.CanCatch;
+  }
+
+  size_t hash() const {
+    return std::hash<Function*>()(OldF) + static_cast<size_t>(CanCatch);
+  }
+};
+
+struct EHDataKey {
+  EHDataKey() = default;
+  EHDataKey(LandingPadInst* LPI) : LPI(LPI) { }
+
+  LandingPadInst* LPI { nullptr };
+
+  bool operator==(const EHDataKey& Other) const {
+    if (!LPI)
+      return !Other.LPI;
+
+    if (!Other.LPI)
+      return false;
+
+    if (LPI->isCleanup() != Other.LPI->isCleanup())
+      return false;
+
+    if (LPI->getNumClauses() != Other.LPI->getNumClauses())
+      return false;
+
+    for (unsigned Idx = LPI->getNumClauses(); Idx--;) {
+      if (LPI->getClause(Idx) != Other.LPI->getClause(Idx))
+        return false;
+    }
+
+    return true;
+  }
+
+  size_t hash() const {
+    if (!LPI)
+      return 0;
+
+    size_t Result = 0;
+    Result += LPI->isCleanup();
+    Result += LPI->getNumClauses();
+    for (unsigned Idx = LPI->getNumClauses(); Idx--;)
+      Result += std::hash<Constant*>()(LPI->getClause(Idx));
+    return Result;
+  }
+};
+
+struct OriginKey {
+  OriginKey() = default;
+
+  OriginKey(Function* OldF, DILocation* DI, bool CanCatch, LandingPadInst* LPI)
+    : OldF(OldF), DI(DI), CanCatch(CanCatch), LPI(LPI) {
+    if (LPI)
+      assert(CanCatch);
+  }
+
+  Function* OldF { nullptr };
+  DILocation* DI { nullptr };
+  bool CanCatch { false };
+  LandingPadInst* LPI { nullptr };
+
+  bool operator==(const OriginKey& Other) const {
+    return OldF == Other.OldF && DI == Other.DI && CanCatch == Other.CanCatch
+      && EHDataKey(LPI) == EHDataKey(Other.LPI);
+  }
+
+  size_t hash() const {
+    return std::hash<Function*>()(OldF) + std::hash<DILocation*>()(DI) + static_cast<size_t>(CanCatch)
+      + EHDataKey(LPI).hash();
+  }
+};
+
+} // anonymous namespace
+
+template<> struct std::hash<FunctionOriginKey> {
+  size_t operator()(const FunctionOriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<EHDataKey> {
+  size_t operator()(const EHDataKey& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<OriginKey> {
+  size_t operator()(const OriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
+namespace {
+
 static constexpr size_t ScratchObjectIndex = 0;
 static constexpr size_t MyArgsObjectIndex = 1;
 static constexpr size_t NumSpecialFrameObjects = 2;
@@ -180,7 +288,9 @@ class Pizlonator {
   Type* Int128Ty;
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
+  StructType* FunctionOriginTy;
   StructType* OriginTy;
+  StructType* OriginWithEHTy;
   StructType* ObjectTy;
   StructType* FrameTy;
   StructType* ThreadTy;
@@ -215,10 +325,15 @@ class Pizlonator {
   FunctionCallee RunGlobalDtor;
   FunctionCallee Error;
   FunctionCallee RealMemset;
+  FunctionCallee LandingPad;
+  FunctionCallee ResumeUnwind;
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
-  std::unordered_map<DILocation*, GlobalVariable*> Origins;
-  std::unordered_map<Function*, GlobalVariable*> OriginsForFunctions;
+  std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
+  std::unordered_map<OriginKey, GlobalVariable*> Origins;
+  std::unordered_map<EHDataKey, GlobalVariable*> EHDatas; /* the value is a high-level GV, need to lookup
+                                                             the getter. */
+  std::unordered_map<Constant*, int> EHTypeIDs;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -239,6 +354,7 @@ class Pizlonator {
 
   std::unordered_map<Instruction*, Type*> InstLowTypes;
   std::unordered_map<Instruction*, std::vector<Type*>> InstLowTypeVectors;
+  std::unordered_map<InvokeInst*, LandingPadInst*> LPIs;
   
   BasicBlock* FirstRealBlock;
 
@@ -246,6 +362,7 @@ class Pizlonator {
 
   BasicBlock* ReturnB;
   PHINode* ReturnPhi;
+  BasicBlock* ResumeB;
 
   size_t ReturnBufferSize;
   size_t ReturnBufferAlignment;
@@ -259,6 +376,8 @@ class Pizlonator {
   std::unordered_map<ValuePtr, size_t> FrameIndexMap;
   size_t FrameSize;
   Value* Frame;
+
+  std::vector<Instruction*> ToErase;
 
   BitCastInst* makeDummy(Type* T) {
     return new BitCastInst(UndefValue::get(T), T, "dummy");
@@ -286,38 +405,89 @@ class Pizlonator {
     return FunctionName;
   }
 
-  Value* getOriginForFunction(Function* F) {
-    auto iter = OriginsForFunctions.find(F);
-    if (iter != OriginsForFunctions.end())
+  // What does "CanCatch" mean in this context? CanCatch=true means we're at an origin that is either:
+  // - a CallInst in a function that is !doesNotThrow, or
+  // - an InvokeInst.
+  //
+  // Lots of origins don't meet this definition!
+  Constant* getFunctionOrigin(bool CanCatch) {
+    assert(OldF);
+    
+    FunctionOriginKey FOK(OldF, CanCatch);
+    auto iter = FunctionOrigins.find(FOK);
+    if (iter != FunctionOrigins.end())
       return iter->second;
 
+    Constant* Personality = LowRawNull;
+    if (CanCatch && OldF->hasPersonalityFn()) {
+      assert(GlobalToGetter.count(cast<Function>(OldF->getPersonalityFn())));
+      Personality = GlobalToGetter[cast<Function>(OldF->getPersonalityFn())];
+    }
+    
+    bool CanThrow = !OldF->doesNotThrow();
+    unsigned NumSetJmps = 0; // FIXME - this'll change once we support the zsetjmp intrinsic.
+    
     Constant* C = ConstantStruct::get(
-      OriginTy,
-      { getString(getFunctionName(F)), getString(F->getSubprogram()->getFilename()),
-        ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) });
+      FunctionOriginTy,
+      { getString(getFunctionName(OldF)),
+        OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
+        Personality, ConstantInt::get(Int8Ty, CanThrow), ConstantInt::get(Int8Ty, CanCatch),
+        ConstantInt::get(Int32Ty, NumSetJmps) });
     GlobalVariable* Result = new GlobalVariable(
-      M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_function_origin");
-    OriginsForFunctions[F] = Result;
+      M, FunctionOriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_function_origin");
+    FunctionOrigins[FOK] = Result;
     return Result;
   }
 
-  Value* getOrigin(DebugLoc Loc) {
-    if (!Loc)
+  Constant* getEHData(LandingPadInst* LPI) {
+    if (!LPI)
       return LowRawNull;
+    assert(EHDatas.count(LPI));
+    assert(GlobalToGetter.count(EHDatas[LPI]));
+    return GlobalToGetter[EHDatas[LPI]];
+  }
+
+  // See the definition of CanCatch, above.
+  Constant* getOrigin(DebugLoc Loc, bool CanCatch = false, LandingPadInst* LPI = nullptr) {
+    assert(OldF);
+    if (LPI)
+      assert(CanCatch);
     
     DILocation* Impl = Loc.get();
-    auto iter = Origins.find(Impl);
+    OriginKey OK(OldF, Impl, CanCatch, LPI);
+    auto iter = Origins.find(OK);
     if (iter != Origins.end())
       return iter->second;
 
-    Constant* C = ConstantStruct::get(
-      OriginTy,
-      { getString(FunctionName), getString(cast<DIScope>(Loc.getScope())->getFilename()),
-        ConstantInt::get(Int32Ty, Loc.getLine()), ConstantInt::get(Int32Ty, Loc.getCol()) });
-    GlobalVariable* Result = new GlobalVariable(
-      M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin");
-    Origins[Impl] = Result;
+    unsigned Line = 0;
+    unsigned Col = 0;
+    if (Loc) {
+      Line = Loc.getLine();
+      Col = Loc.getCol();
+    }
+
+    GlobalVariable* Result;
+    if (CanCatch && OldF->hasPersonalityFn()) {
+      Constant* C = ConstantStruct::get(
+        OriginWithEHTy,
+        { getFunctionOrigin(CanCatch), ConstantInt::get(Int32Ty, Line),
+          ConstantInt::get(Int32Ty, Col), getEHData(LPI) });
+      Result = new GlobalVariable(
+        M, OriginWithEHTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin_with_eh");
+    } else {
+      Constant* C = ConstantStruct::get(
+        OriginTy,
+        { getFunctionOrigin(CanCatch), ConstantInt::get(Int32Ty, Line), ConstantInt::get(Int32Ty, Col) });
+      Result = new GlobalVariable(
+        M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin");
+    }
+    Origins[OK] = Result;
     return Result;
+  }
+
+  // See definition of CanCatch=true, above.
+  Value* getCatchOrigin(DebugLoc Loc, LandingPadInst* LPI = nullptr) {
+    return getOrigin(Loc, true, LPI);
   }
 
   Type* lowerTypeImpl(Type* T) {
@@ -1293,7 +1463,7 @@ class Pizlonator {
         return ConstantFP::get(C->getType(), 0.);
       if (C->getType() == LowRawPtrTy)
         return LowWideNull;
-      return ConstantAggregateZero::get(C->getType());
+      return ConstantAggregateZero::get(lowerType(C->getType()));
     }
     
     if (isa<ConstantPointerNull>(C))
@@ -1391,7 +1561,7 @@ class Pizlonator {
         GEP->setSourceElementType(lowerType(GEP->getSourceElementType()));
         GEP->setResultElementType(lowerType(GEP->getResultElementType()));
         bool result = GEP->accumulateConstantOffset(DL, OffsetAP);
-        delete GEP;
+        GEP->deleteValue();
         if (!result)
           return ConstantTarget();
         uint64_t Offset = OffsetAP.getZExtValue();
@@ -1479,22 +1649,6 @@ class Pizlonator {
     if (Constant* LowC = tryLowerConstantToConstant(C))
       return LowC;
     
-    if (isa<UndefValue>(C)) {
-      if (isa<IntegerType>(C->getType()))
-        return ConstantInt::get(C->getType(), 0);
-      if (C->getType()->isFloatingPointTy())
-        return ConstantFP::get(C->getType(), 0.);
-      if (C->getType() == LowRawPtrTy)
-        return LowWideNull;
-      return ConstantAggregateZero::get(C->getType());
-    }
-    
-    if (isa<ConstantPointerNull>(C))
-      return LowWideNull;
-
-    if (isa<ConstantAggregateZero>(C))
-      return ConstantAggregateZero::get(lowerType(C->getType()));
-
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
       assert(!GlobalToGetter.count(nullptr));
@@ -1564,7 +1718,7 @@ class Pizlonator {
       CEInst, LowRawNull, false, Align(), AtomicOrdering::NotAtomic, SyncScope::System);
     lowerInstruction(CEInst, InitializationContext);
     Value* Result = DummyUser->getOperand(0);
-    delete DummyUser;
+    DummyUser->deleteValue();
     return Result;
   }
 
@@ -1604,11 +1758,13 @@ class Pizlonator {
       return;
     }
 
-    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+    if (CallBase* CI = dyn_cast<CallBase>(I)) {
       std::vector<Type*> Types;
       for (size_t Index = 0; Index < CI->arg_size(); ++Index)
         Types.push_back(lowerType(CI->getArgOperand(Index)->getType()));
       InstLowTypeVectors[I] = std::move(Types);
+      if (InvokeInst* II = dyn_cast<InvokeInst>(I))
+        LPIs[II] = II->getLandingPadInst();
       return;
     }
   }
@@ -1726,6 +1882,14 @@ class Pizlonator {
         II->eraseFromParent();
         return true;
 
+      case Intrinsic::eh_typeid_for: {
+        Constant* TypeConstant = cast<Constant>(II->getArgOperand(0));
+        assert(EHTypeIDs.count(TypeConstant));
+        II->replaceAllUsesWith(ConstantInt::get(Int32Ty, EHTypeIDs[TypeConstant]));
+        II->eraseFromParent();
+        return true;
+      }
+
       default:
         if (!II->getCalledFunction()->doesNotAccessMemory()
             && !isa<ConstrainedFPIntrinsic>(II)) {
@@ -1762,6 +1926,45 @@ class Pizlonator {
       }
     }
     
+    if (isa<LandingPadInst>(I)) {
+      CallInst* CI = CallInst::Create(LandingPad, { MyThread }, "filc_landing_pad", I);
+      CI->setDebugLoc(I->getDebugLoc());
+      SplitBlockAndInsertIfElse(CI, I, false, nullptr, nullptr, nullptr, ResumeB);
+      StructType* ST = cast<StructType>(I->getType());
+      assert(!ST->isOpaque());
+      assert(ST->getNumElements() <= NumUnwindRegisters);
+      Value* Result = UndefValue::get(lowerType(ST));
+      for (unsigned Idx = ST->getNumElements(); Idx--;) {
+        Instruction* UnwindRegisterPtr = GetElementPtrInst::Create(
+          ThreadTy, MyThread,
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2),
+            ConstantInt::get(Int32Ty, Idx) },
+          "filc_unwind_register_ptr", I);
+        UnwindRegisterPtr->setDebugLoc(I->getDebugLoc());
+        LoadInst* RawUnwindRegister = new LoadInst(
+          LowWidePtrTy, UnwindRegisterPtr, "filc_load_unwind_register", I);
+        (new StoreInst(LowWideNull, UnwindRegisterPtr, I))->setDebugLoc(I->getDebugLoc());
+        Value* UnwindRegister;
+        if (ST->getElementType(Idx) == LowRawPtrTy)
+          UnwindRegister = RawUnwindRegister;
+        else {
+          assert(isa<IntegerType>(ST->getElementType(Idx)));
+          Instruction* Trunc = new TruncInst(
+            ptrWord(RawUnwindRegister, I), ST->getElementType(Idx), "filc_trunc_unwind_register", I);
+          Trunc->setDebugLoc(I->getDebugLoc());
+          UnwindRegister = Trunc;
+        }
+        Instruction* InsertValue = InsertValueInst::Create(
+          Result, UnwindRegister, { Idx }, "filc_insert_unwind_register", I);
+        InsertValue->setDebugLoc(I->getDebugLoc());
+        Result = InsertValue;
+      }
+      I->replaceAllUsesWith(Result);
+      I->removeFromParent();
+      ToErase.push_back(I);
+      return true;
+    }
+
     return false;
   }
   
@@ -1923,13 +2126,16 @@ class Pizlonator {
       return;
     }
 
-    if (InvokeInst* II = dyn_cast<InvokeInst>(I)) {
-      llvm_unreachable("Don't support InvokeInst yet");
+    if (isa<CallBrInst>(I)) {
+      llvm_unreachable("Don't support CallBr yet (and maybe never will)");
       return;
     }
-    
-    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+
+    if (CallBase* CI = dyn_cast<CallBase>(I)) {
+      assert(isa<CallInst>(CI) || isa<InvokeInst>(CI));
+      
       if (CI->isInlineAsm()) {
+        assert(isa<CallInst>(CI));
         std::string str;
         raw_string_ostream outs(str);
         outs << "Cannot handle inline asm: " << *CI;
@@ -1953,12 +2159,6 @@ class Pizlonator {
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand()))
         assert(!shouldPassThrough(F));
 
-      Instruction* OriginPtr = GetElementPtrInst::Create(
-        FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-        "filc_frame_origin_ptr", CI);
-      OriginPtr->setDebugLoc(CI->getDebugLoc());
-      (new StoreInst(getOrigin(CI->getDebugLoc()), OriginPtr, CI))->setDebugLoc(CI->getDebugLoc());
-      
       CallInst::Create(
         CheckFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
         ->setDebugLoc(CI->getDebugLoc());
@@ -1969,6 +2169,7 @@ class Pizlonator {
       FunctionType *FT = CI->getFunctionType();
       
       if (CI->arg_size()) {
+        assert(InstLowTypeVectors.count(CI));
         std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
         std::vector<size_t> Offsets;
         size_t Size = 0;
@@ -2056,17 +2257,47 @@ class Pizlonator {
 
       Value* RetPtr = createPtr(FutureReturnBuffer, RetBufferPayload, CI);
 
+      bool CanCatch;
+      LandingPadInst* LPI;
+      if (isa<CallInst>(CI)) {
+        CanCatch = !OldF->doesNotThrow();
+        LPI = nullptr;
+      } else {
+        CanCatch = true;
+        assert(LPIs.count(cast<InvokeInst>(CI)));
+        LPI = LPIs[cast<InvokeInst>(CI)];
+      }
+      
+      Instruction* OriginPtr = GetElementPtrInst::Create(
+        FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+        "filc_frame_origin_ptr", CI);
+      OriginPtr->setDebugLoc(CI->getDebugLoc());
+      (new StoreInst(getOrigin(CI->getDebugLoc(), CanCatch, LPI), OriginPtr, CI))
+        ->setDebugLoc(CI->getDebugLoc());
+      
       assert(!CI->hasOperandBundles());
-      CallInst::Create(
+      CallInst* TheCall = CallInst::Create(
         PizlonatedFuncTy, ptrPtr(CI->getCalledOperand(), CI),
-        { MyThread, ArgBufferWidePtrValue, RetPtr }, "", CI);
+        { MyThread, ArgBufferWidePtrValue, RetPtr }, "filc_call", CI);
+
+      if (isa<CallInst>(CI) && CanCatch)
+        SplitBlockAndInsertIfThen(TheCall, CI, false, nullptr, nullptr, nullptr, ResumeB);
+      else if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
+        BranchInst::Create(II->getUnwindDest(), II->getNormalDest(), TheCall, II);
+      
+      Instruction* PostInsertionPt;
+      if (isa<CallInst>(CI))
+        PostInsertionPt = CI;
+      else
+        PostInsertionPt = &*cast<InvokeInst>(CI)->getNormalDest()->getFirstInsertionPt();
 
       if (LowRetT != VoidTy) {
         CI->replaceAllUsesWith(
           loadValueRecurse(
-            LowRetT, RetPtr, ptrPtr(RetPtr, CI), false, DL.getABITypeAlign(LowRetT),
-            AtomicOrdering::NotAtomic, SyncScope::System, CI));
+            LowRetT, RetPtr, ptrPtr(RetPtr, PostInsertionPt), false, DL.getABITypeAlign(LowRetT),
+            AtomicOrdering::NotAtomic, SyncScope::System, PostInsertionPt));
       }
+
       CI->eraseFromParent();
       return;
     }
@@ -2101,22 +2332,20 @@ class Pizlonator {
     }
 
     if (isa<LandingPadInst>(I)) {
-      llvm_unreachable("Don't support LandingPad yet");
+      llvm_unreachable("Shouldn't see LandingPad because it should have been handled by "
+                       "earlyLowerInstruction.");
+      return;
+    }
+
+    if (isa<ResumeInst>(I)) {
+      BranchInst* BI = BranchInst::Create(ResumeB, I);
+      BI->setDebugLoc(I->getDebugLoc());
+      I->eraseFromParent();
       return;
     }
 
     if (isa<IndirectBrInst>(I)) {
       llvm_unreachable("Don't support IndirectBr yet (and maybe never will)");
-      return;
-    }
-
-    if (isa<CallBrInst>(I)) {
-      llvm_unreachable("Don't support CallBr yet (and maybe never will)");
-      return;
-    }
-
-    if (isa<ResumeInst>(I)) {
-      llvm_unreachable("Don't support Resume yet");
       return;
     }
 
@@ -2334,6 +2563,105 @@ class Pizlonator {
     }
   }
 
+  void makeEHDatas() {
+    std::vector<LandingPadInst*> LPIs;
+    
+    for (Function& F : M.functions()) {
+      for (BasicBlock& BB : F) {
+        LandingPadInst* LPI = dyn_cast<LandingPadInst>(BB.getFirstNonPHI());
+        if (LPI)
+          LPIs.push_back(LPI);
+      }
+    }
+
+    if (LPIs.empty())
+      return;
+    
+    std::vector<Constant*> LowTypesAndFilters;
+    unsigned NumTypes = 0;
+    unsigned NumFilters = 0;
+    std::unordered_map<Constant*, int> TypeOrFilterToAction;
+
+    for (LandingPadInst* LPI : LPIs) {
+      for (unsigned Idx = LPI->getNumClauses(); Idx--;) {
+        if (!LPI->isCatch(Idx))
+          continue;
+
+        if (TypeOrFilterToAction.count(LPI->getClause(Idx)))
+          continue;
+
+        int EHTypeID = NumTypes++ + 1;
+        TypeOrFilterToAction[LPI->getClause(Idx)] = EHTypeID;
+        EHTypeIDs[LPI->getClause(Idx)] = EHTypeID;
+        LowTypesAndFilters.push_back(LPI->getClause(Idx));
+      }
+    }
+
+    for (LandingPadInst* LPI : LPIs) {
+      for (unsigned ClauseIdx = LPI->getNumClauses(); ClauseIdx--;) {
+        if (!LPI->isFilter(ClauseIdx))
+          continue;
+
+        Constant* C = LPI->getClause(ClauseIdx);
+        if (TypeOrFilterToAction.count(C))
+          continue;
+
+        StructType* FilterTy;
+        Constant* FilterCS;
+        if (cast<ArrayType>(C->getType())->getNumElements()) {
+          FilterTy = StructType::get(this->C, { Int32Ty, C->getType() });
+          FilterCS = ConstantStruct::get(
+            FilterTy,
+            { ConstantInt::get(Int32Ty, cast<ArrayType>(C->getType())->getNumElements()), C });
+        } else {
+          FilterTy = StructType::get(this->C, ArrayRef<Type*>(Int32Ty));
+          FilterCS = ConstantStruct::get(FilterTy, ConstantInt::get(Int32Ty, 0));
+        }
+        Constant* LowC = new GlobalVariable(
+          M, FilterTy, true, GlobalValue::PrivateLinkage, FilterCS, "filc_eh_filter");
+        TypeOrFilterToAction[C] = -(NumFilters++ + 1);
+        LowTypesAndFilters.push_back(LowC);
+      }
+    }
+
+    Constant* TypeTableC;
+    if (LowTypesAndFilters.empty())
+      TypeTableC = LowRawNull;
+    else {
+      ArrayType* TypeTableArrayTy = ArrayType::get(LowRawPtrTy, LowTypesAndFilters.size());
+      StructType* TypeTableTy = StructType::get(C, { Int32Ty, TypeTableArrayTy });
+      Constant* TypeTableCS = ConstantStruct::get(
+        TypeTableTy,
+        { ConstantInt::get(Int32Ty, NumTypes),
+          ConstantArray::get(TypeTableArrayTy, LowTypesAndFilters) });
+      TypeTableC = new GlobalVariable(
+        M, TypeTableTy, true, GlobalValue::PrivateLinkage, TypeTableCS, "filc_type_table");
+    }
+
+    for (LandingPadInst* LPI : LPIs) {
+      if (EHDatas.count(EHDataKey(LPI)))
+        continue;
+
+      std::vector<int> Actions;
+
+      for (unsigned Idx = 0; Idx < LPI->getNumClauses(); ++Idx) {
+        assert(TypeOrFilterToAction.count(LPI->getClause(Idx)));
+        Actions.push_back(TypeOrFilterToAction[LPI->getClause(Idx)]);
+      }
+      
+      if (LPI->isCleanup())
+        Actions.push_back(0);
+
+      StructType* EHDataTy = StructType::get(
+        C, { LowRawPtrTy, Int32Ty, ArrayType::get(Int32Ty, Actions.size()) });
+      Constant* EHDataCS = ConstantStruct::get(
+        EHDataTy,
+        { TypeTableC, ConstantInt::get(Int32Ty, Actions.size()), ConstantDataArray::get(C, Actions) });
+      EHDatas[EHDataKey(LPI)] = new GlobalVariable(
+        M, EHDataTy, true, GlobalValue::PrivateLinkage, EHDataCS, "filc_eh_data");
+    }
+  }
+
   void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
@@ -2351,6 +2679,14 @@ class Pizlonator {
         }
       }
 
+      // FIXME: Maybe we don't need to split critical edges in those cases where the target is a
+      // landing pad?
+      //
+      // We split critical edges to handle the case where a phi has a constant input, and we need to
+      // lower the constant in the predecessor block. However, it's not clear if it's even necessary
+      // to split critical edges for that case. If we don't split, then at worst, the predecessors of
+      // phis, where the phi is reached via a critical edge, will have some constant lowering that is
+      // dead along the other edges.
       SplitAllCriticalEdges(F);
     }
   }
@@ -2378,6 +2714,7 @@ public:
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     lowerThreadLocals();
+    makeEHDatas();
     
     if (verbose)
       errs() << "Module with lowered thread locals:\n" << M << "\n";
@@ -2390,17 +2727,22 @@ public:
     FunctionName = "<internal>";
     
     LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
-    OriginTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
+    FunctionOriginTy = StructType::create(
+      {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
+    OriginTy = StructType::create({LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
+    OriginWithEHTy = StructType::create(
+      {LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy}, "filc_origin_with_eh");
     ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");
     FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy}, "filc_frame");
-    ThreadTy = StructType::create({Int8Ty, LowRawPtrTy}, "filc_thread_ish");
+    ThreadTy = StructType::create(
+      {Int8Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters)}, "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
       {IntPtrTy, Int32Ty, LowRawPtrTy}, "filc_constant_relocation");
     ConstexprNodeTy = StructType::create(
       { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy}, "filc_constexpr_node");
     // See PIZLONATED_SIGNATURE in filc_runtime.h.
     PizlonatedFuncTy = FunctionType::get(
-      VoidTy, { LowRawPtrTy, LowWidePtrTy, LowWidePtrTy }, false);
+      Int1Ty, { LowRawPtrTy, LowWidePtrTy, LowWidePtrTy }, false);
     GlobalGetterTy = FunctionType::get(LowWidePtrTy, { LowRawPtrTy }, false);
 
     // Fugc the DSO!
@@ -2468,6 +2810,8 @@ public:
     RunGlobalDtor = M.getOrInsertFunction("filc_run_global_dtor", VoidTy, LowRawPtrTy);
     Error = M.getOrInsertFunction("filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
+    LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
+    ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
@@ -2693,7 +3037,7 @@ public:
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);
         if (F->getReturnType() != VoidTy)
           ReturnPhi = PHINode::Create(lowerType(F->getReturnType()), 1, "filc_return_value", ReturnB);
-        ReturnInst* Return = ReturnInst::Create(C, ReturnB);
+        ReturnInst* Return = ReturnInst::Create(C, ConstantInt::getFalse(Int1Ty), ReturnB);
 
         if (F->getReturnType() != VoidTy) {
           Type* LowT = lowerType(F->getReturnType());
@@ -2702,6 +3046,10 @@ public:
             DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic, SyncScope::System, StoreKind::Unbarriered,
             Return);
         }
+
+        ResumeB = BasicBlock::Create(C, "filc_resume_block", NewF);
+        ReturnInst* ResumeReturn = ReturnInst::Create(C, ConstantInt::getTrue(Int1Ty), ResumeB);
+        CallInst::Create(ResumeUnwind, { MyThread }, "", ResumeReturn);
 
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         StructType* MyFrameTy = StructType::get(
@@ -2735,18 +3083,22 @@ public:
 
         recordObjectAtIndex(ptrObject(NewF->getArg(1), InsertionPoint), MyArgsObjectIndex, InsertionPoint);
 
-        new StoreInst(
-          new LoadInst(
-            LowRawPtrTy,
+        auto PopFrame = [&] (Instruction* Return) {
+          new StoreInst(
+            new LoadInst(
+              LowRawPtrTy,
+              GetElementPtrInst::Create(
+                FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+                "filc_frame_parent_ptr", Return),
+              "filc_frame_parent", Return),
             GetElementPtrInst::Create(
-              FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
-              "filc_frame_parent_ptr", Return),
-            "filc_frame_parent", Return),
-          GetElementPtrInst::Create(
-            ThreadTy, NewF->getArg(0),
-            { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-            "filc_thread_top_frame_ptr", Return),
-          Return);
+              ThreadTy, NewF->getArg(0),
+              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+              "filc_thread_top_frame_ptr", Return),
+            Return);
+        };
+        PopFrame(Return);
+        PopFrame(ResumeReturn);
 
         ArgBufferPtr = NewF->getArg(1);
         Value* RawDataPtr = ptrPtr(ArgBufferPtr, InsertionPoint);
@@ -2783,7 +3135,9 @@ public:
               recordObjects(Phi, I);
             Phis.clear();
           }
-          if (I->isTerminator())
+          if (InvokeInst* II = dyn_cast<InvokeInst>(I))
+            recordObjects(I, &*II->getNormalDest()->getFirstInsertionPt());
+          else if (I->isTerminator())
             assert(I->getType()->isVoidTy());
           else
             recordObjects(I, I->getNextNode());
@@ -2813,12 +3167,14 @@ public:
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_function_getter_root", GetterF);
         Return = ReturnInst::Create(C, UndefValue::get(LowWidePtrTy), RootBB);
         Return->getOperandUse(0) = createPtr(NewObjectG, NewF, Return);
+        
+        if (verbose)
+          errs() << "New function: " << *NewF << "\n";
       }
       
       FunctionName = "<internal>";
-
-      if (verbose)
-        errs() << "New function: " << *NewF << "\n";
+      OldF = nullptr;
+      NewF = nullptr;
     }
     for (GlobalAlias* G : Aliases) {
       Constant* C = G->getAliasee();
@@ -2834,9 +3190,11 @@ public:
         BB);
     }
 
-    delete Dummy;
-    delete FutureReturnBuffer;
+    Dummy->deleteValue();
+    FutureReturnBuffer->deleteValue();
 
+    for (Instruction* I : ToErase)
+      I->deleteValue();
     for (GlobalValue* G : ToDelete)
       G->replaceAllUsesWith(UndefValue::get(G->getType())); // FIXME - should be zero
     for (GlobalValue* G : ToDelete)

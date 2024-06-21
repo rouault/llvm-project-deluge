@@ -64,12 +64,15 @@ PAS_BEGIN_EXTERN_C;
 
 struct filc_constant_relocation;
 struct filc_constexpr_node;
+struct filc_exception_and_int;
 struct filc_frame;
+struct filc_function_origin;
 struct filc_global_initialization_context;
 struct filc_native_frame;
 struct filc_object;
 struct filc_object_array;
 struct filc_origin;
+struct filc_origin_with_eh;
 struct filc_ptr;
 struct filc_ptr_table;
 struct filc_ptr_table_array;
@@ -83,12 +86,15 @@ struct pas_thread_local_cache_node;
 struct verse_heap_object_set;
 typedef struct filc_constant_relocation filc_constant_relocation;
 typedef struct filc_constexpr_node filc_constexpr_node;
+typedef struct filc_exception_and_int filc_exception_and_int;
 typedef struct filc_frame filc_frame;
+typedef struct filc_function_origin filc_function_origin;
 typedef struct filc_global_initialization_context filc_global_initialization_context;
 typedef struct filc_native_frame filc_native_frame;
 typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
 typedef struct filc_origin filc_origin;
+typedef struct filc_origin_with_eh filc_origin_with_eh;
 typedef struct filc_ptr filc_ptr;
 typedef struct filc_ptr_table filc_ptr_table;
 typedef struct filc_ptr_table_array filc_ptr_table_array;
@@ -142,8 +148,10 @@ typedef uint16_t filc_object_flags;
                                                                      the payload. */
 #define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)10)    /* Indicates the special dlopen handle
                                                                      type. The lower points at the hanle
-                                                                     but the GC_allocated payload is
+                                                                     but the GC-allocated payload is
                                                                      empty. */
+#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)11)    /* Indicates the special jmp_buf type.
+                                                                     The lower points at the payload. */
 
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
 
@@ -178,10 +186,30 @@ typedef uint16_t filc_object_flags;
 #define FILC_PTR_TABLE_OFFSET             ((uintptr_t)66666)
 #define FILC_PTR_TABLE_SHIFT              ((uintptr_t)4)
 
+#define FILC_NUM_UNWIND_REGISTERS         2u
+
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
     filc_ptr args, \
     filc_ptr rets
+
+#define FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_filename) \
+    static const filc_function_origin function_ ## origin_name = { \
+        .function = (function_name), \
+        .filename = (passed_filename), \
+        .personality_getter = NULL, \
+        .can_throw = true, \
+        .can_catch = false, \
+        .num_setjmps = 0 \
+    }; \
+    static const filc_origin origin_name = { \
+        .function_origin = &function_ ## origin_name, \
+        .line = 0, \
+        .column = 0 \
+    }
+
+#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name) \
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, "<runtime>")
 
 struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
     pas_uint128 word;
@@ -227,11 +255,50 @@ struct filc_return_buffer {
     pas_uint128 data;
 };
 
-struct filc_origin {
+/* NOTE: A function may have two different function origins - one for origins that are capable of
+   catching, and one for origins not capable of catching. */
+struct filc_function_origin {
     const char* function;
     const char* filename;
+    
+    /* If this is not NULL, then the filc_origin is really a filc_origin_with_eh, so that it includes
+       the eh_data_getter.
+    
+       We store this as a pointer to the getter for the personality function so that the origin
+       struct doesn't need our linking tricks. That implies that the personality function cannot be
+       an arbitrary llvm::Constant; it must be a llvm::Function. That's fine since clang will never
+       do anything but that.
+    
+       If this is not NULL, then the function can handle exceptions, which means that post-call
+       pollchecks will check if the pollcheck returned FILC_POLLCHECK_EXCEPTION. */
+    filc_ptr (*personality_getter)(filc_global_initialization_context*);
+
+    /* Tells whether a function can throw exceptions. Note that a function might be can_catch and have
+       a personality function, but not throw, or vice-versa. */
+    bool can_throw;
+
+    /* Tells whether a function can catch exceptions. All functions that have a personality_getter can
+       also catch exceptions, but not necessarily the other way around. Also, can_catch could mean that
+       the function is merely capable of passing exceptions through it (i.e. it doesn't catch anything
+       but just rethrows - that's what happens if a C function is compiled with -fexceptions). */
+    bool can_catch;
+
+    /* The number of setjmps in the given function's frame. These are always the highest-indexed
+       object slots. */
+    unsigned num_setjmps;
+};
+
+struct filc_origin {
+    const filc_function_origin* function_origin;
     unsigned line;
     unsigned column;
+};
+
+/* Origins are guaranteed to be of this type if !!origin->function_origin->personality_getter. */
+struct filc_origin_with_eh {
+    filc_origin base;
+
+    filc_ptr (*eh_data_getter)(filc_global_initialization_context*);
 };
 
 #define FILC_FRAME_BODY \
@@ -267,6 +334,11 @@ struct filc_thread {
     /* Begin fields that the compiler has to know about. */
     uint8_t state;
     filc_frame* top_frame;
+
+    /* These are not tracked by GC, since they must be consumed by the landingpad right after
+       calling filc_landing_pad. */
+    filc_ptr unwind_registers[FILC_NUM_UNWIND_REGISTERS];
+    
     /* End fields that the compiler has to know about. */
     
     filc_native_frame* top_native_frame;
@@ -309,10 +381,14 @@ struct filc_thread {
                          
                          This is set to non-NULL the moment that the thread is fully started and
                          is set back to NULL when the thread starts stopping. */
-    void (*thread_main)(PIZLONATED_SIGNATURE);
+    bool (*thread_main)(PIZLONATED_SIGNATURE);
     filc_ptr arg_ptr;
     filc_ptr result_ptr;
     filc_ptr cookie_ptr;
+
+    filc_ptr unwind_context_ptr;
+    filc_ptr exception_object_ptr;
+    filc_frame* found_frame_for_unwind;
 
     sigset_t initial_blocked_sigs;
 
@@ -459,6 +535,11 @@ struct filc_ptr_table_array {
     size_t num_entries;
     size_t capacity;
     filc_ptr ptrs[];
+};
+
+struct filc_exception_and_int {
+    bool has_exception;
+    int value;
 };
 
 #define FILC_FOR_EACH_LOCK(macro) \
@@ -726,7 +807,7 @@ PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* orig
 
    Only call this inside Fil-C execution and never after exiting.
 
-   Returns true if the pollcheck was actually taken. */
+   Returns true if the pollcheck fired. */
 static inline bool filc_pollcheck(filc_thread* my_thread, const filc_origin* origin)
 {
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -1125,6 +1206,7 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
     case FILC_WORD_TYPE_PTR_TABLE:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
     case FILC_WORD_TYPE_DL_HANDLE:
+    case FILC_WORD_TYPE_JMP_BUF:
         return true;
     default:
         return false;
@@ -1142,6 +1224,7 @@ static inline bool filc_special_word_type_has_destructor(filc_word_type word_typ
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
     case FILC_WORD_TYPE_DL_HANDLE:
+    case FILC_WORD_TYPE_JMP_BUF:
         return false;
     default:
         PAS_ASSERT(!"Not a special word type");
@@ -1392,6 +1475,22 @@ static inline ssize_t filc_ptr_get_next_ssize_t(filc_ptr* ptr)
     return *(ssize_t*)filc_ptr_ptr(slot_ptr);
 }
 
+static inline filc_exception_and_int filc_exception_and_int_with_int(int value)
+{
+    filc_exception_and_int result;
+    result.has_exception = false;
+    result.value = value;
+    return result;
+}
+
+static inline filc_exception_and_int filc_exception_and_int_with_exception(void)
+{
+    filc_exception_and_int result;
+    result.has_exception = true;
+    result.value = 0;
+    return result;
+}
+
 /* If parent is not NULL, increases its ref count and returns it. Otherwise, creates a new context. */
 filc_global_initialization_context* filc_global_initialization_context_create(
     filc_global_initialization_context* parent);
@@ -1412,15 +1511,38 @@ void filc_execute_constant_relocations(
     void* constant, filc_constant_relocation* relocations, size_t num_relocations,
     filc_global_initialization_context* context);
 
-void filc_defer_or_run_global_ctor(void (*global_ctor)(PIZLONATED_SIGNATURE));
+void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE));
 void filc_run_deferred_global_ctors(filc_thread* my_thread); /* Important safety property: libc must
                                                                 call this before letting the user
                                                                 start threads. But it's OK if the
                                                                 deferred constructors that this calls
                                                                 start threads, as far as safety
                                                                 goes. */
-void filc_run_global_dtor(void (*global_dtor)(PIZLONATED_SIGNATURE));
+void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE));
 void filc_error(const char* reason, const filc_origin* origin);
+
+/* This works out whether we're supposed to catch the exception or keep going by calling the personality
+   function.
+   
+   Returns true if we're supposed to catch the exception. In that case, my_thread->unwind_registers
+   contain the values that are supposed to be consumed by the landingpad.
+   
+   Returns false if we're supposed to let the exception propagate. */
+bool filc_landing_pad(filc_thread* my_thread);
+
+/* This is basically _Unwind_Resume, except that since the compiler is calling it, it's easier to make
+   it a native C function. Also, this is just an assertion to ensure that the unwinder didn't screw
+   up. Because of the way that the unwinder is driven by personality functions, this is a mandatory
+   safety assertion. For example, the personality function could request that we unwind to a destructor,
+   which will appear safe to the unwinder (since that will mean unwinding to a frame that supports
+   unwinding) but then the landing pad ends in a resume, even though the frame after the resume doesn't
+   support unwinding.
+
+   Unlike with legacy C unwinding, this function is also called whenever we do an early return as a
+   result of a CallInst returning exceptionally. This is necessary since this only checks that our
+   caller will be able to handle exceptional returns, not that our caller's caller also will be able
+   to. */
+void filc_resume_unwind(filc_thread* my_thread);
 
 PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);
 
