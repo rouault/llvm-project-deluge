@@ -512,10 +512,9 @@ void zstack_scan(filc_bool (*callback)(
                      void* arg),
                  void* arg);
 
-/* Memory-safe setjmp/longjmp support. Note that zsetjmp is a compiler intrinsic - you cannot call it
-   by taking a pointer to it, and you will not get a usable jmp_buf if you call it from an abstraction.
-   
-   zsetjmp returns an opaque jmp buffer by stashing it in the slot pointed to by jmp_buf_ptr.
+/* Memory-safe setjmp/longjmp support. Note that setjmp and friends are compiler intrinsics - you cannot
+   call them by taking a pointer to them, and you will not get a usable jmp_buf if you call it from an
+   abstraction.
    
    zlongjmp confirms that the caller of the jmp_buf's zsetjmp is still on the stack (that EXACT caller,
    not another frame that happens to be the same function at the same stack height) and that the
@@ -524,8 +523,9 @@ void zstack_scan(filc_bool (*callback)(
    process. */
 struct zjmp_buf;
 typedef struct zjmp_buf zjmp_buf;
-int zsetjmp(zjmp_buf** jmp_buf_ptr);
 void zlongjmp(zjmp_buf* jmp_buf, int value);
+void z_longjmp(zjmp_buf* jmp_buf, int value);
+void zsiglongjmp(zjmp_buf* jmp_buf, int value);
 
 /* ------------------ All APIs below here are intended for libc consumption ------------------------- */
 

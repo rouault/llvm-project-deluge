@@ -85,6 +85,8 @@ static constexpr uint16_t ObjectFlagReadonly = 32;
 
 static constexpr unsigned NumUnwindRegisters = 2;
 
+static constexpr size_t SpecialObjectSize = 32;
+
 enum class AccessKind {
   Read,
   Write
@@ -93,6 +95,12 @@ enum class AccessKind {
 enum class ConstantKind {
   Global,
   Expr
+};
+
+enum class JmpBufKind {
+  setjmp,
+  _setjmp,
+  sigsetjmp
 };
 
 struct ConstantTarget {
@@ -299,6 +307,8 @@ class Pizlonator {
   FunctionType* PizlonatedFuncTy;
   FunctionType* GlobalGetterTy;
   FunctionType* CtorDtorTy;
+  FunctionType* SetjmpTy;
+  FunctionType* SigsetjmpTy;
   Constant* LowRawNull;
   Constant* LowWideNull;
   BitCastInst* Dummy;
@@ -327,6 +337,7 @@ class Pizlonator {
   FunctionCallee RealMemset;
   FunctionCallee LandingPad;
   FunctionCallee ResumeUnwind;
+  FunctionCallee JmpBufCreate;
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
@@ -334,6 +345,7 @@ class Pizlonator {
   std::unordered_map<EHDataKey, GlobalVariable*> EHDatas; /* the value is a high-level GV, need to lookup
                                                              the getter. */
   std::unordered_map<Constant*, int> EHTypeIDs;
+  std::unordered_map<CallBase*, unsigned> Setjmps;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -425,14 +437,14 @@ class Pizlonator {
     }
     
     bool CanThrow = !OldF->doesNotThrow();
-    unsigned NumSetJmps = 0; // FIXME - this'll change once we support the zsetjmp intrinsic.
+    unsigned NumSetjmps = Setjmps.size();
     
     Constant* C = ConstantStruct::get(
       FunctionOriginTy,
       { getString(getFunctionName(OldF)),
         OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
         Personality, ConstantInt::get(Int8Ty, CanThrow), ConstantInt::get(Int8Ty, CanCatch),
-        ConstantInt::get(Int32Ty, NumSetJmps) });
+        ConstantInt::get(Int32Ty, NumSetjmps) });
     GlobalVariable* Result = new GlobalVariable(
       M, FunctionOriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_function_origin");
     FunctionOrigins[FOK] = Result;
@@ -611,6 +623,14 @@ class Pizlonator {
     llvm_unreachable("Bad access kind");
   }
 
+  Value* objectForSpecialPayload(Value* Payload, Instruction* InsertBefore) {
+    Instruction* Result = GetElementPtrInst::Create(
+      Int8Ty, Payload, { ConstantInt::get(IntPtrTy, -SpecialObjectSize) },
+      "filc_object_for_special_payload", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
   Value* ptrWord(Value* P, Instruction* InsertBefore) {
     if (isa<ConstantAggregateZero>(P))
       return ConstantInt::get(Int128Ty, 0);
@@ -663,6 +683,10 @@ class Pizlonator {
       Instruction::Or, CastedPtr, ShiftedObject, "filc_ptr_word", InsertBefore);
     Word->setDebugLoc(InsertBefore->getDebugLoc());
     return wordToPtr(Word, InsertBefore);
+  }
+
+  Value* ptrForSpecialPayload(Value* Payload, Instruction* InsertBefore) {
+    return createPtr(objectForSpecialPayload(Payload, InsertBefore), Payload, InsertBefore);
   }
 
   Value* ptrWithPtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertBefore) {
@@ -1084,6 +1108,7 @@ class Pizlonator {
   void computeFrameIndexMap(std::vector<BasicBlock*> Blocks) {
     FrameIndexMap.clear();
     FrameSize = NumSpecialFrameObjects;
+    Setjmps.clear();
 
     assert(!Blocks.empty());
 
@@ -1218,6 +1243,20 @@ class Pizlonator {
           FrameIndexMap[IP] = FrameIndex;
           FrameSize = std::max(FrameSize, FrameIndex + 1);
           break;
+        }
+      }
+    }
+
+    for (BasicBlock* BB : Blocks) {
+      for (Instruction& I : *BB) {
+        if (CallBase* CI = dyn_cast<CallBase>(&I)) {
+          if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+            if (isSetjmp(F)) {
+              assert(CI->hasFnAttr(Attribute::ReturnsTwice));
+              assert(F->hasFnAttribute(Attribute::ReturnsTwice));
+              Setjmps[CI] = FrameSize++;
+            }
+          }
         }
       }
     }
@@ -1650,7 +1689,7 @@ class Pizlonator {
       return LowC;
     
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
-      assert(!shouldPassThrough(G));
+      assert(!shouldPassThrough(G)); // This is a necessary safety check, at least for setjmp, probably for other things too.
       assert(!GlobalToGetter.count(nullptr));
       assert(!Getters.count(nullptr));
       assert(!Getters.count(G));
@@ -1890,6 +1929,13 @@ class Pizlonator {
         return true;
       }
 
+      case Intrinsic::eh_sjlj_functioncontext:
+      case Intrinsic::eh_sjlj_setjmp:
+      case Intrinsic::eh_sjlj_longjmp:
+      case Intrinsic::eh_sjlj_setup_dispatch:
+        llvm_unreachable("Cannot use sjlj intrinsics.");
+        return true;
+
       default:
         if (!II->getCalledFunction()->doesNotAccessMemory()
             && !isa<ConstrainedFPIntrinsic>(II)) {
@@ -1912,7 +1958,7 @@ class Pizlonator {
       }
     }
     
-    if (CallInst* CI = dyn_cast<CallInst>(I)) {
+    if (CallBase* CI = dyn_cast<CallBase>(I)) {
       if (verbose) {
         errs() << "It's a call!\n";
         errs() << "Callee = " << CI->getCalledOperand() << "\n";
@@ -1921,6 +1967,33 @@ class Pizlonator {
       }
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+        if (isSetjmp(F)) {
+          assert(CI->getFunctionType() == F->getFunctionType());
+          assert(CI->hasFnAttr(Attribute::ReturnsTwice));
+          assert(Setjmps.count(CI));
+          unsigned FrameIndex = Setjmps[CI];
+          CallInst* Create = CallInst::Create(
+            JmpBufCreate,
+            { MyThread, ConstantInt::get(Int32Ty, static_cast<int>(getJmpBufKindForSetjmp(F))) },
+            "filc_jmp_buf_create", CI);
+          Create->setDebugLoc(CI->getDebugLoc());
+          Value* UserJmpBuf = CI->getArgOperand(0);
+          checkWritePtr(UserJmpBuf, CI);
+          storePtr(ptrForSpecialPayload(Create, CI), ptrPtr(UserJmpBuf, CI), StoreKind::Barriered, CI);
+          recordObjectAtIndex(objectForSpecialPayload(Create, CI), FrameIndex, CI);
+          CI->getArgOperandUse(0) = Create;
+          if (InvokeInst* II = dyn_cast<InvokeInst>(CI)) {
+            std::vector<Value*> Args;
+            for (Value* Arg : CI->args())
+              Args.push_back(Arg);
+            CallInst* NewCI = CallInst::Create(F, Args, "filc_setjmp", CI);
+            CI->replaceAllUsesWith(NewCI);
+            NewCI->setDebugLoc(CI->getDebugLoc());
+            BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
+            CI->eraseFromParent();
+          }
+          return true;
+        }
         if (shouldPassThrough(F))
           return true;
       }
@@ -2427,12 +2500,30 @@ class Pizlonator {
     llvm_unreachable("Unknown instruction");
   }
 
+  bool isSetjmp(Function* F) {
+    return (F->getName() == "setjmp" ||
+            F->getName() == "_setjmp" ||
+            F->getName() == "sigsetjmp");
+  }
+
+  JmpBufKind getJmpBufKindForSetjmp(Function* F) {
+    if (F->getName() == "setjmp")
+      return JmpBufKind::setjmp;
+    if (F->getName() == "_setjmp")
+      return JmpBufKind::_setjmp;
+    if (F->getName() == "sigsetjmp")
+      return JmpBufKind::sigsetjmp;
+    llvm_unreachable("Bad setjmp kind");
+    return JmpBufKind::setjmp;
+  }
+
   bool shouldPassThrough(Function* F) {
     return (F->getName() == "__divdc3" ||
             F->getName() == "__muldc3" ||
             F->getName() == "__divsc3" ||
             F->getName() == "__mulsc3" ||
-            F->getName() == "__mulxc3");
+            F->getName() == "__mulxc3" ||
+            isSetjmp(F));
   }
 
   bool shouldPassThrough(GlobalVariable* G) {
@@ -2711,6 +2802,8 @@ public:
     Int128Ty = Type::getInt128Ty(C);
     LowRawPtrTy = PointerType::get(C, TargetAS);
     CtorDtorTy = FunctionType::get(VoidTy, false);
+    SetjmpTy = FunctionType::get(Int32Ty, LowRawPtrTy, false);
+    SigsetjmpTy = FunctionType::get(Int32Ty, { LowRawPtrTy, Int32Ty }, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
     lowerThreadLocals();
@@ -2770,6 +2863,23 @@ public:
           errs() << "Cannot define " << F.getName() << "\n";
           llvm_unreachable("Attempt to define pass-through function.");
         }
+        if (isSetjmp(&F)) {
+          assert(F.hasFnAttribute(Attribute::ReturnsTwice));
+          if (F.getName() == "setjmp" || F.getName() == "_setjmp") {
+            if (F.getFunctionType() != SetjmpTy) {
+              errs() << "Unexpected setjmp signature: " << *F.getFunctionType()
+                     << ", expected: " << *SetjmpTy << "\n";
+            }
+            assert(F.getFunctionType() == SetjmpTy);
+          } else {
+            if (F.getFunctionType() != SigsetjmpTy) {
+              errs() << "Unexpected setjmp signature: " << *F.getFunctionType()
+                     << ", expected: " << *SigsetjmpTy << "\n";
+            }
+            assert(F.getName() == "sigsetjmp");
+            assert(F.getFunctionType() == SigsetjmpTy);
+          }
+        }
         continue;
       }
       Functions.push_back(&F);
@@ -2812,6 +2922,7 @@ public:
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
     ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy);
+    JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
@@ -3167,6 +3278,9 @@ public:
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_function_getter_root", GetterF);
         Return = ReturnInst::Create(C, UndefValue::get(LowWidePtrTy), RootBB);
         Return->getOperandUse(0) = createPtr(NewObjectG, NewF, Return);
+
+        if (Setjmps.size())
+          assert(NewF->callsFunctionThatReturnsTwice());
         
         if (verbose)
           errs() << "New function: " << *NewF << "\n";

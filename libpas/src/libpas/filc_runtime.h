@@ -36,11 +36,12 @@
 #include "pas_range.h"
 #include "pas_segmented_vector.h"
 #include <inttypes.h>
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stdlib.h>
-#include <pthread.h>
-#include <signal.h>
 
 PAS_BEGIN_EXTERN_C;
 
@@ -68,6 +69,7 @@ struct filc_exception_and_int;
 struct filc_frame;
 struct filc_function_origin;
 struct filc_global_initialization_context;
+struct filc_jmp_buf;
 struct filc_native_frame;
 struct filc_object;
 struct filc_object_array;
@@ -90,6 +92,7 @@ typedef struct filc_exception_and_int filc_exception_and_int;
 typedef struct filc_frame filc_frame;
 typedef struct filc_function_origin filc_function_origin;
 typedef struct filc_global_initialization_context filc_global_initialization_context;
+typedef struct filc_jmp_buf filc_jmp_buf;
 typedef struct filc_native_frame filc_native_frame;
 typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
@@ -243,7 +246,9 @@ struct filc_object {
 };
 
 /* The size of filc_object if it's a special object. This is based on special objects having just one
-   word_type. */
+   word_type.
+
+   Note that the compiler pass hardcodes this constant. */
 #define FILC_SPECIAL_OBJECT_SIZE \
     PAS_ROUND_UP_TO_POWER_OF_2(PAS_OFFSETOF(filc_object, word_types) + 1, FILC_WORD_SIZE)
 
@@ -304,7 +309,7 @@ struct filc_origin_with_eh {
 #define FILC_FRAME_BODY \
     filc_frame* parent; \
     const filc_origin* origin; \
-    size_t num_objects
+    size_t num_objects /* FIXME: This should be in function_origin! */
 
 struct filc_frame {
     FILC_FRAME_BODY;
@@ -540,6 +545,27 @@ struct filc_ptr_table_array {
 struct filc_exception_and_int {
     bool has_exception;
     int value;
+};
+
+enum filc_jmp_buf_kind {
+    filc_jmp_buf_setjmp,
+    filc_jmp_buf__setjmp,
+    filc_jmp_buf_sigsetjmp,
+};
+
+typedef enum filc_jmp_buf_kind filc_jmp_buf_kind;
+
+struct filc_jmp_buf {
+    /* The jmp_buf union must be the first thing since the compiler relies on it. */
+    union {
+        jmp_buf system_buf;
+        sigjmp_buf system_sigbuf;
+    } u;
+    filc_jmp_buf_kind kind;
+    filc_frame* saved_top_frame; /* This is only here for assertions since longjmp does a search to
+                                    find the frame, and the frame knows about the jmp_buf. */
+    filc_native_frame* saved_top_native_frame;
+    size_t saved_allocation_roots_num_objects;
 };
 
 #define FILC_FOR_EACH_LOCK(macro) \
@@ -881,7 +907,8 @@ static inline filc_object* filc_object_for_special_payload(void* payload)
                        result->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
                        result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
-                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY);
+                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
+                       result->word_types[0] == FILC_WORD_TYPE_JMP_BUF);
     return result;
 }
 
@@ -1543,6 +1570,38 @@ bool filc_landing_pad(filc_thread* my_thread);
    caller will be able to handle exceptional returns, not that our caller's caller also will be able
    to. */
 void filc_resume_unwind(filc_thread* my_thread);
+
+static inline const char* filc_jmp_buf_kind_get_string(filc_jmp_buf_kind kind)
+{
+    switch (kind) {
+    case filc_jmp_buf_setjmp:
+        return "setjmp";
+    case filc_jmp_buf__setjmp:
+        return "_setjmp";
+    case filc_jmp_buf_sigsetjmp:
+        return "sigsetjmp";
+    }
+    PAS_ASSERT(!"Should not be reached");
+    return NULL;
+}
+
+static inline const char* filc_jmp_buf_kind_get_longjmp_string(filc_jmp_buf_kind kind)
+{
+    switch (kind) {
+    case filc_jmp_buf_setjmp:
+        return "longjmp";
+    case filc_jmp_buf__setjmp:
+        return "_longjmp";
+    case filc_jmp_buf_sigsetjmp:
+        return "siglongjmp";
+    }
+    PAS_ASSERT(!"Should not be reached");
+    return NULL;
+}
+
+/* This creates all of the filc_jmp_buf except for the system_buf, which must be populated by the
+   caller. */
+filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind);
 
 PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);
 

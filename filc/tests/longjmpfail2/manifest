@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "cannot longjmp unless the setjmp destination is on the stack"

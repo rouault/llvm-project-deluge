@@ -530,6 +530,9 @@ void filc_initialize(void)
 {
     PAS_ASSERT(!is_initialized);
 
+    /* This must match SpecialObjectSize in FilPizlonator.cpp. */
+    PAS_ASSERT(FILC_SPECIAL_OBJECT_SIZE == 32);
+
 #define INITIALIZE_LOCK(name) \
     pas_system_mutex_construct(&filc_## name ## _lock)
     FILC_FOR_EACH_LOCK(INITIALIZE_LOCK);
@@ -4018,12 +4021,104 @@ void filc_resume_unwind(filc_thread* my_thread)
         "cannot resume unwinding, parent frame doesn't support catching.");
 }
 
+filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind)
+{
+    PAS_ASSERT(kind == filc_jmp_buf_setjmp ||
+               kind == filc_jmp_buf__setjmp ||
+               kind == filc_jmp_buf_sigsetjmp);
+    
+    filc_jmp_buf* result = (filc_jmp_buf*)
+        filc_allocate_special(my_thread, sizeof(filc_jmp_buf), FILC_WORD_TYPE_JMP_BUF)->lower;
+
+    result->kind = kind;
+    result->saved_top_frame = my_thread->top_frame;
+    result->saved_top_native_frame = my_thread->top_native_frame;
+    result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
+
+    return result;
+}
+
+static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value, filc_jmp_buf_kind kind)
+{
+    PAS_ASSERT(kind == filc_jmp_buf_setjmp ||
+               kind == filc_jmp_buf__setjmp ||
+               kind == filc_jmp_buf_sigsetjmp);
+    
+    filc_check_access_special(jmp_buf_ptr, FILC_WORD_TYPE_JMP_BUF, NULL);
+    filc_jmp_buf* jmp_buf = (filc_jmp_buf*)filc_ptr_ptr(jmp_buf_ptr);
+
+    FILC_CHECK(
+        !my_thread->special_signal_deferral_depth,
+        NULL,
+        "cannot longjmp from a special signal deferral scope.");
+    
+    FILC_CHECK(
+        jmp_buf->kind == kind,
+        NULL,
+        "cannot mix %s with %s.",
+        filc_jmp_buf_kind_get_longjmp_string(kind), filc_jmp_buf_kind_get_string(jmp_buf->kind));
+
+    filc_frame* current_frame;
+    bool found_frame = false;
+    for (current_frame = my_thread->top_frame;
+         current_frame && !found_frame;
+         current_frame = current_frame->parent) {
+        PAS_ASSERT(current_frame->origin);
+        PAS_ASSERT(current_frame->origin->function_origin);
+        PAS_ASSERT(current_frame->origin->function_origin->num_setjmps <= current_frame->num_objects);
+        unsigned index;
+        for (index = current_frame->origin->function_origin->num_setjmps; index-- && !found_frame;) {
+            unsigned object_index = current_frame->num_objects - 1 - index;
+            PAS_ASSERT(object_index < current_frame->num_objects);
+            if (filc_object_for_special_payload(jmp_buf) == current_frame->objects[object_index]) {
+                PAS_ASSERT(current_frame == jmp_buf->saved_top_frame);
+                found_frame = true;
+                break;
+            }
+        }
+    }
+
+    FILC_CHECK(
+        found_frame,
+        NULL,
+        "cannot longjmp unless the setjmp destination is on the stack.");
+
+    while (my_thread->top_frame != jmp_buf->saved_top_frame)
+        filc_pop_frame(my_thread, my_thread->top_frame);
+    while (my_thread->top_native_frame != jmp_buf->saved_top_native_frame)
+        filc_pop_native_frame(my_thread, my_thread->top_native_frame);
+    my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
+
+    switch (kind) {
+    case filc_jmp_buf_setjmp:
+        longjmp(jmp_buf->u.system_buf, value);
+        PAS_ASSERT(!"Should not be reached");
+        break;
+    case filc_jmp_buf__setjmp:
+        _longjmp(jmp_buf->u.system_buf, value);
+        PAS_ASSERT(!"Should not be reached");
+        break;
+    case filc_jmp_buf_sigsetjmp:
+        siglongjmp(jmp_buf->u.system_sigbuf, value);
+        PAS_ASSERT(!"Should not be reached");
+        break;
+    }
+    PAS_ASSERT(!"Should not be reached");
+}
+
 void filc_native_zlongjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(jmp_buf_ptr);
-    PAS_UNUSED_PARAM(value);
-    PAS_ASSERT(!"Not implemented yet");
+    longjmp_impl(my_thread, jmp_buf_ptr, value, filc_jmp_buf_setjmp);
+}
+
+void filc_native_z_longjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value)
+{
+    longjmp_impl(my_thread, jmp_buf_ptr, value, filc_jmp_buf__setjmp);
+}
+
+void filc_native_zsiglongjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value)
+{
+    longjmp_impl(my_thread, jmp_buf_ptr, value, filc_jmp_buf_sigsetjmp);
 }
 
 static bool (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
