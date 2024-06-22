@@ -92,49 +92,76 @@ $testDirectory.each_entry {
         libraryFiles = {}
         outp.puts "rm -f #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "touch #{Shellwords.shellescape(compilerOutput)}"
-        isCpp = false
         fullPath.each_entry {
             | entry |
-            isCpp = true if entry.extname == ".cpp"
-        }
-        if isCpp
-            clang = "clang++"
-            extraOpts = "-std=c++20"
-        else
-            clang = "clang"
-            extraOpts = ""
-        end
+            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
+            isCpp = entry.extname == ".cpp"
+            if isCpp
+                clang = "clang++"
+                extraOpts = "-std=c++20"
+            else
+                clang = "clang"
+                extraOpts = ""
+            end
+            outp.puts "#{$compilerPrefix}build/bin/#{clang} -c -o #{Shellwords.shellescape(fullPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            outp.puts "if [ $? -ne 0 ]"
+            outp.puts "then"
+            outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile #{entry}"))
+            outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
+            outp.puts "    exit 1"
+            outp.puts "fi"
+        }      
         if libraries
             libraries.each_pair {
                 | libname, files |
-                outp.print "#{$compilerPrefix}build/bin/#{clang} #{$bundleOpt} -o #{Shellwords.shellescape(fullPath + libname)}"
+                linkerIsCpp = false
+                files.each {
+                    | entry |
+                    linkerIsCpp = true if Pathname.new(entry).extname == ".cpp"
+                }
+                if linkerIsCpp
+                    clangLinker = "clang++"
+                else
+                    clangLinker = "clang"
+                end
+                outp.print "#{$compilerPrefix}build/bin/#{clangLinker} #{$bundleOpt} -o #{Shellwords.shellescape(fullPath + libname)}"
                 files.each {
                     | file |
                     libraryFiles[file] = true
-                    outp.print " "
-                    outp.print Shellwords.shellescape(fullPath + file)
+                    outp.print " #{Shellwords.shellescape(fullPath + file)}.o"
                 }
-                outp.puts " -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+                outp.puts " >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
                 outp.puts "if [ $? -ne 0 ]"
                 outp.puts "then"
-                outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile #{libname}"))
+                outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't link #{libname}"))
                 outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
                 outp.puts "    exit 1"
                 outp.puts "fi"
             }
         end
-        outp.print "#{$compilerPrefix}build/bin/#{clang} -o #{Shellwords.shellescape(binary)}"
+        linkerIsCpp = false
         fullPath.each_entry {
             | entry |
             next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
             next if libraryFiles[entry.to_s]
-            outp.print " "
-            outp.print Shellwords.shellescape(fullPath + entry)
+            linkerIsCpp = true if entry.extname == ".cpp"
         }
-        outp.puts " filc/tests/legacy_utils.o filc/tests/utils.o -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+        if linkerIsCpp
+            clangLinker = "clang++"
+        else
+            clangLinker = "clang"
+        end
+        outp.print "#{$compilerPrefix}build/bin/#{clangLinker} -o #{Shellwords.shellescape(binary)}"
+        fullPath.each_entry {
+            | entry |
+            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
+            next if libraryFiles[entry.to_s]
+            outp.print " #{Shellwords.shellescape(fullPath + entry)}.o"
+        }
+        outp.puts " filc/tests/legacy_utils.o filc/tests/utils.o >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
         outp.puts "if [ $? -ne 0 ]"
         outp.puts "then"
-        outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile"))
+        outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't link"))
         outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
         outp.puts "    exit 1"
         outp.puts "fi"

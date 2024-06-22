@@ -1394,7 +1394,10 @@ void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
 {
     if (origin) {
         PAS_ASSERT(origin->function_origin);
-        pas_stream_printf(stream, "%s", origin->function_origin->filename);
+        if (origin->function_origin->filename)
+            pas_stream_printf(stream, "%s", origin->function_origin->filename);
+        else
+            pas_stream_printf(stream, "<somewhere>");
         if (origin->line) {
             pas_stream_printf(stream, ":%u", origin->line);
             if (origin->column)
@@ -1402,8 +1405,10 @@ void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
         }
         if (origin->function_origin->function)
             pas_stream_printf(stream, ": %s", origin->function_origin->function);
-    } else
-        pas_stream_printf(stream, "<somewhere>");
+    } else {
+        /* FIXME: Maybe just assert that this doesn't happen? */
+        pas_stream_printf(stream, "<null origin>");
+    }
 }
 
 void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream)

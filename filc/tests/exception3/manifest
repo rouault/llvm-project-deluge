@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "libc++abi: terminating due to uncaught exception of type Exception: oops"
