@@ -1,0 +1,6 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "libc++abi: terminating due to uncaught exception of type Exception: Counting down as time stands still."
+  - "Every time I turn around."
