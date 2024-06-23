@@ -1,0 +1,6 @@
+return:
+  success
+output-includes:
+  - "(1) x = 666.(2) x = 666.(3) x = 666."
+output-excludes:
+  - "Should not get here"
