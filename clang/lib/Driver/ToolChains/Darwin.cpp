@@ -273,7 +273,11 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
   // clang version won't work anyways.
   // lld is built at the same revision as clang and statically links in
   // LLVM libraries, so it doesn't need libLTO.dylib.
-  if (Version >= VersionTuple(133) && !LinkerIsLLD) {
+  // FIXME: Eventually I'll have to make LTO work in Fil-C. Currently, I have to disable
+  // passing an LTO library, since if I do, Darwin's ld (at least on macOS 14.5) will
+  // try to load *its own* libraries from our build/lib, and then it'll trap because
+  // the libc++ in that directory is pizlonated.
+  if ((false) && Version >= VersionTuple(133) && !LinkerIsLLD) {
     // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
     StringRef P = llvm::sys::path::parent_path(D.Dir);
     SmallString<128> LibLTOPath(P);
