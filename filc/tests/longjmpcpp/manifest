@@ -1,0 +1,7 @@
+return:
+  success
+output-includes:
+  - "x = 666"
+output-excludes:
+  - "Should not get here"
+  - "WTF"

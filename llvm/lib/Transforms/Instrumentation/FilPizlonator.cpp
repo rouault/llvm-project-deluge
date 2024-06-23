@@ -1968,6 +1968,8 @@ class Pizlonator {
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
         if (isSetjmp(F)) {
+          for (Use& Arg : CI->args())
+            lowerConstantOperand(Arg, CI, LowRawNull);
           assert(CI->getFunctionType() == F->getFunctionType());
           assert(CI->hasFnAttr(Attribute::ReturnsTwice));
           assert(Setjmps.count(CI));

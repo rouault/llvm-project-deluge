@@ -4085,8 +4085,11 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
 
     while (my_thread->top_frame != jmp_buf->saved_top_frame)
         filc_pop_frame(my_thread, my_thread->top_frame);
-    while (my_thread->top_native_frame != jmp_buf->saved_top_native_frame)
+    while (my_thread->top_native_frame != jmp_buf->saved_top_native_frame) {
+        if (my_thread->top_native_frame->locked)
+            filc_unlock_top_native_frame(my_thread);
         filc_pop_native_frame(my_thread, my_thread->top_native_frame);
+    }
     my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
 
     switch (kind) {
