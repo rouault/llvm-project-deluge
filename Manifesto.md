@@ -38,10 +38,11 @@ Fil-C introduces memory safety at the core of C and C++:
   that pointer's rules by trying to access out-of-bounds, or read an int as a pointer or vice-versa, or
   access a freed object, Fil-C will thwart your program's further execution.
 
-- Fil-C supports tricky features like pthreads, signal handlers, and even mmap. All of these features
-  are memory-safe. Because Fil-C pointers are atomic, lock-free algorithms using pointers work just fine.
-  It's even possible to allocate memory using `malloc` from within a signal handler (which is necessary
-  because Fil-C heap-allocates stack allocations).
+- Fil-C supports tricky features like pthreads, signal handlers, mmap, C++ exceptions (which implies
+  libunwind), and setjmp/longjmp. All of these features are memory-safe. Because Fil-C pointers are
+  atomic, lock-free algorithms using pointers work just fine. It's even possible to allocate memory
+  using `malloc` from within a signal handler (which is necessary because Fil-C heap-allocates stack
+  allocations).
 
 - Fil-C's protections are designed to be comprehensive. There's no escape hatch short of [delightful
   hacks that also break all memory-safe languages](https://blog.yossarian.net/2021/03/16/totally_safe_transmute-line-by-line).

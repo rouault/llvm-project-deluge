@@ -68,7 +68,8 @@ Fil-C catches all of the stuff that makes memory safety in C hard, like:
 - Lots of other stuff.
 
 Fil-C comes with a reasonably complete POSIX libc and even supports tricky
-features like threads, signal handling, and `mmap`/`munmap`.
+features like threads, signal handling, `mmap`/`munmap`, `longjmp`/`setjmp`,
+and C++ exceptions.
 
 ## Things That Don't Work
 
