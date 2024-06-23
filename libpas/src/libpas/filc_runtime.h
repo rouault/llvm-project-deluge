@@ -1573,7 +1573,7 @@ bool filc_landing_pad(filc_thread* my_thread);
    result of a CallInst returning exceptionally. This is necessary since this only checks that our
    caller will be able to handle exceptional returns, not that our caller's caller also will be able
    to. */
-void filc_resume_unwind(filc_thread* my_thread);
+void filc_resume_unwind(filc_thread* my_thread, filc_origin* origin);
 
 static inline const char* filc_jmp_buf_kind_get_string(filc_jmp_buf_kind kind)
 {

@@ -2413,6 +2413,9 @@ class Pizlonator {
     }
 
     if (isa<ResumeInst>(I)) {
+      // NOTE: This function call is only necessary for checks. If our unwind machinery is working
+      // correctly, then these checks should never fire. But I'm paranoid.
+      CallInst::Create(ResumeUnwind, { MyThread, getOrigin(I->getDebugLoc()) }, "", I);
       BranchInst* BI = BranchInst::Create(ResumeB, I);
       BI->setDebugLoc(I->getDebugLoc());
       I->eraseFromParent();
@@ -2923,7 +2926,7 @@ public:
     Error = M.getOrInsertFunction("filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
-    ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy);
+    ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
     JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
@@ -3162,7 +3165,6 @@ public:
 
         ResumeB = BasicBlock::Create(C, "filc_resume_block", NewF);
         ReturnInst* ResumeReturn = ReturnInst::Create(C, ConstantInt::getTrue(Int1Ty), ResumeB);
-        CallInst::Create(ResumeUnwind, { MyThread }, "", ResumeReturn);
 
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         StructType* MyFrameTy = StructType::get(

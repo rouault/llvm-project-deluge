@@ -4004,16 +4004,21 @@ bool filc_landing_pad(filc_thread* my_thread)
     return result;
 }
 
-void filc_resume_unwind(filc_thread* my_thread)
+void filc_resume_unwind(filc_thread* my_thread, filc_origin *origin)
 {
     filc_frame* current_frame = my_thread->top_frame;
 
-    /* The frame has to have an origin. */
+    /* The compiler always passes non-NULL, but I'm going to keep following the convention that
+       runtime functions that taken an origin can take NULL to indicate that the origin has
+       already been set. */
+    if (origin)
+        current_frame->origin = origin;
+
+    /* The frame has to have an origin (maybe because we set it). */
     PAS_ASSERT(current_frame->origin);
 
-    /* It would be weird if we were called from a frame that didn't support unwinding. That would
-       mean that the compiler screwed up. */
-    PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+    /* NOTE: We cannot assert that the origin catches, because the origin corresponds to the
+       resume instruction. The resume instruction doesn't "catch". */
 
     FILC_CHECK(
         current_frame->origin->function_origin->can_throw,
