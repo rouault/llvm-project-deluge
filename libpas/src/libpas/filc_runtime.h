@@ -566,6 +566,10 @@ struct filc_jmp_buf {
                                     find the frame, and the frame knows about the jmp_buf. */
     filc_native_frame* saved_top_native_frame;
     size_t saved_allocation_roots_num_objects;
+    /* Need to save the GC objects referenced at that point in the stack. These must be marked so
+       long as the jmp_buf is around, and they must be splatted back into place when we longjmp. */
+    size_t num_objects;
+    filc_object* objects[];
 };
 
 #define FILC_FOR_EACH_LOCK(macro) \
@@ -1602,6 +1606,7 @@ static inline const char* filc_jmp_buf_kind_get_longjmp_string(filc_jmp_buf_kind
 /* This creates all of the filc_jmp_buf except for the system_buf, which must be populated by the
    caller. */
 filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind);
+void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* stack);
 
 PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);
 

@@ -4034,16 +4034,35 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
     PAS_ASSERT(kind == filc_jmp_buf_setjmp ||
                kind == filc_jmp_buf__setjmp ||
                kind == filc_jmp_buf_sigsetjmp);
+
+    filc_frame* frame = my_thread->top_frame;
     
-    filc_jmp_buf* result = (filc_jmp_buf*)
-        filc_allocate_special(my_thread, sizeof(filc_jmp_buf), FILC_WORD_TYPE_JMP_BUF)->lower;
+    filc_jmp_buf* result = (filc_jmp_buf*)filc_allocate_special(
+        my_thread,
+        PAS_OFFSETOF(filc_jmp_buf, objects) + frame->num_objects * sizeof(filc_object*),
+        FILC_WORD_TYPE_JMP_BUF)->lower;
 
     result->kind = kind;
-    result->saved_top_frame = my_thread->top_frame;
+    result->saved_top_frame = frame;
     result->saved_top_native_frame = my_thread->top_native_frame;
     result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
+    result->num_objects = frame->num_objects;
+    size_t index;
+    for (index = frame->num_objects; index--;) {
+        filc_store_barrier(my_thread, frame->objects[index]);
+        result->objects[index] = frame->objects[index];
+    }
+
+    PAS_ASSERT(result->num_objects == result->saved_top_frame->num_objects);
 
     return result;
+}
+
+void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* stack)
+{
+    size_t index;
+    for (index = jmp_buf->num_objects; index--;)
+        fugc_mark(stack, jmp_buf->objects[index]);
 }
 
 static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value, filc_jmp_buf_kind kind)
@@ -4099,6 +4118,12 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
         filc_pop_native_frame(my_thread, my_thread->top_native_frame);
     }
     my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
+
+    PAS_ASSERT(my_thread->top_frame == jmp_buf->saved_top_frame);
+    PAS_ASSERT(my_thread->top_frame->num_objects == jmp_buf->num_objects);
+    size_t index;
+    for (index = jmp_buf->num_objects; index--;)
+        my_thread->top_frame->objects[index] = jmp_buf->objects[index];
 
     switch (kind) {
     case filc_jmp_buf_setjmp:

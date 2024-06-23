@@ -187,7 +187,6 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
     case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_FREE: /* dirstreams can be freed. */
     case FILC_WORD_TYPE_DL_HANDLE:
-    case FILC_WORD_TYPE_JMP_BUF:
         break;
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
         mark_outgoing_signal_handler_ptrs(
@@ -203,6 +202,10 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
         filc_ptr_table_array_mark_outgoing_ptrs(
             (filc_ptr_table_array*)filc_object_special_payload(object), stack);
+        break;
+    case FILC_WORD_TYPE_JMP_BUF:
+        filc_jmp_buf_mark_outgoing_ptrs(
+            (filc_jmp_buf*)filc_object_special_payload(object), stack);
         break;
     default:
         pas_log("Got a bad special ptr type: ");
