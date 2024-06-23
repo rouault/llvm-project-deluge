@@ -327,10 +327,17 @@ static void deallocate_tid(unsigned tid)
     first_free_tid = node;
 }
 
+/* NOTE: Unlike most other allocation functions, this does not track the allocated object properly.
+   It registers it with the global thread list. But once the thread is started, it will dispose itself
+   once done, and remove it from the list. So, it's necessary to track threads after creating them
+   somehow, unless it's a thread that cannot be disposed. */
 filc_thread* filc_thread_create(void)
 {
+    static const bool verbose = false;
     filc_object* thread_object = filc_allocate_special_early(sizeof(filc_thread), FILC_WORD_TYPE_THREAD);
     filc_thread* thread = thread_object->lower;
+    if (verbose)
+        pas_log("created thread: %p\n", thread);
     PAS_ASSERT(filc_object_for_special_payload(thread) == thread_object);
 
     pas_system_mutex_construct(&thread->lock);
@@ -398,7 +405,8 @@ void filc_thread_destruct(filc_thread* thread)
 
 void filc_thread_relinquish_tid(filc_thread* thread)
 {
-    PAS_ASSERT(filc_thread_is_entered(thread));
+    /* Have to be entered because deallocate_tid uses bmalloc. */
+    PAS_ASSERT(filc_thread_is_entered(filc_get_my_thread()));
     filc_thread_list_lock_lock();
     deallocate_tid(thread->tid);
     thread->tid = 0;
@@ -810,7 +818,7 @@ void filc_soft_handshake_no_op_callback(filc_thread* my_thread, void* arg)
 void filc_soft_handshake(void (*callback)(filc_thread* my_thread, void* arg), void* arg)
 {
     static const bool verbose = false;
-    
+
     filc_assert_my_thread_is_not_entered();
     filc_soft_handshake_lock_lock();
 
@@ -9941,8 +9949,10 @@ static void* start_thread(void* arg)
 
     thread = (filc_thread*)arg;
 
+    unsigned tid = thread->tid;
+
     if (verbose)
-        pas_log("thread %u starting\n", thread->tid);
+        pas_log("thread %u (%p) starting\n", tid, thread);
 
     PAS_ASSERT(thread->has_started);
     PAS_ASSERT(!thread->has_stopped);
@@ -9986,12 +9996,12 @@ static void* start_thread(void* arg)
     filc_lock_top_native_frame(thread);
 
     if (verbose)
-        pas_log("thread %u calling main function\n", thread->tid);
+        pas_log("thread %u calling main function\n", tid);
 
     PAS_ASSERT(!thread->thread_main(thread, args, rets));
 
     if (verbose)
-        pas_log("thread %u main function returned\n", thread->tid);
+        pas_log("thread %u main function returned\n", tid);
 
     filc_unlock_top_native_frame(thread);
     filc_ptr result = *(filc_ptr*)filc_ptr_ptr(rets);
@@ -10035,7 +10045,7 @@ static void* start_thread(void* arg)
     pas_system_mutex_unlock(&thread->lock);
     
     if (verbose)
-        pas_log("thread %u disposing\n", thread->tid);
+        pas_log("thread %u disposing\n", tid);
 
     filc_thread_dispose(thread);
 
@@ -10050,6 +10060,7 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
 {
     filc_check_function_call(callback_ptr);
     filc_thread* thread = filc_thread_create();
+    filc_thread_track_object(my_thread, filc_object_for_special_payload(thread));
     pas_system_mutex_lock(&thread->lock);
     /* I don't see how this could ever happen. */
     PAS_ASSERT(!thread->thread);
@@ -10083,6 +10094,7 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
         thread->error_starting = true;
         filc_thread_undo_create(thread);
         pas_system_mutex_unlock(&thread->lock);
+        filc_thread_relinquish_tid(thread);
         filc_thread_dispose(thread);
         set_errno(result);
         return filc_ptr_forge_null();

@@ -132,8 +132,8 @@ static void dump_handshake(filc_thread* thread, const char* handshake_name)
     if (verbose >= VERBOSE_HANDSHAKES) {
         if (verbose >= VERBOSE_HANDSHAKE_STACKS)
             pas_lock_lock(&dump_handshake_lock);
-        pas_log("[%d] fugc: %s handshake with thread %u %s\n",
-                pas_getpid(), handshake_name, thread->tid, pollcheck_message_for_thread(thread));
+        pas_log("[%d] fugc: %s handshake with thread %u (%p) %s\n",
+                pas_getpid(), handshake_name, thread->tid, thread, pollcheck_message_for_thread(thread));
         if (verbose >= VERBOSE_HANDSHAKE_STACKS) {
             filc_thread_dump_stack(thread, &pas_log_stream.base);
             pas_lock_unlock(&dump_handshake_lock);
