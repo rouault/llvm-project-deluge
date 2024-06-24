@@ -29,8 +29,11 @@ FILCC = ../build/bin/clang
 
 all: \
 	../$(PREFIXDIR)/lib/libpizlo.so ../$(PREFIXDIR)/lib_test/libpizlo.so \
-	../$(PREFIXDIR)/lib/libfilc_crt.so ../$(PREFIXDIR)/lib_test/libfilc_crt.so \
-	../$(PREFIXDIR)/lib/libfilc_mincrt.so ../$(PREFIXDIR)/lib_test/libfilc_mincrt.so
+	../$(PREFIXDIR)/lib/filc_crt.o ../$(PREFIXDIR)/lib/filc_mincrt.o
+
+clean: common-clean
+	rm -f ../$(PREFIXDIR)/lib/libpizlo.so
+	rm -f ../$(PREFIXDIR)/lib_test/libpizlo.so
 
 include common.mk
 
@@ -41,18 +44,6 @@ include common.mk
 ../$(PREFIXDIR)/lib_test/libpizlo.so: $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS)
 	clang -shared -o ../$(PREFIXDIR)/lib_test/libpizlo.so $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS) \
 		-pthread -lm -lutil
-
-../$(PREFIXDIR)/lib/libfilc_crt.so: $(MAINOBJS)
-	clang -shared -o ../$(PREFIXDIR)/lib/libfilc_crt.so $(MAINOBJS) -pthread
-
-../$(PREFIXDIR)/lib_test/libfilc_crt.so: $(MAINTESTOBJS)
-	clang -shared -o ../$(PREFIXDIR)/lib_test/libfilc_crt.so $(MAINTESTOBJS) -pthread
-
-../$(PREFIXDIR)/lib/libfilc_mincrt.so: $(MINMAINOBJS)
-	clang -shared -o ../$(PREFIXDIR)/lib/libfilc_mincrt.so $(MINMAINOBJS) -pthread
-
-../$(PREFIXDIR)/lib_test/libfilc_mincrt.so: $(MINMAINTESTOBJS)
-	clang -shared -o ../$(PREFIXDIR)/lib_test/libfilc_mincrt.so $(MINMAINTESTOBJS) -pthread
 
 check-pas: build/$(OBJPREFIX)-test_pas
 	LD_LIBRARY_PATH=build build/$(OBJPREFIX)-test_pas

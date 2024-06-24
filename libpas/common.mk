@@ -21,6 +21,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+MAINCFLAGS = -g -O3 -W -Werror $(LIBCMODEFLAGS)
 PASCFLAGS = -g -O3 -W -Werror -MD $(LIBCMODEFLAGS)
 PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare \
 	-Wno-missing-field-initializers -Wno-vla-cxx-extension -Wno-unknown-warning-option \
@@ -28,7 +29,7 @@ PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compa
 FILCFLAGS = -O3 -g -W -Werror -MD $(LIBCMODEFLAGS)
 
 PASSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
-MAINSRCS = $(wildcard ../filc/main/*.c)
+MAINSRC = ../filc/main/main.c
 FILSRCS = $(wildcard ../filc/src/*.c)
 TESTPASSRCS = $(wildcard src/test/*.cpp)
 VERIFIERSRCS = $(wildcard src/verifier/*.cpp)
@@ -40,15 +41,6 @@ PASPIZLOTESTOBJS = \
 PASTESTOBJS = \
 	$(patsubst %.c,build/$(OBJPREFIX)-pas-test-%.o,$(notdir $(PASSRCS)))
 
-MAINOBJS = \
-	$(patsubst %.c,build/$(OBJPREFIX)-main-release-%.o,$(notdir $(MAINSRCS)))
-MAINTESTOBJS = \
-	$(patsubst %.c,build/$(OBJPREFIX)-main-test-%.o,$(notdir $(MAINSRCS)))
-MINMAINOBJS = \
-	$(patsubst %.c,build/$(OBJPREFIX)-min-main-release-%.o,$(notdir $(MAINSRCS)))
-MINMAINTESTOBJS = \
-	$(patsubst %.c,build/$(OBJPREFIX)-min-main-test-%.o,$(notdir $(MAINSRCS)))
-
 FILPIZLOOBJS = $(patsubst %.c,build/$(OBJPREFIX)-fil-pizlo-%.o,$(notdir $(FILSRCS)))
 
 TESTPASOBJS = $(patsubst %.cpp,build/$(OBJPREFIX)-test_pas-%.o,$(notdir $(TESTPASSRCS)))
@@ -56,10 +48,12 @@ VERIFIEROBJS = $(patsubst %.cpp,build/$(OBJPREFIX)-verifier-%.o,$(notdir $(VERIF
 
 -include $(wildcard build/*.d)
 
-clean:
+common-clean:
 	rm -rf build
 	rm -f src/libpas/filc_native_forwarders.c
 	rm -f src/libpas/filc_native.h
+	rm -f ../$(PREFIXDIR)/lib/filc_crt.o
+	rm -f ../$(PREFIXDIR)/lib/filc_mincrt.o
 
 build/$(OBJPREFIX)-pas-pizlo-release-%.o: src/libpas/%.c
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1
@@ -69,20 +63,6 @@ build/$(OBJPREFIX)-pas-pizlo-test-%.o: src/libpas/%.c
 
 build/$(OBJPREFIX)-pas-test-%.o: src/libpas/%.c
 	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1
-
-build/$(OBJPREFIX)-main-release-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=1 -Isrc/libpas
-
-build/$(OBJPREFIX)-main-test-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=1 -DENABLE_PAS_TESTING=1 \
-		-Isrc/libpas
-
-build/$(OBJPREFIX)-min-main-release-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=0 -Isrc/libpas
-
-build/$(OBJPREFIX)-min-main-test-%.o: ../filc/main/%.c
-	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DPAS_FILC=1 -DUSE_LIBC=0 -DENABLE_PAS_TESTING=1 \
-		-Isrc/libpas
 
 build/$(OBJPREFIX)-fil-pizlo-%.o: ../filc/src/%.c ../build/bin/clang
 	$(FILCC) $(FILCFLAGS) -c -o $@ $<
@@ -96,6 +76,12 @@ build/$(OBJPREFIX)-verifier-%.o: src/verifier/%.cpp
 build/$(OBJPREFIX)-pas-pizlo-release-filc_runtime.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-pizlo-test-filc_runtime.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-test-filc_runtime.o: src/libpas/filc_native.h
+
+../$(PREFIXDIR)/lib/filc_crt.o: $(MAINSRC)
+	$(PASCC) -c -o ../pizfix/lib/filc_crt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=1
+
+../$(PREFIXDIR)/lib/filc_mincrt.o: $(MAINSRC)
+	$(PASCC) -c -o ../pizfix/lib/filc_mincrt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=0
 
 src/libpas/filc_native.h: src/libpas/generate_pizlonated_forwarders.rb
 	ruby src/libpas/generate_pizlonated_forwarders.rb src/libpas/filc_native.h

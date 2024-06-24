@@ -11,7 +11,8 @@ static bool callback(zstack_frame_description description,
 {
     ZASSERT(arg == (void*)666);
     ZASSERT(description.can_throw);
-    if (!strcmp(description.filename, "<crt>")) {
+    if (!strcmp(description.filename, "<runtime>") &&
+        !strcmp(description.function_name, "start_program")) {
         ZASSERT(!description.can_catch);
         ZASSERT(!description.personality_function);
         ZASSERT(!description.eh_data);

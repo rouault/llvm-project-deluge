@@ -87,11 +87,10 @@ fi
      $MAKE -j `sysctl -n hw.ncpu` &&
      $MAKE install)
 
-# FIXME: Should change how filc_crt works on Darwin so that I don't have to --disable-strip.
 (cd deluded-openssh-portable &&
      ($MAKE distclean || echo whatever) &&
      autoreconf &&
-     CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix --disable-strip &&
+     CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix &&
      $MAKE -j `sysctl -n hw.ncpu` &&
      $MAKE install)
 

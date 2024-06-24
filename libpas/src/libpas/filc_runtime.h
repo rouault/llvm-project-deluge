@@ -196,10 +196,10 @@ typedef uint16_t filc_object_flags;
     filc_ptr args, \
     filc_ptr rets
 
-#define FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_num_objects, passed_filename) \
+#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_objects) \
     static const filc_function_origin function_ ## origin_name = { \
         .function = (function_name), \
-        .filename = (passed_filename), \
+        .filename = "<runtime>", \
         .num_objects = (passed_num_objects), \
         .personality_getter = NULL, \
         .can_throw = true, \
@@ -211,9 +211,6 @@ typedef uint16_t filc_object_flags;
         .line = 0, \
         .column = 0 \
     }
-
-#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_objects) \
-    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_num_objects, "<runtime>")
 
 struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
     pas_uint128 word;
@@ -1615,6 +1612,11 @@ PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lo
 PAS_API bool filc_get_bool_env(const char* name, bool default_value);
 PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);
 PAS_API size_t filc_get_size_env(const char* name, size_t default_value);
+
+void filc_start_program(int argc, char** argv,
+                        filc_ptr pizlonated___init_libc(filc_global_initialization_context*),
+                        filc_ptr pizlonated_exit(filc_global_initialization_context*),
+                        filc_ptr pizlonated_main(filc_global_initialization_context*));
 
 PAS_END_EXTERN_C;
 

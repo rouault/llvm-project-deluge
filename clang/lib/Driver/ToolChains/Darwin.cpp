@@ -3325,7 +3325,10 @@ static void addDefaultCRTLinkArgs(const Darwin &D, const ArgList &Args,
     CmdArgs.push_back("-lcrt1.10.6.o");
   // darwin_crt2 spec is empty.
 
-  CmdArgs.push_back("-lfilc_crt");
+  SmallString<128> P(D.getDriver().InstalledDir);
+  llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+  llvm::sys::path::append(P, "filc_crt.o");
+  CmdArgs.push_back(Args.MakeArgString(P));
 }
 
 void Darwin::addStartObjectFileArgs(const ArgList &Args,
