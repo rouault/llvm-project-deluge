@@ -183,7 +183,7 @@ static PAS_ALWAYS_INLINE void verse_heap_notify_allocation(uintptr_t bytes_alloc
         uintptr_t old_live_bytes;
 
         old_live_bytes = verse_heap_live_bytes;
-        new_live_bytes = verse_heap_live_bytes + bytes_allocated;
+        new_live_bytes = old_live_bytes + bytes_allocated;
         PAS_ASSERT(new_live_bytes > old_live_bytes);
 
         if (pas_compare_and_swap_uintptr_weak(&verse_heap_live_bytes, old_live_bytes, new_live_bytes))
@@ -206,7 +206,7 @@ static PAS_ALWAYS_INLINE void verse_heap_notify_deallocation(uintptr_t bytes_dea
 		uintptr_t new_live_bytes;
         
         old_live_bytes = verse_heap_live_bytes;
-        new_live_bytes = verse_heap_live_bytes - bytes_deallocated;
+        new_live_bytes = old_live_bytes - bytes_deallocated;
         PAS_ASSERT(new_live_bytes < old_live_bytes);
 
         if (pas_compare_and_swap_uintptr_weak(&verse_heap_live_bytes, old_live_bytes, new_live_bytes))
