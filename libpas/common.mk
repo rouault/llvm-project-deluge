@@ -78,10 +78,10 @@ build/$(OBJPREFIX)-pas-pizlo-test-filc_runtime.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-test-filc_runtime.o: src/libpas/filc_native.h
 
 ../$(PREFIXDIR)/lib/filc_crt.o: $(MAINSRC)
-	$(PASCC) -c -o ../pizfix/lib/filc_crt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=1
+	$(PASCC) -c -o ../$(PREFIXDIR)/lib/filc_crt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=1
 
 ../$(PREFIXDIR)/lib/filc_mincrt.o: $(MAINSRC)
-	$(PASCC) -c -o ../pizfix/lib/filc_mincrt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=0
+	$(PASCC) -c -o ../$(PREFIXDIR)/lib/filc_mincrt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=0
 
 src/libpas/filc_native.h: src/libpas/generate_pizlonated_forwarders.rb
 	ruby src/libpas/generate_pizlonated_forwarders.rb src/libpas/filc_native.h
