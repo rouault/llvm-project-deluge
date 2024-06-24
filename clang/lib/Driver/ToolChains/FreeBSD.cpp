@@ -343,11 +343,19 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                      options::OPT_r)) {
       CmdArgs.push_back("-lc");
-      if (!Args.hasArg(options::OPT_shared))
-        CmdArgs.push_back("-lfilc_crt");
+      if (!Args.hasArg(options::OPT_shared)) {
+        SmallString<128> P(ToolChain.getDriver().InstalledDir);
+        llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+        llvm::sys::path::append(P, "filc_crt.o");
+        CmdArgs.push_back(Args.MakeArgString(P));
+      }
     } else {
-      if (!Args.hasArg(options::OPT_shared))
-        CmdArgs.push_back("-lfilc_mincrt");
+      if (!Args.hasArg(options::OPT_shared)) {
+        SmallString<128> P(ToolChain.getDriver().InstalledDir);
+        llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+        llvm::sys::path::append(P, "filc_mincrt.o");
+        CmdArgs.push_back(Args.MakeArgString(P));
+      }
     }
     if (ToolChain.ShouldLinkCXXStdlib(Args))
       ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
