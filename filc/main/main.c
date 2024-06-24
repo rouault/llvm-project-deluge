@@ -80,9 +80,9 @@ int main(int argc, char** argv)
     filc_enter(my_thread);
 
 #if USE_LIBC
-    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", "<crt>");
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", 0, "<crt>");
 #else /* USE_LIBC -> so !USE_LIBC */
-    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", "<mincrt>");
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin, "main", 0, "<mincrt>");
 #endif /* USE_LIBC -> so end of !USE_LIBC */
 
     struct {
@@ -91,7 +91,6 @@ int main(int argc, char** argv)
     pas_zero_memory(&actual_frame, sizeof(actual_frame));
     filc_frame* frame = (filc_frame*)&actual_frame;
     frame->origin = &origin;
-    frame->num_objects = 0;
     filc_push_frame(my_thread, frame);
 
     filc_native_frame native_frame;

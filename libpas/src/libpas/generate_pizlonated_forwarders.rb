@@ -308,7 +308,6 @@ when "src/libpas/filc_native_forwarders.c"
             | signature |
             outp.puts "static bool native_thunk_#{signature.name}(PIZLONATED_SIGNATURE)"
             outp.puts "{"
-            outp.puts "    FILC_DEFINE_RUNTIME_ORIGIN(origin, \"#{signature.name}\");"
             numObjects = 1
             signature.args.each {
                 | arg |
@@ -316,6 +315,7 @@ when "src/libpas/filc_native_forwarders.c"
                     numObjects += 1
                 end
             }
+            outp.puts "    FILC_DEFINE_RUNTIME_ORIGIN(origin, \"#{signature.name}\", #{numObjects});"
             outp.puts "    struct {"
             outp.puts "        FILC_FRAME_BODY;"
             outp.puts "        filc_object* objects[#{numObjects}];"
@@ -323,7 +323,6 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "    pas_zero_memory(&actual_frame, sizeof(actual_frame));"
             outp.puts "    filc_frame* frame = (filc_frame*)&actual_frame;"
             outp.puts "    frame->origin = &origin;"
-            outp.puts "    frame->num_objects = #{numObjects};"
             outp.puts "    filc_native_frame native_frame;"
             outp.puts "    filc_push_frame(my_thread, frame);"
             outp.puts "    filc_push_native_frame(my_thread, &native_frame);"

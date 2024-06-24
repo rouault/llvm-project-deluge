@@ -196,10 +196,11 @@ typedef uint16_t filc_object_flags;
     filc_ptr args, \
     filc_ptr rets
 
-#define FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_filename) \
+#define FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_num_objects, passed_filename) \
     static const filc_function_origin function_ ## origin_name = { \
         .function = (function_name), \
         .filename = (passed_filename), \
+        .num_objects = (passed_num_objects), \
         .personality_getter = NULL, \
         .can_throw = true, \
         .can_catch = false, \
@@ -211,8 +212,8 @@ typedef uint16_t filc_object_flags;
         .column = 0 \
     }
 
-#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name) \
-    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, "<runtime>")
+#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_objects) \
+    FILC_DEFINE_RUNTIME_ORIGIN_WITH_FILENAME(origin_name, function_name, passed_num_objects, "<runtime>")
 
 struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
     pas_uint128 word;
@@ -265,6 +266,8 @@ struct filc_return_buffer {
 struct filc_function_origin {
     const char* function;
     const char* filename;
+
+    unsigned num_objects;
     
     /* If this is not NULL, then the filc_origin is really a filc_origin_with_eh, so that it includes
        the eh_data_getter.
@@ -308,8 +311,7 @@ struct filc_origin_with_eh {
 
 #define FILC_FRAME_BODY \
     filc_frame* parent; \
-    const filc_origin* origin; \
-    size_t num_objects /* FIXME: This should be in function_origin! */
+    const filc_origin* origin
 
 struct filc_frame {
     FILC_FRAME_BODY;

@@ -61,50 +61,9 @@ fi
            -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON \
            -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DLIBCXX_HAS_PTHREAD_API=ON \
            -DLIBCXX_HAS_MUSL_LIBC=ON -DLLVM_ENABLE_ZSTD=OFF \
-           -DLIBCXX_FORCE_LIBCXXABI=ON -DLLVM_TARGETS_TO_BUILD=$LLVMARCH &&
-     ninja clang)
+           -DLIBCXX_FORCE_LIBCXXABI=ON -DLLVM_TARGETS_TO_BUILD=$LLVMARCH)
 
-(cd libpas && ./build.sh)
-
-case $OS in
-    macosx)
-        MUSL_DYLIB_OPT=-dynamiclib
-        MUSL_DYLIB_EXT=dylib
-        MUSL_PREFIX=pizlonated_
-        ;;
-    freebsd)
-        MUSL_DYLIB_OPT="-shared -Wl,-soname,libc.so.666"
-        MUSL_DYLIB_EXT=so.666
-        MUSL_PREFIX=
-        ;;
-    openbsd)
-        MUSL_DYLIB_OPT=-shared
-        MUSL_DYLIB_EXT=so
-        MUSL_PREFIX=pizlonated_
-        ;;
-    *)
-        echo "Should not get here"
-        exit 1
-        ;;
-esac
-
-(cd musl && \
-     CC="$CCPREFIX$PWD/../build/bin/clang" ./configure --target=$ARCH \
-         --prefix=$PWD/../pizfix --dylib-opt="$MUSL_DYLIB_OPT" \
-         --dylib-ext=$MUSL_DYLIB_EXT --libc-prefix=$MUSL_PREFIX && \
-     $MAKE clean && \
-     $MAKE -j `sysctl -n hw.ncpu` && \
-     $MAKE install)
-
-if test $OS = freebsd
-then
-    (cd pizfix/lib && ln -s libc.so.666 libc.so)
-fi
-
-(cd build && ninja runtimes-clean && ninja runtimes)
-./install-cxx-$OS.sh
-
-filc/run-tests
+./simple_build.sh
 
 (cd zlib-1.3 &&
      ($MAKE distclean || echo whatever) &&

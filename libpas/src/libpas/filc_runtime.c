@@ -973,7 +973,7 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
     if (was_top_native_frame_unlocked)
         filc_lock_top_native_frame(my_thread);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "call_signal_handler");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "call_signal_handler", 0);
 
     struct {
         FILC_FRAME_BODY;
@@ -1282,7 +1282,9 @@ void filc_thread_mark_roots(filc_thread* my_thread)
 
     filc_frame* frame;
     for (frame = my_thread->top_frame; frame; frame = frame->parent) {
-        for (index = frame->num_objects; index--;) {
+        PAS_ASSERT(frame->origin);
+        PAS_ASSERT(frame->origin->function_origin);
+        for (index = frame->origin->function_origin->num_objects; index--;) {
             if (verbose)
                 pas_log("Marking thread root %p\n", frame->objects[index]);
             fugc_mark(&my_thread->mark_stack, frame->objects[index]);
@@ -2775,7 +2777,7 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     if (passed_origin)
         my_thread->top_frame->origin = passed_origin;
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 1);
     struct {
         FILC_FRAME_BODY;
         filc_object* objects[1];
@@ -2783,7 +2785,6 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     pas_zero_memory(&actual_frame, sizeof(actual_frame));
     filc_frame* frame = (filc_frame*)&actual_frame;
     frame->origin = &origin;
-    frame->num_objects = 1;
     frame->objects[0] = filc_ptr_object(ptr);
     filc_push_frame(my_thread, frame);
     
@@ -2878,7 +2879,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     filc_object* dst_object = filc_ptr_object(dst);
     filc_object* src_object = filc_ptr_object(src);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 2);
     struct {
         FILC_FRAME_BODY;
         filc_object* objects[2];
@@ -2886,7 +2887,6 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     pas_zero_memory(&actual_frame, sizeof(actual_frame));
     filc_frame* frame = (filc_frame*)&actual_frame;
     frame->origin = &origin;
-    frame->num_objects = 2;
     frame->objects[0] = dst_object;
     frame->objects[1] = src_object;
     filc_push_frame(my_thread, frame);
@@ -3267,7 +3267,7 @@ static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONAT
         return;
     }
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_ctor");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_ctor", 0);
 
     struct {
         FILC_FRAME_BODY;
@@ -3346,7 +3346,7 @@ void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE))
     
     filc_enter(my_thread);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_dtor");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_dtor", 0);
 
     struct {
         FILC_FRAME_BODY;
@@ -3957,7 +3957,7 @@ bool filc_landing_pad(filc_thread* my_thread)
     filc_frame* current_frame = my_thread->top_frame;
     PAS_ASSERT(current_frame);
     
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "landing_pad");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "landing_pad", 0);
     struct {
         FILC_FRAME_BODY;
     } actual_frame;
@@ -4041,24 +4041,27 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
                kind == filc_jmp_buf_sigsetjmp);
 
     filc_frame* frame = my_thread->top_frame;
+    PAS_ASSERT(frame->origin);
+    PAS_ASSERT(frame->origin->function_origin);
     
     filc_jmp_buf* result = (filc_jmp_buf*)filc_allocate_special(
         my_thread,
-        PAS_OFFSETOF(filc_jmp_buf, objects) + frame->num_objects * sizeof(filc_object*),
+        PAS_OFFSETOF(filc_jmp_buf, objects)
+        + frame->origin->function_origin->num_objects * sizeof(filc_object*),
         FILC_WORD_TYPE_JMP_BUF)->lower;
 
     result->kind = kind;
     result->saved_top_frame = frame;
     result->saved_top_native_frame = my_thread->top_native_frame;
     result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
-    result->num_objects = frame->num_objects;
+    result->num_objects = frame->origin->function_origin->num_objects;
     size_t index;
-    for (index = frame->num_objects; index--;) {
+    for (index = frame->origin->function_origin->num_objects; index--;) {
         filc_store_barrier(my_thread, frame->objects[index]);
         result->objects[index] = frame->objects[index];
     }
 
-    PAS_ASSERT(result->num_objects == result->saved_top_frame->num_objects);
+    PAS_ASSERT(result->num_objects == result->saved_top_frame->origin->function_origin->num_objects);
 
     return result;
 }
@@ -4097,11 +4100,12 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
          current_frame = current_frame->parent) {
         PAS_ASSERT(current_frame->origin);
         PAS_ASSERT(current_frame->origin->function_origin);
-        PAS_ASSERT(current_frame->origin->function_origin->num_setjmps <= current_frame->num_objects);
+        PAS_ASSERT(current_frame->origin->function_origin->num_setjmps
+                   <= current_frame->origin->function_origin->num_objects);
         unsigned index;
         for (index = current_frame->origin->function_origin->num_setjmps; index-- && !found_frame;) {
-            unsigned object_index = current_frame->num_objects - 1 - index;
-            PAS_ASSERT(object_index < current_frame->num_objects);
+            unsigned object_index = current_frame->origin->function_origin->num_objects - 1 - index;
+            PAS_ASSERT(object_index < current_frame->origin->function_origin->num_objects);
             if (filc_object_for_special_payload(jmp_buf) == current_frame->objects[object_index]) {
                 PAS_ASSERT(current_frame == jmp_buf->saved_top_frame);
                 found_frame = true;
@@ -4125,7 +4129,7 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
     my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
 
     PAS_ASSERT(my_thread->top_frame == jmp_buf->saved_top_frame);
-    PAS_ASSERT(my_thread->top_frame->num_objects == jmp_buf->num_objects);
+    PAS_ASSERT(my_thread->top_frame->origin->function_origin->num_objects == jmp_buf->num_objects);
     size_t index;
     for (index = jmp_buf->num_objects; index--;)
         my_thread->top_frame->objects[index] = jmp_buf->objects[index];
@@ -10002,7 +10006,7 @@ static void* start_thread(void* arg)
     thread->tlc_node = verse_heap_get_thread_local_cache_node();
     thread->tlc_node_version = pas_thread_local_cache_node_version(thread->tlc_node);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "start_thread");
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "start_thread", 0);
 
     struct {
         FILC_FRAME_BODY;

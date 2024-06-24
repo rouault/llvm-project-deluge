@@ -443,6 +443,7 @@ class Pizlonator {
       FunctionOriginTy,
       { getString(getFunctionName(OldF)),
         OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
+        ConstantInt::get(Int32Ty, FrameSize),
         Personality, ConstantInt::get(Int8Ty, CanThrow), ConstantInt::get(Int8Ty, CanCatch),
         ConstantInt::get(Int32Ty, NumSetjmps) });
     GlobalVariable* Result = new GlobalVariable(
@@ -1265,7 +1266,7 @@ class Pizlonator {
   void recordObjectAtIndex(Value* Object, size_t FrameIndex, Instruction* InsertBefore) {
     assert(FrameIndex < FrameSize);
     Instruction* ObjectsPtr = GetElementPtrInst::Create(
-      FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
+      FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
       "filc_frame_objects", InsertBefore);
     ObjectsPtr->setDebugLoc(InsertBefore->getDebugLoc());
     Instruction* ObjectPtr = GetElementPtrInst::Create(
@@ -2826,12 +2827,12 @@ public:
     
     LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
     FunctionOriginTy = StructType::create(
-      {LowRawPtrTy, LowRawPtrTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
+      {LowRawPtrTy, LowRawPtrTy, Int32Ty, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
     OriginTy = StructType::create({LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
     OriginWithEHTy = StructType::create(
       {LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy}, "filc_origin_with_eh");
     ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");
-    FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy}, "filc_frame");
+    FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "filc_frame");
     ThreadTy = StructType::create(
       {Int8Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters)}, "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
@@ -3168,7 +3169,7 @@ public:
 
         Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         StructType* MyFrameTy = StructType::get(
-          C, { LowRawPtrTy, LowRawPtrTy, IntPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
+          C, { LowRawPtrTy, LowRawPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
         Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
         Value* ThreadTopFramePtr = GetElementPtrInst::Create(
           ThreadTy, NewF->getArg(0),
@@ -3182,15 +3183,9 @@ public:
           InsertionPoint);
         new StoreInst(Frame, ThreadTopFramePtr, InsertionPoint);
         new StoreInst(
-          LowRawNull,
+          getOrigin(DebugLoc()),
           GetElementPtrInst::Create(
             FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-            "filc_frame_parent_ptr", InsertionPoint),
-          InsertionPoint);
-        new StoreInst(
-          ConstantInt::get(IntPtrTy, FrameSize),
-          GetElementPtrInst::Create(
-            FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
             "filc_frame_parent_ptr", InsertionPoint),
           InsertionPoint);
         for (size_t FrameIndex = FrameSize; FrameIndex--;)
