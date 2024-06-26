@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021-2022 Apple Inc. All rights reserved.
- * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,6 +28,7 @@
 #define BMALLOC_HEAP_H
 
 #include "bmalloc_heap_ref.h"
+#include "pas_allocation_config.h"
 #include "pas_primitive_heap_ref.h"
 #include "pas_reallocate_free_mode.h"
 #include "ue_include/bmalloc_heap_ue.h"
@@ -128,6 +129,8 @@ PAS_API pas_heap* bmalloc_force_auxiliary_heap_into_reserved_memory(pas_primitiv
 
 PAS_BAPI size_t bmalloc_heap_ref_get_type_size(pas_heap_ref* heap_ref);
 PAS_API pas_heap* bmalloc_get_heap(void* ptr);
+
+PAS_API void bmalloc_initialize_allocation_config(pas_allocation_config* allocation_config);
 
 PAS_END_EXTERN_C;
 

@@ -40,12 +40,13 @@ def underbarType(type)
 end
 
 class Signature
-    attr_reader :name, :args, :rets
+    attr_reader :name, :args, :rets, :defines
 
-    def initialize(name, args, rets)
+    def initialize(name, args, rets, defines)
         @name = name
         @args = args
         @rets = rets
+        @defines = defines
 
         args.each_with_index {
             | arg, index |
@@ -83,12 +84,25 @@ end
 
 $signatureMap = {}
 $signatures = []
+$defines = []
 
 def addSig(rets, name, *args)
     raise if $signatureMap[name]
-    sig = Signature.new(name, args, rets)
+    sig = Signature.new(name, args, rets, $defines.dup)
     $signatures << sig
     $signatureMap[name] = sig
+end
+
+def forMusl
+    $defines.push "FILC_MUSL"
+    yield
+    $defines.pop
+end
+
+def forFilBSD
+    $defines.push "FILC_FILBSD"
+    yield
+    $defines.pop
 end
 
 addSig "filc_ptr", "zalloc", "size_t"
@@ -161,16 +175,13 @@ addSig "int", "zsys_clock_gettime", "int", "filc_ptr"
 addSig "int", "zsys_fstatat", "int", "filc_ptr", "filc_ptr", "int"
 addSig "int", "zsys_fstat", "int", "filc_ptr"
 addSig "int", "zsys_fcntl", "int", "int", "..."
-addSig "filc_ptr", "zsys_getpwuid", "unsigned"
 addSig "int", "zsys_sigaction", "int", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_isatty", "int"
 addSig "int", "zsys_pipe", "filc_ptr"
 addSig "int", "zsys_select", "int", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
 addSig "void", "zsys_sched_yield"
 addSig "int", "zsys_socket", "int", "int", "int"
 addSig "int", "zsys_setsockopt", "int", "int", "int", "filc_ptr", "unsigned"
 addSig "int", "zsys_bind", "int", "filc_ptr", "unsigned"
-addSig "int", "zsys_getaddrinfo", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_connect", "int", "filc_ptr", "unsigned"
 addSig "int", "zsys_getsockname", "int", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_getsockopt", "int", "int", "int", "filc_ptr", "filc_ptr"
@@ -179,7 +190,6 @@ addSig "ssize_t", "zsys_sendto", "int", "filc_ptr", "size_t", "int", "filc_ptr",
 addSig "ssize_t", "zsys_recvfrom", "int", "filc_ptr", "size_t", "int", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_getrlimit", "int", "filc_ptr"
 addSig "unsigned", "zsys_umask", "unsigned"
-addSig "int", "zsys_uname", "filc_ptr"
 addSig "int", "zsys_getitimer", "int", "filc_ptr"
 addSig "int", "zsys_setitimer", "int", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_pause"
@@ -190,20 +200,6 @@ addSig "int", "zsys_raise", "int"
 addSig "int", "zsys_dup", "int"
 addSig "int", "zsys_dup2", "int", "int"
 addSig "int", "zsys_sigprocmask", "int", "filc_ptr", "filc_ptr"
-addSig "filc_ptr", "zsys_getpwnam", "filc_ptr"
-addSig "int", "zsys_setgroups", "size_t", "filc_ptr"
-addSig "filc_ptr", "zsys_opendir", "filc_ptr"
-addSig "filc_ptr", "zsys_fdopendir", "int"
-addSig "int", "zsys_closedir", "filc_ptr"
-addSig "filc_ptr", "zsys_readdir", "filc_ptr"
-addSig "void", "zsys_rewinddir", "filc_ptr"
-addSig "void", "zsys_seekdir", "filc_ptr", "long"
-addSig "long", "zsys_telldir", "filc_ptr"
-addSig "int", "zsys_dirfd", "filc_ptr"
-addSig "void", "zsys_closelog"
-addSig "void", "zsys_openlog", "filc_ptr", "int", "int"
-addSig "int", "zsys_setlogmask", "int"
-addSig "void", "zsys_syslog", "int", "filc_ptr"
 addSig "int", "zsys_chdir", "filc_ptr"
 addSig "int", "zsys_fork"
 addSig "int", "zsys_waitpid", "int", "filc_ptr", "int"
@@ -221,35 +217,18 @@ addSig "int", "zsys_setgid", "unsigned"
 addSig "int", "zsys_setegid", "unsigned"
 addSig "int", "zsys_setregid", "unsigned", "unsigned"
 addSig "int", "zsys_nanosleep", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_getgroups", "int", "filc_ptr"
-addSig "int", "zsys_getgrouplist", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_initgroups", "filc_ptr", "unsigned"
 addSig "long", "zsys_readlink", "filc_ptr", "filc_ptr", "size_t"
-addSig "int", "zsys_openpty", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_ttyname_r", "int", "filc_ptr", "size_t"
-addSig "filc_ptr", "zsys_getgrnam", "filc_ptr"
 addSig "int", "zsys_chown", "filc_ptr", "unsigned", "unsigned"
 addSig "int", "zsys_chmod", "filc_ptr", "unsigned"
-addSig "void", "zsys_endutxent"
-addSig "filc_ptr", "zsys_getutxent"
-addSig "filc_ptr", "zsys_getutxid", "filc_ptr"
-addSig "filc_ptr", "zsys_getutxline", "filc_ptr"
-addSig "filc_ptr", "zsys_pututxline", "filc_ptr"
-addSig "void", "zsys_setutxent"
-addSig "filc_ptr", "zsys_getlastlogx", "unsigned", "filc_ptr"
-addSig "filc_ptr", "zsys_getlastlogxbyname", "filc_ptr", "filc_ptr"
 addSig "ssize_t", "zsys_sendmsg", "int", "filc_ptr", "int"
 addSig "ssize_t", "zsys_recvmsg", "int", "filc_ptr", "int"
 addSig "int", "zsys_fchmod", "int", "unsigned"
 addSig "int", "zsys_rename", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_unlink", "filc_ptr"
 addSig "int", "zsys_link", "filc_ptr", "filc_ptr"
-addSig "long", "zsys_sysconf_override", "int"
-addSig "int", "zsys_numcores"
 addSig "filc_ptr", "zsys_mmap", "filc_ptr", "size_t", "int", "int", "int", "long"
 addSig "int", "zsys_munmap", "filc_ptr", "size_t"
 addSig "int", "zsys_ftruncate", "int", "long"
-addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
 addSig "filc_ptr", "zsys_getcwd", "filc_ptr", "size_t"
 addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned"
 addSig "filc_ptr", "zsys_dlopen", "filc_ptr", "int"
@@ -258,8 +237,6 @@ addSig "int", "zsys_poll", "filc_ptr", "unsigned long", "int"
 addSig "int", "zsys_faccessat", "int", "filc_ptr", "int", "int"
 addSig "int", "zsys_sigwait", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_fsync", "int"
-addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_shutdown", "int", "int"
 addSig "int", "zsys_rmdir", "filc_ptr"
 addSig "int", "zsys_futimens", "int", "filc_ptr"
@@ -271,6 +248,45 @@ addSig "filc_ptr", "zthread_get_cookie", "filc_ptr"
 addSig "void", "zthread_set_self_cookie", "filc_ptr"
 addSig "filc_ptr", "zthread_create", "filc_ptr", "filc_ptr"
 addSig "bool", "zthread_join", "filc_ptr", "filc_ptr"
+forMusl {
+    addSig "filc_ptr", "zsys_getpwuid", "unsigned"
+    addSig "int", "zsys_isatty", "int"
+    addSig "int", "zsys_getaddrinfo", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_uname", "filc_ptr"
+    addSig "filc_ptr", "zsys_getpwnam", "filc_ptr"
+    addSig "int", "zsys_setgroups", "size_t", "filc_ptr"
+    addSig "filc_ptr", "zsys_opendir", "filc_ptr"
+    addSig "filc_ptr", "zsys_fdopendir", "int"
+    addSig "int", "zsys_closedir", "filc_ptr"
+    addSig "filc_ptr", "zsys_readdir", "filc_ptr"
+    addSig "void", "zsys_rewinddir", "filc_ptr"
+    addSig "void", "zsys_seekdir", "filc_ptr", "long"
+    addSig "long", "zsys_telldir", "filc_ptr"
+    addSig "int", "zsys_dirfd", "filc_ptr"
+    addSig "void", "zsys_closelog"
+    addSig "void", "zsys_openlog", "filc_ptr", "int", "int"
+    addSig "int", "zsys_setlogmask", "int"
+    addSig "void", "zsys_syslog", "int", "filc_ptr"
+    addSig "int", "zsys_getgroups", "int", "filc_ptr"
+    addSig "int", "zsys_getgrouplist", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_initgroups", "filc_ptr", "unsigned"
+    addSig "int", "zsys_openpty", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_ttyname_r", "int", "filc_ptr", "size_t"
+    addSig "filc_ptr", "zsys_getgrnam", "filc_ptr"
+    addSig "void", "zsys_endutxent"
+    addSig "filc_ptr", "zsys_getutxent"
+    addSig "filc_ptr", "zsys_getutxid", "filc_ptr"
+    addSig "filc_ptr", "zsys_getutxline", "filc_ptr"
+    addSig "filc_ptr", "zsys_pututxline", "filc_ptr"
+    addSig "void", "zsys_setutxent"
+    addSig "filc_ptr", "zsys_getlastlogx", "unsigned", "filc_ptr"
+    addSig "filc_ptr", "zsys_getlastlogxbyname", "filc_ptr", "filc_ptr"
+    addSig "long", "zsys_sysconf_override", "int"
+    addSig "int", "zsys_numcores"
+    addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
+    addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+}
 
 case ARGV[0]
 when "src/libpas/filc_native.h"
@@ -282,6 +298,9 @@ when "src/libpas/filc_native.h"
         outp.puts "#include \"filc_runtime.h\""
         $signatures.each {
             | signature |
+            unless signature.defines.empty?
+                outp.puts("#if " + signature.defines.join(" && "))
+            end
             outp.print "PAS_API #{signature.nativeReturnType} "
             outp.print "filc_native_#{signature.name}(filc_thread* my_thread"
             unless signature.args.empty?
@@ -295,6 +314,9 @@ when "src/libpas/filc_native.h"
                            }.join(', '))
             end
             outp.puts ");"
+            unless signature.defines.empty?
+                outp.puts("#endif /* " + signature.defines.join(" && ") + " */")
+            end
         }
         outp.puts "#endif /* FILC_NATIVE_H */"
     }
@@ -306,6 +328,9 @@ when "src/libpas/filc_native_forwarders.c"
         outp.puts "#include \"filc_native.h\""
         $signatures.each {
             | signature |
+            unless signature.defines.empty?
+                outp.puts("#if " + signature.defines.join(" && "))
+            end
             outp.puts "static bool native_thunk_#{signature.name}(PIZLONATED_SIGNATURE)"
             outp.puts "{"
             numObjects = 1
@@ -391,6 +416,9 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "        &function_object_#{signature.name},"
             outp.puts "        &native_thunk_#{signature.name});"
             outp.puts "}"
+            unless signature.defines.empty?
+                outp.puts("#endif /* " + signature.defines.join(" && ") + " */")
+            end
         }
     }
 

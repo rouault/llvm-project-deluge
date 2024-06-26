@@ -24,6 +24,8 @@
  */
 
 #include <stdfil.h>
+#include <pizlonated_common_syscalls.h>
+#include <pizlonated_runtime.h>
 
 _Bool zinbounds(void* ptr)
 {

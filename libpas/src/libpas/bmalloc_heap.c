@@ -460,6 +460,31 @@ pas_heap* bmalloc_get_heap(void* ptr)
     return pas_get_heap(ptr, BMALLOC_HEAP_CONFIG);
 }
 
+static void* allocate_bmalloc_for_allocation_config(
+    size_t size, const char* name, pas_allocation_kind allocation_kind, void* arg)
+{
+    PAS_UNUSED_PARAM(name);
+    PAS_ASSERT(allocation_kind == pas_object_allocation);
+    PAS_ASSERT(!arg);
+    return bmalloc_allocate(size);
+}
+
+static void deallocate_bmalloc_for_allocation_config(
+    void* ptr, size_t size, pas_allocation_kind allocation_kind, void* arg)
+{
+    PAS_UNUSED_PARAM(size);
+    PAS_ASSERT(allocation_kind == pas_object_allocation);
+    PAS_ASSERT(!arg);
+    bmalloc_deallocate(ptr);
+}
+
+void bmalloc_initialize_allocation_config(pas_allocation_config* allocation_config)
+{
+    allocation_config->allocate = allocate_bmalloc_for_allocation_config;
+    allocation_config->deallocate = deallocate_bmalloc_for_allocation_config;
+    allocation_config->arg = NULL;
+}
+
 PAS_END_EXTERN_C;
 
 #endif /* PAS_ENABLE_BMALLOC */

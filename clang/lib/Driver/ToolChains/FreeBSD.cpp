@@ -490,10 +490,19 @@ void FreeBSD::AddClangSystemIncludeArgs(
   const Driver &D = getDriver();
 
   const char* FilPrefix = IsFilBSD ? "filbsdrt" : "pizfix";
-  
+
   SmallString<128> P(D.InstalledDir);
   llvm::sys::path::append(P, "..", "..", FilPrefix, "stdfil-include");
   addSystemInclude(DriverArgs, CC1Args, P);
+  if (IsFilBSD) {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", FilPrefix, "filbsd-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  } else {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", FilPrefix, "musl-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
   
   if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
       && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {

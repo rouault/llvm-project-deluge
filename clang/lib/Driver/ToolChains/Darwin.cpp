@@ -2419,9 +2419,16 @@ void DarwinClang::AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs
       options::OPT_ibuiltininc, options::OPT_nobuiltininc, /*Default=*/false);
 
   if ((true)) {
-    SmallString<128> P(D.InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
-    addSystemInclude(DriverArgs, CC1Args, P);
+    {
+      SmallString<128> P(D.InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
+      addSystemInclude(DriverArgs, CC1Args, P);
+    }
+    {
+      SmallString<128> P(D.InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "musl-include");
+      addSystemInclude(DriverArgs, CC1Args, P);
+    }
     
     // Add the Clang builtin headers that are allowlisted for FilC
     if (!(NoStdInc && !ForceBuiltinInc) && !NoBuiltinInc) {

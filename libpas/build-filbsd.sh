@@ -28,6 +28,7 @@ set -x
 
 mkdir -p build
 mkdir -p ../filbsdrt/stdfil-include
+mkdir -p ../filbsdrt/filbsd-include
 mkdir -p ../filbsdrt/builtins-include
 mkdir -p ../filbsdrt/lib
 mkdir -p ../filbsdrt/lib_test

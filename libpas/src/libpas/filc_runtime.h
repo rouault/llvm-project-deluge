@@ -45,6 +45,54 @@
 
 PAS_BEGIN_EXTERN_C;
 
+/* The Fil-C runtime can compiler in the following modes:
+
+   - Musl, indicated by -DFILC_MUSL=1. This means that we're using musl as our libc *and* it *also* means
+     that we're running on a libc that is *not* musl and *isn't even a Linux libc*. This implies that we
+     expose something that isn't even a normal syscall API, since there are some system functions in musl
+     (like syslog, getaddrinfo, and others) that musl would normally implement using lower-level
+     functionality but that for portability reasons we implement in filc_runtime using the underlying
+     libc's versions of those system functions. This also implies that we have to translate lots of stuff.
+     We have to translate flags (musl will use some variant of the Linux #defines for flags), ioctl,
+     fcntl, and sockopt numbers, socket addresses, and any struct even if the struct has no pointers.
+
+     It is a goal to make the musl configuration be the only one that ever does this. So, if you see
+     checks like !FILC_MUSL, then this isn't merely a shortcut for FILC_FILBSD but a check to see "are we
+     doing that weird thing where we use something other than the underlying system's libc as the user
+     libc".
+
+     I'll probably have to rename this configuration if we ever support running on musl on Linux to avoid
+     confusion. Running with musl on Linux will be more like !FILC_MUSL than like FILC_MUSL, since it
+     won't require the weird translations.
+
+     This configuration exists so that Fil-C can be easily tested on a variety of platforms, including
+     macOS. There might come a time when this configuration stops being interesting, since the need for
+     translations makes it inherently constrained in what kinds of software it can support.
+
+   - FilBSD, indicated by -DFILC_FILBSD=1. This means that we're on FreeBSD and we have the FreeBSD libc
+     below and above us. Unlike the musl configuration, this can pass a lot of data to syscalls through
+     without translation. Translation is only required for things that have pointers.
+
+   Functions that are truly specific to either musl or filbsd are in separate files. But lots of functions
+   and datatypes are in filc_runtime.h|c just to maximize code sharing. For simplicity, we make it
+   possible to conditionalize a lot of code using normal C conditionals (rather than preprocessor #if's)
+   by ensuring the FILC_MUSL an FILC_FILBSD are always defined but are either 0 or 1. */
+     
+#ifndef FILC_MUSL
+#define FILC_MUSL 0
+#endif
+
+#ifndef FILC_FILBSD
+#define FILC_FILBSD 0
+#endif
+
+#if !FILC_MUSL && !FILC_FILBSD
+#error "Must enable either musl or FilBSD"
+#endif
+#if FILC_MUSL && FILC_FILBSD
+#error "Cannot enable both musl and FilBSD"
+#endif
+
 /* Internal FilC runtime header, defining how the FilC runtime maintains its state.
  
    Currently, including this header is the only way to perform FFI to FilC code, and the API for
@@ -79,9 +127,10 @@ struct filc_ptr;
 struct filc_ptr_table;
 struct filc_ptr_table_array;
 struct filc_ptr_uintptr_hash_map_entry;
-struct filc_signal_handler;
 struct filc_return_buffer;
+struct filc_signal_handler;
 struct filc_thread;
+struct filc_user_iovec;
 struct pas_basic_heap_runtime_config;
 struct pas_stream;
 struct pas_thread_local_cache_node;
@@ -105,6 +154,7 @@ typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
 typedef struct filc_return_buffer filc_return_buffer;
 typedef struct filc_signal_handler filc_signal_handler;
 typedef struct filc_thread filc_thread;
+typedef struct filc_user_iovec filc_user_iovec;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
 typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
@@ -177,7 +227,13 @@ typedef uint16_t filc_object_flags;
                                                                      cannot be freed. This is only useful
                                                                      for munmap scenarios. */
 
-#define FILC_MAX_MUSL_SIGNUM              31u
+#if FILC_MUSL
+#define FILC_MAX_USER_SIGNUM              31u
+#elif FILC_FILBSD
+#define FILC_MAX_USER_SIGNUM              128u
+#else /* FILC_FILBSD */
+#error "Don't know how many signals"
+#endif
                                           
 #define FILC_THREAD_STATE_ENTERED         ((uint8_t)1)
 #define FILC_THREAD_STATE_CHECK_REQUESTED ((uint8_t)2)
@@ -331,7 +387,7 @@ struct filc_signal_handler {
     filc_ptr function_ptr; /* This has to be pre-checked to actually be a callable function, but out
                               of an abundance of caution, we check it again anyway when calling it. */
     sigset_t mask;
-    int musl_signum; /* This is only needed for assertion discipline. */
+    int user_signum; /* This is only needed for assertion discipline. */
 };
 
 struct filc_thread {
@@ -405,7 +461,7 @@ struct filc_thread {
     unsigned special_signal_deferral_depth;
     bool have_deferred_signal_special;
     
-    uint64_t num_deferred_signals[FILC_MAX_MUSL_SIGNUM + 1];
+    uint64_t num_deferred_signals[FILC_MAX_USER_SIGNUM + 1];
 };
 
 struct filc_global_initialization_context {
@@ -571,7 +627,57 @@ struct filc_jmp_buf {
     filc_object* objects[];
 };
 
-#define FILC_FOR_EACH_LOCK(macro) \
+#if FILC_MUSL
+struct filc_user_itimerval;
+struct filc_user_rlimit;
+struct filc_user_sigset;
+struct filc_user_timespec;
+struct filc_user_timeval;
+typedef struct filc_user_itimerval filc_user_itimerval;
+typedef struct filc_user_rlimit filc_user_rlimit;
+typedef struct filc_user_sigset filc_user_sigset;
+typedef struct filc_user_timespec filc_user_timespec;
+typedef struct filc_user_timeval filc_user_timeval;
+
+struct filc_user_rlimit {
+    unsigned long long rlim_cur;
+    unsigned long long rlim_max;
+};
+
+struct filc_user_sigset {
+    unsigned long bits[128 / sizeof(long)];
+};
+
+struct filc_user_timespec {
+    uint64_t tv_sec;
+    uint64_t tv_nsec;
+};
+
+struct filc_user_timeval {
+    uint64_t tv_sec;
+    uint64_t tv_usec;
+};
+
+struct filc_user_itimerval {
+    filc_user_timeval it_interval;
+    filc_user_timeval it_value;
+};
+
+#else /* FILC_MUSL -> so !FILC_MUSL */
+typedef struct itimerval filc_user_itimerval;
+typedef struct rlimit filc_user_rlimit;
+typedef sigset_t filc_user_sigset;
+typedef struct timespec filc_user_timespec;
+typedef struct timeval filc_user_timeval;
+#endif /* FILC_MUSL -> so end of !FILC_MUSL */
+
+/* musl and FilBSD agree on this layout. */
+struct filc_user_iovec {
+    filc_ptr iov_base;
+    size_t iov_len;
+};
+
+#define FILC_FOR_EACH_LOCK(macro)               \
     macro(thread_list); \
     macro(stop_the_world)
 
@@ -1608,6 +1714,43 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
 void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* stack);
 
 PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);
+
+PAS_API void filc_set_user_errno(int libc_errno_value);
+PAS_API int filc_to_user_errno(int errno_value);
+PAS_API void filc_set_errno(int errno_value);
+
+#define filc_check_and_clear(passed_flags_ptr, passed_expected) ({ \
+        typeof(passed_flags_ptr) flags_ptr = (passed_flags_ptr); \
+        typeof(passed_expected) expected = (passed_expected); \
+        bool result; \
+        if ((*flags_ptr & expected) == expected) { \
+            *flags_ptr &= ~expected; \
+            result = true; \
+        } else \
+            result = false; \
+        result; \
+    })
+
+PAS_API void filc_check_user_sigset(filc_ptr ptr, filc_access_kind access_kind);
+PAS_API void filc_from_user_sigset(filc_user_sigset* user_sigset, sigset_t* sigset);
+PAS_API void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset);
+
+PAS_API int filc_from_user_signum(int signum);
+PAS_API int filc_to_user_signum(int signum);
+
+PAS_API int filc_from_user_open_flags(int user_flags);
+PAS_API int filc_to_user_open_flags(int user_flags);
+
+PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int iovcnt,
+                                         filc_access_kind access_kind);
+PAS_API void filc_unprepare_iovec(struct iovec* iov, filc_ptr user_iov, int iovcnt);
+
+PAS_API void filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
+                                                             filc_ptr user_array_ptr,
+                                                             size_t* array_length,
+                                                             char*** array);
+PAS_API void filc_deallocate_null_terminated_string_array(size_t array_length,
+                                                          char** array);
 
 PAS_API bool filc_get_bool_env(const char* name, bool default_value);
 PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);

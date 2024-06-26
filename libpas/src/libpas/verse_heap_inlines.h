@@ -27,6 +27,7 @@
 #define VERSE_HEAP_INLINES_H
 
 #include "pas_fd_stream.h"
+#include "pas_heap.h"
 #include "pas_object_kind.h"
 #include "pas_segregated_page_config_inlines.h"
 #include "verse_heap.h"

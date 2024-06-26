@@ -22,12 +22,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
 FILSRCHEADERS = $(wildcard ../filc/include/*.h)
+RTSPECIFICSRCHEADERS = $(wildcard ../filc/$(OBJPREFIX)-include/*.h) 
 BUILTINSRCHEADERS = $(wildcard ../filc/builtins/*.h)
 FILHEADERS = \
 	$(patsubst %.h,../$(PREFIXDIR)/stdfil-include/%.h,$(notdir $(FILSRCHEADERS)))
+RTSPECIFICHEADERS = \
+	$(patsubst %.h,../$(PREFIXDIR)/$(OBJPREFIX)-include/%.h,$(notdir $(RTSPECIFICSRCHEADERS)))
 BUILTINHEADERS = \
 	$(patsubst %.h,../$(PREFIXDIR)/builtins-include/%.h,$(notdir $(BUILTINSRCHEADERS)))
-ALLHEADERS = $(FILHEADERS) $(BUILTINHEADERS)
+ALLHEADERS = $(FILHEADERS) $(RTSPECIFICHEADERS) $(BUILTINHEADERS)
 
 all: $(ALLHEADERS)
 
@@ -35,6 +38,9 @@ clean:
 	rm -f $(ALLHEADERS)
 
 ../$(PREFIXDIR)/stdfil-include/%.h: ../filc/include/%.h
+	cp $< $@
+
+../$(PREFIXDIR)/$(OBJPREFIX)-include/%.h: ../filc/$(OBJPREFIX)-include/%.h
 	cp $< $@
 
 ../$(PREFIXDIR)/builtins-include/%.h: ../filc/builtins/%.h
