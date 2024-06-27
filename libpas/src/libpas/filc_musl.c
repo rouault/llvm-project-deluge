@@ -3001,11 +3001,9 @@ struct musl_cmsghdr {
     int cmsg_type;
 };
 
-static void destroy_msghdr(struct msghdr* msghdr, struct musl_msghdr* musl_msghdr)
+static void destroy_msghdr(struct msghdr* msghdr)
 {
-    filc_unprepare_iovec(
-        msghdr->msg_iov, filc_ptr_load_with_manual_tracking(&musl_msghdr->msg_iov),
-        musl_msghdr->msg_iovlen);
+    filc_unprepare_iovec(msghdr->msg_iov);
     bmalloc_deallocate(msghdr->msg_name);
     bmalloc_deallocate(msghdr->msg_control);
 }
@@ -3139,7 +3137,7 @@ static bool from_musl_msghdr_for_send(filc_thread* my_thread,
 
     return true;
 error:
-    destroy_msghdr(msghdr, musl_msghdr);
+    destroy_msghdr(msghdr);
     return false;
 }
 
@@ -3253,7 +3251,7 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     if (verbose)
         pas_log("sendmsg result = %ld\n", (long)result);
     filc_enter(my_thread);
-    destroy_msghdr(&msg, musl_msg);
+    destroy_msghdr(&msg);
     if (result < 0)
         filc_set_errno(errno);
     return result;
@@ -3267,7 +3265,7 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
 {
     static const bool verbose = false;
 
-    check_musl_msghdr(msg_ptr, filc_write_access);
+    check_musl_msghdr(msg_ptr, filc_read_access);
     struct musl_msghdr* musl_msg = (struct musl_msghdr*)filc_ptr_ptr(msg_ptr);
     int flags;
     if (verbose)
@@ -3301,9 +3299,11 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
         if (verbose)
             pas_log("recvmsg failed: %s\n", strerror(errno));
         filc_set_errno(my_errno);
-    } else
+    } else {
+        check_musl_msghdr(msg_ptr, filc_write_access);
         to_musl_msghdr_for_recv(my_thread, &msg, musl_msg);
-    destroy_msghdr(&msg, musl_msg);
+    }
+    destroy_msghdr(&msg);
     return result;
 
 einval:
@@ -4108,7 +4108,7 @@ int filc_native_zsys_poll(
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0)
-        filc_set_errno(errno);
+        filc_set_errno(my_errno);
     else {
         filc_check_write_int(musl_pollfds_ptr, total_size, NULL);
         to_musl_pollfds(pollfds, musl_pollfds, nfds);

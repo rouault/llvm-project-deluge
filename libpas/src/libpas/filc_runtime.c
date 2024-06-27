@@ -1040,6 +1040,37 @@ void filc_object_array_reset(filc_object_array* array)
     filc_object_array_construct(array);
 }
 
+void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    filc_object_array_construct(&frame->array);
+    filc_object_array_construct(&frame->pinned);
+    frame->locked = false;
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
+    filc_assert_top_frame_locked(my_thread);
+    frame->parent = my_thread->top_native_frame;
+    my_thread->top_native_frame = frame;
+}
+
+void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    filc_object_array_destruct(&frame->array);
+
+    size_t index;
+    for (index = frame->pinned.num_objects; index--;)
+        filc_unpin(frame->pinned.objects[index]);
+    filc_object_array_destruct(&frame->pinned);
+    
+    PAS_TESTING_ASSERT(!frame->locked);
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame == frame);
+    my_thread->top_native_frame = frame->parent;
+}
+
 void filc_native_frame_add(filc_native_frame* frame, filc_object* object)
 {
     PAS_ASSERT(!frame->locked);
@@ -1048,6 +1079,17 @@ void filc_native_frame_add(filc_native_frame* frame, filc_object* object)
         return;
 
     filc_object_array_push(&frame->array, object);
+}
+
+void filc_native_frame_pin(filc_native_frame* frame, filc_object* object)
+{
+    PAS_ASSERT(!frame->locked);
+    
+    if (!object)
+        return;
+
+    filc_pin(object);
+    filc_object_array_push(&frame->pinned, object);
 }
 
 void filc_thread_track_object(filc_thread* my_thread, filc_object* object)
@@ -1116,6 +1158,11 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     for (native_frame = my_thread->top_native_frame; native_frame; native_frame = native_frame->parent) {
         for (index = native_frame->array.num_objects; index--;)
             fugc_mark(&my_thread->mark_stack, native_frame->array.objects[index]);
+
+        /* In almost all cases where we pin, the object is already otherwise tracked. But we're going to
+           be paranoid anyway because that's how we roll. */
+        for (index = native_frame->pinned.num_objects; index--;)
+            fugc_mark(&my_thread->mark_stack, native_frame->pinned.objects[index]);
     }
 
     for (index = FILC_NUM_UNWIND_REGISTERS; index--;)
@@ -2180,6 +2227,14 @@ void filc_unpin(filc_object* object)
         if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
             break;
     }
+}
+
+void filc_pin_tracked(filc_thread* my_thread, filc_object* object)
+{
+    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(my_thread->top_native_frame);
+    filc_native_frame_pin(my_thread->top_native_frame, object);
 }
 
 filc_ptr filc_native_zalloc(filc_thread* my_thread, size_t size)
@@ -3873,6 +3928,9 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
 
     result->kind = kind;
     result->saved_top_frame = frame;
+    /* NOTE: We could possibly do more stuff to track the state of the top native frame, but we don't,
+       because frames that create native frames don't setjmp. Basically, native code doesn't setjmp. */
+    filc_native_frame_assert_locked(my_thread->top_native_frame);
     result->saved_top_native_frame = my_thread->top_native_frame;
     result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
     result->num_objects = frame->origin->function_origin->num_objects;
@@ -4087,26 +4145,15 @@ struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int 
             my_thread, &((filc_user_iovec*)filc_ptr_ptr(user_iov_entry))->iov_base);
         iov_len = ((filc_user_iovec*)filc_ptr_ptr(user_iov_entry))->iov_len;
         filc_check_access_int(user_iov_base, iov_len, access_kind, NULL);
-        filc_pin(filc_ptr_object(user_iov_base));
+        filc_pin_tracked(my_thread, filc_ptr_object(user_iov_base));
         iov[index].iov_base = filc_ptr_ptr(user_iov_base);
         iov[index].iov_len = iov_len;
     }
     return iov;
 }
 
-void filc_unprepare_iovec(struct iovec* iov, filc_ptr user_iov, int iovcnt)
+void filc_unprepare_iovec(struct iovec* iov)
 {
-    size_t index;
-    for (index = 0; index < (size_t)iovcnt; ++index) {
-        filc_ptr user_iov_entry;
-        filc_ptr user_iov_base;
-        user_iov_entry = filc_ptr_with_offset(user_iov, sizeof(filc_user_iovec) * index);
-        filc_check_read_ptr(
-            filc_ptr_with_offset(user_iov_entry, PAS_OFFSETOF(filc_user_iovec, iov_base)), NULL);
-        user_iov_base = filc_ptr_load_with_manual_tracking(
-            &((filc_user_iovec*)filc_ptr_ptr(user_iov_entry))->iov_base);
-        filc_unpin(filc_ptr_object(user_iov_base));
-    }
     bmalloc_deallocate(iov);
 }
 
@@ -4120,7 +4167,7 @@ ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_io
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
-    filc_unprepare_iovec(iov, user_iov, iovcnt);
+    filc_unprepare_iovec(iov);
     return result;
 }
 
@@ -4148,7 +4195,7 @@ ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr user_iov
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
-    filc_unprepare_iovec(iov, user_iov, iovcnt);
+    filc_unprepare_iovec(iov);
     return result;
 }
 

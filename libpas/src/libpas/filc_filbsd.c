@@ -80,23 +80,35 @@ static ioctl_result do_ioctl(filc_thread* my_thread, int fd, unsigned long reque
     return result;
 }
 
-static int handle_ioctl_result(ioctl_result result)
+static int handle_ioctl_result_excluding_fault(ioctl_result result)
 {
     if (result.result < 0) {
         PAS_ASSERT(result.result == -1);
+        PAS_ASSERT(result.my_errno != EFAULT);
         filc_set_errno(result.my_errno);
     }
     return result.result;
 }
 
+static int handle_ioctl_result(ioctl_result result, unsigned long request)
+{
+    if (result.result < 0 && result.my_errno == EFAULT) {
+        filc_safety_panic(
+            NULL,
+            "passed NULL as the argument to ioctl request %lu but the kernel wanted a real argument.",
+            request);
+    }
+    return handle_ioctl_result_excluding_fault(result);
+}
+
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_ptr args)
 {
     if (filc_ptr_available(args) < FILC_WORD_SIZE)
-        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL));
+        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL), request);
 
     filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
     if (!filc_ptr_ptr(arg_ptr))
-        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL));
+        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL), request);
 
     size_t extent_limit = 128;
     char* base = (char*)filc_ptr_ptr(arg_ptr);
@@ -138,14 +150,17 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
                 }
             }
             bmalloc_deallocate(input_copy);
-            return handle_ioctl_result(result);
+            return handle_ioctl_result_excluding_fault(result);
         }
 
         PAS_ASSERT(result.result == -1 && result.my_errno == EFAULT);
         bmalloc_deallocate(input_copy);
         if (extent_limit > limited_extent) {
-            filc_set_errno(EFAULT);
-            return -1;
+            filc_safety_panic(
+                NULL,
+                "was only able to pass %zu int bytes to ioctl request %lu but the kernel wanted more "
+                "(arg ptr = %s).",
+                extent_limit, request, filc_ptr_to_new_string(arg_ptr));
         }
         PAS_ASSERT(!pas_mul_uintptr_overflow(extent_limit, 2, &extent_limit));
     }
@@ -277,7 +292,328 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr ad
     return result;
 }
 
+ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
+                                int flags, filc_ptr addr_ptr, unsigned addrlen)
+{
+    filc_check_read_int(buf_ptr, len, NULL);
+    filc_check_read_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
+                        (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
 
+ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
+                                  int flags, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
+{
+    filc_check_write_int(buf_ptr, len, NULL);
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = recvfrom(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
+                          (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+    filc_check_write-int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = accept(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_socketpair(filc_thread* my_thread, int domain, int type, int protocol,
+                                filc_ptr sv_ptr)
+{
+    filc_check_write_int(sv_ptr, sizeof(int) * 2, NULL);
+    filc_pin(filc_ptr_object(sv_ptr));
+    filc_exit(my_thread);
+    int result = socketpair(domain, type, protocol, (int*)filc_ptr_ptr(sv_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(sv_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+struct user_msghdr {
+    filc_ptr msg_name;
+    unsigned msg_namelen;
+    filc_ptr msg_iov;
+    int msg_iovlen;
+    filc_ptr msg_control;
+    unsigned msg_controllen;
+    int msg_flags;
+};
+
+static void check_user_msghdr(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_name, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_namelen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_iov, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_iovlen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_control, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_controllen, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_flags, access_kind);
+}
+
+static void destroy_msghdr(struct msghdr* msghdr)
+{
+    filc_unprepare_iovec(msghdr->msg_iov);
+}
+
+static void from_user_msghdr_base(filc_thread* my_thread,
+                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
+                                  filc_access_kind access_kind)
+{
+    pas_zero_memory(msghdr, sizeof(struct msghdr));
+
+    int iovlen = user_msghdr->msg_iovlen;
+    msghdr->msg_iov = filc_prepare_iovec(
+        my_thread, filc_ptr_load(my_thread, &user_msghdr->msg_iov), iovlen, access_kind);
+    msghdr->msg_iovlen = iovlen;
+
+    msghdr->msg_flags = user_msghdr->msg_flags;
+}
+
+static void from_user_msghdr_impl(filc_thread* my_thread,
+                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
+                                  filc_access_kind access_kind)
+{
+    from_user_msghdr_base(my_thread, user_msghdr, msghdr, access_kind);
+
+    unsigned msg_namelen = user_msghdr->msg_namelen;
+    if (msg_namelen) {
+        filc_ptr msg_name = filc_ptr_load(my_thread, &user_msghdr->msg_name);
+        filc_check_access_int(msg_name, msg_namelen, access_kind, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(msg_name));
+        msghdr->msg_name = filc_ptr_ptr(msg_name);
+        msghdr->msg_namelen = msg_namelen;
+    }
+
+    unsigned user_controllen = user_msghdr->msg_controllen;
+    if (user_controllen) {
+        filc_ptr user_control = filc_ptr_load(my_thread, &user_msghdr->msg_control);
+        filc_check_access_int(user_control, user_controllen, access_kind, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(user_control));
+        msghdr->msg_control = filc_ptr_ptr(user_control);
+        msghdr->msg_controllen = user_controllen;
+    }
+}
+
+static void from_user_msghdr_for_send(filc_thread* my_thread,
+                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+{
+    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_read_access);
+}
+
+static void from_user_msghdr_for_recv(filc_thread* my_thread,
+                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+{
+    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_write_access);
+}
+
+static void to_user_msghdr_for_recv(struct msghdr* msghdr, struct user_msghdr* user_msghdr)
+{
+    user_msghdr->msg_namelen = msghdr->msg_namelen;
+    user_msghdr->msg_controllen = msghdr->msg_controllen;
+    user_msghdr->msg_flags = msghdr->msg_flags;
+}
+
+ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr msg_ptr, int flags)
+{
+    static const bool verbose = false;
+    
+    if (verbose)
+        pas_log("In sendmsg\n");
+
+    check_user_msghdr(msg_ptr, filc_read_access);
+    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    struct msghdr msg;
+    from_user_msghdr_for_send(my_thread, user_msg, &msg);
+    if (verbose)
+        pas_log("Got this far\n");
+    filc_exit(my_thread);
+    if (verbose)
+        pas_log("Actually doing sendmsg\n");
+    ssize_t result = sendmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("sendmsg result = %ld\n", (long)result);
+    filc_enter(my_thread);
+    destroy_msghdr(&msg);
+    if (result < 0)
+        filc_set_errno(errno);
+    return result;
+}
+
+ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr msg_ptr, int flags)
+{
+    static const bool verbose = false;
+
+    check_user_msghdr(msg_ptr, filc_read_access);
+    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    struct msghdr msg;
+    from_user_msghdr_for_recv(my_thread, user_msg, &msg);
+    filc_exit(my_thread);
+    if (verbose) {
+        pas_log("Actually doing recvmsg\n");
+        pas_log("msg.msg_iov = %p\n", msg.msg_iov);
+        pas_log("msg.msg_iovlen = %d\n", msg.msg_iovlen);
+        int index;
+        for (index = 0; index < (int)msg.msg_iovlen; ++index)
+            pas_log("msg.msg_iov[%d].iov_len = %zu\n", index, msg.msg_iov[index].iov_len);
+    }
+    ssize_t result = recvmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("recvmsg result = %ld\n", (long)result);
+    filc_enter(my_thread);
+    if (result < 0) {
+        if (verbose)
+            pas_log("recvmsg failed: %s\n", strerror(errno));
+        filc_set_errno(my_errno);
+    } else {
+        check_user_msghdr(msg_ptr, filc_write_access);
+        to_user_msghdr_for_recv(&msg, user_msg);
+    }
+    destroy_msghdr(&msg);
+    return result;
+
+einval:
+    filc_set_errno(EINVAL);
+    return -1;
+}
+
+int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_ptr args)
+{
+    static const bool verbose = false;
+    
+    bool have_arg_int = false;
+    bool have_arg_flock = false;
+    filc_access_kind arg_flock_access_kind = filc_read_access;
+    bool have_arg_kinfo_file = false;
+    switch (cmd) {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+    case F_DUP2FD:
+    case F_DUP2FD_CLOEXEC:
+    case F_SETFD:
+    case F_SETFL:
+    case F_SETOWN:
+    case F_READAHEAD:
+    case F_RDAHEAD:
+    case F_ADD_SEALS:
+        have_arg_int = true;
+        break;
+    case F_GETLK:
+        have_arg_flock = true;
+        arg_flock_access_kind = filc_write_access;
+        break;
+    case F_SETLK:
+    case F_SETLKW:
+        have_arg_flock = true;
+        break;
+    case F_KINFO:
+        have_arg_kinfo_file = true;
+        break;
+    case F_GETFD:
+    case F_GETFL:
+    case F_GETOWN:
+    case F_GET_SEALS:
+    case F_ISUNIONSTACK:
+        break;
+    default:
+        if (verbose)
+            pas_log("no cmd!\n");
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    int arg_int = 0;
+    void* arg_ptr = NULL;
+    if (have_arg_int)
+        arg_int = filc_ptr_get_next_int(&args);
+    else if (have_arg_flock) {
+        filc_ptr flock_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_check_access_int(flock_ptr, sizeof(struct flock), arg_flock_access_kind, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(flock_ptr));
+        arg_ptr = filc_ptr_ptr(flock_ptr);
+    } else if (have_kinfo_file) {
+        filc_ptr kinfo_file_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_check_write_int(kinfo_file_ptr, sizeof(struct kinfo_file), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(kinfo_file_ptr));
+        arg_ptr = filc_ptr_ptr(kinfo_file_ptr);
+    }
+    if (verbose)
+        pas_log("so far so good.\n");
+    int result;
+    filc_exit(my_thread);
+    if (have_arg_int)
+        result = fcntl(fd, cmd, arg_int);
+    else if (arg_ptr)
+        result = fcntl(fd, cmd, arg_ptr);
+    else
+        result = fcntl(fd, cmd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (verbose)
+        pas_log("result = %d\n", result);
+    if (result == -1) {
+        if (verbose)
+            pas_log("error = %s\n", strerror(my_errno));
+        filc_set_errno(my_errno);
+    }
+    return result;
+}
+
+int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned long nfds, int timeout)
+{
+    filc_check_write_int(pollfds_ptr, sizeof(struct pollfd) * nfds, NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(pollfds_ptr));
+    struct pollfd* pollfds = (struct pollfd*)filc_ptr_ptr(pollfds_ptr);
+    filc_exit(my_thread);
+    int result = poll(pollfds, nfds, timeout);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 

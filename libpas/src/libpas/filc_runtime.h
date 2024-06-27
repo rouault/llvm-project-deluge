@@ -393,6 +393,7 @@ struct filc_object_array {
 struct filc_native_frame {
     filc_native_frame* parent;
     filc_object_array array;
+    filc_object_array pinned;
     bool locked;
 };
 
@@ -922,31 +923,11 @@ static inline void filc_assert_top_frame_locked(filc_thread* thread)
         filc_native_frame_assert_locked(thread->top_native_frame);
 }
 
-static inline void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame)
-{
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-
-    filc_object_array_construct(&frame->array);
-    frame->locked = false;
-    
-    PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
-    filc_assert_top_frame_locked(my_thread);
-    frame->parent = my_thread->top_native_frame;
-    my_thread->top_native_frame = frame;
-}
-
-static inline void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
-{
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-
-    filc_object_array_destruct(&frame->array);
-    PAS_TESTING_ASSERT(!frame->locked);
-    
-    PAS_TESTING_ASSERT(my_thread->top_native_frame == frame);
-    my_thread->top_native_frame = frame->parent;
-}
+PAS_API void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame);
+PAS_API void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame);
 
 PAS_API void filc_native_frame_add(filc_native_frame* frame, filc_object* object);
+PAS_API void filc_native_frame_pin(filc_native_frame* frame, filc_object* object);
 
 /* Requires that we have a top_native_frame, so can only be called from native functions. */
 PAS_API void filc_thread_track_object(filc_thread* my_thread, filc_object* object);
@@ -1471,6 +1452,9 @@ void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_o
 void filc_pin(filc_object* object);
 void filc_unpin(filc_object* object);
 
+/* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
+void filc_unpin_tracked(filc_thread* my_thread, filc_object* object);
+
 void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, filc_access_kind kind,
                            const filc_origin* origin);
 void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);
@@ -1765,7 +1749,7 @@ PAS_API int filc_to_user_open_flags(int user_flags);
 
 PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int iovcnt,
                                          filc_access_kind access_kind);
-PAS_API void filc_unprepare_iovec(struct iovec* iov, filc_ptr user_iov, int iovcnt);
+PAS_API void filc_unprepare_iovec(struct iovec* iov);
 
 PAS_API void filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
                                                              filc_ptr user_array_ptr,
