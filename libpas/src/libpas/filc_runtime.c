@@ -286,6 +286,7 @@ void filc_thread_undo_create(filc_thread* thread)
     PAS_ASSERT(!thread->mark_stack.num_objects);
     filc_object_array_destruct(&thread->allocation_roots);
     filc_object_array_destruct(&thread->mark_stack);
+    filc_thread_destroy_space_with_guard_page(thread);
 }
 
 void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stack)
@@ -6265,6 +6266,47 @@ unsigned filc_native_zunpark(filc_thread* my_thread, filc_ptr address_ptr, unsig
         "cannot zunpark on a null address.");
     return filc_unpark(my_thread, filc_ptr_ptr(address_ptr), count);
 }
+
+void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread)
+{
+#if FILC_MUSL
+    PAS_UNUSED_PARAM(my_thread);
+#else /* FILC_MUSL -> so !FILC_MUSL */
+    if (!my_thread->space_with_guard_page) {
+        PAS_ASSERT(!my_thread->guard_page);
+        return;
+    }
+    PAS_ASSERT(my_thread->guard_page > my_thread->space_with_guard_page);
+    pas_page_malloc_deallocate(
+        my_thread->space_with_guard_page,
+        my_thread->guard_page - my_thread->space_with_guard_page + pas_page_malloc_alignment());
+    my_thread->space_with_guard_page = NULL;
+    my_thread->guard_page = NULL;
+#endif /* FILC_MUSL -> so end of !FILC_MUSL */
+}
+
+#if !FILC_MUSL
+char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
+                                                             size_t desired_size)
+{
+    PAS_ASSERT(my_thread->guard_page >= my_thread->space_with_guard_page);
+    if (my_thread->guard_page - my_thread->space_with_guard_page >= desired_size) {
+        PAS_ASSERT(my_thread->space_with_guard_page);
+        PAS_ASSERT(my_thread->guard_page);
+        return my_thread->guard_page;
+    }
+    filc_thread_destroy_space_with_guard_page(my_thread);
+    size_t size = pas_round_up_to_power_of_2(desired_size, pas_page_malloc_alignment());
+    pas_aligned_allocation_result result = pas_page_malloc_try_allocate_without_deallocating_padding(
+        size + pas_page_malloc_alignment(), pas_aligmnent_create_trivial(), pas_committed);
+    PAS_ASSERT(!result.left_padding_size);
+    PAS_ASSERT(!result.right_padding_size);
+    pas_page_malloc_protect_reservation((char*)result.result + size, pas_page_malloc_alignment());
+    my_thread->space_with_guard_page = (char*)result.result;
+    my_thread->guard_page = (char*)result.result + size;
+    return (char*)result.result + size;
+}
+#endif /* !FILC_MUSL */
 
 bool filc_get_bool_env(const char* name, bool default_value)
 {

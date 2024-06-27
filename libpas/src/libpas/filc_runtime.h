@@ -47,37 +47,39 @@ PAS_BEGIN_EXTERN_C;
 
 /* The Fil-C runtime can compiler in the following modes:
 
-   - Musl, indicated by -DFILC_MUSL=1. This means that we're using musl as our libc *and* it *also* means
-     that we're running on a libc that is *not* musl and *isn't even a Linux libc*. This implies that we
-     expose something that isn't even a normal syscall API, since there are some system functions in musl
-     (like syslog, getaddrinfo, and others) that musl would normally implement using lower-level
-     functionality but that for portability reasons we implement in filc_runtime using the underlying
-     libc's versions of those system functions. This also implies that we have to translate lots of stuff.
-     We have to translate flags (musl will use some variant of the Linux #defines for flags), ioctl,
-     fcntl, and sockopt numbers, socket addresses, and any struct even if the struct has no pointers.
+   - Musl, indicated by -DFILC_MUSL=1. This means that we're using musl as our libc *and* it *also*
+     means that we're running on a libc that is *not* musl and *isn't even a Linux libc*. This implies
+     that we expose something that isn't even a normal syscall API, since there are some system
+     functions in musl (like syslog, getaddrinfo, and others) that musl would normally implement using
+     lower-level functionality but that for portability reasons we implement in filc_runtime using the
+     underlying libc's versions of those system functions. This also implies that we have to translate
+     lots of stuff. We have to translate flags (musl will use some variant of the Linux #defines for
+     flags), ioctl, fcntl, and sockopt numbers, socket addresses, and any struct even if the struct
+     has no pointers.
 
      It is a goal to make the musl configuration be the only one that ever does this. So, if you see
-     checks like !FILC_MUSL, then this isn't merely a shortcut for FILC_FILBSD but a check to see "are we
-     doing that weird thing where we use something other than the underlying system's libc as the user
-     libc".
+     checks like !FILC_MUSL, then this isn't merely a shortcut for FILC_FILBSD but a check to see "are
+     we doing that weird thing where we use something other than the underlying system's libc as the
+     user libc".
 
-     I'll probably have to rename this configuration if we ever support running on musl on Linux to avoid
-     confusion. Running with musl on Linux will be more like !FILC_MUSL than like FILC_MUSL, since it
-     won't require the weird translations.
+     I'll probably have to rename this configuration if we ever support running on musl on Linux to
+     avoid confusion. Running with musl on Linux will be more like !FILC_MUSL than like FILC_MUSL,
+     since it won't require the weird translations.
 
      This configuration exists so that Fil-C can be easily tested on a variety of platforms, including
-     macOS. There might come a time when this configuration stops being interesting, since the need for
-     translations makes it inherently constrained in what kinds of software it can support.
+     macOS. There might come a time when this configuration stops being interesting, since the need
+     for translations makes it inherently constrained in what kinds of software it can support.
 
-   - FilBSD, indicated by -DFILC_FILBSD=1. This means that we're on FreeBSD and we have the FreeBSD libc
-     below and above us. Unlike the musl configuration, this can pass a lot of data to syscalls through
-     without translation. Translation is only required for things that have pointers.
+   - FilBSD, indicated by -DFILC_FILBSD=1. This means that we're on FreeBSD and we have the FreeBSD
+     libc below and above us. Unlike the musl configuration, this can pass a lot of data to syscalls
+     through without translation. Translation is only required for things that have pointers.
 
-   Functions that are truly specific to either musl or filbsd are in separate files. But lots of functions
-   and datatypes are in filc_runtime.h|c just to maximize code sharing. For simplicity, we make it
-   possible to conditionalize a lot of code using normal C conditionals (rather than preprocessor #if's)
-   by ensuring the FILC_MUSL an FILC_FILBSD are always defined but are either 0 or 1. */
-     
+   Functions that are truly specific to either musl or filbsd are in separate files. But lots of
+   functions and datatypes are in filc_runtime.h|c just to maximize code sharing. For simplicity, we
+   make it possible to conditionalize a lot of code using normal C conditionals (rather than
+   preprocessor #if's) by ensuring the FILC_MUSL an FILC_FILBSD are always defined but are either 0 or
+   1. */
+
 #ifndef FILC_MUSL
 #define FILC_MUSL 0
 #endif
@@ -180,52 +182,63 @@ typedef uint16_t filc_object_flags;
 
    Hence, some types have no edges in the lattice (if they have no transition from unset and no
    transition to free). */
-#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't been
-                                                                     set yet. */
-#define FILC_WORD_TYPE_INT                ((filc_word_type)1)     /* 128-bit word that contains ints. */
-#define FILC_WORD_TYPE_PTR                ((filc_word_type)2)     /* 128-bit word that contains a ptr. */
-#define FILC_WORD_TYPE_FREE               ((filc_word_type)3)     /* 128-bit word that has been freed. */
-#define FILC_WORD_TYPE_FUNCTION           ((filc_word_type)4)     /* Indicates the special function type.
-                                                                     The lower points at the function but
-                                                                     the GC-allocated payload is empty. */
-#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread type.
-                                                                     The lower points at the payload. */
-#define FILC_WORD_TYPE_DIRSTREAM          ((filc_word_type)6)     /* Indicates the special dirstream type.
-                                                                     The lower points at the payload. */
-#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)7)     /* Indicates the special signal_handler.
-                                                                     The lower points at the payload. */
+#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't
+                                                                     been set yet. */
+#define FILC_WORD_TYPE_INT                ((filc_word_type)1)     /* 128-bit word that contains
+                                                                     ints. */
+#define FILC_WORD_TYPE_PTR                ((filc_word_type)2)     /* 128-bit word that contains a
+                                                                     ptr. */
+#define FILC_WORD_TYPE_FREE               ((filc_word_type)3)     /* 128-bit word that has been
+                                                                     freed. */
+#define FILC_WORD_TYPE_FUNCTION           ((filc_word_type)4)     /* Indicates the special function
+                                                                     type. The lower points at the
+                                                                     function but the GC-allocated
+                                                                     payload is empty. */
+#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread
+                                                                     type. The lower points at the
+                                                                     payload. */
+#define FILC_WORD_TYPE_DIRSTREAM          ((filc_word_type)6)     /* Indicates the special dirstream
+                                                                     type. The lower points at the
+                                                                     payload. */
+#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)7)     /* Indicates the special
+                                                                     signal_handler. The lower points
+                                                                     at the payload. */ 
 #define FILC_WORD_TYPE_PTR_TABLE          ((filc_word_type)8)     /* Indicates the special ptr_table.
-                                                                     The lower points at the payload. */
+                                                                     The lower points at the
+                                                                     payload. */
 #define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)9)     /* Indicates the special
-                                                                     ptr_table_array. The lower points at
-                                                                     the payload. */
-#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)10)    /* Indicates the special dlopen handle
-                                                                     type. The lower points at the hanle
-                                                                     but the GC-allocated payload is
-                                                                     empty. */
-#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)11)    /* Indicates the special jmp_buf type.
-                                                                     The lower points at the payload. */
+                                                                     ptr_table_array. The lower points
+                                                                     at the payload. */
+#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)10)    /* Indicates the special dlopen
+                                                                     handle type. The lower points at
+                                                                     the hanle but the GC-allocated
+                                                                     payload is empty. */
+#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)11)    /* Indicates the special jmp_buf
+                                                                     type. The lower points at the
+                                                                     payload. */
 
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
-
+ 
 #define FILC_OBJECT_FLAG_FREE             ((filc_object_flags)1)  /* The object has been freed. */
-#define FILC_OBJECT_FLAG_RETURN_BUFFER    ((filc_object_flags)2)  /* This is a return buffer (so it's not
-                                                                     GC'd and should never be seen by GC).
-                                                                     Useful for assertions only! */
-#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)4)  /* It's a special object. If there are
-                                                                     no words, or any of them are
-                                                                     unset/int/ptr, then this cannot be
-                                                                     set. If this is set, then there must
-                                                                     be one word, and that word must be
-                                                                     one of free/function/
-                                                                     thread/dirstream/signal_handler. */
+#define FILC_OBJECT_FLAG_RETURN_BUFFER    ((filc_object_flags)2)  /* This is a return buffer (so it's
+                                                                     not GC'd and should never be seen
+                                                                     by GC). Useful for assertions
+                                                                     only! */
+#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)4)  /* It's a special object. If there
+                                                                     are no words, or any of them are
+                                                                     unset/int/ptr, then this cannot
+                                                                     be set. If this is set, then
+                                                                     there must be one word, and that
+                                                                     word must be one of free/
+                                                                     function/thread/dirstream/
+                                                                     signal_handler. */
 #define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)8)  /* Pointer to a global, so cannot be
                                                                      freed. */
 #define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)16) /* Pointer to mmap. */
 #define FILC_OBJECT_FLAG_READONLY         ((filc_object_flags)32) /* Object is readonly. */
 #define FILC_OBJECT_FLAGS_PIN_SHIFT       ((filc_object_flags)6)  /* Data is pinned by the runtime, so
-                                                                     cannot be freed. This is only useful
-                                                                     for munmap scenarios. */
+                                                                     cannot be freed. This is only
+                                                                     useful for munmap scenarios. */
 
 #if FILC_MUSL
 #define FILC_MAX_USER_SIGNUM              31u
@@ -462,6 +475,15 @@ struct filc_thread {
     bool have_deferred_signal_special;
     
     uint64_t num_deferred_signals[FILC_MAX_USER_SIGNUM + 1];
+
+#if !FILC_MUSL
+    /* On platforms that implement ioctl (and similar syscalls) by passing the data
+       down to the kernel directly, we need to have some way of telling the kernel
+       how much data we are able to pass. Ioctl doesn't take a length. So, we do it
+       by having a guard page. */
+    char* space_with_guard_page;
+    char* guard_page;
+#endif /* !FILC_MUSL */
 };
 
 struct filc_global_initialization_context {
@@ -1751,6 +1773,12 @@ PAS_API void filc_check_and_get_null_terminated_string_array(filc_thread* my_thr
                                                              char*** array);
 PAS_API void filc_deallocate_null_terminated_string_array(size_t array_length,
                                                           char** array);
+
+PAS_API void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread);
+#if !FILC_MUSL
+PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
+                                                                     size_t desired_size);
+#endif /* !FILC_MUSL */
 
 PAS_API bool filc_get_bool_env(const char* name, bool default_value);
 PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);

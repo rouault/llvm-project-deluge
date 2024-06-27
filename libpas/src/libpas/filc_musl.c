@@ -33,7 +33,6 @@
 
 #include "bmalloc_heap.h"
 #include "filc_native.h"
-#include "pas_string_stream.h"
 #include "pas_uint64_hash_map.h"
 #include "pas_utils.h"
 #include <termios.h>
@@ -58,8 +57,6 @@
 #include <sys/wait.h>
 #include <grp.h>
 #include <sys/sysctl.h>
-#include <sys/mman.h>
-#include <dlfcn.h>
 #include <poll.h>
 #include <spawn.h>
 
