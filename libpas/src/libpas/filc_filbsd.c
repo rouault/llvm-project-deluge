@@ -205,6 +205,80 @@ int filc_native_zsys_connect(filc_thread* my_thread, int sockfd, filc_ptr addr_p
     return result;
 }
 
+int filc_native_zsys_getsockname(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
+                                 filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = getsockname(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_len), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int level, int optname,
+                                filc_ptr optval_ptr, filc_ptr optlen_ptr)
+{
+    filc_check_read_int(optlen_ptr, sizeof(unsigned), NULL);
+    unsigned optlen = *(unsigned*)filc_ptr_ptr(optlen_ptr);
+
+    filc_check_write_int(optval_ptr, optlen, NULL);
+
+    filc_pin(filc_ptr_object(optval_ptr));
+    filc_exit(my_thread);
+    int result = getsockopt(sockfd, level, optname, filc_ptr_ptr(optval_ptr), &optlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(optval_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(optlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(optlen_ptr) = optlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
+                                 filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = getpeername(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_len), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */
