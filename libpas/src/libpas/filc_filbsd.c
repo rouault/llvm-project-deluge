@@ -29,6 +29,10 @@
 
 #include "filc_runtime.h"
 
+/* FIXME: This is really a great implementation of the "not-musl" syscalls that make sense for all
+   platforms.
+
+   But we don't have to worry about that just yet. */
 #if PAS_ENABLE_FILC && FILC_FILBSD
 
 #include "bmalloc_heap.h"
@@ -58,11 +62,24 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 #include <poll.h>
-#include <spawn.h>
+#include <sys/user.h>
 
 int filc_to_user_errno(int errno_value)
 {
     return errno_value;
+}
+
+void filc_from_user_sigset(filc_user_sigset* user_sigset,
+                           sigset_t* sigset)
+{
+    PAS_ASSERT(sizeof(filc_user_sigset) == sizeof(sigset_t));
+    memcpy(sigset, user_sigset, sizeof(sigset_t));
+}
+
+void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
+{
+    PAS_ASSERT(sizeof(sigset_t) == sizeof(filc_user_sigset));
+    memcpy(user_sigset, sigset, sizeof(sigset_t));
 }
 
 typedef struct {
@@ -211,7 +228,7 @@ int filc_native_zsys_connect(filc_thread* my_thread, int sockfd, filc_ptr addr_p
     filc_check_read_int(addr_ptr, addrlen, NULL);
     filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
-    int result = connst(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int result = connect(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(addr_ptr));
@@ -230,7 +247,7 @@ int filc_native_zsys_getsockname(filc_thread* my_thread, int sockfd, filc_ptr ad
 
     filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
-    int result = getsockname(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_len), &addrlen);
+    int result = getsockname(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(addr_ptr));
@@ -278,7 +295,7 @@ int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr ad
 
     filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
-    int result = getpeername(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_len), &addrlen);
+    int result = getpeername(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(addr_ptr));
@@ -340,10 +357,10 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr addr_pt
 {
     filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
     unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
-    filc_check_write-int(addr_ptr, addrlen, NULL);
+    filc_check_write_int(addr_ptr, addrlen, NULL);
     filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
-    int result = accept(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int result = accept(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(addr_ptr));
@@ -573,7 +590,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_ptr arg
         filc_check_access_int(flock_ptr, sizeof(struct flock), arg_flock_access_kind, NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(flock_ptr));
         arg_ptr = filc_ptr_ptr(flock_ptr);
-    } else if (have_kinfo_file) {
+    } else if (have_arg_kinfo_file) {
         filc_ptr kinfo_file_ptr = filc_ptr_get_next_ptr(my_thread, &args);
         filc_check_write_int(kinfo_file_ptr, sizeof(struct kinfo_file), NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(kinfo_file_ptr));

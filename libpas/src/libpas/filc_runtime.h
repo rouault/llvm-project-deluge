@@ -1453,7 +1453,7 @@ void filc_pin(filc_object* object);
 void filc_unpin(filc_object* object);
 
 /* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
-void filc_unpin_tracked(filc_thread* my_thread, filc_object* object);
+void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
 
 void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, filc_access_kind kind,
                            const filc_origin* origin);

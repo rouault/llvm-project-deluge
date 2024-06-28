@@ -33,6 +33,7 @@
 
 #include "bmalloc_heap.h"
 #include "filc_native.h"
+#include "pas_bitvector.h"
 #include "pas_uint64_hash_map.h"
 #include "pas_utils.h"
 #include <termios.h>
@@ -294,6 +295,60 @@ int filc_to_user_errno(int errno_value)
         // madness and have musl use system errno's.
         PAS_ASSERT(!"Bad errno value");
         return 0;
+    }
+}
+
+void filc_from_user_sigset(filc_user_sigset* user_sigset,
+                           sigset_t* sigset)
+{
+    static const bool verbose = false;
+    
+    static const unsigned num_active_words = 2;
+    static const unsigned num_active_bits = 2 * 64;
+
+    PAS_ASSERT(!sigemptyset(sigset));
+    
+    unsigned musl_sigindex;
+    for (musl_sigindex = num_active_bits; musl_sigindex--;) {
+        int musl_signum = musl_sigindex + 1;
+        bool bit_value = !!(user_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)]
+                            & PAS_BITVECTOR_BIT_MASK64(musl_sigindex));
+        if (verbose)
+            pas_log("musl_signum %u: %s\n", musl_signum, bit_value ? "yes" : "no");
+        if (!bit_value)
+            continue;
+        int signum = filc_from_user_signum(musl_signum);
+        if (signum < 0) {
+            if (verbose)
+                pas_log("no conversion, skipping.\n");
+            continue;
+        }
+        sigaddset(sigset, signum);
+    }
+    if (verbose) {
+        for (int sig = 1; sig < 32; ++sig)
+            pas_log("signal %d masked: %s\n", sig, sigismember(sigset, sig) ? "yes" : "no");
+    }
+}
+
+void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
+{
+    static const unsigned num_active_words = 2;
+    static const unsigned num_active_bits = 2 * 64;
+
+    memset(user_sigset, 0, sizeof(filc_user_sigset));
+    
+    unsigned musl_signum;
+    for (musl_signum = num_active_bits; musl_signum--;) {
+        int signum = filc_from_user_signum(musl_signum);
+        if (signum < 0)
+            continue;
+        if (sigismember(sigset, signum)) {
+            PAS_ASSERT(musl_signum);
+            unsigned musl_sigindex = musl_signum - 1;
+            user_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)] |=
+                PAS_BITVECTOR_BIT_MASK64(musl_sigindex);
+        }
     }
 }
 

@@ -4545,45 +4545,6 @@ int filc_native_zsys_fstat(filc_thread* my_thread, int fd, filc_ptr user_stat_pt
     return handle_fstat_result(user_stat_ptr, &st, result, my_errno);
 }
 
-void filc_from_user_sigset(filc_user_sigset* user_sigset,
-                           sigset_t* sigset)
-{
-    if (!FILC_MUSL) {
-        PAS_ASSERT(sizeof(filc_user_sigset) == sizeof(sigset_t));
-        memcpy(sigset, user_sigset, sizeof(sigset_t));
-        return;
-    }
-    
-    static const bool verbose = false;
-    
-    static const unsigned num_active_words = 2;
-    static const unsigned num_active_bits = 2 * 64;
-
-    PAS_ASSERT(!sigemptyset(sigset));
-    
-    unsigned musl_sigindex;
-    for (musl_sigindex = num_active_bits; musl_sigindex--;) {
-        int musl_signum = musl_sigindex + 1;
-        bool bit_value = !!(user_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)]
-                            & PAS_BITVECTOR_BIT_MASK64(musl_sigindex));
-        if (verbose)
-            pas_log("musl_signum %u: %s\n", musl_signum, bit_value ? "yes" : "no");
-        if (!bit_value)
-            continue;
-        int signum = filc_from_user_signum(musl_signum);
-        if (signum < 0) {
-            if (verbose)
-                pas_log("no conversion, skipping.\n");
-            continue;
-        }
-        sigaddset(sigset, signum);
-    }
-    if (verbose) {
-        for (int sig = 1; sig < 32; ++sig)
-            pas_log("signal %d masked: %s\n", sig, sigismember(sigset, sig) ? "yes" : "no");
-    }
-}
-
 static bool from_user_sa_flags(int user_flags, int* flags)
 {
     if (!FILC_MUSL) {
@@ -4607,33 +4568,6 @@ static bool from_user_sa_flags(int user_flags, int* flags)
     if (filc_check_and_clear(&user_flags, 0x80000000))
         *flags |= SA_RESETHAND;
     return !user_flags;
-}
-
-void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
-{
-    if (!FILC_MUSL) {
-        PAS_ASSERT(sizeof(sigset_t) == sizeof(filc_user_sigset));
-        memcpy(user_sigset, sigset, sizeof(sigset_t));
-        return;
-    }
-    
-    static const unsigned num_active_words = 2;
-    static const unsigned num_active_bits = 2 * 64;
-
-    memset(user_sigset, 0, sizeof(filc_user_sigset));
-    
-    unsigned musl_signum;
-    for (musl_signum = num_active_bits; musl_signum--;) {
-        int signum = filc_from_user_signum(musl_signum);
-        if (signum < 0)
-            continue;
-        if (sigismember(sigset, signum)) {
-            PAS_ASSERT(musl_signum);
-            unsigned musl_sigindex = musl_signum - 1;
-            user_sigset->bits[PAS_BITVECTOR_WORD64_INDEX(musl_sigindex)] |=
-                PAS_BITVECTOR_BIT_MASK64(musl_sigindex);
-        }
-    }
 }
 
 static int to_user_sa_flags(int sa_flags)
@@ -5042,7 +4976,7 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
         timeout.tv_sec = user_timeout->tv_sec;
         timeout.tv_nsec = user_timeout->tv_nsec;
     }
-    struct filc_user_sigset* user_sigmask = (struct filc_user_sigset*)filc_ptr_ptr(sigmask_ptr);
+    filc_user_sigset* user_sigmask = (filc_user_sigset*)filc_ptr_ptr(sigmask_ptr);
     sigset_t sigmask;
     if (user_sigmask)
         filc_from_user_sigset(user_sigmask, &sigmask);
@@ -6337,7 +6271,7 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
                                                              size_t desired_size)
 {
     PAS_ASSERT(my_thread->guard_page >= my_thread->space_with_guard_page);
-    if (my_thread->guard_page - my_thread->space_with_guard_page >= desired_size) {
+    if ((size_t)(my_thread->guard_page - my_thread->space_with_guard_page) >= desired_size) {
         PAS_ASSERT(my_thread->space_with_guard_page);
         PAS_ASSERT(my_thread->guard_page);
         return my_thread->guard_page;
@@ -6345,7 +6279,7 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
     filc_thread_destroy_space_with_guard_page(my_thread);
     size_t size = pas_round_up_to_power_of_2(desired_size, pas_page_malloc_alignment());
     pas_aligned_allocation_result result = pas_page_malloc_try_allocate_without_deallocating_padding(
-        size + pas_page_malloc_alignment(), pas_aligmnent_create_trivial(), pas_committed);
+        size + pas_page_malloc_alignment(), pas_alignment_create_trivial(), pas_committed);
     PAS_ASSERT(!result.left_padding_size);
     PAS_ASSERT(!result.right_padding_size);
     pas_page_malloc_protect_reservation((char*)result.result + size, pas_page_malloc_alignment());
