@@ -2760,6 +2760,8 @@ class Pizlonator {
   }
 
   void prepare() {
+    assert(M.getModuleInlineAsm().empty());
+    
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
         for (Instruction& I : BB) {
