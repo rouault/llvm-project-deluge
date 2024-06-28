@@ -83,8 +83,7 @@ int zsys_dup2(int oldfd, int newfd);
 int zsys_sigprocmask(int how, const void* set, void* oldset); /* This is pthread_sigmask, but sets
                                                                  errno and returns -1 on error. */
 int zsys_chdir(const char* path);
-int zsys_fork(void); /* This currently panics if threads had ever been created. But that's only because
-                        I haven't yet had to deal with a multithreaded forker. */
+int zsys_fork(void);
 int zsys_waitpid(int pid, int* status, int options);
 int zsys_listen(int sockfd, int backlog);
 int zsys_accept(int sockfd, void* addr, unsigned* addrlen);
