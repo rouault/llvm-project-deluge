@@ -32,6 +32,7 @@
 #if PAS_ENABLE_FILC
 
 #include "bmalloc_heap.h"
+#include "bmalloc_heap_config.h"
 #include "filc_native.h"
 #include "filc_parking_lot.h"
 #include "fugc.h"
@@ -1740,11 +1741,12 @@ static void prepare_allocate(size_t* size, size_t alignment,
 }
 
 static void initialize_object(filc_object* result, size_t size, size_t num_words,
-                              size_t offset_to_payload, filc_word_type initial_word_type)
+                              size_t offset_to_payload, filc_object_flags object_flags,
+                              filc_word_type initial_word_type)
 {
     result->lower = (char*)result + offset_to_payload;
     result->upper = (char*)result + offset_to_payload + size;
-    result->flags = 0;
+    result->flags = object_flags;
 
     size_t index;
     for (index = num_words; index--;)
@@ -1757,21 +1759,21 @@ static void initialize_object(filc_object* result, size_t size, size_t num_words
 
 static filc_object* finish_allocate(
     filc_thread* my_thread, void* allocation, size_t size, size_t num_words, size_t offset_to_payload,
-    filc_word_type initial_word_type)
+    filc_object_flags object_flags, filc_word_type initial_word_type)
 {
     filc_object* result = (filc_object*)allocation;
     if (size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        initialize_object(result, size, num_words, offset_to_payload, initial_word_type);
+        initialize_object(result, size, num_words, offset_to_payload, object_flags, initial_word_type);
     else {
         filc_exit_with_allocation_root(my_thread, result);
-        initialize_object(result, size, num_words, offset_to_payload, initial_word_type);
+        initialize_object(result, size, num_words, offset_to_payload, object_flags, initial_word_type);
         filc_enter_with_allocation_root(my_thread, result);
     }
     return result;
 }
 
 static filc_object* allocate_impl(
-    filc_thread* my_thread, size_t size, filc_word_type initial_word_type)
+    filc_thread* my_thread, size_t size, filc_object_flags object_flags, filc_word_type initial_word_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -1782,12 +1784,12 @@ static filc_object* allocate_impl(
     prepare_allocate(&size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_allocate(
         my_thread, verse_heap_allocate(filc_default_heap, total_size),
-        size, num_words, offset_to_payload, initial_word_type);
+        size, num_words, offset_to_payload, object_flags, initial_word_type);
 }
 
 filc_object* filc_allocate(filc_thread* my_thread, size_t size)
 {
-    return allocate_impl(my_thread, size, FILC_WORD_TYPE_UNSET);
+    return allocate_impl(my_thread, size, 0, FILC_WORD_TYPE_UNSET);
 }
 
 filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment)
@@ -1802,12 +1804,12 @@ filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, s
     prepare_allocate(&size, alignment, &num_words, &offset_to_payload, &total_size);
     return finish_allocate(
         my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
-        size, num_words, offset_to_payload, FILC_WORD_TYPE_UNSET);
+        size, num_words, offset_to_payload, 0, FILC_WORD_TYPE_UNSET);
 }
 
 filc_object* filc_allocate_int(filc_thread* my_thread, size_t size)
 {
-    return allocate_impl(my_thread, size, FILC_WORD_TYPE_INT);
+    return allocate_impl(my_thread, size, 0, FILC_WORD_TYPE_INT);
 }
 
 static filc_object* finish_reallocate(
@@ -2741,34 +2743,12 @@ static void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr sr
     PAS_ASSERT(!"Bad part");
 }
 
-void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
-                  const filc_origin* passed_origin)
+PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
+                                           size_t count, filc_barrier_mode barriered,
+                                           filc_pollcheck_mode pollchecked)
 {
-    static const bool verbose = false;
-    
-    if (!count)
-        return;
-    
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
-    
     filc_object* dst_object = filc_ptr_object(dst);
     filc_object* src_object = filc_ptr_object(src);
-
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 2);
-    struct {
-        FILC_FRAME_BODY;
-        filc_object* objects[2];
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
-    frame->objects[0] = dst_object;
-    frame->objects[1] = src_object;
-    filc_push_frame(my_thread, frame);
-    
-    check_access_common(dst, count, filc_write_access, NULL);
-    check_access_common(src, count, filc_read_access, NULL);
 
     char* dst_start = filc_ptr_ptr(dst);
     char* src_start = filc_ptr_ptr(src);
@@ -2781,7 +2761,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
         check_int(dst, count, NULL);
         check_int(src, count, NULL);
         memmove(dst_start, src_start, count);
-        goto done;
+        return;
     }
 
     bool is_up = dst_start < src_start;
@@ -2858,7 +2838,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
                     filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
                     filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             }
-            if (src_word_type == FILC_WORD_TYPE_PTR) {
+            if (src_word_type == FILC_WORD_TYPE_PTR && barriered) {
                 filc_ptr ptr;
                 ptr.word = src_word;
                 filc_store_barrier(my_thread, filc_ptr_object(ptr));
@@ -2877,7 +2857,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
             cur_dst_word_index--;
             cur_src_word_index--;
         }
-        if (filc_pollcheck(my_thread, NULL)) {
+        if (pollchecked && filc_pollcheck(my_thread, NULL)) {
             check_accessible(dst, NULL);
             check_accessible(src, NULL);
         }
@@ -2885,9 +2865,155 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     
     memmove_smidgen(is_up ? memmove_upper_smidgen : memmove_lower_smidgen,
                     dst, src, dst_start, aligned_dst_start, dst_end, aligned_dst_end, src_start);
+}
 
-done:
+void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                  const filc_origin* passed_origin)
+{
+    static const bool verbose = false;
+    
+    if (!count)
+        return;
+    
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+    
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 2);
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[2];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->objects[0] = dst_object;
+    frame->objects[1] = src_object;
+    filc_push_frame(my_thread, frame);
+    
+    check_access_common(dst, count, filc_write_access, NULL);
+    check_access_common(src, count, filc_read_access, NULL);
+
+    memmove_impl(my_thread, dst, src, count, filc_barriered, filc_pollchecked);
+
     filc_pop_frame(my_thread, frame);
+}
+
+filc_ptr filc_clone_readonly_for_zargs(filc_thread* my_thread, filc_ptr ptr)
+{
+    if (!filc_ptr_available(ptr))
+        return filc_ptr_forge_null();
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "zargs", 2);
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[2];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->objects[0] = filc_ptr_object(ptr);
+    filc_push_frame(my_thread, frame);
+    
+    check_access_common(ptr, filc_ptr_available(ptr), filc_read_access, NULL);
+    
+    filc_object* result_object = allocate_impl(
+        my_thread, filc_ptr_available(ptr), FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET);
+    frame->objects[1] = result_object;
+    filc_ptr result = filc_ptr_create_with_manual_tracking(result_object);
+    memmove_impl(my_thread, result, ptr, filc_ptr_available(ptr), filc_barriered, filc_pollchecked);
+
+    filc_pop_frame(my_thread, frame);
+    return result;
+}
+
+void filc_memcpy_for_zreturn(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                             const filc_origin* passed_origin)
+{
+    PAS_ASSERT(filc_ptr_object(dst));
+    PAS_ASSERT(filc_ptr_object(dst)->flags & FILC_OBJECT_FLAG_RETURN_BUFFER);
+
+    if (!count)
+        return;
+
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "zreturn", 1);
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[1];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->objects[0] = filc_ptr_object(src);
+    filc_push_frame(my_thread, frame);
+
+    check_access_common(src, count, filc_read_access, NULL);
+    memmove_impl(my_thread, dst, src, count, filc_unbarriered, filc_not_pollchecked);
+    
+    filc_pop_frame(my_thread, frame);
+}
+
+filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr,
+                           size_t ret_bytes)
+{
+    filc_check_function_call(callee_ptr);
+
+    filc_ptr args_copy;
+    if (!filc_ptr_available(args_ptr))
+        args_copy = filc_ptr_forge_null();
+    else {
+        check_access_common(args_ptr, filc_ptr_available(args_ptr), filc_read_access, NULL);
+
+        /* It's weird but true that the ABI args are not readonly right now. Not a problem we need to
+           solve yet. */
+        args_copy = filc_ptr_create(my_thread, filc_allocate(my_thread, filc_ptr_available(args_ptr)));
+        memmove_impl(my_thread, args_copy, args_ptr, filc_ptr_available(args_ptr), filc_barriered,
+                     filc_pollchecked);
+    }
+
+    size_t num_words;
+    size_t offset_to_payload;
+    size_t total_size;
+    prepare_allocate(&ret_bytes, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
+    PAS_ASSERT(FILC_WORD_SIZE == BMALLOC_MINALIGN_SIZE);
+    filc_object* ret_object = (filc_object*)bmalloc_allocate(total_size);
+    initialize_object(ret_object, ret_bytes, num_words, offset_to_payload, FILC_OBJECT_FLAG_RETURN_BUFFER,
+                      FILC_WORD_TYPE_UNSET);
+    filc_ptr rets = filc_ptr_create_with_manual_tracking(ret_object);
+
+    /* We allocate the result_object before the call as a hack to avoid triggering a pollcheck between
+       when the callee returns and when we grab its return values.
+
+       NOTE: We could *almost* pass this as the return buffer, except:
+
+       - This object is readonly, but the return buffer isn't.
+       
+       - When storing to this object, we need barriers, but the callee won't barrier when storing to
+         its return buffer. */
+    filc_ptr result = filc_ptr_create(
+        my_thread, allocate_impl(my_thread, ret_bytes, FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET));
+
+    filc_lock_top_native_frame(my_thread);
+    bool (*callee)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callee_ptr);
+    /* FIXME: The only things stopping us from allowing exceptions to be thrown are:
+
+       - generate_pizlonated_forwarders.rb will say that our frame can't catch.
+
+       - We'll need some way of deallocating ret_object upon unwind. */
+    PAS_ASSERT(!callee(my_thread, args_copy, rets));
+    filc_unlock_top_native_frame(my_thread);
+
+    /* FIXME: This doesn't really need the full complexirty of memmove_impl, but who cares. */
+    memmove_impl(my_thread, result, rets, ret_bytes, filc_barriered, filc_not_pollchecked);
+
+    bmalloc_deallocate(ret_object);
+    
+    return result;
 }
 
 int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)

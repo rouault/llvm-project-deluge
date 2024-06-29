@@ -338,6 +338,8 @@ class Pizlonator {
   FunctionCallee LandingPad;
   FunctionCallee ResumeUnwind;
   FunctionCallee JmpBufCreate;
+  FunctionCallee CloneReadonlyForZargs;
+  FunctionCallee MemcpyForZreturn;
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
@@ -375,12 +377,15 @@ class Pizlonator {
   BasicBlock* ReturnB;
   PHINode* ReturnPhi;
   BasicBlock* ResumeB;
+  BasicBlock* ReallyReturnB;
 
   size_t ReturnBufferSize;
   size_t ReturnBufferAlignment;
 
-  Value* ArgBufferPtr; /* This is left in a state where it's advanced past the last declared
-                          arg. */
+  bool CallsZargs;
+  size_t ZargsFrameIndex;
+  Value* SnapshottedArgsPtr;
+  Value* ArgBufferPtr; // This is left in a state where it's advanced past the last declared arg.
   std::vector<Value*> Args;
 
   Value* MyThread;
@@ -1110,6 +1115,7 @@ class Pizlonator {
     FrameIndexMap.clear();
     FrameSize = NumSpecialFrameObjects;
     Setjmps.clear();
+    CallsZargs = false;
 
     assert(!Blocks.empty());
 
@@ -1246,6 +1252,24 @@ class Pizlonator {
           break;
         }
       }
+    }
+
+    for (BasicBlock* BB : Blocks) {
+      for (Instruction& I : *BB) {
+        if (CallBase* CI = dyn_cast<CallBase>(&I)) {
+          if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+            if (F->getName() == "zargs") {
+              assert(!CallsZargs);
+              CallsZargs = true;
+              ZargsFrameIndex = FrameSize++;
+            }
+          }
+        }
+        if (CallsZargs)
+          break;
+      }
+      if (CallsZargs)
+        break;
     }
 
     for (BasicBlock* BB : Blocks) {
@@ -1969,6 +1993,8 @@ class Pizlonator {
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
         if (isSetjmp(F)) {
+          if (verbose)
+            errs() << "Lowering some kind of setjmp\n";
           for (Use& Arg : CI->args())
             lowerConstantOperand(Arg, CI, LowRawNull);
           assert(CI->getFunctionType() == F->getFunctionType());
@@ -1997,6 +2023,30 @@ class Pizlonator {
           }
           return true;
         }
+
+        if (F->getName() == "zargs") {
+          if (verbose)
+            errs() << "Lowering zargs\n";
+          assert(CallsZargs);
+          CI->replaceAllUsesWith(SnapshottedArgsPtr);
+          CI->eraseFromParent();
+          return true;
+        }
+
+        if (F->getName() == "zreturn") {
+          for (Use& Arg : CI->args())
+            lowerConstantOperand(Arg, CI, LowRawNull);
+          CallInst::Create(
+            MemcpyForZreturn,
+            { MyThread, NewF->getArg(2), CI->getArgOperand(0), CI->getArgOperand(1),
+              getOrigin(CI->getDebugLoc()) }, "", CI)->setDebugLoc(CI->getDebugLoc());
+          BasicBlock* B = CI->getParent();
+          SplitBlock(B, CI);
+          cast<BranchInst>(B->getTerminator())->setSuccessor(0, ReallyReturnB);
+          CI->eraseFromParent();
+          return true;
+        }
+        
         if (shouldPassThrough(F))
           return true;
       }
@@ -2529,6 +2579,8 @@ class Pizlonator {
             F->getName() == "__divsc3" ||
             F->getName() == "__mulsc3" ||
             F->getName() == "__mulxc3" ||
+            F->getName() == "zargs" ||
+            F->getName() == "zreturn" ||
             isSetjmp(F));
   }
 
@@ -2931,6 +2983,8 @@ public:
     LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
     ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
     JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty);
+    CloneReadonlyForZargs = M.getOrInsertFunction("filc_clone_readonly_for_zargs", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy);
+    MemcpyForZreturn = M.getOrInsertFunction("filc_memcpy_for_zreturn", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
@@ -3149,21 +3203,24 @@ public:
 
           // LMAO who needs backwards edge analysis when you don't give a fugc about perf?
           CallInst::Create(
-              Pollcheck, { NewF->getArg(0), getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
+              Pollcheck, { MyThread, getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
               BB->getTerminator());
         }
 
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);
         if (F->getReturnType() != VoidTy)
           ReturnPhi = PHINode::Create(lowerType(F->getReturnType()), 1, "filc_return_value", ReturnB);
-        ReturnInst* Return = ReturnInst::Create(C, ConstantInt::getFalse(Int1Ty), ReturnB);
+
+        ReallyReturnB = BasicBlock::Create(C, "filc_really_return_block", NewF);
+        BranchInst* ReturnBranch = BranchInst::Create(ReallyReturnB, ReturnB);
+        ReturnInst* Return = ReturnInst::Create(C, ConstantInt::getFalse(Int1Ty), ReallyReturnB);
 
         if (F->getReturnType() != VoidTy) {
           Type* LowT = lowerType(F->getReturnType());
           storeValueRecurse(
-            LowT, NewF->getArg(2), ReturnPhi, ptrPtr(NewF->getArg(2), Return), false,
+            LowT, NewF->getArg(2), ReturnPhi, ptrPtr(NewF->getArg(2), ReturnBranch), false,
             DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic, SyncScope::System, StoreKind::Unbarriered,
-            Return);
+            ReturnBranch);
         }
 
         ResumeB = BasicBlock::Create(C, "filc_resume_block", NewF);
@@ -3174,7 +3231,7 @@ public:
           C, { LowRawPtrTy, LowRawPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
         Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
         Value* ThreadTopFramePtr = GetElementPtrInst::Create(
-          ThreadTy, NewF->getArg(0),
+          ThreadTy, MyThread,
           { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
           "filc_thread_top_frame_ptr", InsertionPoint);
         new StoreInst(
@@ -3204,7 +3261,7 @@ public:
                 "filc_frame_parent_ptr", Return),
               "filc_frame_parent", Return),
             GetElementPtrInst::Create(
-              ThreadTy, NewF->getArg(0),
+              ThreadTy, MyThread,
               { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
               "filc_thread_top_frame_ptr", Return),
             Return);
@@ -3230,6 +3287,11 @@ public:
           recordObjects(OldF->getArg(Index), LowT, V, InsertionPoint);
           Args.push_back(V);
           ArgOffset += Size;
+        }
+        if (CallsZargs) {
+          // Do this after we have recorded all the args for GC, so it's safe to have a pollcheck.
+          SnapshottedArgsPtr =
+            CallInst::Create(CloneReadonlyForZargs, { MyThread, ArgBufferPtr }, "", InsertionPoint);
         }
         Instruction* ArgEndPtr = GetElementPtrInst::Create(
           Int8Ty, RawDataPtr, { ConstantInt::get(IntPtrTy, ArgOffset) }, "filc_arg_end_ptr",

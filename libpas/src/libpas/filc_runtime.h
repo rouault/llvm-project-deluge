@@ -700,7 +700,21 @@ struct filc_user_iovec {
     size_t iov_len;
 };
 
-#define FILC_FOR_EACH_LOCK(macro)               \
+enum filc_barrier_mode {
+    filc_unbarriered,
+    filc_barriered
+};
+
+typedef enum filc_barrier_mode filc_barrier_mode;
+
+enum filc_pollcheck_mode {
+    filc_not_pollchecked,
+    filc_pollchecked
+};
+
+typedef enum filc_pollcheck_mode filc_pollcheck_mode;
+
+#define FILC_FOR_EACH_LOCK(macro) \
     macro(thread_list); \
     macro(stop_the_world)
 
@@ -1509,6 +1523,10 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
    never be worth it. */
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* origin);
+
+filc_ptr filc_clone_readonly_for_zargs(filc_thread* my_thread, filc_ptr ptr);
+void filc_memcpy_for_zreturn(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                             const filc_origin* origin);
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
    get to the upper bound. Returns a copy of that string allocated in the utility heap, and checks
