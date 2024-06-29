@@ -2,6 +2,8 @@ return:
   success
 libraries:
   libtest.so:
-    - library.c
+    isBundle: true
+    files:
+      - library.c
 output-includes:
   - "called foo."

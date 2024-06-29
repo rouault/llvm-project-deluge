@@ -1,0 +1,11 @@
+return:
+  success
+libraries:
+  libthingy:
+    isBundle: false
+    files:
+      - thingy.c
+extraLinkerArgs:
+  "-Lfilc/test-output/shlib -lthingy"
+extraLDPath:
+  "filc/test-output/shlib"

@@ -33,7 +33,7 @@ static void* thread_main(void* arg)
 {
     flag = true;
     zfence();
-    int fd = open("filc/tests/mmapwritefail/testfile.dat", O_CREAT | O_WRONLY, 0644);
+    int fd = open("filc/test-output/mmapwritefail/testfile.dat", O_CREAT | O_WRONLY, 0644);
     writeloop(fd, memory1, size);
     return NULL;
 }

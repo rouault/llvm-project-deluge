@@ -6,7 +6,7 @@ void* opaque(void*);
 
 int main()
 {
-    void* lib = dlopen("filc/tests/dlopen/libtest.so", RTLD_LAZY | RTLD_LOCAL);
+    void* lib = dlopen("filc/test-output/dlopen/libtest.so", RTLD_LAZY | RTLD_LOCAL);
     ZASSERT(lib);
 
     int* (*foo)(void) = dlsym(lib, "foo");

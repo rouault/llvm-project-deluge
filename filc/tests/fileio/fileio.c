@@ -141,7 +141,7 @@ int main(int argc, char** argv)
     }
     ZASSERT(!closedir(dir));
     ZASSERT(saw_fileio_c);
-    ZASSERT(saw_fileio);
+    ZASSERT(!saw_fileio);
     ZASSERT(saw_manifest);
     ZASSERT(saw_test_txt);
     

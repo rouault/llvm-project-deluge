@@ -27,14 +27,19 @@ require 'etc'
 require 'pathname'
 require 'shellwords'
 require 'yaml'
+require 'fileutils'
 
 if RUBY_PLATFORM =~ /darwin/
     $compilerPrefix = "xcrun "
     $bundleOpt = "-bundle"
+    $dylibOpt = "-dynamiclib"
+    $dylibExt = ".dylib"
     $libraryPathEnv = "DYLD_LIBRARY_PATH"
 else
     $compilerPrefix = ""
     $bundleOpt = "-shared"
+    $dylibOpt = "-shared"
+    $dylibExt = ".so"
     $libraryPathEnv = "LD_LIBRARY_PATH"
 end
 
@@ -48,6 +53,10 @@ raise unless system("#{$compilerPrefix}clang -c -o filc/tests/legacy_utils.o fil
 raise unless system("#{$compilerPrefix}build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
+$testOutputDirectory = Pathname.new("filc/test-output")
+$testOutputDirectory.mkpath
+$testOutputDirectory.rmtree
+$testOutputDirectory.mkpath
 
 $tests = []
 
@@ -68,23 +77,25 @@ $testDirectory.each_entry {
         puts "Skipping #{entry}, no manifest."
         next
     end
+    outputPath = $testOutputDirectory + entry
+    outputPath.mkpath
     manifest = YAML.load_file(fullPath + "manifest")
     expectedReturn = manifest["return"]
     raise unless expectedReturn == "success" or expectedReturn == "failure" or expectedReturn == "crash"
     expectedOutputs = handleArray(manifest["output-includes"])
     forbiddenOutputs = handleArray(manifest["output-excludes"])
-    runScript = fullPath + "run.sh"
-    compileScript = fullPath + "compile.sh"
-    justRunScript = fullPath + "justRun.sh"
-    justRunReleaseScript = fullPath + "justRunRelease.sh"
-    subRunScript = fullPath + "subRun.sh"
-    subRunSTWScript = fullPath + "subRunSTW.sh"
-    subRunReleaseScript = fullPath + "subRunRelease.sh"
-    binary = fullPath + testName
-    compilerOutput = fullPath + "compilerOutput.txt"
-    output = fullPath + "output.txt"
-    outputSTW = fullPath + "outputSTW.txt"
-    outputRelease = fullPath + "outputRelease.txt"
+    runScript = outputPath + "run.sh"
+    compileScript = outputPath + "compile.sh"
+    justRunScript = outputPath + "justRun.sh"
+    justRunReleaseScript = outputPath + "justRunRelease.sh"
+    subRunScript = outputPath + "subRun.sh"
+    subRunSTWScript = outputPath + "subRunSTW.sh"
+    subRunReleaseScript = outputPath + "subRunRelease.sh"
+    binary = outputPath + testName
+    compilerOutput = outputPath + "compilerOutput.txt"
+    output = outputPath + "output.txt"
+    outputSTW = outputPath + "outputSTW.txt"
+    outputRelease = outputPath + "outputRelease.txt"
     File.open(compileScript, "w") {
         | outp |
         outp.puts "#!/bin/sh"
@@ -103,7 +114,7 @@ $testDirectory.each_entry {
                 clang = "clang"
                 extraOpts = ""
             end
-            outp.puts "#{$compilerPrefix}build/bin/#{clang} -c -o #{Shellwords.shellescape(fullPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            outp.puts "#{$compilerPrefix}build/bin/#{clang} -c -o #{Shellwords.shellescape(outputPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
             outp.puts "if [ $? -ne 0 ]"
             outp.puts "then"
             outp.puts("    echo " + Shellwords.shellescape(runScript.to_s + ": FAIL: couldn't compile #{entry}"))
@@ -113,9 +124,15 @@ $testDirectory.each_entry {
         }      
         if libraries
             libraries.each_pair {
-                | libname, files |
+                | libname, data |
+                if data["isBundle"]
+                    libraryOpt = $bundleOpt
+                else
+                    libraryOpt = $dylibOpt
+                    libname += $dylibExt
+                end
                 linkerIsCpp = false
-                files.each {
+                data["files"].each {
                     | entry |
                     linkerIsCpp = true if Pathname.new(entry).extname == ".cpp"
                 }
@@ -124,11 +141,11 @@ $testDirectory.each_entry {
                 else
                     clangLinker = "clang"
                 end
-                outp.print "#{$compilerPrefix}build/bin/#{clangLinker} #{$bundleOpt} -o #{Shellwords.shellescape(fullPath + libname)}"
-                files.each {
+                outp.print "#{$compilerPrefix}build/bin/#{clangLinker} #{libraryOpt} -o #{Shellwords.shellescape(outputPath + libname)}"
+                data["files"].each {
                     | file |
                     libraryFiles[file] = true
-                    outp.print " #{Shellwords.shellescape(fullPath + file)}.o"
+                    outp.print " #{Shellwords.shellescape(outputPath + file)}.o"
                 }
                 outp.puts " >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
                 outp.puts "if [ $? -ne 0 ]"
@@ -156,8 +173,11 @@ $testDirectory.each_entry {
             | entry |
             next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
             next if libraryFiles[entry.to_s]
-            outp.print " #{Shellwords.shellescape(fullPath + entry)}.o"
+            outp.print " #{Shellwords.shellescape(outputPath + entry)}.o"
         }
+        if manifest["extraLinkerArgs"]
+            outp.print " #{manifest["extraLinkerArgs"]}"
+        end
         outp.puts " filc/tests/legacy_utils.o filc/tests/utils.o >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
         outp.puts "if [ $? -ne 0 ]"
         outp.puts "then"
@@ -170,7 +190,11 @@ $testDirectory.each_entry {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
-        outp.print "#{$libraryPathEnv}=pizfix/lib_test "
+        outp.print "#{$libraryPathEnv}=pizfix/lib_test"
+        if manifest["extraLDPath"]
+            outp.print ":#{manifest["extraLDPath"]}"
+        end
+        outp.print " "
         handleArray(manifest["extra-env"]).each {
             | entry |
             outp.print "#{entry} "
@@ -181,6 +205,9 @@ $testDirectory.each_entry {
         | outp |
         outp.puts "#!/bin/sh"
         outp.puts "set -e"
+        if manifest["extraLDPath"]
+            outp.print "#{$libraryPathEnv}=#{manifest["extraLDPath"]} "
+        end
         handleArray(manifest["extra-env"]).each {
             | entry |
             outp.print "#{entry} "

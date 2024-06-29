@@ -17,8 +17,8 @@ void* opaque(void* ptr);
 
 int main()
 {
-    unlink("filc/tests/mmapobjectfail2/mmapfile.dat");
-    int fd = open("filc/tests/mmapobjectfail2/mmapfile.dat", O_CREAT | O_RDWR, 0644);
+    unlink("filc/test-output/mmapobjectfail2/mmapfile.dat");
+    int fd = open("filc/test-output/mmapobjectfail2/mmapfile.dat", O_CREAT | O_RDWR, 0644);
     ZASSERT(fd > 2);
 
     ZASSERT(!ftruncate(fd, 16384));

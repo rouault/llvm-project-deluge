@@ -7,7 +7,7 @@ void* opaque(void*);
 int main()
 {
     zprintf("calling dlopen.");
-    void* lib = dlopen("filc/tests/dlopen2/libtest.so", RTLD_LAZY | RTLD_LOCAL);
+    void* lib = dlopen("filc/test-output/dlopen2/libtest.so", RTLD_LAZY | RTLD_LOCAL);
     ZASSERT(lib);
     zprintf("done calling dlopen.\n");
 

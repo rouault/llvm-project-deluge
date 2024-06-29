@@ -16,8 +16,8 @@
 
 int main()
 {
-    unlink("filc/tests/mmapfile2/mmapfile.dat");
-    int fd = open("filc/tests/mmapfile2/mmapfile.dat", O_CREAT | O_RDWR, 0644);
+    unlink("filc/test-output/mmapfile2/mmapfile.dat");
+    int fd = open("filc/test-output/mmapfile2/mmapfile.dat", O_CREAT | O_RDWR, 0644);
     ASSERT(fd > 2);
 
     ASSERT(!ftruncate(fd, 16384));
@@ -31,7 +31,7 @@ int main()
     munmap(memory, 16384);
     close(fd);
 
-    fd = open("filc/tests/mmapfile2/mmapfile.dat", O_RDONLY);
+    fd = open("filc/test-output/mmapfile2/mmapfile.dat", O_RDONLY);
     ASSERT(fd > 2);
     char buf[100];
     ASSERT(read(fd, buf, 100) == 100);
