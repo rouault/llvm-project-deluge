@@ -974,13 +974,13 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__LITTLE_ENDIAN__");
   }
 
-  if (TI.getPointerWidth(LangAS::Default) == 64 && TI.getLongWidth() == 64 &&
+  if (TI.getConstexprPointerWidth(LangAS::Default) == 64 && TI.getLongWidth() == 64 &&
       TI.getIntWidth() == 32) {
     Builder.defineMacro("_LP64");
     Builder.defineMacro("__LP64__");
   }
 
-  if (TI.getPointerWidth(LangAS::Default) == 32 && TI.getLongWidth() == 32 &&
+  if (TI.getConstexprPointerWidth(LangAS::Default) == 32 && TI.getLongWidth() == 32 &&
       TI.getIntWidth() == 32) {
     Builder.defineMacro("_ILP32");
     Builder.defineMacro("__ILP32__");
