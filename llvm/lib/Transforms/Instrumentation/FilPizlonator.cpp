@@ -2812,6 +2812,10 @@ class Pizlonator {
   }
 
   void prepare() {
+    if (!M.getModuleInlineAsm().empty()) {
+      errs() << "Can't handle module inline asm:\n"
+             << M.getModuleInlineAsm() << "\n";
+    }
     assert(M.getModuleInlineAsm().empty());
     
     for (Function& F : M.functions()) {
