@@ -279,6 +279,101 @@ static constexpr size_t ScratchObjectIndex = 0;
 static constexpr size_t MyArgsObjectIndex = 1;
 static constexpr size_t NumSpecialFrameObjects = 2;
 
+enum class MATokenKind {
+  None,
+  Error,
+  Directive,
+  Identifier,
+  Comma,
+  EndLine
+};
+
+inline const char* MATokenKindString(MATokenKind Kind) {
+  switch (Kind) {
+  case MATokenKind::None:
+    return "None";
+  case MATokenKind::Error:
+    return "Error";
+  case MATokenKind::Directive:
+    return "Directive";
+  case MATokenKind::Identifier:
+    return "Identifier";
+  case MATokenKind::Comma:
+    return "Comma";
+  case MATokenKind::EndLine:
+    return "EndLine";
+  }
+  llvm_unreachable("Bad MATokenKind");
+  return nullptr;
+}
+
+struct MAToken {
+  MAToken() = default;
+
+  MAToken(MATokenKind Kind, const std::string& Str): Kind(Kind), Str(Str) {}
+
+  MATokenKind Kind { MATokenKind::None };
+  std::string Str;
+};
+
+class MATokenizer {
+  std::string MA;
+  size_t Idx { 0 };
+
+  void skipWhitespace() {
+    while (Idx < MA.size() && MA[Idx] != '\n' && isspace(MA[Idx]))
+      Idx++;
+  }
+
+  void skipID() {
+    while (Idx < MA.size() && (isalnum(MA[Idx]) ||
+                               MA[Idx] == '_' ||
+                               MA[Idx] == '$' ||
+                               MA[Idx] == '@' ||
+                               MA[Idx] == '.'))
+      Idx++;
+  }
+  
+public:
+  MATokenizer(const std::string& MA): MA(MA) {}
+
+  bool isAtEnd() const { return Idx >= MA.size(); }
+
+  MAToken getNext() {
+    skipWhitespace();
+    if (isAtEnd())
+      return MAToken();
+    if (MA[Idx] == '\n') {
+      Idx++;
+      return MAToken(MATokenKind::EndLine, "\n");
+    }
+    if (MA[Idx] == ',') {
+      Idx++;
+      return MAToken(MATokenKind::Comma, "\n");
+    }
+    if (MA[Idx] == '.') {
+      size_t Start = Idx;
+      skipID();
+      return MAToken(MATokenKind::Directive, MA.substr(Start, Idx - Start));
+    }
+    if (isalpha(MA[Idx]) || MA[Idx] == '_') {
+      size_t Start = Idx;
+      skipID();
+      return MAToken(MATokenKind::Identifier, MA.substr(Start, Idx - Start));
+    }
+    return MAToken(MATokenKind::Error, MA.substr(Idx, MA.size() - Idx));
+  }
+
+  MAToken getNextSpecific(MATokenKind Kind) {
+    MAToken Tok = getNext();
+    if (Tok.Kind != Kind) {
+      errs() << "Expected " << MATokenKindString(Kind) << " but got: " << Tok.Str << "\n";
+      llvm_unreachable("Error parsing module asm");
+    }
+    return Tok;
+  }
+};
+
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
   
@@ -2811,13 +2906,83 @@ class Pizlonator {
     }
   }
 
-  void prepare() {
-    if (!M.getModuleInlineAsm().empty()) {
-      errs() << "Can't handle module inline asm:\n"
-             << M.getModuleInlineAsm() << "\n";
+  GlobalValue* getGlobal(StringRef Name) {
+    if (GlobalVariable* GV = M.getNamedGlobal(Name))
+      return GV;
+    if (GlobalAlias* GA = M.getNamedAlias(Name))
+      return GA;
+    if (Function* F = M.getFunction(Name))
+      return F;
+    return nullptr;
+  }
+
+  void compileModuleAsm() {
+    MATokenizer MAT(M.getModuleInlineAsm());
+
+    for (;;) {
+      MAToken Tok = MAT.getNext();
+      if (Tok.Kind == MATokenKind::None)
+        break;
+      if (Tok.Kind == MATokenKind::Error) {
+        errs() << "Cannot parse module asm: " << Tok.Str << "\n";
+        llvm_unreachable("Error parsing module asm");
+      }
+      if (Tok.Kind == MATokenKind::EndLine)
+        continue;
+      if (Tok.Kind == MATokenKind::Directive) {
+        if (Tok.Str == ".filc_weak" ||
+            Tok.Str == ".filc_globl") {
+          std::string Name = MAT.getNextSpecific(MATokenKind::Identifier).Str;
+          MAT.getNextSpecific(MATokenKind::EndLine);
+          GlobalValue* GV = getGlobal(Name);
+          if (!GV) {
+            errs() << "Cannot do " << Tok.Str << " to " << Name << " because it doesn't exit.\n";
+            llvm_unreachable("Error interpreting module asm");
+          }
+          if (Tok.Str == ".filc_weak")
+            GV->setLinkage(GlobalValue::WeakAnyLinkage);
+          else {
+            assert(Tok.Str == ".filc_globl");
+            GV->setLinkage(GlobalValue::ExternalLinkage);
+          }
+          continue;
+        }
+        if (Tok.Str == ".filc_weak_alias" ||
+            Tok.Str == ".filc_alias") {
+          std::string OldName = MAT.getNextSpecific(MATokenKind::Identifier).Str;
+          MAT.getNextSpecific(MATokenKind::Comma);
+          std::string NewName = MAT.getNextSpecific(MATokenKind::Identifier).Str;
+          MAT.getNextSpecific(MATokenKind::EndLine);
+          GlobalValue* GV = getGlobal(OldName);
+          if (!GV) {
+            errs() << "Cannot do .filc_weak_alias to " << OldName << " because it doesn't exit.\n";
+            llvm_unreachable("Error interpreting module asm");
+          }
+          if (getGlobal(NewName)) {
+            errs() << "Cannot do .filc_weak_alias to " << NewName << " because it already exists.\n";
+            llvm_unreachable("Error interpreting module asm");
+          }
+          GlobalValue::LinkageTypes Linkage;
+          if (Tok.Str == ".filc_weak_alias")
+            Linkage = GlobalValue::WeakAnyLinkage;
+          else {
+            assert(Tok.Str == ".filc_alias");
+            Linkage = GlobalValue::ExternalLinkage;
+          }
+          GlobalAlias::create(GV->getType(), GV->getAddressSpace(), Linkage, NewName, GV, &M);
+          continue;
+        }
+        errs() << "Invalid directive: " << Tok.Str << "\n";
+        llvm_unreachable("Error parsing module asm");
+      }
+      errs() << "Unexpected token: " << Tok.Str << "\n";
+      llvm_unreachable("Error parsing module asm");
     }
-    assert(M.getModuleInlineAsm().empty());
-    
+
+    M.setModuleInlineAsm("");
+  }
+
+  void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
         for (Instruction& I : BB) {
@@ -2872,9 +3037,10 @@ public:
 
     lowerThreadLocals();
     makeEHDatas();
+    compileModuleAsm();
     
     if (verbose)
-      errs() << "Module with lowered thread locals:\n" << M << "\n";
+      errs() << "Module with lowered thread locals, EH data, and module asm:\n" << M << "\n";
 
     prepare();
 
