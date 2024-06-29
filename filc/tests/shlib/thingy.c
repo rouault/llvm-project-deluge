@@ -19,3 +19,17 @@ int blah(void)
 
 __asm__(".filc_weak_alias blah, bleh");
 
+int fuzz(void)
+{
+    return 111;
+}
+
+int buzz(void);
+
+int fizz(void)
+{
+    return buzz();
+}
+
+__asm__(".filc_weak_alias fuzz, buzz");
+

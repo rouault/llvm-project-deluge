@@ -2958,9 +2958,13 @@ class Pizlonator {
             errs() << "Cannot do .filc_weak_alias to " << OldName << " because it doesn't exit.\n";
             llvm_unreachable("Error interpreting module asm");
           }
-          if (getGlobal(NewName)) {
-            errs() << "Cannot do .filc_weak_alias to " << NewName << " because it already exists.\n";
-            llvm_unreachable("Error interpreting module asm");
+          Type* T = GV->getType();
+          GlobalValue* ExistingGV = getGlobal(NewName);
+          if (ExistingGV) {
+            T = ExistingGV->getType();
+            assert(!Dummy->getNumUses());
+            ExistingGV->replaceAllUsesWith(Dummy);
+            ExistingGV->eraseFromParent();
           }
           GlobalValue::LinkageTypes Linkage;
           if (Tok.Str == ".filc_weak_alias")
@@ -2969,7 +2973,9 @@ class Pizlonator {
             assert(Tok.Str == ".filc_alias");
             Linkage = GlobalValue::ExternalLinkage;
           }
-          GlobalAlias::create(GV->getType(), GV->getAddressSpace(), Linkage, NewName, GV, &M);
+          GlobalAlias* NewGA = GlobalAlias::create(T, GV->getAddressSpace(), Linkage, NewName, GV, &M);
+          if (ExistingGV)
+            Dummy->replaceAllUsesWith(NewGA);
           continue;
         }
         errs() << "Invalid directive: " << Tok.Str << "\n";
@@ -3035,6 +3041,8 @@ public:
     SigsetjmpTy = FunctionType::get(Int32Ty, { LowRawPtrTy, Int32Ty }, false);
     LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
 
+    Dummy = makeDummy(Int32Ty);
+    
     lowerThreadLocals();
     makeEHDatas();
     compileModuleAsm();
@@ -3126,7 +3134,6 @@ public:
     if (verbose)
       errs() << "LowWideNull = " << *LowWideNull << "\n";
 
-    Dummy = makeDummy(Int32Ty);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
 
     Pollcheck = M.getOrInsertFunction("filc_pollcheck_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
