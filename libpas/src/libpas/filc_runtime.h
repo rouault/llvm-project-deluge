@@ -1610,6 +1610,14 @@ static inline unsigned long filc_ptr_get_next_unsigned_long(filc_ptr* ptr)
     return *(unsigned long*)filc_ptr_ptr(slot_ptr);
 }
 
+static inline unsigned short filc_ptr_get_next_unsigned_short(filc_ptr* ptr)
+{
+    filc_ptr slot_ptr;
+    slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(unsigned short), alignof(unsigned short));
+    filc_check_read_int(slot_ptr, sizeof(unsigned short), NULL);
+    return *(unsigned short*)filc_ptr_ptr(slot_ptr);
+}
+
 static inline size_t filc_ptr_get_next_size_t(filc_ptr* ptr)
 {
     filc_ptr slot_ptr;

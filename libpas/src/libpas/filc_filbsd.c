@@ -851,6 +851,141 @@ int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, 
     return result;
 }
 
+int filc_native_zsys_swapon(filc_thread* my_thread, filc_ptr special_ptr)
+{
+    char* special = filc_check_and_get_new_str(special_ptr);
+    filc_exit(my_thread);
+    int result = swapon(special);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(special);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_swapoff(filc_thread* my_thread, filc_ptr special_ptr, unsigned flags)
+{
+    char* special = filc_check_and_get_new_str(special_ptr);
+    filc_exit(my_thread);
+    int result = swapoff(special, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(special);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getdtablesize(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    int result = getdtablesize();
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getpriority(filc_thread* my_thread, int which, int who)
+{
+    filc_exit(my_thread);
+    errno = 0;
+    int result = getpriority(which, who);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (my_errno)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setpriority(filc_thread* my_thread, int which, int who, int prio)
+{
+    filc_exit(my_thread);
+    int result = setpriority(which, who, prio);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
+{
+    filc_check_write_int(tp_ptr, sizeof(struct timeval), NULL);
+    filc_check_write_int(tzp_ptr, sizeof(struct timezone), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    filc_exit(my_thread);
+    int result = gettimeofday((struct timeval*)filc_ptr_ptr(tp_ptr),
+                              (struct timezone*)filc_ptr_ptr(tzp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_settimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
+{
+    filc_check_read_int(tp_ptr, sizeof(struct timeval), NULL);
+    filc_check_read_int(tzp_ptr, sizeof(struct timezone), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    filc_exit(my_thread);
+    int result = settimeofday((const struct timeval*)filc_ptr_ptr(tp_ptr),
+                              (const struct timezone*)filc_ptr_ptr(tzp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getrusage(filc_thread* my_thread, int who, filc_ptr rusage_ptr)
+{
+    filc_check_write_int(rusage_ptr, sizeof(struct rusage), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(rusage_ptr));
+    filc_exit(my_thread);
+    int result = getrusage(who, (struct rusage*)filc_ptr_ptr(rusage_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_flock(filc_thread* my_thread, int fd, int operation)
+{
+    filc_exit(my_thread);
+    int result = flock(fd, operation);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned short mode)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    filc_exit(my_thread);
+    int result = mkfifo(path, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    bmalloc_deallocate(path);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

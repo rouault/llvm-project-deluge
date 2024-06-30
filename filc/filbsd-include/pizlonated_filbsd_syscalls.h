@@ -41,6 +41,16 @@ int zsys_ktrace(const char *tracefile, int ops, int trpoints, int pid);
 int zsys_setgroups(int size, const unsigned* list);
 int zsys_madvise(void* addr, __SIZE_TYPE__ len, int behav);
 int zsys_mincore(void* addr, __SIZE_TYPE__ len, char* vec);
+int zsys_swapon(const char* special);
+int zsys_swapoff(const char* special, unsigned flags);
+int zsys_getdtablesize(void);
+int zsys_getpriority(int which, int who);
+int zsys_setpriority(int which, int who, int prio);
+int zsys_gettimeofday(void* tp, void* tzp);
+int zsys_settimeofday(const void* tp, const void* tzp);
+int zsys_getrusage(int who, void* rusage);
+int zsys_flock(int fd, int operation);
+int zsys_mkfifo(const char* path, unsigned short mode);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

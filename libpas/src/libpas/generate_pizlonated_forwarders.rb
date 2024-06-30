@@ -25,7 +25,8 @@
 
 def checkType(type)
     case type
-    when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool', "ssize_t"
+    when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
+         "ssize_t", 'unsigned short'
     else
         raise "Bad type #{type}"
     end
@@ -307,6 +308,16 @@ forFilBSD {
     addSig "int", "zsys_setgroups", "int", "filc_ptr"
     addSig "int", "zsys_madvise", "filc_ptr", "size_t", "int"
     addSig "int", "zsys_mincore", "filc_ptr", "size_t", "filc_ptr"
+    addSig "int", "zsys_swapon", "filc_ptr"
+    addSig "int", "zsys_swapoff", "filc_ptr", "unsigned"
+    addSig "int", "zsys_getdtablesize"
+    addSig "int", "zsys_getpriority", "int", "int"
+    addSig "int", "zsys_setpriority", "int", "int", "int"
+    addSig "int", "zsys_gettimeofday", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_settimeofday", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_getrusage", "int", "filc_ptr"
+    addSig "int", "zsys_flock", "int", "int"
+    addSig "int", "zsys_mkfifo", "filc_ptr", "unsigned short"
 }
 
 case ARGV[0]
