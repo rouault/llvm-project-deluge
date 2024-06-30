@@ -37,6 +37,7 @@ int zsys_setlogin(const char* name);
 int zsys_acct(const char* file);
 int zsys_reboot(int howto);
 int zsys_revoke(const char* path);
+int zsys_ktrace(const char *tracefile, int ops, int trpoints, int pid);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

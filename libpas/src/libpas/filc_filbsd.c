@@ -65,6 +65,7 @@
 #include <poll.h>
 #include <sys/user.h>
 #include <sys/mount.h>
+#include <sys/ktrace.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -770,6 +771,21 @@ int filc_native_zsys_revoke(filc_thread* my_thread, filc_ptr path_ptr)
     filc_enter(my_thread);
     PAS_ASSERT(!result || result == -1);
     bmalloc_deallocate(path);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_ktrace(filc_thread* my_thread, filc_ptr tracefile_ptr, int ops, int trpoints,
+                            int pid)
+{
+    char* tracefile = filc_check_and_get_new_str(tracefile_ptr);
+    filc_exit(my_thread);
+    int result = ktrace(tracefile, ops, trpoints, pid);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    bmalloc_deallocate(tracefile);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;

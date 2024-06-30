@@ -302,6 +302,7 @@ forFilBSD {
     addSig "int", "zsys_acct", "filc_ptr"
     addSig "int", "zsys_reboot", "int"
     addSig "int", "zsys_revoke", "filc_ptr"
+    addSig "int", "zsys_ktrace", "filc_ptr", "int", "int", "int"
 }
 
 case ARGV[0]
