@@ -6086,8 +6086,10 @@ int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t 
     }
     if (prot == (PROT_READ | PROT_WRITE))
         check_access_common(addr_ptr, len, filc_write_access, NULL);
-    else
+    else {
+        /* Protect the GC. We don't want the GC scanning pointers in protected memory. */
         filc_check_write_int(addr_ptr, len, NULL);
+    }
     filc_object* object = filc_ptr_object(addr_ptr);
     FILC_CHECK(
         object->flags & FILC_OBJECT_FLAG_MMAP,
