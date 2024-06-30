@@ -33,6 +33,10 @@ int zsys_nmount(void* iov, unsigned niov, int flags);
 int zsys_chflags(const char* path, unsigned long flags);
 int zsys_fchflags(int fd, unsigned long flags);
 int zsys_profil(char* samples, __SIZE_TYPE__ size, unsigned long offset, int scale);
+int zsys_setlogin(const char* name);
+int zsys_acct(const char* file);
+int zsys_reboot(int howto);
+int zsys_revoke(const char* path);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

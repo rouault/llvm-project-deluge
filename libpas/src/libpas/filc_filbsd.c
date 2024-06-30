@@ -722,6 +722,59 @@ int filc_native_zsys_profil(filc_thread* my_thread, filc_ptr samples_ptr, size_t
     return result;
 }
 
+int filc_native_zsys_setlogin(filc_thread* my_thread, filc_ptr name_ptr)
+{
+    char* name = filc_check_and_get_new_str(name_ptr);
+    filc_exit(my_thread);
+    int result = setlogin(name);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    bmalloc_deallocate(name);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_acct(filc_thread* my_thread, filc_ptr file_ptr)
+{
+    char* file = filc_check_and_get_new_str(file_ptr);
+    filc_exit(my_thread);
+    int result = acct(file);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    bmalloc_deallocate(file);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_reboot(filc_thread* my_thread, int howto)
+{
+    filc_exit(my_thread);
+    int result = reboot(howto);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(result == -1);
+    filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_revoke(filc_thread* my_thread, filc_ptr path_ptr)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    filc_exit(my_thread);
+    int result = revoke(path);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    bmalloc_deallocate(path);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

@@ -6046,6 +6046,35 @@ void filc_native_zsys_sync(filc_thread* my_thread)
     filc_enter(my_thread);
 }
 
+int filc_native_zsys_access(filc_thread* my_thread, filc_ptr path_ptr, int mode)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    filc_exit(my_thread);
+    int result = access(path, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(path);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
+{
+    char* oldname = filc_check_and_get_new_str(oldname_ptr);
+    char* newname = filc_check_and_get_new_str(newname_ptr);
+    filc_exit(my_thread);
+    int result = symlink(oldname, newname);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(oldname);
+    bmalloc_deallocate(newname);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;
