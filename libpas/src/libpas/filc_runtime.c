@@ -6075,6 +6075,76 @@ int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_
     return result;
 }
 
+int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int user_prot)
+{
+    check_access_common(addr_ptr, len, filc_write_access, NULL);
+    filc_object* object = filc_ptr_object(addr_ptr);
+    FILC_CHECK(
+        object->flags & FILC_OBJECT_FLAG_MMAP,
+        NULL,
+        "cannot mprotect something that was not mmapped (ptr = %s).",
+        filc_ptr_to_new_string(addr_ptr));
+    FILC_CHECK(
+        !(object->flags & FILC_OBJECT_FLAG_FREE),
+        NULL,
+        "cannot mprotect a free object (ptr = %s).",
+        filc_ptr_to_new_string(addr_ptr));
+    int prot;
+    if (!from_user_prot(user_prot, &prot)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    filc_pin_tracked(my_thread, object);
+    filc_exit(my_thread);
+    int result = mprotect(filc_ptr_ptr(addr_ptr), len, prot);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getgroups(filc_thread* my_thread, int size, filc_ptr list_ptr)
+{
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(unsigned), size, &total_size),
+        NULL,
+        "size argument too big, causes overflow; size = %d.",
+        size);
+    filc_check_write_int(list_ptr, total_size, NULL);
+    filc_pin(filc_ptr_object(list_ptr));
+    filc_exit(my_thread);
+    PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
+    int result = getgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(list_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getpgrp(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    int result = getpgrp();
+    filc_enter(my_thread);
+    return result;
+}
+
+int filc_native_zsys_getpgid(filc_thread* my_thread, int pid)
+{
+    filc_exit(my_thread);
+    int result = getpgid(pid);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result == -1)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

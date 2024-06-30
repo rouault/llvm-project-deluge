@@ -2479,27 +2479,6 @@ int filc_native_zsys_socketpair(filc_thread* my_thread, int musl_domain, int mus
     return result;
 }
 
-int filc_native_zsys_getgroups(filc_thread* my_thread, int size, filc_ptr list_ptr)
-{
-    size_t total_size;
-    FILC_CHECK(
-        !pas_mul_uintptr_overflow(sizeof(unsigned), size, &total_size),
-        NULL,
-        "size argument too big, causes overflow; size = %d.",
-        size);
-    filc_check_write_int(list_ptr, total_size, NULL);
-    filc_pin(filc_ptr_object(list_ptr));
-    filc_exit(my_thread);
-    PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
-    int result = getgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
-    int my_errno = errno;
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(list_ptr));
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
 int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, unsigned group,
                                   filc_ptr groups_ptr, filc_ptr ngroups_ptr)
 {

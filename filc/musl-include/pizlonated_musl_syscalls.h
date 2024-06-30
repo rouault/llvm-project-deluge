@@ -55,7 +55,6 @@ void zsys_openlog(const char* ident, int option, int facility);
 int zsys_setlogmask(int mask);
 void zsys_syslog(int priority, const char* msg); /* formatting is up to libc and thankfully musl's printf
                                                     always just supports %m! */
-int zsys_getgroups(int size, unsigned* list);
 int zsys_getgrouplist(const char* user, unsigned group, unsigned* groups, int* ngroups);
 int zsys_initgroups(const char* user, unsigned gid);
 int zsys_openpty(int* masterfd, int* slavefd, char* name, const void* term, const void* win);

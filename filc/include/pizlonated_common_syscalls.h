@@ -130,5 +130,9 @@ int zsys_fchdir(int fd);
 void zsys_sync(void);
 int zsys_access(const char* path, int mode);
 int zsys_symlink(const char* oldname, const char* newname);
+int zsys_mprotect(void* addr, __SIZE_TYPE__ len, int prot);
+int zsys_getgroups(int size, unsigned* list);
+int zsys_getpgrp(void);
+int zsys_getpgid(int pid);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

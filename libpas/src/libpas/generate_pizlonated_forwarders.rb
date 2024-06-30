@@ -82,15 +82,12 @@ class Signature
     end
 end
 
-$signatureMap = {}
 $signatures = []
 $defines = []
 
 def addSig(rets, name, *args)
-    raise if $signatureMap[name]
     sig = Signature.new(name, args, rets, $defines.dup)
     $signatures << sig
-    $signatureMap[name] = sig
 end
 
 def forMusl
@@ -246,6 +243,10 @@ addSig "int", "zsys_fchdir", "int"
 addSig "void", "zsys_sync"
 addSig "int", "zsys_access", "filc_ptr", "int"
 addSig "int", "zsys_symlink", "filc_ptr", "filc_ptr"
+addSig "int", "zsys_mprotect", "filc_ptr", "size_t", "int"
+addSig "int", "zsys_getgroups", "int", "filc_ptr"
+addSig "int", "zsys_getpgrp"
+addSig "int", "zsys_getpgid", "int"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
@@ -272,7 +273,6 @@ forMusl {
     addSig "void", "zsys_openlog", "filc_ptr", "int", "int"
     addSig "int", "zsys_setlogmask", "int"
     addSig "void", "zsys_syslog", "int", "filc_ptr"
-    addSig "int", "zsys_getgroups", "int", "filc_ptr"
     addSig "int", "zsys_getgrouplist", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_initgroups", "filc_ptr", "unsigned"
     addSig "int", "zsys_openpty", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
@@ -303,6 +303,7 @@ forFilBSD {
     addSig "int", "zsys_reboot", "int"
     addSig "int", "zsys_revoke", "filc_ptr"
     addSig "int", "zsys_ktrace", "filc_ptr", "int", "int", "int"
+    addSig "int", "zsys_setgroups", "int", "filc_ptr"
 }
 
 case ARGV[0]
