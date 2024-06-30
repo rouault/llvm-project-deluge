@@ -2936,7 +2936,7 @@ class Pizlonator {
           MAT.getNextSpecific(MATokenKind::EndLine);
           GlobalValue* GV = getGlobal(Name);
           if (!GV) {
-            errs() << "Cannot do " << Tok.Str << " to " << Name << " because it doesn't exit.\n";
+            errs() << "Cannot do " << Tok.Str << " to " << Name << " because it doesn't exist.\n";
             llvm_unreachable("Error interpreting module asm");
           }
           if (Tok.Str == ".filc_weak")
@@ -2954,17 +2954,29 @@ class Pizlonator {
           std::string NewName = MAT.getNextSpecific(MATokenKind::Identifier).Str;
           MAT.getNextSpecific(MATokenKind::EndLine);
           GlobalValue* GV = getGlobal(OldName);
-          if (!GV) {
-            errs() << "Cannot do .filc_weak_alias to " << OldName << " because it doesn't exit.\n";
-            llvm_unreachable("Error interpreting module asm");
-          }
-          Type* T = GV->getType();
+          Type* T;
           GlobalValue* ExistingGV = getGlobal(NewName);
           if (ExistingGV) {
-            T = ExistingGV->getType();
+            T = ExistingGV->getValueType();
+            assert(ExistingGV->isDeclaration());
             assert(!Dummy->getNumUses());
+            if (!GV) {
+              if (isa<Function>(ExistingGV)) {
+                assert(isa<FunctionType>(T));
+                GV = Function::Create(
+                  cast<FunctionType>(T), GlobalValue::ExternalLinkage, OldName, &M);
+              } else {
+                assert(isa<GlobalVariable>(ExistingGV));
+                GV = new GlobalVariable(M, T, false, GlobalValue::ExternalLinkage, nullptr, OldName);
+              }
+            }
             ExistingGV->replaceAllUsesWith(Dummy);
             ExistingGV->eraseFromParent();
+          } else if (GV)
+            T = GV->getValueType();
+          else {
+            T = Int8Ty;
+            GV = new GlobalVariable(M, Int8Ty, false, GlobalValue::ExternalLinkage, nullptr, OldName);
           }
           GlobalValue::LinkageTypes Linkage;
           if (Tok.Str == ".filc_weak_alias")

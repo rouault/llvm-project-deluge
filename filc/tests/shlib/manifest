@@ -5,6 +5,7 @@ libraries:
     isBundle: false
     files:
       - thingy.c
+      - otherthingy.c
 extraLinkerArgs:
   "-Lfilc/test-output/shlib -lthingy"
 extraLDPath:

@@ -33,3 +33,16 @@ int fizz(void)
 
 __asm__(".filc_weak_alias fuzz, buzz");
 
+int wombat(int x, int y);
+
+__asm__(".filc_weak_alias wombat, baz");
+
+int red(int x, int y);
+int blue(int x, int y);
+__asm__(".filc_weak_alias red, blue");
+
+extern int green;
+extern int yellow;
+__asm__(".filc_weak_alias green, yellow");
+
+
