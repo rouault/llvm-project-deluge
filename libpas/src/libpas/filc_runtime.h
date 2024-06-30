@@ -981,6 +981,9 @@ void filc_thread_mark_roots(filc_thread* my_thread);
 void filc_thread_sweep_mark_stack(filc_thread* my_thread);
 void filc_thread_donate(filc_thread* my_thread);
 
+/* Called by filc_mark_global_roots() to mark the roots that are specific to the user stack. */
+void filc_mark_user_global_roots(filc_object_array* mark_stack);
+
 void filc_mark_global_roots(filc_object_array* mark_stack);
 
 void filc_origin_dump(const filc_origin* origin, pas_stream* stream);

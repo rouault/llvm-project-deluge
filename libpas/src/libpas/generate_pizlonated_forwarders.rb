@@ -294,6 +294,8 @@ forFilBSD {
     addSig "int", "zsys_unmount", "filc_ptr", "int"
     addSig "int", "zsys_nmount", "filc_ptr", "unsigned", "int"
     addSig "int", "zsys_chflags", "filc_ptr", "unsigned long"
+    addSig "int", "zsys_fchflags", "int", "unsigned long"
+    addSig "int", "zsys_profil", "filc_ptr", "size_t", "unsigned long", "int"
 }
 
 case ARGV[0]

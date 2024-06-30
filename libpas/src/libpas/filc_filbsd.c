@@ -37,6 +37,7 @@
 
 #include "bmalloc_heap.h"
 #include "filc_native.h"
+#include "fugc.h"
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -64,6 +65,16 @@
 #include <poll.h>
 #include <sys/user.h>
 #include <sys/mount.h>
+
+static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
+static filc_object* profil_samples_root = NULL;
+
+void filc_mark_user_global_roots(filc_object_array* mark_stack)
+{
+    pas_lock_lock(&roots_lock);
+    fugc_mark(mark_stack, profil_samples_root);
+    pas_lock_unlock(&roots_lock);
+}
 
 int filc_to_user_errno(int errno_value)
 {
@@ -673,6 +684,41 @@ int filc_native_zsys_chflags(filc_thread* my_thread, filc_ptr path_ptr, unsigned
     if (result < 0)
         filc_set_errno(my_errno);
     bmalloc_deallocate(path);
+    return result;
+}
+
+int filc_native_zsys_fchflags(filc_thread* my_thread, int fd, unsigned long flags)
+{
+    filc_exit(my_thread);
+    int result = fchflags(fd, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_profil(filc_thread* my_thread, filc_ptr samples_ptr, size_t size,
+                            unsigned long offset, int scale)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    if (filc_ptr_ptr(samples_ptr)) {
+        filc_check_write_int(samples_ptr, size, NULL);
+        filc_pin(filc_ptr_object(samples_ptr));
+    }
+    pas_lock_lock(&roots_lock);
+    int result = profil((char*)filc_ptr_ptr(samples_ptr), size, offset, scale);
+    PAS_ASSERT(!result || result == -1);
+    int my_errno = errno;
+    if (!result) {
+        filc_unpin(profil_samples_root);
+        profil_samples_root = filc_ptr_ptr(samples_ptr) ? filc_ptr_object(samples_ptr) : NULL;
+    } else if (filc_ptr_ptr(samples_ptr))
+        filc_unpin(filc_ptr_object(samples_ptr));
+    pas_lock_unlock(&roots_lock);
+    if (result < 0)
+        filc_set_errno(my_errno);
     return result;
 }
 

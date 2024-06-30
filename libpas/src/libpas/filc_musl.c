@@ -83,6 +83,11 @@
 #define HAVE_LASTLOGX 0
 #endif /* PAS_OS(DARWIN) -> so end of !PAS_OS(DARWIN) */
 
+void filc_mark_user_global_roots(filc_object_array* mark_stack)
+{
+    PAS_UNUSED_PARAM(mark_stack);
+}
+
 struct musl_passwd {
     filc_ptr pw_name;
     filc_ptr pw_passwd;

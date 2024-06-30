@@ -64,6 +64,7 @@ esac
 
 if test $OS = freebsd
 then
+    rm -f pizfix/lib/libc.so
     (cd pizfix/lib && ln -s libc.so.666 libc.so)
 fi
 

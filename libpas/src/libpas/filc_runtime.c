@@ -1214,6 +1214,8 @@ void filc_mark_global_roots(filc_object_array* mark_stack)
     for (index = num_threads; index--;)
         fugc_mark(mark_stack, filc_object_for_special_payload(threads[index]));
     bmalloc_deallocate(threads);
+
+    filc_mark_user_global_roots(mark_stack);
 }
 
 static void signal_pizlonator(int signum)
