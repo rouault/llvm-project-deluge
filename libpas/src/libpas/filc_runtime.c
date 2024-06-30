@@ -5735,7 +5735,8 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
     }
     PAS_ASSERT(raw_result);
     filc_word_type initial_word_type;
-    if ((flags & MAP_PRIVATE) && (flags & MAP_ANON) && fd == -1 && !offset) {
+    if ((flags & MAP_PRIVATE) && (flags & MAP_ANON) && fd == -1 && !offset
+        && prot == (PROT_READ | PROT_WRITE)) {
         if (verbose)
             pas_log("using unset word type.\n");
         initial_word_type = FILC_WORD_TYPE_UNSET;
@@ -5766,6 +5767,7 @@ int filc_native_zsys_munmap(filc_thread* my_thread, filc_ptr address, size_t len
     filc_free_yolo(my_thread, object);
     filc_exit(my_thread);
     filc_soft_handshake(filc_soft_handshake_no_op_callback, NULL);
+    fugc_handshake(); /* Make sure we don't try to mark unmapped memory. */
     int result = munmap(filc_ptr_ptr(address), length);
     int my_errno = errno;
     filc_enter(my_thread);
@@ -6077,7 +6079,15 @@ int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_
 
 int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int user_prot)
 {
-    check_access_common(addr_ptr, len, filc_write_access, NULL);
+    int prot;
+    if (!from_user_prot(user_prot, &prot)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    if (prot == (PROT_READ | PROT_WRITE))
+        check_access_common(addr_ptr, len, filc_write_access, NULL);
+    else
+        filc_check_write_int(addr_ptr, len, NULL);
     filc_object* object = filc_ptr_object(addr_ptr);
     FILC_CHECK(
         object->flags & FILC_OBJECT_FLAG_MMAP,
@@ -6089,11 +6099,6 @@ int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t 
         NULL,
         "cannot mprotect a free object (ptr = %s).",
         filc_ptr_to_new_string(addr_ptr));
-    int prot;
-    if (!from_user_prot(user_prot, &prot)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     filc_pin_tracked(my_thread, object);
     filc_exit(my_thread);
     int result = mprotect(filc_ptr_ptr(addr_ptr), len, prot);

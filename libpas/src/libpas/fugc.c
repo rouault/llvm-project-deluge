@@ -72,7 +72,13 @@
 static pas_system_mutex collector_thread_state_lock;
 static pas_system_condition collector_thread_state_cond;
 static bool collector_thread_is_running = false;
-static bool collector_suspend_requested = false;
+
+#define COLLECTOR_CONTROL_REQUEST_SUSPEND 1u
+#define COLLECTOR_CONTROL_REQUEST_HANDSHAKE 2u
+
+static unsigned collector_control_request = 0;
+
+static unsigned collector_suspend_count = 0;
 
 static uint64_t completed_cycle;
 static uint64_t requested_cycle;
@@ -274,11 +280,11 @@ static void wait_and_start_marking(void)
         PAS_ASSERT(completed_cycle <= requested_cycle);
         while (completed_cycle == requested_cycle
                && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold
-               && !collector_suspend_requested)
+               && !collector_control_request)
             pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
         pas_system_mutex_unlock(&collector_thread_state_lock);
         
-        if (collector_suspend_requested)
+        if (collector_control_request)
             return;
         
         PAS_ASSERT(completed_cycle <= requested_cycle);
@@ -341,10 +347,10 @@ static void mark_and_start_destructing(void)
             break;
         
         filc_object* object;
-        while (!collector_suspend_requested && (object = filc_object_array_pop(&local_stack)))
+        while (!collector_control_request && (object = filc_object_array_pop(&local_stack)))
             mark_outgoing_ptrs(&local_stack, object);
 
-        if (collector_suspend_requested)
+        if (collector_control_request)
             return;
     }
     
@@ -374,7 +380,7 @@ static void destruct_and_start_sweeping(void)
     PAS_ASSERT(current_collector_state == collector_destructing);
 
     for (; destruct_index < destruct_size; destruct_index += 10) {
-        if (collector_suspend_requested)
+        if (collector_control_request)
             return;
         size_t next_destruct_index = pas_min_uintptr(destruct_index + 10, destruct_size);
         verse_heap_object_set_iterate_range_inline(
@@ -414,7 +420,7 @@ static void sweep_and_end(void)
     PAS_ASSERT(current_collector_state == collector_sweeping);
     
     for (; sweep_index < sweep_size; sweep_index += 10) {
-        if (collector_suspend_requested)
+        if (collector_control_request)
             return;
         size_t next_sweep_index = pas_min_uintptr(sweep_index + 10, sweep_size);
         verse_heap_sweep_range(sweep_index, next_sweep_index);
@@ -482,7 +488,13 @@ static pas_thread_return_type collector_thread(void* arg)
     
     PAS_ASSERT(collector_thread_is_running);
 
-    while (!collector_suspend_requested) {
+    while (!(collector_control_request & COLLECTOR_CONTROL_REQUEST_SUSPEND)) {
+        if ((collector_control_request & COLLECTOR_CONTROL_REQUEST_HANDSHAKE)) {
+            pas_system_mutex_lock(&collector_thread_state_lock);
+            collector_control_request &= ~COLLECTOR_CONTROL_REQUEST_HANDSHAKE;
+            pas_system_condition_broadcast(&collector_thread_state_cond);
+            pas_system_mutex_unlock(&collector_thread_state_lock);
+        }
         switch (current_collector_state) {
         case collector_waiting:
             wait_and_start_marking();
@@ -548,9 +560,13 @@ void fugc_initialize(void)
 void fugc_suspend(void)
 {
     pas_system_mutex_lock(&collector_thread_state_lock);
+    if (collector_suspend_count++) {
+        pas_system_mutex_unlock(&collector_thread_state_lock);
+        return;
+    }
     PAS_ASSERT(collector_thread_is_running);
-    PAS_ASSERT(!collector_suspend_requested);
-    collector_suspend_requested = true;
+    PAS_ASSERT(!(collector_control_request & COLLECTOR_CONTROL_REQUEST_SUSPEND));
+    collector_control_request |= COLLECTOR_CONTROL_REQUEST_SUSPEND;
     pas_system_condition_broadcast(&collector_thread_state_cond);
     while (collector_thread_is_running)
         pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
@@ -560,11 +576,31 @@ void fugc_suspend(void)
 void fugc_resume(void)
 {
     pas_system_mutex_lock(&collector_thread_state_lock);
+    if (--collector_suspend_count) {
+        pas_system_mutex_unlock(&collector_thread_state_lock);
+        return;
+    }
     PAS_ASSERT(!collector_thread_is_running);
-    PAS_ASSERT(collector_suspend_requested);
-    collector_suspend_requested = false;
+    PAS_ASSERT(collector_control_request & COLLECTOR_CONTROL_REQUEST_SUSPEND);
+    collector_control_request &= ~COLLECTOR_CONTROL_REQUEST_SUSPEND;
     collector_thread_is_running = true;
     create_thread();
+    pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+void fugc_handshake(void)
+{
+    pas_system_mutex_lock(&collector_thread_state_lock);
+    PAS_ASSERT(completed_cycle <= requested_cycle);
+    if (requested_cycle == completed_cycle) {
+        pas_system_mutex_unlock(&collector_thread_state_lock);
+        return;
+    }
+    collector_control_request |= COLLECTOR_CONTROL_REQUEST_HANDSHAKE;
+    pas_system_condition_broadcast(&collector_thread_state_cond);
+    while ((collector_control_request & COLLECTOR_CONTROL_REQUEST_HANDSHAKE)
+           && collector_thread_is_running)
+        pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
     pas_system_mutex_unlock(&collector_thread_state_lock);
 }
 

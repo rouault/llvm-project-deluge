@@ -41,6 +41,9 @@ PAS_API void fugc_initialize(void);
 PAS_API void fugc_suspend(void);
 PAS_API void fugc_resume(void);
 
+/* Needed for munmap/mprotect support. */
+PAS_API void fugc_handshake(void);
+
 static inline void fugc_mark(filc_object_array* mark_stack, filc_object* object)
 {
     static const bool verbose = false;
