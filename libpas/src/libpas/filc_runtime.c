@@ -1509,8 +1509,8 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     filc_store_barrier(my_thread, target);
 }
 
-static void check_access_common(filc_ptr ptr, uintptr_t bytes, filc_access_kind access_kind,
-                                const filc_origin* origin)
+void filc_check_access_common(filc_ptr ptr, uintptr_t bytes, filc_access_kind access_kind,
+                              const filc_origin* origin)
 {
     if (PAS_ENABLE_TESTING)
         filc_validate_ptr(ptr, origin);
@@ -2310,7 +2310,7 @@ filc_ptr filc_native_zgetupper(filc_thread* my_thread, filc_ptr ptr)
 bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, filc_read_access, NULL);
+    filc_check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return false;
@@ -2322,7 +2322,7 @@ bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
 bool filc_native_zisint(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, filc_read_access, NULL);
+    filc_check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return false;
@@ -2334,7 +2334,7 @@ bool filc_native_zisint(filc_thread* my_thread, filc_ptr ptr)
 int filc_native_zptrphase(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    check_access_common(ptr, 1, filc_read_access, NULL);
+    filc_check_access_common(ptr, 1, filc_read_access, NULL);
     check_not_free(ptr, NULL);
     if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
         return -1;
@@ -2505,7 +2505,7 @@ void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind access_k
 {
     if (!bytes)
         return;
-    check_access_common(ptr, bytes, access_kind, origin);
+    filc_check_access_common(ptr, bytes, access_kind, origin);
     check_int(ptr, bytes, origin);
 }
 
@@ -2514,7 +2514,7 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const fil
     uintptr_t offset;
     uintptr_t word_type_index;
 
-    check_access_common(ptr, sizeof(filc_ptr), access_kind, origin);
+    filc_check_access_common(ptr, sizeof(filc_ptr), access_kind, origin);
 
     offset = filc_ptr_offset(ptr);
     FILC_CHECK(
@@ -2567,6 +2567,24 @@ void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
 void filc_check_function_call(filc_ptr ptr)
 {
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
+}
+
+void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr)
+{
+    filc_object* object = filc_ptr_object(ptr);
+    PAS_ASSERT(object); /* To use this function you should have already checked that the ptr is
+                           accessible. */
+    FILC_CHECK(
+        object->flags & FILC_OBJECT_FLAG_MMAP,
+        NULL,
+        "cannot perform this operation on something that was not mmapped (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+    FILC_CHECK(
+        !(object->flags & FILC_OBJECT_FLAG_FREE),
+        NULL,
+        "cannot perform this operation on a free object (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+    filc_pin_tracked(my_thread, object);
 }
 
 void filc_memset_with_exit(
@@ -2672,7 +2690,7 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     
     if (verbose)
         pas_log("count = %zu\n", count);
-    check_access_common(ptr, count, filc_write_access, NULL);
+    filc_check_access_common(ptr, count, filc_write_access, NULL);
     
     if (!value) {
         /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
@@ -2895,8 +2913,8 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     frame->objects[1] = src_object;
     filc_push_frame(my_thread, frame);
     
-    check_access_common(dst, count, filc_write_access, NULL);
-    check_access_common(src, count, filc_read_access, NULL);
+    filc_check_access_common(dst, count, filc_write_access, NULL);
+    filc_check_access_common(src, count, filc_read_access, NULL);
 
     memmove_impl(my_thread, dst, src, count, filc_barriered, filc_pollchecked);
 
@@ -2919,7 +2937,7 @@ filc_ptr filc_clone_readonly_for_zargs(filc_thread* my_thread, filc_ptr ptr)
     frame->objects[0] = filc_ptr_object(ptr);
     filc_push_frame(my_thread, frame);
     
-    check_access_common(ptr, filc_ptr_available(ptr), filc_read_access, NULL);
+    filc_check_access_common(ptr, filc_ptr_available(ptr), filc_read_access, NULL);
     
     filc_object* result_object = allocate_impl(
         my_thread, filc_ptr_available(ptr), FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET);
@@ -2954,7 +2972,7 @@ void filc_memcpy_for_zreturn(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
     frame->objects[0] = filc_ptr_object(src);
     filc_push_frame(my_thread, frame);
 
-    check_access_common(src, count, filc_read_access, NULL);
+    filc_check_access_common(src, count, filc_read_access, NULL);
     memmove_impl(my_thread, dst, src, count, filc_unbarriered, filc_not_pollchecked);
     
     filc_pop_frame(my_thread, frame);
@@ -2969,7 +2987,7 @@ filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr
     if (!filc_ptr_available(args_ptr))
         args_copy = filc_ptr_forge_null();
     else {
-        check_access_common(args_ptr, filc_ptr_available(args_ptr), filc_read_access, NULL);
+        filc_check_access_common(args_ptr, filc_ptr_available(args_ptr), filc_read_access, NULL);
 
         /* It's weird but true that the ABI args are not readonly right now. Not a problem we need to
            solve yet. */
@@ -3023,8 +3041,8 @@ int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, si
     if (!count)
         return 0;
 
-    check_access_common(ptr1, count, filc_read_access, NULL);
-    check_access_common(ptr2, count, filc_read_access, NULL);
+    filc_check_access_common(ptr1, count, filc_read_access, NULL);
+    filc_check_access_common(ptr2, count, filc_read_access, NULL);
     check_accessible(ptr1, NULL);
     check_accessible(ptr2, NULL);
 
@@ -3053,7 +3071,7 @@ char* filc_check_and_get_new_str(filc_ptr str)
 {
     size_t available;
     size_t length;
-    check_access_common(str, 1, filc_read_access, NULL);
+    filc_check_access_common(str, 1, filc_read_access, NULL);
     available = filc_ptr_available(str);
     length = strnlen((char*)filc_ptr_ptr(str), available);
     FILC_ASSERT(length < available, NULL);
@@ -6085,23 +6103,12 @@ int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t 
         return -1;
     }
     if (prot == (PROT_READ | PROT_WRITE))
-        check_access_common(addr_ptr, len, filc_write_access, NULL);
+        filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
     else {
         /* Protect the GC. We don't want the GC scanning pointers in protected memory. */
         filc_check_write_int(addr_ptr, len, NULL);
     }
-    filc_object* object = filc_ptr_object(addr_ptr);
-    FILC_CHECK(
-        object->flags & FILC_OBJECT_FLAG_MMAP,
-        NULL,
-        "cannot mprotect something that was not mmapped (ptr = %s).",
-        filc_ptr_to_new_string(addr_ptr));
-    FILC_CHECK(
-        !(object->flags & FILC_OBJECT_FLAG_FREE),
-        NULL,
-        "cannot mprotect a free object (ptr = %s).",
-        filc_ptr_to_new_string(addr_ptr));
-    filc_pin_tracked(my_thread, object);
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
     filc_exit(my_thread);
     int result = mprotect(filc_ptr_ptr(addr_ptr), len, prot);
     int my_errno = errno;
@@ -6148,6 +6155,18 @@ int filc_native_zsys_getpgid(filc_thread* my_thread, int pid)
     int my_errno = errno;
     filc_enter(my_thread);
     if (result == -1)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setpgid(filc_thread* my_thread, int pid, int pgrp)
+{
+    filc_exit(my_thread);
+    int result = setpgid(pid, pgrp);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
         filc_set_errno(my_errno);
     return result;
 }

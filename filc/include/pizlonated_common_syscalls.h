@@ -134,5 +134,6 @@ int zsys_mprotect(void* addr, __SIZE_TYPE__ len, int prot);
 int zsys_getgroups(int size, unsigned* list);
 int zsys_getpgrp(void);
 int zsys_getpgid(int pid);
+int zsys_setpgid(int pid, int pgrp);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

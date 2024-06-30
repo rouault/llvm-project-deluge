@@ -38,6 +38,7 @@
 #include "bmalloc_heap.h"
 #include "filc_native.h"
 #include "fugc.h"
+#include "pas_page_malloc.h"
 #include <termios.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -813,6 +814,38 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, int size, filc_ptr list_p
     filc_unpin(filc_ptr_object(list_ptr));
     if (verbose)
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int behav)
+{
+    filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_exit(my_thread);
+    int result = madvise(filc_ptr_ptr(addr_ptr), len, behav);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, filc_ptr vec_ptr)
+{
+    filc_check_write_int(
+        vec_ptr,
+        pas_round_up_to_power_of_2(
+            len, pas_page_malloc_alignment()) >> pas_page_malloc_alignment_shift(),
+        NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(vec_ptr));
+    filc_exit(my_thread);
+    int result = mincore(filc_ptr_ptr(addr), len, (char*)filc_ptr_ptr(vec_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;

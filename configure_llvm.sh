@@ -23,23 +23,16 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-rm -rf filbsdrt
-
-# Stash pizfix instead of deleting it, in case we want to quickly recover it.
-if test -d pizfix
-then
-    rm -rf pizfix-saved
-    mv pizfix pizfix-saved
-fi
-
-# Configure the LLVM project exactly like how build_all.sh would do it to prevent ping-pong. That's a
-# bit wierd since we don't end up using the libcxx/libcxxabi builds that this enables, but whatever.
-./configure_llvm.sh
-
-(cd build && ninja clang)
-
-(cd libpas && ./build-filbsd.sh)
-
+(cd build &&
+     cmake -S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang \
+           -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON \
+           -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
+           -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON \
+           -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DLIBCXX_HAS_PTHREAD_API=ON \
+           -DLIBCXX_HAS_MUSL_LIBC=ON -DLLVM_ENABLE_ZSTD=OFF \
+           -DLIBCXX_FORCE_LIBCXXABI=ON -DLLVM_TARGETS_TO_BUILD=$LLVMARCH)

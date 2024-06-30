@@ -39,6 +39,8 @@ int zsys_reboot(int howto);
 int zsys_revoke(const char* path);
 int zsys_ktrace(const char *tracefile, int ops, int trpoints, int pid);
 int zsys_setgroups(int size, const unsigned* list);
+int zsys_madvise(void* addr, __SIZE_TYPE__ len, int behav);
+int zsys_mincore(void* addr, __SIZE_TYPE__ len, char* vec);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

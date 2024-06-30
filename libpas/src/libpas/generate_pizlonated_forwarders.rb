@@ -247,6 +247,7 @@ addSig "int", "zsys_mprotect", "filc_ptr", "size_t", "int"
 addSig "int", "zsys_getgroups", "int", "filc_ptr"
 addSig "int", "zsys_getpgrp"
 addSig "int", "zsys_getpgid", "int"
+addSig "int", "zsys_setpgid", "int", "int"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
@@ -304,6 +305,8 @@ forFilBSD {
     addSig "int", "zsys_revoke", "filc_ptr"
     addSig "int", "zsys_ktrace", "filc_ptr", "int", "int", "int"
     addSig "int", "zsys_setgroups", "int", "filc_ptr"
+    addSig "int", "zsys_madvise", "filc_ptr", "size_t", "int"
+    addSig "int", "zsys_mincore", "filc_ptr", "size_t", "filc_ptr"
 }
 
 case ARGV[0]
