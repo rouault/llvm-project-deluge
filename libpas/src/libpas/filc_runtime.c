@@ -6025,6 +6025,18 @@ int filc_native_zsys_fchown(filc_thread* my_thread, int fd, unsigned uid, unsign
     return result;
 }
 
+int filc_native_zsys_fchdir(filc_thread* my_thread, int fd)
+{
+    filc_exit(my_thread);
+    int result = fchdir(fd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;
