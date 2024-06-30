@@ -63,6 +63,7 @@
 #include <dlfcn.h>
 #include <poll.h>
 #include <sys/user.h>
+#include <sys/mount.h>
 
 int filc_to_user_errno(int errno_value)
 {
@@ -629,6 +630,49 @@ int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_unmount(filc_thread* my_thread, filc_ptr dir_ptr, int flags)
+{
+    char* dir = filc_check_and_get_new_str(dir_ptr);
+    filc_exit(my_thread);
+    int result = unmount(dir, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    bmalloc_deallocate(dir);
+    return result;
+}
+
+int filc_native_zsys_nmount(filc_thread* my_thread, filc_ptr iov_ptr, unsigned niov, int flags)
+{
+    /* This syscall is the coolest thing ever. */
+    struct iovec* iov = filc_prepare_iovec(my_thread, iov_ptr, niov, filc_read_access);
+    filc_exit(my_thread);
+    int result = nmount(iov, niov, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    filc_unprepare_iovec(iov);
+    return result;
+}
+
+int filc_native_zsys_chflags(filc_thread* my_thread, filc_ptr path_ptr, unsigned long flags)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    filc_exit(my_thread);
+    int result = chflags(path, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    bmalloc_deallocate(path);
     return result;
 }
 

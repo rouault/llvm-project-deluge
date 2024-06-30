@@ -6037,6 +6037,13 @@ int filc_native_zsys_fchdir(filc_thread* my_thread, int fd)
     return result;
 }
 
+void filc_native_zsys_sync(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    sync();
+    filc_enter(my_thread);
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

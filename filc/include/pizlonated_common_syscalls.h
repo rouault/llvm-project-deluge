@@ -127,5 +127,6 @@ int zsys_rmdir(const char* path);
 int zsys_futimens(int fd, const void* times);
 int zsys_fchown(int fd, unsigned uid, unsigned gid);
 int zsys_fchdir(int fd);
+void zsys_sync(void);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

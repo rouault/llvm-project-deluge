@@ -243,6 +243,7 @@ addSig "int", "zsys_rmdir", "filc_ptr"
 addSig "int", "zsys_futimens", "int", "filc_ptr"
 addSig "int", "zsys_fchown", "int", "unsigned", "unsigned"
 addSig "int", "zsys_fchdir", "int"
+addSig "void", "zsys_sync"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
@@ -288,6 +289,11 @@ forMusl {
     addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
     addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+}
+forFilBSD {
+    addSig "int", "zsys_unmount", "filc_ptr", "int"
+    addSig "int", "zsys_nmount", "filc_ptr", "unsigned", "int"
+    addSig "int", "zsys_chflags", "filc_ptr", "unsigned long"
 }
 
 case ARGV[0]

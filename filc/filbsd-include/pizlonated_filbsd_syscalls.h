@@ -28,5 +28,9 @@
 
 #include <pizlonated_common_syscalls.h>
 
+int zsys_unmount(const char* dir, int flags);
+int zsys_nmount(void* iov, unsigned niov, int flags);
+int zsys_chflags(const char* path, unsigned long flags);
+
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
