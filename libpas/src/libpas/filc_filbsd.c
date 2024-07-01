@@ -73,6 +73,7 @@
 #include <fs/nfs/nfskpiport.h>
 #include <fs/nfs/nfs.h>
 #include <fs/nfs/nfsport.h>
+#include <sys/timex.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -1790,6 +1791,121 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
     }
     filc_set_errno(EINVAL);
     return -1;
+}
+
+static int rtprio_impl(filc_thread* my_thread, int function, int pidish, filc_ptr rtp_ptr,
+                       int (*actual_rtprio)(int, int, struct rtprio*))
+{
+    switch (function) {
+    case RTP_LOOKUP:
+        filc_check_write_int(rtp_ptr, sizeof(struct rtprio), NULL);
+        break;
+    case RTP_SET:
+        filc_check_read_int(rtp_ptr, sizeof(struct rtprio), NULL);
+        break;
+    default:
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    filc_pin_tracked(my_thread, filc_ptr_object(rtp_ptr));
+    filc_exit(my_thread);
+    int result = actual_rtprio(function, pidish, (struct rtprio*)filc_ptr_ptr(rtp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_rtprio(filc_thread* my_thread, int function, int pid, filc_ptr rtp_ptr)
+{
+    return rtprio_impl(my_thread, function, pid, rtp_ptr, rtprio);
+}
+
+int filc_native_zsys_rtprio_thread(filc_thread* my_thread, int function, int pid, filc_ptr rtp_ptr)
+{
+    return rtprio_impl(my_thread, function, pid, rtp_ptr, rtprio_thread);
+}
+
+static int getfh_impl(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr fhp_ptr,
+                      int (*actual_getfh)(const char*, fhandle_t*))
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_check_write_int(fhp_ptr, sizeof(fhandle_t), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(fhp_ptr));
+    filc_exit(my_thread);
+    int result = actual_getfh(path, (fhandle_t*)filc_ptr_ptr(fhp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getfh(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr fhp_ptr)
+{
+    return getfh_impl(my_thread, path_ptr, fhp_ptr, getfh);
+}
+
+int filc_native_zsys_lgetfh(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr fhp_ptr)
+{
+    return getfh_impl(my_thread, path_ptr, fhp_ptr, lgetfh);
+}
+
+int filc_native_zsys_getfhat(filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr fhp_ptr,
+                             int flags)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_check_write_int(fhp_ptr, sizeof(fhandle_t), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(fhp_ptr));
+    filc_exit(my_thread);
+    int result = getfhat(fd, path, (fhandle_t*)filc_ptr_ptr(fhp_ptr), flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setfib(filc_thread* my_thread, int fib)
+{
+    filc_exit(my_thread);
+    int result = setfib(fib);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return 0;
+}
+
+int filc_native_zsys_ntp_adjtime(filc_thread* my_thread, filc_ptr timex_ptr)
+{
+    filc_check_write_int(timex_ptr, sizeof(struct timex), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(timex_ptr));
+    filc_exit(my_thread);
+    int result = ntp_adjtime((struct timex*)filc_ptr_ptr(timex_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_ntp_gettime(filc_thread* my_thread, filc_ptr timeval_ptr)
+{
+    filc_check_write_int(timeval_ptr, sizeof(struct ntptimeval), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(timeval_ptr));
+    filc_exit(my_thread);
+    int result = ntp_gettime((struct ntptimeval*)filc_ptr_ptr(timeval_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

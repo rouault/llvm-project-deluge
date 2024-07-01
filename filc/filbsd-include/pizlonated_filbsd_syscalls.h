@@ -60,6 +60,14 @@ int zsys_adjtime(const void* delta, void* olddelta);
 int zsys_quotactl(const char* path, int cmd, int id, void* addr);
 int zsys_nlm_syscall(int debug_level, int grace_period, int addr_count, char** addrs);
 int zsys_nfssvc(int flags, void* argstructp);
+int zsys_rtprio(int function, int pid, void* rtp);
+int zsys_rtprio_thread(int function, int lwpid, void* rtp);
+int zsys_getfh(const char* path, void* fhp);
+int zsys_lgetfh(const char* path, void* fhp);
+int zsys_getfhat(int fd, const char* path, void* fhp, int flag);
+int zsys_setfib(int fib);
+int zsys_ntp_adjtime(void* timex);
+int zsys_ntp_gettime(void* timeval);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

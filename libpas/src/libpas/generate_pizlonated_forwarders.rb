@@ -327,6 +327,14 @@ forFilBSD {
     addSig "int", "zsys_quotactl", "filc_ptr", "int", "int", "filc_ptr"
     addSig "int", "zsys_nlm_syscall", "int", "int", "int", "filc_ptr"
     addSig "int", "zsys_nfssvc", "int", "filc_ptr"
+    addSig "int", "zsys_rtprio", "int", "int", "filc_ptr"
+    addSig "int", "zsys_rtprio_thread", "int", "int", "filc_ptr"
+    addSig "int", "zsys_getfh", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_lgetfh", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_getfhat", "int", "filc_ptr", "filc_ptr", "int"
+    addSig "int", "zsys_setfib", "int"
+    addSig "int", "zsys_ntp_adjtime", "filc_ptr"
+    addSig "int", "zsys_ntp_gettime", "filc_ptr"
 }
 
 case ARGV[0]
