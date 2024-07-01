@@ -2048,18 +2048,15 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
             return to_musl_eai(EAI_SYSTEM);
         }
     }
-    char* node = filc_check_and_get_new_str_or_null(node_ptr);
-    char* service = filc_check_and_get_new_str_or_null(service_ptr);
+    char* node = filc_check_and_get_tmp_str_or_null(my_thread, node_ptr);
+    char* service = filc_check_and_get_tmp_str_or_null(my_thread, service_ptr);
     struct addrinfo* res = NULL;
     int result;
-    int musl_result = 0;
     filc_exit(my_thread);
     result = getaddrinfo(node, service, &hints, &res);
     filc_enter(my_thread);
-    if (result) {
-        musl_result = to_musl_eai(result);
-        goto done;
-    }
+    if (result)
+        return to_musl_eai(result);
     filc_check_write_ptr(res_ptr, NULL);
     filc_ptr* addrinfo_ptr = (filc_ptr*)filc_ptr_ptr(res_ptr);
     struct addrinfo* current;
@@ -2085,11 +2082,7 @@ int filc_native_zsys_getaddrinfo(filc_thread* my_thread, filc_ptr node_ptr, filc
     }
     filc_ptr_store(my_thread, addrinfo_ptr, filc_ptr_forge_invalid(NULL));
     freeaddrinfo(res);
-
-done:
-    bmalloc_deallocate(node);
-    bmalloc_deallocate(service);
-    return musl_result;
+    return 0;
 }
 
 struct musl_utsname {
@@ -2123,11 +2116,10 @@ int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
 
 filc_ptr filc_native_zsys_getpwnam(filc_thread* my_thread, filc_ptr name_ptr)
 {
-    char* name = filc_check_and_get_new_str(name_ptr);
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
     struct passwd* passwd = getpwnam(name);
     int my_errno = errno;
-    bmalloc_deallocate(name);
     if (!passwd) {
         filc_set_errno(my_errno);
         return filc_ptr_forge_null();
@@ -2166,12 +2158,11 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
 
 filc_ptr filc_native_zsys_opendir(filc_thread* my_thread, filc_ptr name_ptr)
 {
-    char* name = filc_check_and_get_new_str(name_ptr);
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_exit(my_thread);
     DIR* dir = opendir(name);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(name);
     if (!dir) {
         filc_set_errno(my_errno);
         return filc_ptr_forge_null();
@@ -2397,12 +2388,11 @@ void filc_native_zsys_closelog(filc_thread* my_thread)
 
 void filc_native_zsys_openlog(filc_thread* my_thread, filc_ptr ident_ptr, int option, int facility)
 {
-    char* ident = filc_check_and_get_new_str(ident_ptr);
+    char* ident = filc_check_and_get_tmp_str(my_thread, ident_ptr);
     filc_exit(my_thread);
     /* Amazingly, the option/facility constants all match up! */
     openlog(ident, option, facility);
     filc_enter(my_thread);
-    bmalloc_deallocate(ident);
 }
 
 int filc_native_zsys_setlogmask(filc_thread* my_thread, int mask)
@@ -2415,11 +2405,10 @@ int filc_native_zsys_setlogmask(filc_thread* my_thread, int mask)
 
 void filc_native_zsys_syslog(filc_thread* my_thread, int priority, filc_ptr msg_ptr)
 {
-    char* msg = filc_check_and_get_new_str(msg_ptr);
+    char* msg = filc_check_and_get_tmp_str(my_thread, msg_ptr);
     filc_exit(my_thread);
     syslog(priority, "%s", msg);
     filc_enter(my_thread);
-    bmalloc_deallocate(msg);
 }
 
 int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr musl_addr_ptr,
@@ -2484,7 +2473,7 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
 {
     static const bool verbose = false;
     
-    char* user = filc_check_and_get_new_str(user_ptr);
+    char* user = filc_check_and_get_tmp_str(my_thread, user_ptr);
     filc_check_read_int(ngroups_ptr, sizeof(int), NULL);
     int ngroups = *(int*)filc_ptr_ptr(ngroups_ptr);
     size_t total_size;
@@ -2504,7 +2493,6 @@ int filc_native_zsys_getgrouplist(filc_thread* my_thread, filc_ptr user_ptr, uns
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(groups_ptr));
-    bmalloc_deallocate(user);
     if (verbose)
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
@@ -2518,12 +2506,11 @@ int filc_native_zsys_initgroups(filc_thread* my_thread, filc_ptr user_ptr, unsig
 {
     static const bool verbose = false;
     
-    char* user = filc_check_and_get_new_str(user_ptr);
+    char* user = filc_check_and_get_tmp_str(my_thread, user_ptr);
     filc_exit(my_thread);
     int result = initgroups(user, gid);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(user);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -2606,11 +2593,10 @@ static struct filc_ptr to_musl_group(filc_thread* my_thread, struct group* group
 
 filc_ptr filc_native_zsys_getgrnam(filc_thread* my_thread, filc_ptr name_ptr)
 {
-    char* name = filc_check_and_get_new_str(name_ptr);
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     /* Don't filc_exit so we don't have a reentrancy problem on the thread-local passwd. */
     struct group* group = getgrnam(name);
     int my_errno = errno;
-    bmalloc_deallocate(name);
     if (!group) {
         filc_set_errno(my_errno);
         return filc_ptr_forge_null();
@@ -2994,7 +2980,7 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
                                             filc_ptr musl_lastlogx_ptr)
 {
 #if HAVE_LASTLOGX
-    char* name = filc_check_and_get_new_str(name_ptr);
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     if (filc_ptr_ptr(musl_lastlogx_ptr))
         filc_check_write_int(musl_lastlogx_ptr, sizeof(struct musl_lastlogx), NULL);
     pas_lock_lock(&utmpx_lock);
@@ -3002,7 +2988,6 @@ filc_ptr filc_native_zsys_getlastlogxbyname(filc_thread* my_thread, filc_ptr nam
     filc_ptr result = handle_lastlogx_result(
         my_thread, musl_lastlogx_ptr, getlastlogxbyname(name, &lastlogx));
     pas_lock_unlock(&utmpx_lock);
-    bmalloc_deallocate(name);
     return result;
 #else /* HAVE_LASTLOGX -> so !HAVE_LASTLOGX */
     PAS_UNUSED_PARAM(my_thread);
@@ -3042,7 +3027,6 @@ struct musl_cmsghdr {
 
 static void destroy_msghdr(struct msghdr* msghdr)
 {
-    filc_unprepare_iovec(msghdr->msg_iov);
     bmalloc_deallocate(msghdr->msg_name);
     bmalloc_deallocate(msghdr->msg_control);
 }
@@ -3733,18 +3717,16 @@ static bool from_musl_posix_spawn_file_actions(filc_thread* my_thread,
             int flags = filc_from_user_open_flags(fdop->oflag);
             if (flags < 0)
                 goto error;
-            char* path = filc_check_and_get_new_str(
-                filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
+            char* path = filc_check_and_get_tmp_str(
+                my_thread, filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
             PAS_ASSERT(!posix_spawn_file_actions_addopen(actions, fdop->fd, path, flags, fdop->mode));
-            bmalloc_deallocate(path);
             break;
         }
 #if !PAS_OS(OPENBSD)
         case 4: /* FDOP_CHDIR */ {
-            char* path = filc_check_and_get_new_str(
-                filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
+            char* path = filc_check_and_get_tmp_str(
+                my_thread, filc_ptr_with_offset(fdop_ptr, PAS_OFFSETOF(struct musl_fdop, path)));
             PAS_ASSERT(!posix_spawn_file_actions_addchdir_np(actions, path));
-            bmalloc_deallocate(path);
             break;
         }
         case 5: /* FDOP_FCHDIR */ {
@@ -3771,7 +3753,7 @@ static int posix_spawn_impl(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr p
                             filc_ptr actions_ptr, filc_ptr attr_ptr, filc_ptr argv_ptr,
                             filc_ptr envp_ptr, bool is_p)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     posix_spawn_file_actions_t actions;
     if (!from_musl_posix_spawn_file_actions(my_thread, actions_ptr, &actions)) {
         filc_set_errno(EINVAL);
@@ -3799,9 +3781,6 @@ static int posix_spawn_impl(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr p
     filc_enter(my_thread);
     posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&spawnattr);
-    filc_deallocate_null_terminated_string_array(argv_len, argv);
-    filc_deallocate_null_terminated_string_array(envp_len, envp);
-    bmalloc_deallocate(path);
     if (result)
         return filc_to_user_errno(result);
     filc_check_write_int(pid_ptr, sizeof(int), NULL);
@@ -4158,12 +4137,11 @@ int filc_native_zsys_poll(
 
 int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
 {
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_exit(my_thread);
     int result = chmod(pathname, mode);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -4183,12 +4161,11 @@ int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned mode)
 int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr, unsigned mode)
 {
     int dirfd = filc_from_user_atfd(user_dirfd);
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_exit(my_thread);
     int result = mkdirat(dirfd, pathname, mode);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);

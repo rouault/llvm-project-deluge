@@ -59,6 +59,7 @@ int zsys_utimes(const char* path, const void* times);
 int zsys_adjtime(const void* delta, void* olddelta);
 int zsys_quotactl(const char* path, int cmd, int id, void* addr);
 int zsys_nlm_syscall(int debug_level, int grace_period, int addr_count, char** addrs);
+int zsys_nfssvc(int flags, void* argstructp);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

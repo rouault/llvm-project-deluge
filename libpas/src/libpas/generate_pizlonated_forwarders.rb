@@ -326,6 +326,7 @@ forFilBSD {
     addSig "int", "zsys_adjtime", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_quotactl", "filc_ptr", "int", "int", "filc_ptr"
     addSig "int", "zsys_nlm_syscall", "int", "int", "int", "filc_ptr"
+    addSig "int", "zsys_nfssvc", "int", "filc_ptr"
 }
 
 case ARGV[0]

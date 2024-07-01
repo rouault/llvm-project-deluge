@@ -976,6 +976,27 @@ void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocat
     filc_exit(my_thread);
 }
 
+void filc_ptr_array_add(filc_ptr_array* array, void* ptr)
+{
+    if (array->size >= array->capacity) {
+        void** new_array;
+        unsigned new_capacity;
+        
+        PAS_ASSERT(array->size == array->capacity);
+        PAS_ASSERT(!pas_mul_uint32_overflow(array->capacity, 2, &new_capacity));
+
+        new_array = bmalloc_allocate(sizeof(void*) * new_capacity);
+        memcpy(new_array, array->array, sizeof(void*) * array->size);
+
+        bmalloc_deallocate(array->array);
+        array->array = new_array;
+        array->capacity = new_capacity;
+        PAS_ASSERT(array->size < array->capacity);
+    }
+
+    array->array[array->size++] = ptr;
+}
+
 static void enlarge_array(filc_object_array* array, size_t anticipated_size)
 {
     PAS_ASSERT(anticipated_size > array->objects_capacity);
@@ -1047,6 +1068,7 @@ void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame)
 
     filc_object_array_construct(&frame->array);
     filc_object_array_construct(&frame->pinned);
+    filc_ptr_array_construct(&frame->to_bmalloc_deallocate);
     frame->locked = false;
     
     PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
@@ -1065,6 +1087,10 @@ void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
     for (index = frame->pinned.num_objects; index--;)
         filc_unpin(frame->pinned.objects[index]);
     filc_object_array_destruct(&frame->pinned);
+
+    for (index = frame->to_bmalloc_deallocate.size; index--;)
+        bmalloc_deallocate(frame->to_bmalloc_deallocate.array[index]);
+    filc_ptr_array_destruct(&frame->to_bmalloc_deallocate);
     
     PAS_TESTING_ASSERT(!frame->locked);
     
@@ -1093,12 +1119,39 @@ void filc_native_frame_pin(filc_native_frame* frame, filc_object* object)
     filc_object_array_push(&frame->pinned, object);
 }
 
+void filc_native_frame_defer_bmalloc_deallocate(filc_native_frame* frame, void* bmalloc_object)
+{
+    PAS_ASSERT(!frame->locked);
+
+    if (!bmalloc_object)
+        return;
+
+    filc_ptr_array_add(&frame->to_bmalloc_deallocate, bmalloc_object);
+}
+
 void filc_thread_track_object(filc_thread* my_thread, filc_object* object)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
     PAS_TESTING_ASSERT(my_thread->top_native_frame);
     filc_native_frame_add(my_thread->top_native_frame, object);
+}
+
+void filc_defer_bmalloc_deallocate(filc_thread* my_thread, void* bmalloc_object)
+{
+    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(my_thread->top_native_frame);
+    filc_native_frame_defer_bmalloc_deallocate(my_thread->top_native_frame, bmalloc_object);
+}
+
+void* filc_bmalloc_allocate_tmp(filc_thread* my_thread, size_t size)
+{
+    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    void* result = bmalloc_allocate_zeroed(size);
+    filc_defer_bmalloc_deallocate(my_thread, result);
+    return result;
 }
 
 void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin)
@@ -3099,6 +3152,27 @@ char* filc_check_and_get_new_str_or_null(filc_ptr ptr)
     return NULL;
 }
 
+char* filc_check_and_get_tmp_str(filc_thread* my_thread, filc_ptr ptr)
+{
+    char* result = filc_check_and_get_new_str(ptr);
+    filc_defer_bmalloc_deallocate(my_thread, result);
+    return result;
+}
+
+char* filc_check_and_get_tmp_str_for_int_memory(filc_thread* my_thread, char* base, size_t size)
+{
+    char* result = filc_check_and_get_new_str_for_int_memory(base, size);
+    filc_defer_bmalloc_deallocate(my_thread, result);
+    return result;
+}
+
+char* filc_check_and_get_tmp_str_or_null(filc_thread* my_thread, filc_ptr ptr)
+{
+    char* result = filc_check_and_get_new_str_or_null(ptr);
+    filc_defer_bmalloc_deallocate(my_thread, result);
+    return result;
+}
+
 filc_ptr filc_strdup(filc_thread* my_thread, const char* str)
 {
     if (!str)
@@ -3477,10 +3551,7 @@ static void print_str(const char* str)
 
 void filc_native_zprint(filc_thread* my_thread, filc_ptr str_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    char* str = filc_check_and_get_new_str(str_ptr);
-    print_str(str);
-    bmalloc_deallocate(str);
+    print_str(filc_check_and_get_tmp_str(my_thread, str_ptr));
 }
 
 void filc_native_zprint_long(filc_thread* my_thread, long x)
@@ -3512,11 +3583,7 @@ void filc_native_zerror(filc_thread* my_thread, filc_ptr ptr)
 
 size_t filc_native_zstrlen(filc_thread* my_thread, filc_ptr ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    char* str = filc_check_and_get_new_str(ptr);
-    size_t result = strlen(str);
-    bmalloc_deallocate(str);
-    return result;
+    return strlen(filc_check_and_get_tmp_str(my_thread, ptr));
 }
 
 int filc_native_zisdigit(filc_thread* my_thread, int chr)
@@ -4262,6 +4329,31 @@ static void set_dlerror(const char* error)
     filc_unlock_top_native_frame(my_thread);
 }
 
+void filc_extract_user_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_ptr,
+                                   filc_ptr* user_iov_base, size_t* iov_len)
+{
+    filc_check_read_ptr(
+        filc_ptr_with_offset(user_iov_entry_ptr, PAS_OFFSETOF(filc_user_iovec, iov_base)), NULL);
+    filc_check_read_int(
+        filc_ptr_with_offset(user_iov_entry_ptr, PAS_OFFSETOF(filc_user_iovec, iov_len)),
+        sizeof(size_t), NULL);
+    *user_iov_base = filc_ptr_load(
+        my_thread, &((filc_user_iovec*)filc_ptr_ptr(user_iov_entry_ptr))->iov_base);
+    *iov_len = ((filc_user_iovec*)filc_ptr_ptr(user_iov_entry_ptr))->iov_len;
+}
+
+void filc_prepare_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_ptr,
+                              struct iovec* iov_entry, filc_access_kind access_kind)
+{
+    filc_ptr user_iov_base;
+    size_t iov_len;
+    filc_extract_user_iovec_entry(my_thread, user_iov_entry_ptr, &user_iov_base, &iov_len);
+    filc_check_access_int(user_iov_base, iov_len, access_kind, NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(user_iov_base));
+    iov_entry->iov_base = filc_ptr_ptr(user_iov_base);
+    iov_entry->iov_len = iov_len;
+}
+
 struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int iovcnt,
                                  filc_access_kind access_kind)
 {
@@ -4272,35 +4364,14 @@ struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int 
         iovcnt >= 0,
         NULL,
         "iovcnt cannot be negative; iovcnt = %d.\n", iovcnt);
-    FILC_CHECK(
-        !pas_mul_uintptr_overflow(sizeof(filc_user_iovec), iovcnt, &iov_size),
-        NULL,
-        "iovcnt too large, leading to overflow; iovcnt = %d.\n", iovcnt);
-    iov = bmalloc_allocate_zeroed(iov_size);
+    iov = filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size(sizeof(struct iovec), iovcnt));
     for (index = 0; index < (size_t)iovcnt; ++index) {
-        filc_ptr user_iov_entry;
-        filc_ptr user_iov_base;
-        size_t iov_len;
-        user_iov_entry = filc_ptr_with_offset(user_iov, sizeof(filc_user_iovec) * index);
-        filc_check_read_ptr(
-            filc_ptr_with_offset(user_iov_entry, PAS_OFFSETOF(filc_user_iovec, iov_base)), NULL);
-        filc_check_read_int(
-            filc_ptr_with_offset(user_iov_entry, PAS_OFFSETOF(filc_user_iovec, iov_len)),
-            sizeof(size_t), NULL);
-        user_iov_base = filc_ptr_load(
-            my_thread, &((filc_user_iovec*)filc_ptr_ptr(user_iov_entry))->iov_base);
-        iov_len = ((filc_user_iovec*)filc_ptr_ptr(user_iov_entry))->iov_len;
-        filc_check_access_int(user_iov_base, iov_len, access_kind, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(user_iov_base));
-        iov[index].iov_base = filc_ptr_ptr(user_iov_base);
-        iov[index].iov_len = iov_len;
+        filc_prepare_iovec_entry(
+            my_thread, filc_ptr_with_offset(user_iov, filc_mul_size(sizeof(filc_user_iovec), index)),
+            iov + index, access_kind);
     }
     return iov;
-}
-
-void filc_unprepare_iovec(struct iovec* iov)
-{
-    bmalloc_deallocate(iov);
 }
 
 ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_iov, int iovcnt)
@@ -4313,7 +4384,6 @@ ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_io
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
-    filc_unprepare_iovec(iov);
     return result;
 }
 
@@ -4341,7 +4411,6 @@ ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr user_iov
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
-    filc_unprepare_iovec(iov);
     return result;
 }
 
@@ -4507,14 +4576,13 @@ int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_fl
         filc_set_errno(EINVAL);
         return -1;
     }
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
-    bmalloc_deallocate(path);
     return result;
 }
 
@@ -4672,12 +4740,11 @@ int filc_native_zsys_fstatat(
     }
     int fd = filc_from_user_atfd(user_fd);
     struct stat st;
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = fstatat(fd, path, &st, flag);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     return handle_fstat_result(user_stat_ptr, &st, result, my_errno);
 }
 
@@ -5274,12 +5341,11 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int user_how, filc_ptr 
 
 int filc_native_zsys_chdir(filc_thread* my_thread, filc_ptr path_ptr)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = chdir(path);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5431,28 +5497,20 @@ void filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
                                                      char*** array)
 {
     *array_length = length_of_null_terminated_ptr_array(user_array_ptr);
-    *array = (char**)bmalloc_allocate_zeroed((*array_length + 1) * sizeof(char*));
+    *array = (char**)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size((*array_length + 1), sizeof(char*)));
     (*array)[*array_length] = NULL;
     size_t index;
     for (index = *array_length; index--;) {
-        (*array)[index] = filc_check_and_get_new_str(
-            filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(user_array_ptr) + index));
+        (*array)[index] = filc_check_and_get_tmp_str(
+            my_thread, filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(user_array_ptr) + index));
     }
-}
-
-void filc_deallocate_null_terminated_string_array(size_t array_length,
-                                                  char** array)
-{
-    size_t index;
-    for (index = array_length; index--;)
-        bmalloc_deallocate(array[index]);
-    bmalloc_deallocate(array);
 }
 
 int filc_native_zsys_execve(filc_thread* my_thread, filc_ptr pathname_ptr, filc_ptr argv_ptr,
                             filc_ptr envp_ptr)
 {
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     size_t argv_len;
     size_t envp_len;
     char** argv;
@@ -5465,9 +5523,6 @@ int filc_native_zsys_execve(filc_thread* my_thread, filc_ptr pathname_ptr, filc_
     filc_enter(my_thread);
     PAS_ASSERT(result == -1);
     filc_set_errno(my_errno);
-    filc_deallocate_null_terminated_string_array(argv_len, argv);
-    filc_deallocate_null_terminated_string_array(envp_len, envp);
-    bmalloc_deallocate(pathname);
     return -1;
 }
 
@@ -5481,12 +5536,11 @@ int filc_native_zsys_getppid(filc_thread* my_thread)
 
 int filc_native_zsys_chroot(filc_thread* my_thread, filc_ptr path_ptr)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = chroot(path);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5582,7 +5636,7 @@ int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr user_req_ptr, fi
 
 long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr buf_ptr, size_t bufsize)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_check_write_int(buf_ptr, bufsize, NULL);
     filc_pin(filc_ptr_object(buf_ptr));
     filc_exit(my_thread);
@@ -5590,7 +5644,6 @@ long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_p
     int my_errno = errno;
     filc_enter(my_thread);
     filc_unpin(filc_ptr_object(buf_ptr));
-    bmalloc_deallocate(path);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5598,12 +5651,11 @@ long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_p
 
 int filc_native_zsys_chown(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned owner, unsigned group)
 {
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_exit(my_thread);
     int result = chown(pathname, owner, group);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5611,14 +5663,12 @@ int filc_native_zsys_chown(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
 
 int filc_native_zsys_rename(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
 {
-    char* oldname = filc_check_and_get_new_str(oldname_ptr);
-    char* newname = filc_check_and_get_new_str(newname_ptr);
+    char* oldname = filc_check_and_get_tmp_str(my_thread, oldname_ptr);
+    char* newname = filc_check_and_get_tmp_str(my_thread, newname_ptr);
     filc_exit(my_thread);
     int result = rename(oldname, newname);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(oldname);
-    bmalloc_deallocate(newname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5626,12 +5676,11 @@ int filc_native_zsys_rename(filc_thread* my_thread, filc_ptr oldname_ptr, filc_p
 
 int filc_native_zsys_unlink(filc_thread* my_thread, filc_ptr path_ptr)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = unlink(path);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5639,14 +5688,12 @@ int filc_native_zsys_unlink(filc_thread* my_thread, filc_ptr path_ptr)
 
 int filc_native_zsys_link(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
 {
-    char* oldname = filc_check_and_get_new_str(oldname_ptr);
-    char* newname = filc_check_and_get_new_str(newname_ptr);
+    char* oldname = filc_check_and_get_tmp_str(my_thread, oldname_ptr);
+    char* newname = filc_check_and_get_tmp_str(my_thread, newname_ptr);
     filc_exit(my_thread);
     int result = link(oldname, newname);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(oldname);
-    bmalloc_deallocate(newname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5829,15 +5876,10 @@ filc_ptr filc_native_zsys_dlopen(filc_thread* my_thread, filc_ptr filename_ptr, 
         set_dlerror("Unrecognized flag to dlopen");
         return filc_ptr_forge_null();
     }
-    char* filename;
-    if (filc_ptr_ptr(filename_ptr))
-        filename = filc_check_and_get_new_str(filename_ptr);
-    else
-        filename = NULL;
+    char* filename = filc_check_and_get_tmp_str_or_null(my_thread, filename_ptr);
     filc_exit(my_thread);
     void* handle = dlopen(filename, flags);
     filc_enter(my_thread);
-    bmalloc_deallocate(filename);
     if (!handle) {
         set_dlerror(dlerror());
         return filc_ptr_forge_null();
@@ -5850,13 +5892,12 @@ filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, fil
 {
     filc_check_access_special(handle_ptr, FILC_WORD_TYPE_DL_HANDLE, NULL);
     void* handle = filc_ptr_ptr(handle_ptr);
-    char* symbol = filc_check_and_get_new_str(symbol_ptr);
+    char* symbol = filc_check_and_get_tmp_str(my_thread, symbol_ptr);
     pas_allocation_config allocation_config;
     bmalloc_initialize_allocation_config(&allocation_config);
     pas_string_stream stream;
     pas_string_stream_construct(&stream, &allocation_config);
     pas_string_stream_printf(&stream, "pizlonated_%s", symbol);
-    bmalloc_deallocate(symbol);
     filc_exit(my_thread);
     filc_ptr (*raw_symbol)(filc_global_initialization_context*) =
         dlsym(handle, pas_string_stream_get_string(&stream));
@@ -5878,12 +5919,11 @@ int filc_native_zsys_faccessat(filc_thread* my_thread, int user_dirfd, filc_ptr 
         filc_set_errno(EINVAL);
         return -1;
     }
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_exit(my_thread);
     int result = faccessat(dirfd, pathname, mode, flags);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -5949,12 +5989,11 @@ int filc_native_zsys_shutdown(filc_thread* my_thread, int fd, int user_how)
 
 int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = rmdir(path);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);
@@ -6031,12 +6070,11 @@ void filc_native_zsys_sync(filc_thread* my_thread)
 
 int filc_native_zsys_access(filc_thread* my_thread, filc_ptr path_ptr, int mode)
 {
-    char* path = filc_check_and_get_new_str(path_ptr);
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = access(path, mode);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(path);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);
@@ -6045,14 +6083,12 @@ int filc_native_zsys_access(filc_thread* my_thread, filc_ptr path_ptr, int mode)
 
 int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
 {
-    char* oldname = filc_check_and_get_new_str(oldname_ptr);
-    char* newname = filc_check_and_get_new_str(newname_ptr);
+    char* oldname = filc_check_and_get_tmp_str(my_thread, oldname_ptr);
+    char* newname = filc_check_and_get_tmp_str(my_thread, newname_ptr);
     filc_exit(my_thread);
     int result = symlink(oldname, newname);
     int my_errno = errno;
     filc_enter(my_thread);
-    bmalloc_deallocate(oldname);
-    bmalloc_deallocate(newname);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -6523,6 +6559,16 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
     return (char*)result.result + size;
 }
 #endif /* !FILC_MUSL */
+
+size_t filc_mul_size(size_t a, size_t b)
+{
+    size_t result;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(a, b, &result),
+        NULL,
+        "multiplication %zu * %zu overflowed", a, b);
+    return result;
+}
 
 bool filc_get_bool_env(const char* name, bool default_value)
 {

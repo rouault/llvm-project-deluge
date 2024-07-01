@@ -42,6 +42,8 @@
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/uio.h>
 
 PAS_BEGIN_EXTERN_C;
 
@@ -126,6 +128,7 @@ struct filc_object_array;
 struct filc_origin;
 struct filc_origin_with_eh;
 struct filc_ptr;
+struct filc_ptr_array;
 struct filc_ptr_table;
 struct filc_ptr_table_array;
 struct filc_ptr_uintptr_hash_map_entry;
@@ -150,6 +153,7 @@ typedef struct filc_object_array filc_object_array;
 typedef struct filc_origin filc_origin;
 typedef struct filc_origin_with_eh filc_origin_with_eh;
 typedef struct filc_ptr filc_ptr;
+typedef struct filc_ptr_array filc_ptr_array;
 typedef struct filc_ptr_table filc_ptr_table;
 typedef struct filc_ptr_table_array filc_ptr_table_array;
 typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
@@ -384,6 +388,12 @@ struct filc_frame {
     filc_object* objects[];
 };
 
+struct filc_ptr_array {
+    void** array;
+    unsigned size;
+    unsigned capacity;
+};
+
 struct filc_object_array {
     size_t num_objects;
     size_t objects_capacity;
@@ -394,6 +404,7 @@ struct filc_native_frame {
     filc_native_frame* parent;
     filc_object_array array;
     filc_object_array pinned;
+    filc_ptr_array to_bmalloc_deallocate;
     bool locked;
 };
 
@@ -859,6 +870,22 @@ static inline void filc_pop_frame(filc_thread* my_thread, filc_frame* frame)
     my_thread->top_frame = frame->parent;
 }
 
+static inline void filc_ptr_array_construct(filc_ptr_array* array)
+{
+    static const unsigned initial_capacity = 5;
+    
+    array->array = bmalloc_allocate(sizeof(void*) * initial_capacity);
+    array->size = 0;
+    array->capacity = initial_capacity;
+}
+
+static inline void filc_ptr_array_destruct(filc_ptr_array* array)
+{
+    bmalloc_deallocate(array->array);
+}
+
+void filc_ptr_array_add(filc_ptr_array* array, void* ptr);
+
 static inline void filc_object_array_construct(filc_object_array* array)
 {
     array->num_objects = 0;
@@ -942,9 +969,16 @@ PAS_API void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* fr
 
 PAS_API void filc_native_frame_add(filc_native_frame* frame, filc_object* object);
 PAS_API void filc_native_frame_pin(filc_native_frame* frame, filc_object* object);
+PAS_API void filc_native_frame_defer_bmalloc_deallocate(filc_native_frame* frame, void* bmalloc_object);
 
 /* Requires that we have a top_native_frame, so can only be called from native functions. */
 PAS_API void filc_thread_track_object(filc_thread* my_thread, filc_object* object);
+
+PAS_API void filc_defer_bmalloc_deallocate(filc_thread* my_thread, void* bmalloc_object);
+
+/* Allocates something with bmalloc that will be freed when the top native frame
+   pops. */
+PAS_API void* filc_bmalloc_allocate_tmp(filc_thread* my_thread, size_t size);
 
 PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin);
 
@@ -1557,6 +1591,13 @@ char* filc_check_and_get_new_str_for_int_memory(char* base, size_t size);
 
 char* filc_check_and_get_new_str_or_null(filc_ptr ptr);
 
+/* Helper around filc_check_and_get_new_str that doesn't require freeing, since the
+   new string is added to the native frame's bmalloc deferral list. */
+char* filc_check_and_get_tmp_str(filc_thread* my_thread, filc_ptr ptr);
+char* filc_check_and_get_tmp_str_for_int_memory(filc_thread* my_thread,
+                                                char* base, size_t size);
+char* filc_check_and_get_tmp_str_or_null(filc_thread* my_thread, filc_ptr ptr);
+
 /* Safely create a Fil-C string from a legacy C string. */
 filc_ptr filc_strdup(filc_thread* my_thread, const char* str);
 
@@ -1780,9 +1821,16 @@ PAS_API int filc_to_user_signum(int signum);
 PAS_API int filc_from_user_open_flags(int user_flags);
 PAS_API int filc_to_user_open_flags(int user_flags);
 
-PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int iovcnt,
-                                         filc_access_kind access_kind);
-PAS_API void filc_unprepare_iovec(struct iovec* iov);
+PAS_API void filc_extract_user_iovec_entry(filc_thread* my_thread,
+                                           filc_ptr user_iov_entry_ptr,
+                                           filc_ptr* user_iov_base,
+                                           size_t* iov_len);
+PAS_API void filc_prepare_iovec_entry(filc_thread* my_thread,
+                                      filc_ptr user_iov_entry_ptr,
+                                      struct iovec* iov_entry,
+                                      filc_access_kind access_kind);
+PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov,
+                                         int iovcnt, filc_access_kind access_kind);
 
 PAS_API int filc_from_user_atfd(int fd);
 
@@ -1790,14 +1838,14 @@ PAS_API void filc_check_and_get_null_terminated_string_array(filc_thread* my_thr
                                                              filc_ptr user_array_ptr,
                                                              size_t* array_length,
                                                              char*** array);
-PAS_API void filc_deallocate_null_terminated_string_array(size_t array_length,
-                                                          char** array);
 
 PAS_API void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread);
 #if !FILC_MUSL
 PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
                                                                      size_t desired_size);
 #endif /* !FILC_MUSL */
+
+PAS_API size_t filc_mul_size(size_t a, size_t b);
 
 PAS_API bool filc_get_bool_env(const char* name, bool default_value);
 PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);

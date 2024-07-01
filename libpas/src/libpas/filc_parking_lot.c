@@ -40,18 +40,10 @@ static const bool verbose = false;
 
 struct bucket;
 struct hashtable;
-struct ptr_array;
 struct thread_data;
 typedef struct bucket bucket;
 typedef struct hashtable hashtable;
-typedef struct ptr_array ptr_array;
 typedef struct thread_data thread_data;
-
-struct ptr_array {
-    void** array;
-    unsigned size;
-    unsigned capacity;
-};
 
 struct thread_data {
     unsigned ref_count;
@@ -81,41 +73,6 @@ struct hashtable {
     unsigned size;
     bucket* data[1];
 };
-
-static void ptr_array_construct(ptr_array* array)
-{
-    static const unsigned initial_capacity = 5;
-    
-    array->array = bmalloc_allocate(sizeof(void*) * initial_capacity);
-    array->size = 0;
-    array->capacity = initial_capacity;
-}
-
-static void ptr_array_destruct(ptr_array* array)
-{
-    bmalloc_deallocate(array->array);
-}
-
-static void ptr_array_add(ptr_array* array, void* ptr)
-{
-    if (array->size >= array->capacity) {
-        void** new_array;
-        unsigned new_capacity;
-        
-        PAS_ASSERT(array->size == array->capacity);
-        PAS_ASSERT(!pas_mul_uint32_overflow(array->capacity, 2, &new_capacity));
-
-        new_array = bmalloc_allocate(sizeof(void*) * new_capacity);
-        memcpy(new_array, array->array, sizeof(void*) * array->size);
-
-        bmalloc_deallocate(array->array);
-        array->array = new_array;
-        array->capacity = new_capacity;
-        PAS_ASSERT(array->size < array->capacity);
-    }
-
-    array->array[array->size++] = ptr;
-}
 
 static void bucket_construct(bucket* bucket)
 {
@@ -272,7 +229,7 @@ static int compare_ptr(const void* a_ptr, const void* b_ptr)
 
 /* We allow my_thread to be NULL in the case that we're using this for locking the parking lot, which is
    a special operation done under stop-the-world. */
-static void lock_hashtable(filc_thread* my_thread, ptr_array* buckets)
+static void lock_hashtable(filc_thread* my_thread, filc_ptr_array* buckets)
 {
     for (;;) {
         PAS_ASSERT(!buckets->size);
@@ -296,7 +253,7 @@ static void lock_hashtable(filc_thread* my_thread, ptr_array* buckets)
                     }
                 }
 
-                ptr_array_add(buckets, my_bucket);
+                filc_ptr_array_add(buckets, my_bucket);
                 break;
             }
         }
@@ -323,7 +280,7 @@ static void lock_hashtable(filc_thread* my_thread, ptr_array* buckets)
     }
 }
 
-static void unlock_hashtable(ptr_array* buckets)
+static void unlock_hashtable(filc_ptr_array* buckets)
 {
     unsigned index;
     for (index = buckets->size; index--;)
@@ -341,8 +298,8 @@ static void ensure_hashtable_size(filc_thread* my_thread, unsigned num_threads)
         return;
     }
 
-    ptr_array buckets;
-    ptr_array_construct(&buckets);
+    filc_ptr_array buckets;
+    filc_ptr_array_construct(&buckets);
     lock_hashtable(my_thread, &buckets);
 
     old_table = the_table;
@@ -355,7 +312,7 @@ static void ensure_hashtable_size(filc_thread* my_thread, unsigned num_threads)
                     pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
         }
         unlock_hashtable(&buckets);
-        ptr_array_destruct(&buckets);
+        filc_ptr_array_destruct(&buckets);
         return;
     }
 
@@ -364,14 +321,14 @@ static void ensure_hashtable_size(filc_thread* my_thread, unsigned num_threads)
                 pas_get_current_system_thread_id(), old_table->size, num_threads, max_load_factor);
     }
 
-    ptr_array thread_datas;
-    ptr_array_construct(&thread_datas);
+    filc_ptr_array thread_datas;
+    filc_ptr_array_construct(&thread_datas);
     unsigned index;
     for (index = 0; index < buckets.size; ++index) {
         bucket* my_bucket = (bucket*)buckets.array[index];
         thread_data* data;
         while ((data = bucket_dequeue(my_bucket)))
-            ptr_array_add(&thread_datas, data);
+            filc_ptr_array_add(&thread_datas, data);
     }
 
     unsigned new_size;
@@ -416,8 +373,8 @@ static void ensure_hashtable_size(filc_thread* my_thread, unsigned num_threads)
     PAS_ASSERT(pas_compare_and_swap_ptr_strong(&the_table, old_table, new_table) == old_table);
 
     unlock_hashtable(&buckets);
-    ptr_array_destruct(&buckets);
-    ptr_array_destruct(&thread_datas);
+    filc_ptr_array_destruct(&buckets);
+    filc_ptr_array_destruct(&thread_datas);
 }
 
 static pas_system_mutex thread_datas_lock;
@@ -854,7 +811,7 @@ void filc_unpark_one(
 
 typedef struct {
     const void* address;
-    ptr_array array;
+    filc_ptr_array array;
     unsigned count;
 } unpark_data;
 
@@ -864,7 +821,7 @@ static dequeue_result unpark_dequeue_callback(thread_data* element, void* arg)
     if (element->address != data->address)
         return dequeue_ignore;
     thread_data_ref(element);
-    ptr_array_add(&data->array, element);
+    filc_ptr_array_add(&data->array, element);
     PAS_ASSERT(data->array.size <= data->count);
     if (data->array.size == data->count)
         return dequeue_remove_and_stop;
@@ -877,7 +834,7 @@ unsigned filc_unpark(filc_thread* my_thread, const void* address, unsigned count
     
     unpark_data data;
     data.address = address;
-    ptr_array_construct(&data.array);
+    filc_ptr_array_construct(&data.array);
     data.count = count;
     dequeue(my_thread, address, bucket_ignore_empty, unpark_dequeue_callback, empty_finish_callback, &data);
 
@@ -897,7 +854,7 @@ unsigned filc_unpark(filc_thread* my_thread, const void* address, unsigned count
     }
 
     unsigned result = data.array.size;
-    ptr_array_destruct(&data.array);
+    filc_ptr_array_destruct(&data.array);
 
     filc_decrease_special_signal_deferral_depth(my_thread);
     
@@ -908,8 +865,8 @@ void* filc_parking_lot_lock(void)
 {
     pas_system_mutex_lock(&thread_datas_lock);
     
-    ptr_array* result = (ptr_array*)bmalloc_allocate(sizeof(ptr_array));
-    ptr_array_construct(result);
+    filc_ptr_array* result = (filc_ptr_array*)bmalloc_allocate(sizeof(filc_ptr_array));
+    filc_ptr_array_construct(result);
     lock_hashtable(NULL, result);
 
     thread_data* data;
@@ -921,14 +878,14 @@ void* filc_parking_lot_lock(void)
 
 void filc_parking_lot_unlock(void* cookie)
 {
-    ptr_array* array = (ptr_array*)cookie;
+    filc_ptr_array* array = (filc_ptr_array*)cookie;
 
     thread_data* data;
     for (data = first_thread_data; data; data = data->next_thread)
         pas_system_mutex_unlock(&data->lock);
 
     unlock_hashtable(array);
-    ptr_array_destruct(array);
+    filc_ptr_array_destruct(array);
     bmalloc_deallocate(array);
 
     pas_system_mutex_unlock(&thread_datas_lock);
