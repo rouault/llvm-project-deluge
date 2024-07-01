@@ -68,6 +68,11 @@
 #include <sys/mount.h>
 #include <sys/ktrace.h>
 #include <ufs/ufs/quota.h>
+#include <nfs/nfssvc.h>
+#include <fs/nfs/nfsproto.h>
+#include <fs/nfs/nfskpiport.h>
+#include <fs/nfs/nfs.h>
+#include <fs/nfs/nfsport.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -693,17 +698,17 @@ static void from_user_export_args(filc_thread* my_thread, struct user_export_arg
     export_args->ex_ngroups = user_export_args->ex_ngroups;
     filc_ptr groups_ptr = filc_ptr_load(my_thread, &user_export_args->ex_groups);
     filc_check_read_int(groups_ptr, filc_mul_size(sizeof(gid_t), export_args->ex_ngroups), NULL);
-    filc_pin_tracked(filc_ptr_object(my_thread, groups_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(groups_ptr));
     export_args->ex_groups = (gid_t*)filc_ptr_ptr(groups_ptr);
     export_args->ex_addrlen = user_export_args->ex_addrlen;
     filc_ptr addr_ptr = filc_ptr_load(my_thread, &user_export_args->ex_addr);
     filc_check_read_int(addr_ptr, export_args->ex_addrlen, NULL);
-    filc_pin_tracked(filc_ptr_load(my_thread, addr_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(addr_ptr));
     export_args->ex_addr = (struct sockaddr*)filc_ptr_ptr(addr_ptr);
     export_args->ex_masklen = user_export_args->ex_masklen;
     filc_ptr mask_ptr = filc_ptr_load(my_thread, &user_export_args->ex_mask);
     filc_check_read_int(mask_ptr, export_args->ex_masklen, NULL);
-    filc_pin_tracked(filc_ptr_load(my_thread, mask_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(mask_ptr));
     export_args->ex_mask = (struct sockaddr*)filc_ptr_ptr(mask_ptr);
     filc_ptr indexfile_ptr = filc_ptr_load(my_thread, &user_export_args->ex_indexfile);
     export_args->ex_indexfile = filc_check_and_get_tmp_str(my_thread, indexfile_ptr);
@@ -724,12 +729,26 @@ struct user_xucred {
 	};
 };
 
+static void check_user_xucred(filc_ptr ptr, filc_access_kind access_kind)
+{
+    filc_check_access_int(ptr, sizeof(struct user_xucred), access_kind, NULL);
+}
+
+static void from_user_xucred(struct user_xucred* user_xucred, struct xucred* xucred)
+{
+    xucred->cr_version = user_xucred->cr_version;
+    xucred->cr_uid = user_xucred->cr_uid;
+    xucred->cr_ngroups = user_xucred->cr_ngroups;
+    PAS_ASSERT(sizeof(xucred->cr_groups) == sizeof(user_xucred->cr_groups));
+    memcpy(xucred->cr_groups, user_xucred->cr_groups,
+           sizeof(xucred->cr_groups));
+    xucred->cr_pid = user_xucred->cr_pid;
+}
+
 struct user_o2export_args {
 	uint64_t ex_flags;		/* export related flags */
 	uid_t	 ex_root;		/* mapping for root uid */
-	uid_t	 ex_uid;		/* mapping for anonymous user */
-	int	 ex_ngroups;
-	filc_ptr ex_groups;
+	struct user_xucred ex_anon;     /* mapping for anonymous user */
 	filc_ptr ex_addr;	        /* net address to which exported */
 	u_char	 ex_addrlen;		/* and the net address length */
 	filc_ptr ex_mask;	        /* mask of valid bits in saddr */
@@ -739,42 +758,37 @@ struct user_o2export_args {
 	int	 ex_secflavors[MAXSECFLAVORS]; /* list of security flavors */
 };
 
-static void check_user_export_args(filc_ptr ptr, filc_access_kind access_kind)
+static void check_user_o2export_args(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_flags, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_root, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_uid, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_ngroups, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_export_args, ex_groups, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_export_args, ex_addr, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_addrlen, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_export_args, ex_mask, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_masklen, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_export_args, ex_indexfile, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_numsecflavors, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_export_args, ex_secflavors, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_flags, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_root, access_kind);
+    check_user_xucred(filc_ptr_with_offset(ptr, PAS_OFFSETOF(struct user_o2export_args, ex_anon)),
+                      access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_o2export_args, ex_addr, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_addrlen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_o2export_args, ex_mask, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_masklen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_o2export_args, ex_indexfile, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_numsecflavors, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_o2export_args, ex_secflavors, access_kind);
 }
 
-static void from_user_export_args(filc_thread* my_thread, struct user_export_args* user_export_args,
-                                  struct export_args* export_args)
+static void from_user_o2export_args(filc_thread* my_thread,
+                                    struct user_o2export_args* user_export_args,
+                                    struct o2export_args* export_args)
 {
     export_args->ex_flags = user_export_args->ex_flags;
     export_args->ex_root = user_export_args->ex_root;
-    export_args->ex_uid = user_export_args->ex_uid;
-    export_args->ex_ngroups = user_export_args->ex_ngroups;
-    filc_ptr groups_ptr = filc_ptr_load(my_thread, &user_export_args->ex_groups);
-    filc_check_read_int(groups_ptr, filc_mul_size(sizeof(gid_t), export_args->ex_ngroups), NULL);
-    filc_pin_tracked(filc_ptr_object(my_thread, groups_ptr));
-    export_args->ex_groups = (gid_t*)filc_ptr_ptr(groups_ptr);
+    from_user_xucred(&user_export_args->ex_anon, &export_args->ex_anon);
     export_args->ex_addrlen = user_export_args->ex_addrlen;
     filc_ptr addr_ptr = filc_ptr_load(my_thread, &user_export_args->ex_addr);
     filc_check_read_int(addr_ptr, export_args->ex_addrlen, NULL);
-    filc_pin_tracked(filc_ptr_load(my_thread, addr_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(addr_ptr));
     export_args->ex_addr = (struct sockaddr*)filc_ptr_ptr(addr_ptr);
     export_args->ex_masklen = user_export_args->ex_masklen;
     filc_ptr mask_ptr = filc_ptr_load(my_thread, &user_export_args->ex_mask);
     filc_check_read_int(mask_ptr, export_args->ex_masklen, NULL);
-    filc_pin_tracked(filc_ptr_load(my_thread, mask_ptr));
+    filc_pin_tracked(my_thread, filc_ptr_object(mask_ptr));
     export_args->ex_mask = (struct sockaddr*)filc_ptr_ptr(mask_ptr);
     filc_ptr indexfile_ptr = filc_ptr_load(my_thread, &user_export_args->ex_indexfile);
     export_args->ex_indexfile = filc_check_and_get_tmp_str(my_thread, indexfile_ptr);
@@ -793,13 +807,13 @@ struct iovec* prepare_nmount_iovec(filc_thread* my_thread, filc_ptr user_iov, un
         NULL,
         "niov must be multiple of 2; niov = %u.\n", niov);
     iov = filc_bmalloc_allocate_tmp(my_thread, filc_mul_size(niov, sizeof(struct iovec)));
-    for (index = 0; index < (size_t)iovcnt; index += 2) {
+    for (index = 0; index < (size_t)niov; index += 2) {
         filc_ptr key_iov_base;
         size_t key_iov_len;
         filc_extract_user_iovec_entry(
             my_thread, filc_ptr_with_offset(user_iov, filc_mul_size(sizeof(filc_user_iovec), index)),
             &key_iov_base, &key_iov_len);
-        filc_check_read_int(key_iov_base, key_iov_len);
+        filc_check_read_int(key_iov_base, key_iov_len, NULL);
         char* key = filc_check_and_get_tmp_str_for_int_memory(
             my_thread, (char*)filc_ptr_ptr(key_iov_base), key_iov_len);
         iov[index].iov_base = key;
@@ -1470,14 +1484,14 @@ static void check_user_nfsd_pnfsd_args(filc_ptr ptr, filc_access_kind access_kin
 
 struct user_nfsex_args {
 	filc_ptr fspec;
-	struct export_args	export;
+	struct user_export_args	export;
 };
 
 static void check_user_nfsex_args(filc_ptr ptr, filc_access_kind access_kind)
 {
     FILC_CHECK_PTR_FIELD(ptr, struct user_nfsex_args, fspec, access_kind);
     check_user_export_args(
-        filc_ptr_with_offset(ptr, FILC_OFFSETOF(struct user_nfsex_args, export)), access_kind);
+        filc_ptr_with_offset(ptr, PAS_OFFSETOF(struct user_nfsex_args, export)), access_kind);
 }
 
 struct user_nfsex_oldargs {
@@ -1489,7 +1503,31 @@ static void check_user_nfsex_oldargs(filc_ptr ptr, filc_access_kind access_kind)
 {
     FILC_CHECK_PTR_FIELD(ptr, struct user_nfsex_oldargs, fspec, access_kind);
     check_user_o2export_args(
-        filc_ptr_with_offset(ptr, FILC_OFFSETOF(struct user_nfsex_oldargs, export)), access_kind);
+        filc_ptr_with_offset(ptr, PAS_OFFSETOF(struct user_nfsex_oldargs, export)), access_kind);
+}
+
+struct user_nfsd_dumplist {
+	int		ndl_size;	/* Number of elements */
+	filc_ptr        ndl_list;	/* and the list of elements */
+};
+
+static void check_user_nfsd_dumplist(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(ptr, struct user_nfsd_dumplist, ndl_size, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_nfsd_dumplist, ndl_list, access_kind);
+}
+
+struct user_nfsd_dumplocklist {
+	filc_ptr        ndllck_fname;	/* File Name */
+	int		ndllck_size;	/* Number of elements */
+	filc_ptr        ndllck_list;	/* and the list of elements */
+};
+
+static void check_user_nfsd_dumplocklist(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(ptr, struct user_nfsd_dumplocklist, ndllck_fname, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_nfsd_dumplocklist, ndllck_size, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_nfsd_dumplocklist, ndllck_list, access_kind);
 }
 
 static int nfssvc_impl(filc_thread* my_thread, int flags, void* argstructp)
@@ -1554,32 +1592,36 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
             if (version == NFSSTATS_V1) {
                 filc_check_write_int(argstructp_ptr, sizeof(struct nfsstatsv1), NULL);
                 filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-                return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+                return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
             }
             if (version == NFSSTATS_OV1) {
                 filc_check_write_int(argstructp_ptr, sizeof(struct nfsstatsov1), NULL);
                 filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-                return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+                return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
             }
             filc_set_errno(EPERM);
             return -1;
         }
         filc_check_write_int(argstructp_ptr, sizeof(struct ext_nfsstats), NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-        return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+        return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
     }
     if ((flags & NFSSVC_NFSUSERDPORT)) {
         if ((flags & NFSSVC_NEWSTRUCT)) {
             filc_check_read_int(argstructp_ptr, sizeof(struct nfsuserd_args), NULL);
             filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-            return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+            return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
         }
         filc_check_read_int(argstructp_ptr, sizeof(u_short), NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-        return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+        return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
     }
-    if ((flags & NFSSVC_NFSUSERDDELPORT))
-        return nfssvc_impl(flags, NULL);
+    if ((flags & NFSSVC_NFSUSERDDELPORT) ||
+        (flags & NFSSVC_NOPUBLICFH) ||
+        (flags & NFSSVC_BACKUPSTABLE) ||
+        (flags & NFSSVC_SUSPENDNFSD) ||
+        (flags & NFSSVC_RESUMENFSD))
+        return nfssvc_impl(my_thread, flags, NULL);
     if ((flags & NFSSVC_CBADDSOCK)) {
         struct nfscbd_args args;
         check_user_nfscbd_args(argstructp_ptr, filc_read_access);
@@ -1589,13 +1631,13 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
         args.port = user_args->port;
         /* The name/namelen are not used by the kernel, and set to NULL/0 by the user, so we ignore
            it! */
-        return nfssvc_impl(flags, &args);
+        return nfssvc_impl(my_thread, flags, &args);
     }
     if ((flags & NFSSVC_NFSCBD)) {
-        filc_check_access_ptr(argstructp_ptr, NULL);
+        filc_check_read_ptr(argstructp_ptr, NULL);
         filc_ptr str_ptr = filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(argstructp_ptr));
         char* str = filc_check_and_get_tmp_str(my_thread, str_ptr);
-        return nfssvc_impl(flags, &str);
+        return nfssvc_impl(my_thread, flags, &str);
     }
     if ((flags & NFSSVC_DUMPMNTOPTS)) {
         struct nfscl_dumpmntopts args;
@@ -1603,19 +1645,17 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
         struct user_nfscl_dumpmntopts* user_args =
             (struct user_nfscl_dumpmntopts*)filc_ptr_ptr(argstructp_ptr);
         filc_ptr fname_ptr = filc_ptr_load(my_thread, &user_args->ndmnt_fname);
-        args.ndmnt_fname = filc_check_and_get_str(fname_ptr);
+        args.ndmnt_fname = filc_check_and_get_tmp_str(my_thread, fname_ptr);
         args.ndmnt_blen = user_args->ndmnt_blen;
         filc_ptr buf_ptr = filc_ptr_load(my_thread, &user_args->ndmnt_buf);
         filc_check_write_int(buf_ptr, args.ndmnt_blen, NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(buf_ptr));
         args.ndmnt_buf = filc_ptr_ptr(buf_ptr);
-        int result = nfssvc_impl(flags, &args);
-        bmalloc_deallocate(args.ndmnt_fname);
-        return result;
+        return nfssvc_impl(my_thread, flags, &args);
     }
     if ((flags & NFSSVC_FORCEDISM)) {
         char* buf = filc_check_and_get_tmp_str(my_thread, argstructp_ptr);
-        return nfssvc_impl(flags, buf);
+        return nfssvc_impl(my_thread, flags, buf);
     }
     if ((flags & NFSSVC_NFSDADDSOCK)) {
         struct nfsd_addsock_args args;
@@ -1626,7 +1666,7 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
         args.sock = user_args->sock;
         /* The name/namelen are not used by the kernel, and set to NULL/0 by the user, so we ignore
            it! */
-        return nfssvc_impl(flags, &args);
+        return nfssvc_impl(my_thread, flags, &args);
     }
     if ((flags & NFSSVC_NFSDNFSD)) {
         if ((flags & NFSSVC_NEWSTRUCT)) {
@@ -1660,7 +1700,7 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
             filc_pin_tracked(my_thread, filc_ptr_object(mdspath_ptr));
             args.mdspath = (char*)filc_ptr_ptr(mdspath_ptr);
             args.mirrorcnt = user_args->mirrorcnt;
-            return nfssvc_impl(flags, &args);
+            return nfssvc_impl(my_thread, flags, &args);
         }
         struct nfsd_nfsd_oargs args;
         check_user_nfsd_nfsd_oargs(argstructp_ptr, filc_read_access);
@@ -1670,7 +1710,7 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
         args.principal = filc_check_and_get_tmp_str(my_thread, principal_ptr);
         args.minthreads = user_args->minthreads;
         args.maxthreads = user_args->maxthreads;
-        return nfssvc_impl(flags, &args);
+        return nfssvc_impl(my_thread, flags, &args);
     }
     if ((flags & NFSSVC_PNFSDS)) {
         struct nfsd_pnfsd_args args;
@@ -1684,26 +1724,72 @@ int filc_native_zsys_nfssvc(filc_thread* my_thread, int flags, filc_ptr argstruc
         args.dspath = filc_check_and_get_tmp_str(my_thread, dspath_ptr);
         filc_ptr curdspath_ptr = filc_ptr_load(my_thread, &user_args->curdspath);
         args.curdspath = filc_check_and_get_tmp_str(my_thread, curdspath_ptr);
-        return nfssvc_impl(flags, &args);
+        return nfssvc_impl(my_thread, flags, &args);
     }
     if ((flags & NFSSVC_PUBLICFH)) {
         filc_check_read_int(argstructp_ptr, sizeof(fhandle_t), NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
-        return nfssvc_impl(flags, filc_ptr_ptr(argstructp_ptr));
+        return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
     }
     if ((flags & NFSSVC_V4ROOTEXPORT)) {
-        if ((flags & NFSSVC_NEWSTRING)) {
+        if ((flags & NFSSVC_NEWSTRUCT)) {
             struct nfsex_args args;
-            check_user_nfsex_arsg(argstructp_ptr, filc_read_access);
+            check_user_nfsex_args(argstructp_ptr, filc_read_access);
             struct user_nfsex_args* user_args = (struct user_nfsex_args*)filc_ptr_ptr(argstructp_ptr);
             filc_ptr fspec_ptr = filc_ptr_load(my_thread, &user_args->fspec);
             args.fspec = filc_check_and_get_tmp_str(my_thread, fspec_ptr);
             from_user_export_args(my_thread, &user_args->export, &args.export);
-            return nfssvc_impl(flags, &args);
+            return nfssvc_impl(my_thread, flags, &args);
         }
         struct nfsex_oldargs args;
-        
+        check_user_nfsex_oldargs(argstructp_ptr, filc_read_access);
+        struct user_nfsex_oldargs* user_args =
+            (struct user_nfsex_oldargs*)filc_ptr_ptr(argstructp_ptr);
+        filc_ptr fspec_ptr = filc_ptr_load(my_thread, &user_args->fspec);
+        args.fspec = filc_check_and_get_tmp_str(my_thread, fspec_ptr);
+        from_user_o2export_args(my_thread, &user_args->export, &args.export);
+        return nfssvc_impl(my_thread, flags, &args);
     }
+    if ((flags & NFSSVC_STABLERESTART)) {
+        filc_check_read_int(argstructp_ptr, sizeof(int), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
+        return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
+    }
+    if ((flags & NFSSVC_ADMINREVOKE)) {
+        filc_check_read_int(argstructp_ptr, sizeof(struct nfsd_clid), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(argstructp_ptr));
+        return nfssvc_impl(my_thread, flags, filc_ptr_ptr(argstructp_ptr));
+    }
+    if ((flags & NFSSVC_DUMPCLIENTS)) {
+        struct nfsd_dumplist args;
+        check_user_nfsd_dumplist(argstructp_ptr, filc_read_access);
+        struct user_nfsd_dumplist* user_args =
+            (struct user_nfsd_dumplist*)filc_ptr_ptr(argstructp_ptr);
+        args.ndl_size = user_args->ndl_size;
+        filc_ptr list_ptr = filc_ptr_load(my_thread, &user_args->ndl_list);
+        filc_check_write_int(list_ptr, filc_mul_size(args.ndl_size, sizeof(struct nfsd_dumpclients)),
+                             NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(list_ptr));
+        args.ndl_list = filc_ptr_ptr(list_ptr);
+        return nfssvc_impl(my_thread, flags, &args);
+    }
+    if ((flags & NFSSVC_DUMPLOCKS)) {
+        struct nfsd_dumplocklist args;
+        check_user_nfsd_dumplocklist(argstructp_ptr, filc_read_access);
+        struct user_nfsd_dumplocklist* user_args =
+            (struct user_nfsd_dumplocklist*)filc_ptr_ptr(argstructp_ptr);
+        args.ndllck_fname = filc_check_and_get_tmp_str(
+            my_thread, filc_ptr_load(my_thread, &user_args->ndllck_fname));
+        args.ndllck_size = user_args->ndllck_size;
+        filc_ptr list_ptr = filc_ptr_load(my_thread, &user_args->ndllck_list);
+        filc_check_write_int(list_ptr, filc_mul_size(args.ndllck_size, sizeof(struct nfsd_dumplocks)),
+                             NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(list_ptr));
+        args.ndllck_list = filc_ptr_ptr(list_ptr);
+        return nfssvc_impl(my_thread, flags, &args);
+    }
+    filc_set_errno(EINVAL);
+    return -1;
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
