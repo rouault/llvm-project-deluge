@@ -218,10 +218,8 @@ addSig "int", "zsys_setregid", "unsigned", "unsigned"
 addSig "int", "zsys_nanosleep", "filc_ptr", "filc_ptr"
 addSig "long", "zsys_readlink", "filc_ptr", "filc_ptr", "size_t"
 addSig "int", "zsys_chown", "filc_ptr", "unsigned", "unsigned"
-addSig "int", "zsys_chmod", "filc_ptr", "unsigned"
 addSig "ssize_t", "zsys_sendmsg", "int", "filc_ptr", "int"
 addSig "ssize_t", "zsys_recvmsg", "int", "filc_ptr", "int"
-addSig "int", "zsys_fchmod", "int", "unsigned"
 addSig "int", "zsys_rename", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_unlink", "filc_ptr"
 addSig "int", "zsys_link", "filc_ptr", "filc_ptr"
@@ -229,7 +227,6 @@ addSig "filc_ptr", "zsys_mmap", "filc_ptr", "size_t", "int", "int", "int", "long
 addSig "int", "zsys_munmap", "filc_ptr", "size_t"
 addSig "int", "zsys_ftruncate", "int", "long"
 addSig "filc_ptr", "zsys_getcwd", "filc_ptr", "size_t"
-addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned"
 addSig "filc_ptr", "zsys_dlopen", "filc_ptr", "int"
 addSig "filc_ptr", "zsys_dlsym", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_poll", "filc_ptr", "unsigned long", "int"
@@ -293,6 +290,9 @@ forMusl {
     addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
     addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_chmod", "filc_ptr", "unsigned"
+    addSig "int", "zsys_fchmod", "int", "unsigned"
+    addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned"
 }
 forFilBSD {
     addSig "int", "zsys_unmount", "filc_ptr", "int"
@@ -318,6 +318,14 @@ forFilBSD {
     addSig "int", "zsys_getrusage", "int", "filc_ptr"
     addSig "int", "zsys_flock", "int", "int"
     addSig "int", "zsys_mkfifo", "filc_ptr", "unsigned short"
+    addSig "int", "zsys_chmod", "filc_ptr", "unsigned short"
+    addSig "int", "zsys_fchmod", "int", "unsigned short"
+    addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned short"
+    addSig "int", "zsys_mkdir", "filc_ptr", "unsigned short"
+    addSig "int", "zsys_utimes", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_adjtime", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_quotactl", "filc_ptr", "int", "int", "filc_ptr"
+    addSig "int", "zsys_nlm_syscall", "int", "int", "int", "filc_ptr"
 }
 
 case ARGV[0]

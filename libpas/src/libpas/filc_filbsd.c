@@ -67,6 +67,7 @@
 #include <sys/user.h>
 #include <sys/mount.h>
 #include <sys/ktrace.h>
+#include <ufs/ufs/quota.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -914,10 +915,14 @@ int filc_native_zsys_setpriority(filc_thread* my_thread, int which, int who, int
 
 int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
 {
-    filc_check_write_int(tp_ptr, sizeof(struct timeval), NULL);
-    filc_check_write_int(tzp_ptr, sizeof(struct timezone), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
-    filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    if (filc_ptr_ptr(tp_ptr)) {
+        filc_check_write_int(tp_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    }
+    if (filc_ptr_ptr(tzp_ptr)) {
+        filc_check_write_int(tzp_ptr, sizeof(struct timezone), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    }
     filc_exit(my_thread);
     int result = gettimeofday((struct timeval*)filc_ptr_ptr(tp_ptr),
                               (struct timezone*)filc_ptr_ptr(tzp_ptr));
@@ -931,10 +936,14 @@ int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_
 
 int filc_native_zsys_settimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
 {
-    filc_check_read_int(tp_ptr, sizeof(struct timeval), NULL);
-    filc_check_read_int(tzp_ptr, sizeof(struct timezone), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
-    filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    if (filc_ptr_ptr(tp_ptr)) {
+        filc_check_read_int(tp_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    }
+    if (filc_ptr_ptr(tzp_ptr)) {
+        filc_check_read_int(tzp_ptr, sizeof(struct timezone), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    }
     filc_exit(my_thread);
     int result = settimeofday((const struct timeval*)filc_ptr_ptr(tp_ptr),
                               (const struct timezone*)filc_ptr_ptr(tzp_ptr));
@@ -983,6 +992,170 @@ int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned 
     if (result < 0)
         filc_set_errno(my_errno);
     bmalloc_deallocate(path);
+    return result;
+}
+
+int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
+{
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = chmod(pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned short mode)
+{
+    filc_exit(my_thread);
+    int result = fchmod(fd, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mkdirat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr, unsigned short mode)
+{
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = mkdirat(dirfd, pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
+{
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = mkdir(pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_utimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    filc_exit(my_thread);
+    int result = utimes(path, (const struct timeval*)filc_ptr_ptr(times_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_ptr olddelta_ptr)
+{
+    if (filc_ptr_ptr(delta_ptr)) {
+        filc_check_read_int(delta_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(delta_ptr));
+    }
+    if (filc_ptr_ptr(olddelta_ptr)) {
+        filc_check_write_int(olddelta_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(olddelta_ptr));
+    }
+    filc_exit(my_thread);
+    int result = adjtime((const struct timeval*)filc_ptr_ptr(delta_ptr),
+                         (struct timeval*)filc_ptr_ptr(olddelta_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_quotactl(filc_thread* my_thread, filc_ptr path_ptr, int cmd, int id,
+                              filc_ptr addr_ptr)
+{
+    char* path = filc_check_and_get_new_str(path_ptr);
+    void* addr = NULL;
+    bool should_free_addr = false;
+    bool pin_addr = false;
+    switch (cmd >> SUBCMDSHIFT) {
+    case Q_QUOTAON:
+        addr = filc_check_and_get_new_str(addr_ptr);
+        should_free_addr = true;
+        break;
+    case Q_GETQUOTASIZE:
+        filc_check_write_int(addr_ptr, sizeof(int), NULL);
+        pin_addr = true;
+        break;
+    case Q_GETQUOTA:
+        filc_check_write_int(addr_ptr, sizeof(struct dqblk), NULL);
+        pin_addr = true;
+        break;
+    case Q_SETQUOTA:
+    case Q_SETUSE:
+        filc_check_read_int(addr_ptr, sizeof(struct dqblk), NULL);
+        pin_addr = true;
+        break;
+    default:
+        break;
+    }
+    if (pin_addr) {
+        filc_pin_tracked(my_thread, filc_ptr_object(addr_ptr));
+        addr = filc_ptr_ptr(addr_ptr);
+    }
+    filc_exit(my_thread);
+    int result = quotactl(path, cmd, id, addr);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    bmalloc_deallocate(path);
+    if (should_free_addr)
+        bmalloc_deallocate(addr);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_nlm_syscall(filc_thread* my_thread, int debug_level, int grace_period,
+                                 int addr_count, filc_ptr addrs_ptr)
+{
+    size_t num_addrs = (size_t)addr_count;
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(char*), num_addrs, &total_size),
+        NULL,
+        "addr_count is so big that it caused overflow (addr_count = %d).", addr_count);
+    char** addrs = bmalloc_allocate(total_size);
+    size_t index;
+    for (index = num_addrs; index--;) {
+        filc_ptr addr_ptr_ptr = filc_ptr_with_offset(addrs_ptr, sizeof(filc_ptr) * index);
+        filc_check_read_ptr(addr_ptr_ptr, NULL);
+        filc_ptr addr_ptr = filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(addr_ptr_ptr));
+        addrs[index] = filc_check_and_get_new_str(addr_ptr);
+    }
+    filc_exit(my_thread);
+    int result = nlm_syscall(debug_level, grace_period, addr_count, addrs);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    for (index = num_addrs; index--;)
+        bmalloc_deallocate(addrs[index]);
+    bmalloc_deallocate(addrs);
+    if (result < 0)
+        filc_set_errno(my_errno);
     return result;
 }
 

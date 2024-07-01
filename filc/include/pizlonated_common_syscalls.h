@@ -101,10 +101,8 @@ int zsys_setregid(unsigned rgid, unsigned egid);
 int zsys_nanosleep(const void* req, void* rem);
 long zsys_readlink(const char* path, char* buf, __SIZE_TYPE__ bufsize);
 int zsys_chown(const char* pathname, unsigned owner, unsigned group);
-int zsys_chmod(const char* pathname, unsigned mode);
 long zsys_sendmsg(int sockfd, const void* msg, int flags);
 long zsys_recvmsg(int sockfd, void* msg, int flags);
-int zsys_fchmod(int fd, unsigned mode);
 int zsys_rename(const char* oldname, const char* newname);
 int zsys_unlink(const char* path);
 int zsys_link(const char* oldname, const char* newname);
@@ -112,7 +110,6 @@ void* zsys_mmap(void* address, __SIZE_TYPE__ length, int prot, int flags, int fd
 int zsys_munmap(void* address, __SIZE_TYPE__ length);
 int zsys_ftruncate(int fd, long length);
 char* zsys_getcwd(char* buf, __SIZE_TYPE__ size);
-int zsys_mkdirat(int dirfd, const char* pathname, unsigned mode);
 void* zsys_dlopen(const char* filename, int flags); /* FIXME: we should add dlclose support eventually,
                                                        but that would require changing the ABI so that
                                                        globals are GC-allocated. Which is fine, we could

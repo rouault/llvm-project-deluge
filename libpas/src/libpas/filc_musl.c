@@ -4156,6 +4156,45 @@ int filc_native_zsys_poll(
     return result;
 }
 
+int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
+{
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = chmod(pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned mode)
+{
+    filc_exit(my_thread);
+    int result = fchmod(fd, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr, unsigned mode)
+{
+    int dirfd = filc_from_user_atfd(user_dirfd);
+    char* pathname = filc_check_and_get_new_str(pathname_ptr);
+    filc_exit(my_thread);
+    int result = mkdirat(dirfd, pathname, mode);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    bmalloc_deallocate(pathname);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_NUSL */
 
 #endif /* LIBPAS_ENABLED */

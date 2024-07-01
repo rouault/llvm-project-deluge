@@ -4652,7 +4652,7 @@ static int handle_fstat_result(filc_ptr user_stat_ptr, struct stat *st,
     return 0;
 }
 
-static int from_user_atfd(int fd)
+int filc_from_user_atfd(int fd)
 {
     if (!FILC_MUSL)
         return fd;
@@ -4670,7 +4670,7 @@ int filc_native_zsys_fstatat(
         filc_set_errno(EINVAL);
         return -1;
     }
-    int fd = from_user_atfd(user_fd);
+    int fd = filc_from_user_atfd(user_fd);
     struct stat st;
     char* path = filc_check_and_get_new_str(path_ptr);
     filc_exit(my_thread);
@@ -5609,30 +5609,6 @@ int filc_native_zsys_chown(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
     return result;
 }
 
-int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
-{
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
-    filc_exit(my_thread);
-    int result = chmod(pathname, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned mode)
-{
-    filc_exit(my_thread);
-    int result = fchmod(fd, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
 int filc_native_zsys_rename(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
 {
     char* oldname = filc_check_and_get_new_str(oldname_ptr);
@@ -5823,21 +5799,6 @@ filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_
     return buf_ptr;
 }
 
-int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr, unsigned mode)
-{
-    int dirfd = from_user_atfd(user_dirfd);
-    char* pathname = filc_check_and_get_new_str(pathname_ptr);
-    filc_exit(my_thread);
-    int result = mkdirat(dirfd, pathname, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    bmalloc_deallocate(pathname);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
 static bool from_user_dlopen_flags(int user_flags, int* flags)
 {
     if (!FILC_MUSL) {
@@ -5911,7 +5872,7 @@ filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, fil
 int filc_native_zsys_faccessat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr,
                                int mode, int user_flags)
 {
-    int dirfd = from_user_atfd(user_dirfd);
+    int dirfd = filc_from_user_atfd(user_dirfd);
     int flags;
     if (!from_user_fstatat_flag(user_flags, &flags)) {
         filc_set_errno(EINVAL);
@@ -6020,13 +5981,15 @@ static void from_user_utime_timespec(filc_user_timespec* user_tv, struct timespe
 
 int filc_native_zsys_futimens(filc_thread* my_thread, int fd, filc_ptr times_ptr)
 {
-    filc_check_read_int(times_ptr, sizeof(filc_user_timespec) * 2, NULL);
-    filc_user_timespec* user_times = (filc_user_timespec*)filc_ptr_ptr(times_ptr);
     struct timespec times[2];
-    from_user_utime_timespec(user_times + 0, times + 0);
-    from_user_utime_timespec(user_times + 1, times + 1);
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(filc_user_timespec) * 2, NULL);
+        filc_user_timespec* user_times = (filc_user_timespec*)filc_ptr_ptr(times_ptr);
+        from_user_utime_timespec(user_times + 0, times + 0);
+        from_user_utime_timespec(user_times + 1, times + 1);
+    }
     filc_exit(my_thread);
-    int result = futimens(fd, times);
+    int result = futimens(fd, filc_ptr_ptr(times_ptr) ? times : NULL);
     int my_errno = errno;
     filc_enter(my_thread);
     PAS_ASSERT(!result || result == -1);
