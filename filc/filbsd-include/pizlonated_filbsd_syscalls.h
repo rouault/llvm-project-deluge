@@ -97,6 +97,11 @@ int zsys_ktimer_delete(int oshandle);
 int zsys_ktimer_gettime(int oshandle, void* itimerp);
 int zsys_ktimer_getoverrun(int oshandle);
 int zsys_ktimer_settime(int oshandle, int flags, const void* new_value, void* old_value);
+int zsys_ffclock_getcounter(unsigned long long* ffcount);
+int zsys_ffclock_getestimate(void* cest);
+int zsys_ffclock_setestimate(void* cest);
+int zsys_clock_getcpuclockid2(long long id, int which, void* clock_id);
+int zsys_minherit(void* addr, __SIZE_TYPE__ len, int inherit);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

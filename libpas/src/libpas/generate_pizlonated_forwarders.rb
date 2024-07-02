@@ -26,7 +26,7 @@
 def checkType(type)
     case type
     when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
-         "ssize_t", 'unsigned short'
+         "ssize_t", 'unsigned short', 'unsigned long long', 'long long'
     else
         raise "Bad type #{type}"
     end
@@ -363,6 +363,11 @@ forFilBSD {
     addSig "int", "zsys_ktimer_gettime", "int", "filc_ptr"
     addSig "int", "zsys_ktimer_getoverrun", "int"
     addSig "int", "zsys_ktimer_settime", "int", "int", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_ffclock_getcounter", "filc_ptr"
+    addSig "int", "zsys_ffclock_getestimate", "filc_ptr"
+    addSig "int", "zsys_ffclock_setestimate", "filc_ptr"
+    addSig "int", "zsys_getcpuclockid2", "long long", "int", "filc_ptr"
+    addSig "int", "zsys_minherit", "filc_ptr", "size_t", "int"
 }
 
 case ARGV[0]

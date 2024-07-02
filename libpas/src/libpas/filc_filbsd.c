@@ -74,6 +74,7 @@
 #include <fs/nfs/nfs.h>
 #include <fs/nfs/nfsport.h>
 #include <sys/timex.h>
+#include <sys/timeffc.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -2264,6 +2265,55 @@ int filc_native_zsys_ktimer_settime(filc_thread* my_thread, int oshandle, int fl
         my_thread, ktimer_settime(oshandle, flags,
                                   (const struct itimerspec*)filc_ptr_ptr(new_value_ptr),
                                   (struct itimerspec*)filc_ptr_ptr(old_value_ptr)));
+}
+
+int filc_native_zsys_ffclock_getcounter(filc_thread* my_thread, filc_ptr ffcount_ptr)
+{
+    filc_cpt_write_int(my_thread, ffcount_ptr, sizeof(ffcounter));
+    return FILC_SYSCALL(my_thread, ffclock_getcounter((ffcounter*)filc_ptr_ptr(ffcount_ptr)));
+}
+
+int filc_native_zsys_ffclock_getestimate(filc_thread* my_thread, filc_ptr cest_ptr)
+{
+    filc_cpt_write_int(my_thread, cest_ptr, sizeof(struct ffclock_estimate));
+    return FILC_SYSCALL(
+        my_thread, ffclock_getestimate((struct ffclock_estimate*)filc_ptr_ptr(cest_ptr)));
+}
+
+int filc_native_zsys_ffclock_setestimate(filc_thread* my_thread, filc_ptr cest_ptr)
+{
+    filc_cpt_write_int(my_thread, cest_ptr, sizeof(struct ffclock_estimate));
+    return FILC_SYSCALL(
+        my_thread, ffclock_setestimate((struct ffclock_estimate*)filc_ptr_ptr(cest_ptr)));
+}
+
+int filc_native_zsys_clock_getcpuclockid2(filc_thread* my_thread, long long id, int which,
+                                          filc_ptr clock_id_ptr)
+{
+    filc_cpt_write_int(my_thread, clock_id_ptr, sizeof(clockid_t));
+    return FILC_SYSCALL(
+        my_thread, clock_getcpuclockid2(id, which, (clockid_t*)filc_ptr_ptr(clock_id_ptr)));
+}
+
+int filc_native_zsys_minherit(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int inherit)
+{
+    switch (inherit) {
+    case INHERIT_SHARE:
+        filc_check_write_int(addr_ptr, len, NULL);
+        break;
+    case INHERIT_COPY:
+    case INHERIT_ZERO:
+        filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
+        break;
+    case INHERIT_NONE:
+        filc_internal_panic(NULL, "cannot minherit INHERIT_NONE, no safe implementation yet.");
+        break;
+    default:
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    return FILC_SYSCALL(my_thread, minherit(filc_ptr_ptr(addr_ptr), len, inherit));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
