@@ -2039,6 +2039,137 @@ int filc_native_zsys_undelete(filc_thread* my_thread, filc_ptr path_ptr)
     return result;
 }
 
+/* It's totally a goal to implement SysV IPC, including the shared memory parts. I just don't have to,
+   yet. */
+int filc_native_zsys_semget(filc_thread* my_thread, long key, int nsems, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(nsems);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_semget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd, filc_ptr args)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(semnum);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(args);
+    filc_internal_panic(NULL, "zsys_semctl not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_semop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(array_ptr);
+    PAS_UNUSED_PARAM(nops);
+    filc_internal_panic(NULL, "zsys_semop not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_shmget(filc_thread* my_thread, long key, size_t size, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_shmget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_shmctl(filc_thread* my_thread, int shmid, int cmd, filc_ptr buf_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "zsys_shmctl not implemented.");
+    return -1;
+}
+
+filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr_ptr, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_shmat not implemented.");
+    return filc_ptr_forge_null();
+}
+
+int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    filc_internal_panic(NULL, "zsys_shmdt not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgget(filc_thread* my_thread, long key, int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgctl(filc_thread* my_thread, int msgid, int cmd, filc_ptr buf_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "zsys_msgctl not implemented.");
+    return -1;
+}
+
+long filc_native_zsys_msgrcv(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
+                             long msgtyp, int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgtyp);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgrcv not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgsnd(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
+                            int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgsnd not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
+{
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    filc_exit(my_thread);
+    int result = futimes(fd, (const struct timeval*)filc_ptr_ptr(times_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

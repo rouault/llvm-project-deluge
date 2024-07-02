@@ -78,6 +78,18 @@ int zsys_setrlimit(int resource, const void* rlp);
 int zsys___sysctl(const int* name, unsigned namelen, void* oldp, __SIZE_TYPE__ oldlenp,
                   const void* newp, __SIZE_TYPE__ newlen);
 int zsys_undelete(const char* path);
+int zsys_semget(long key, int nsems, int flag);
+int zsys_semctl(int semid, int semnum, int cmd, ...);
+int zsys_semop(int semid, void* array, __SIZE_TYPE__ nops);
+int zsys_shmget(long key, __SIZE_TYPE__ size, int flag);
+int zsys_shmctl(int shmid, int cmd, void* buf);
+void* zsys_shmat(int shmid, const void* addr, int flag);
+int zsys_shmdt(const void* addr);
+int zsys_msgget(long key, int msgflg);
+int zsys_msgctl(int msgid, int cmd, void* buf);
+long zsys_msgrcv(int msgid, void* msgp, __SIZE_TYPE__ msgsz, long msgtyp, int msgflg);
+int zsys_msgsnd(int msgid, const void* msgp, __SIZE_TYPE__ msgsz, int msgflg);
+int zsys_futimes(int fd, const void* times);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

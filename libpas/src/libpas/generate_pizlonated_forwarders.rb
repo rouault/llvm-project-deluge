@@ -344,6 +344,18 @@ forFilBSD {
     addSig "int", "zsys_setrlimit", "int", "filc_ptr"
     addSig "int", "zsys___sysctl", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr", "size_t"
     addSig "int", "zsys_undelete", "filc_ptr"
+    addSig "int", "zsys_semget", "long", "int", "int"
+    addSig "int", "zsys_semctl", "int", "int", "int", "..."
+    addSig "int", "zsys_semop", "int", "filc_ptr", "size_t"
+    addSig "int", "zsys_shmget", "long", "size_t", "int"
+    addSig "int", "zsys_shmctl", "int", "int", "filc_ptr"
+    addSig "filc_ptr", "zsys_shmat", "int", "filc_ptr", "int"
+    addSig "int", "zsys_shmdt", "filc_ptr"
+    addSig "int", "zsys_msgget", "long", "int"
+    addSig "int", "zsys_msgctl", "int", "int", "filc_ptr"
+    addSig "long", "zsys_msgrcv", "int", "filc_ptr", "size_t", "long", "int"
+    addSig "int", "zsys_msgsnd", "int", "filc_ptr", "size_t", "int"
+    addSig "int", "zsys_futimes", "int", "filc_ptr"
 }
 
 case ARGV[0]
