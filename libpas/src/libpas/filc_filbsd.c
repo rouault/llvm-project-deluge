@@ -2170,6 +2170,28 @@ int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
     return result;
 }
 
+int ktimer_create(clockid_t, struct sigevent *__restrict, int *__restrict);
+
+int filc_native_zsys_ktimer_create(filc_thread* my_thread, int clock, filc_ptr sigev_ptr,
+                                   filc_ptr oshandle_ptr)
+{
+    if (filc_ptr_ptr(sigev_ptr)) {
+        filc_check_read_int(sigev_ptr, sizeof(struct sigevent), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(sigev_ptr));
+    }
+    filc_check_write_int(oshandle_ptr, sizeof(int), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(oshandle_ptr));
+    filc_exit(my_thread);
+    int result = ktimer_create(clock, (struct sigevent*)filc_ptr_ptr(sigev_ptr),
+                               (int*)filc_ptr_ptr(oshandle_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

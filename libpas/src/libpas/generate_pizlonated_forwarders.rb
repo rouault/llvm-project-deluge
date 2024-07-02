@@ -356,6 +356,7 @@ forFilBSD {
     addSig "long", "zsys_msgrcv", "int", "filc_ptr", "size_t", "long", "int"
     addSig "int", "zsys_msgsnd", "int", "filc_ptr", "size_t", "int"
     addSig "int", "zsys_futimes", "int", "filc_ptr"
+    addSig "int", "zsys_ktimer_create", "int", "filc_ptr", "filc_ptr"
 }
 
 case ARGV[0]

@@ -90,6 +90,7 @@ int zsys_msgctl(int msgid, int cmd, void* buf);
 long zsys_msgrcv(int msgid, void* msgp, __SIZE_TYPE__ msgsz, long msgtyp, int msgflg);
 int zsys_msgsnd(int msgid, const void* msgp, __SIZE_TYPE__ msgsz, int msgflg);
 int zsys_futimes(int fd, const void* times);
+int zsys_ktimer_create(int clock, void* sigev, int* oshandle);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
