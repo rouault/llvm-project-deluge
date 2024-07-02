@@ -28,6 +28,21 @@ require 'pathname'
 require 'shellwords'
 require 'yaml'
 require 'fileutils'
+require 'getoptlong'
+
+$runTests = true
+
+GetoptLong.new(
+    [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ]
+).each {
+    | opt, arg |
+    case opt
+    when '--no-run'
+        $runTests = false
+    else
+        raise
+    end
+}
 
 if RUBY_PLATFORM =~ /darwin/
     $compilerPrefix = "xcrun "
@@ -326,6 +341,9 @@ File.open("filc/tests/testmakefile", "w") {
     }
 }
 
-raise unless system("#{$make} -f filc/tests/testmakefile -j #{Etc.nprocessors}")
-puts "SUCCESS"
+if $runTests
+    raise unless system("#{$make} -f filc/tests/testmakefile -j #{Etc.nprocessors}")
+    puts "SUCCESS"
+end
+
 

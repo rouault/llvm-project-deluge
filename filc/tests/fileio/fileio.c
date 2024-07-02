@@ -151,6 +151,9 @@ int main(int argc, char** argv)
     ZASSERT(read(socks[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));
 
+    ZASSERT(read(666, buf, 100) == -1);
+    ZASSERT(errno == EBADF);
+
     return 0;
 }
 
