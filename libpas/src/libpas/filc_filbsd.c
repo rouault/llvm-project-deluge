@@ -2220,6 +2220,52 @@ int filc_native_zsys_clock_getres(filc_thread* my_thread, int clock_id, filc_ptr
     return result;
 }
 
+int ktimer_delete(int oshandle);
+
+int filc_native_zsys_ktimer_delete(filc_thread* my_thread, int oshandle)
+{
+    filc_exit(my_thread);
+    int result = ktimer_delete(oshandle);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int ktimer_gettime(int oshandle, struct itimerspec* itimerp);
+
+int filc_native_zsys_ktimer_gettime(filc_thread* my_thread, int oshandle, filc_ptr itimerp_ptr)
+{
+    filc_cpt_write_int(my_thread, itimerp_ptr, sizeof(struct itimerspec));
+    return FILC_SYSCALL(
+        my_thread, ktimer_gettime(oshandle, (struct itimerspec*)filc_ptr_ptr(itimerp_ptr)));
+}
+
+int ktimer_getoverrun(int oshandle);
+
+int filc_native_zsys_ktimer_getoverrun(filc_thread* my_thread, int oshandle)
+{
+    return FILC_SYSCALL(my_thread, ktimer_getoverrun(oshandle));
+}
+
+int ktimer_settime(int oshandle, int flags, const struct itimerspec* new_value,
+                   struct itimerspec* old_value);
+
+int filc_native_zsys_ktimer_settime(filc_thread* my_thread, int oshandle, int flags,
+                                    filc_ptr new_value_ptr, filc_ptr old_value_ptr)
+{
+    if (filc_ptr_ptr(new_value_ptr))
+        filc_cpt_read_int(my_thread, new_value_ptr, sizeof(struct itimerspec));
+    if (filc_ptr_ptr(old_value_ptr))
+        filc_cpt_write_int(my_thread, old_value_ptr, sizeof(struct itimerspec));
+    return FILC_SYSCALL(
+        my_thread, ktimer_settime(oshandle, flags,
+                                  (const struct itimerspec*)filc_ptr_ptr(new_value_ptr),
+                                  (struct itimerspec*)filc_ptr_ptr(old_value_ptr)));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

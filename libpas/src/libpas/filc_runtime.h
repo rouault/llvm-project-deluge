@@ -1506,16 +1506,25 @@ void filc_unpin(filc_object* object);
 /* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
 void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
 
-void filc_check_access_common(filc_ptr, uintptr_t bytes, filc_access_kind kind,
+void filc_check_access_common(filc_ptr, size_t bytes, filc_access_kind kind,
                               const filc_origin* origin);
-void filc_check_access_int(filc_ptr ptr, uintptr_t bytes, filc_access_kind kind,
+void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind kind,
                            const filc_origin* origin);
 void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);
 
-void filc_check_read_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
-void filc_check_write_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin);
+/* CPT stands for Check Pin Tracked.
+
+   This is check_access_int followed by filc_pin_tracked. */
+void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, uintptr_t bytes,
+                         filc_access_kind kind);
+
+void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
+void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
 void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin);
+
+void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
+void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
 
 #define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
         struct_type check_temp; \
@@ -1533,6 +1542,10 @@ void filc_check_function_call(filc_ptr ptr);
 void filc_check_access_special(
     filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
 
+/* Checks that the pointer is in fact an mmap, isn't free, and then pins and tracks
+   it.
+
+   Does not perform any other safety checks. */
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr);
 
 void filc_memset_with_exit(filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes);
@@ -1846,6 +1859,19 @@ PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread
 #endif /* !FILC_MUSL */
 
 PAS_API size_t filc_mul_size(size_t a, size_t b);
+
+/* FIXME: We should totally use this macro a lot more. */
+#define FILC_SYSCALL(my_thread, syscall_call) ({ \
+        filc_thread* syscall_thread = (my_thread); \
+        filc_exit(syscall_thread); \
+        errno = 0; \
+        typeof(syscall_call) syscall_result = syscall_call; \
+        int syscall_errno = errno; \
+        filc_enter(syscall_thread); \
+        if (syscall_errno) \
+            filc_set_errno(syscall_errno); \
+        syscall_result; \
+    })
 
 PAS_API bool filc_get_bool_env(const char* name, bool default_value);
 PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value);

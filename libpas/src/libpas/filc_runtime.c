@@ -1562,7 +1562,7 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     filc_store_barrier(my_thread, target);
 }
 
-void filc_check_access_common(filc_ptr ptr, uintptr_t bytes, filc_access_kind access_kind,
+void filc_check_access_common(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
                               const filc_origin* origin)
 {
     if (PAS_ENABLE_TESTING)
@@ -2597,6 +2597,13 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const fil
     }
 }
 
+void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes,
+                         filc_access_kind access_kind)
+{
+    filc_check_access_int(ptr, bytes, access_kind, NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(ptr));
+}
+
 void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
 {
     filc_check_access_int(ptr, bytes, filc_read_access, origin);
@@ -2615,6 +2622,16 @@ void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
 void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_write_access, origin);
+}
+
+void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
+{
+    filc_cpt_access_int(my_thread, ptr, bytes, filc_read_access);
+}
+
+void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
+{
+    filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access);
 }
 
 void filc_check_function_call(filc_ptr ptr)
@@ -4389,16 +4406,8 @@ ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_io
 
 ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_check_write_int(buf, size, NULL);
-    filc_pin(filc_ptr_object(buf));
-    filc_exit(my_thread);
-    ssize_t result = read(fd, filc_ptr_ptr(buf), size);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(buf));
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    filc_cpt_write_int(my_thread, buf, size);
+    return FILC_SYSCALL(my_thread, read(fd, filc_ptr_ptr(buf), size));
 }
 
 ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr user_iov, int iovcnt)
@@ -4416,16 +4425,8 @@ ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr user_iov
 
 ssize_t filc_native_zsys_write(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_check_read_int(buf, size, NULL);
-    filc_pin(filc_ptr_object(buf));
-    filc_exit(my_thread);
-    ssize_t result = write(fd, filc_ptr_ptr(buf), size);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(buf));
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    filc_cpt_read_int(my_thread, buf, size);
+    return FILC_SYSCALL(my_thread, write(fd, filc_ptr_ptr(buf), size));
 }
 
 int filc_native_zsys_close(filc_thread* my_thread, int fd)

@@ -359,6 +359,10 @@ forFilBSD {
     addSig "int", "zsys_ktimer_create", "int", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_clock_settime", "int", "filc_ptr"
     addSig "int", "zsys_clock_getres", "int", "filc_ptr"
+    addSig "int", "zsys_ktimer_delete", "int"
+    addSig "int", "zsys_ktimer_gettime", "int", "filc_ptr"
+    addSig "int", "zsys_ktimer_getoverrun", "int"
+    addSig "int", "zsys_ktimer_settime", "int", "int", "filc_ptr", "filc_ptr"
 }
 
 case ARGV[0]
