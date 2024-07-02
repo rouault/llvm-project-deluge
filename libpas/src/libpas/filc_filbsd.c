@@ -2192,6 +2192,34 @@ int filc_native_zsys_ktimer_create(filc_thread* my_thread, int clock, filc_ptr s
     return result;
 }
 
+int filc_native_zsys_clock_settime(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
+{
+    filc_check_read_int(tp_ptr, sizeof(struct timespec), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_exit(my_thread);
+    int result = clock_settime(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_clock_getres(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
+{
+    filc_check_write_int(tp_ptr, sizeof(struct timespec), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_exit(my_thread);
+    int result = clock_getres(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */
