@@ -56,6 +56,7 @@ int zsys_fchmod(int fd, unsigned short mode);
 int zsys_mkdirat(int dirfd, const char* pathname, unsigned short mode);
 int zsys_mkdir(const char* path, unsigned short mode);
 int zsys_utimes(const char* path, const void* times);
+int zsys_lutimes(const char* path, const void* times);
 int zsys_adjtime(const void* delta, void* olddelta);
 int zsys_quotactl(const char* path, int cmd, int id, void* addr);
 int zsys_nlm_syscall(int debug_level, int grace_period, int addr_count, char** addrs);
@@ -68,6 +69,15 @@ int zsys_getfhat(int fd, const char* path, void* fhp, int flag);
 int zsys_setfib(int fib);
 int zsys_ntp_adjtime(void* timex);
 int zsys_ntp_gettime(void* timeval);
+long zsys_pathconf(const char* path, int name);
+long zsys_lpathconf(const char* path, int name);
+long zsys_fpathconf(int fd, int name);
+int zsys_mlock(const void* addr, __SIZE_TYPE__ len);
+int zsys_munlock(const void* addr, __SIZE_TYPE__ len);
+int zsys_setrlimit(int resource, const void* rlp);
+int zsys___sysctl(const int* name, unsigned namelen, void* oldp, __SIZE_TYPE__ oldlenp,
+                  const void* newp, __SIZE_TYPE__ newlen);
+int zsys_undelete(const char* path);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

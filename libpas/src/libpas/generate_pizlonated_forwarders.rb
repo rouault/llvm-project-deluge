@@ -323,6 +323,7 @@ forFilBSD {
     addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned short"
     addSig "int", "zsys_mkdir", "filc_ptr", "unsigned short"
     addSig "int", "zsys_utimes", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_lutimes", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_adjtime", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_quotactl", "filc_ptr", "int", "int", "filc_ptr"
     addSig "int", "zsys_nlm_syscall", "int", "int", "int", "filc_ptr"
@@ -335,6 +336,14 @@ forFilBSD {
     addSig "int", "zsys_setfib", "int"
     addSig "int", "zsys_ntp_adjtime", "filc_ptr"
     addSig "int", "zsys_ntp_gettime", "filc_ptr"
+    addSig "long", "zsys_pathconf", "filc_ptr", "int"
+    addSig "long", "zsys_lpathconf", "filc_ptr", "int"
+    addSig "long", "zsys_fpathconf", "int", "int"
+    addSig "int", "zsys_mlock", "filc_ptr", "size_t"
+    addSig "int", "zsys_munlock", "filc_ptr", "size_t"
+    addSig "int", "zsys_setrlimit", "int", "filc_ptr"
+    addSig "int", "zsys___sysctl", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr", "size_t"
+    addSig "int", "zsys_undelete", "filc_ptr"
 }
 
 case ARGV[0]

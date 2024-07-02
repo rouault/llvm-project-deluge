@@ -3276,7 +3276,7 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     filc_enter(my_thread);
     destroy_msghdr(&msg);
     if (result < 0)
-        filc_set_errno(errno);
+        filc_set_errno(my_errno);
     return result;
 
 einval:
@@ -4106,7 +4106,7 @@ int filc_native_zsys_poll(
         int my_errno = errno;
         filc_enter(my_thread);
         if (result < 0)
-            filc_set_errno(errno);
+            filc_set_errno(my_errno);
         return result;
     }
     size_t total_size;

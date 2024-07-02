@@ -510,7 +510,7 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
         pas_log("sendmsg result = %ld\n", (long)result);
     filc_enter(my_thread);
     if (result < 0)
-        filc_set_errno(errno);
+        filc_set_errno(my_errno);
     return result;
 }
 
@@ -1230,7 +1230,8 @@ int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
     return result;
 }
 
-int filc_native_zsys_utimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+static int utimes_impl(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr,
+                       int (*actual_utimes)(const char*, const struct timeval*))
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     if (filc_ptr_ptr(times_ptr)) {
@@ -1238,13 +1239,23 @@ int filc_native_zsys_utimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr 
         filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
     }
     filc_exit(my_thread);
-    int result = utimes(path, (const struct timeval*)filc_ptr_ptr(times_ptr));
+    int result = actual_utimes(path, (const struct timeval*)filc_ptr_ptr(times_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
     PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
+}
+
+int filc_native_zsys_utimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    return utimes_impl(my_thread, path_ptr, times_ptr, utimes);
+}
+
+int filc_native_zsys_lutimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    return utimes_impl(my_thread, path_ptr, times_ptr, lutimes);
 }
 
 int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_ptr olddelta_ptr)
@@ -1903,6 +1914,126 @@ int filc_native_zsys_ntp_gettime(filc_thread* my_thread, filc_ptr timeval_ptr)
     int result = ntp_gettime((struct ntptimeval*)filc_ptr_ptr(timeval_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+static long pathconf_impl(filc_thread* my_thread, filc_ptr path_ptr, int name,
+                          long (*actual_pathconf)(const char*, int))
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_exit(my_thread);
+    errno = 0;
+    long result = actual_pathconf(path, name);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (my_errno)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+long filc_native_zsys_pathconf(filc_thread* my_thread, filc_ptr path_ptr, int name)
+{
+    return pathconf_impl(my_thread, path_ptr, name, pathconf);
+}
+
+long filc_native_zsys_lpathconf(filc_thread* my_thread, filc_ptr path_ptr, int name)
+{
+    return pathconf_impl(my_thread, path_ptr, name, lpathconf);
+}
+
+long filc_native_zsys_fpathconf(filc_thread* my_thread, int fd, int name)
+{
+    filc_exit(my_thread);
+    errno = 0;
+    long result = fpathconf(fd, name);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (my_errno)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+static int mlock_impl(filc_thread* my_thread, filc_ptr addr_ptr, size_t len,
+                      int (*actual_mlock)(const void*, size_t))
+{
+    filc_check_access_common(addr_ptr, len, filc_read_access, NULL);
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_exit(my_thread);
+    int result = actual_mlock(filc_ptr_ptr(addr_ptr), len);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
+{
+    return mlock_impl(my_thread, addr_ptr, len, mlock);
+}
+
+int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
+{
+    return mlock_impl(my_thread, addr_ptr, len, munlock);
+}
+
+int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rlp_ptr)
+{
+    filc_check_read_int(rlp_ptr, sizeof(struct rlimit), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(rlp_ptr));
+    filc_exit(my_thread);
+    int result = setrlimit(resource, (struct rlimit*)filc_ptr_ptr(rlp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int __sysctl(const int *name, unsigned namelen, void *oldp, size_t *oldlenp, const void *newp,
+             size_t newlen);
+
+int filc_native_zsys___sysctl(filc_thread* my_thread, filc_ptr name_ptr, unsigned namelen,
+                              filc_ptr oldp_ptr, filc_ptr oldlenp_ptr, filc_ptr newp_ptr,
+                              size_t newlen)
+{
+    filc_check_read_int(name_ptr, filc_mul_size(namelen, sizeof(int)), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(name_ptr));
+    if (filc_ptr_ptr(oldp_ptr) || filc_ptr_ptr(oldlenp_ptr)) {
+        filc_check_write_int(oldlenp_ptr, sizeof(size_t), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(oldlenp_ptr));
+    }
+    if (filc_ptr_ptr(oldp_ptr)) {
+        filc_check_write_int(oldp_ptr, *(size_t*)filc_ptr_ptr(oldlenp_ptr), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(oldp_ptr));
+    }
+    if (filc_ptr_ptr(newp_ptr)) {
+        filc_check_read_int(newp_ptr, newlen, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(newp_ptr));
+    }
+    filc_exit(my_thread);
+    int result = __sysctl((int*)filc_ptr_ptr(name_ptr), namelen, filc_ptr_ptr(oldp_ptr),
+                          (size_t*)filc_ptr_ptr(oldlenp_ptr), filc_ptr_ptr(newp_ptr), newlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_undelete(filc_thread* my_thread, filc_ptr path_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_exit(my_thread);
+    int result = undelete(path);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
