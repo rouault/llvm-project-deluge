@@ -119,6 +119,8 @@ int zsys_aio_mlock(void* iocb);
 int zsys_fhopen(const void* fhp, int flags);
 int zsys_fhstat(const void* fhp, void* sb);
 int zsys_fhstatfs(const void* fhp, void* buf);
+int zsys_modnext(int modid);
+int zsys_modfnext(int modid);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

@@ -391,6 +391,8 @@ forFilBSD {
     addSig "int", "zsys_fhopen", "filc_ptr", "int"
     addSig "int", "zsys_fhstat", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_fhstatfs", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_modnext", "int"
+    addSig "int", "zsys_modfnext", "int"
 }
 
 case ARGV[0]

@@ -75,6 +75,8 @@
 #include <fs/nfs/nfsport.h>
 #include <sys/timex.h>
 #include <sys/timeffc.h>
+#include <sys/param.h>
+#include <sys/module.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -2442,6 +2444,16 @@ int filc_native_zsys_fhstatfs(filc_thread* my_thread, filc_ptr fhp_ptr, filc_ptr
     filc_cpt_write_int(my_thread, buf_ptr, sizeof(struct statfs));
     return FILC_SYSCALL(my_thread, fhstatfs((const fhandle_t*)filc_ptr_ptr(fhp_ptr),
                                             (struct statfs*)filc_ptr_ptr(buf_ptr)));
+}
+
+int filc_native_zsys_modnext(filc_thread* my_thread, int modid)
+{
+    return FILC_SYSCALL(my_thread, modnext(modid));
+}
+
+int filc_native_zsys_modfnext(filc_thread* my_thread, int modid)
+{
+    return FILC_SYSCALL(my_thread, modfnext(modid));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
