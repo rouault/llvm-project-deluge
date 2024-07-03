@@ -77,6 +77,7 @@
 #include <sys/timeffc.h>
 #include <sys/param.h>
 #include <sys/module.h>
+#include <sys/linker.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -2454,6 +2455,45 @@ int filc_native_zsys_modnext(filc_thread* my_thread, int modid)
 int filc_native_zsys_modfnext(filc_thread* my_thread, int modid)
 {
     return FILC_SYSCALL(my_thread, modfnext(modid));
+}
+
+int filc_native_zsys_modstat(filc_thread* my_thread, int modid, filc_ptr stat_ptr)
+{
+    filc_cpt_write_int(my_thread, stat_ptr, sizeof(struct module_stat));
+    return FILC_SYSCALL(my_thread, modstat(modid, (struct module_stat*)filc_ptr_ptr(stat_ptr)));
+}
+
+int filc_native_zsys_modfind(filc_thread* my_thread, filc_ptr modname_ptr)
+{
+    char* modname = filc_check_and_get_tmp_str(my_thread, modname_ptr);
+    return FILC_SYSCALL(my_thread, modfind(modname));
+}
+
+int filc_native_zsys_kldload(filc_thread* my_thread, filc_ptr file_ptr)
+{
+    char* file = filc_check_and_get_tmp_str(my_thread, file_ptr);
+    return FILC_SYSCALL(my_thread, kldload(file));
+}
+
+int filc_native_zsys_kldunload(filc_thread* my_thread, int fileid)
+{
+    return FILC_SYSCALL(my_thread, kldunload(fileid));
+}
+
+int filc_native_zsys_kldunloadf(filc_thread* my_thread, int fileid, int flags)
+{
+    return FILC_SYSCALL(my_thread, kldunloadf(fileid, flags));
+}
+
+int filc_native_zsys_kldfind(filc_thread* my_thread, filc_ptr file_ptr)
+{
+    char* file = filc_check_and_get_tmp_str(my_thread, file_ptr);
+    return FILC_SYSCALL(my_thread, kldfind(file));
+}
+
+int filc_native_zsys_kldnext(filc_thread* my_thread, int fileid)
+{
+    return FILC_SYSCALL(my_thread, kldnext(fileid));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

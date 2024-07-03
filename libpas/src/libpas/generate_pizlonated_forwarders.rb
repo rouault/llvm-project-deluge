@@ -393,6 +393,13 @@ forFilBSD {
     addSig "int", "zsys_fhstatfs", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_modnext", "int"
     addSig "int", "zsys_modfnext", "int"
+    addSig "int", "zsys_modstat", "int", "filc_ptr"
+    addSig "int", "zsys_modfind", "filc_ptr"
+    addSig "int", "zsys_kldload", "filc_ptr"
+    addSig "int", "zsys_kldunload", "int"
+    addSig "int", "zsys_kldunloadf", "int", "int"
+    addSig "int", "zsys_kldfind", "filc_ptr"
+    addSig "int", "zsys_kldnext", "int"
 }
 
 case ARGV[0]

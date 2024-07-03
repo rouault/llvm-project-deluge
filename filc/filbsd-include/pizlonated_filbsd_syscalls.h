@@ -121,6 +121,13 @@ int zsys_fhstat(const void* fhp, void* sb);
 int zsys_fhstatfs(const void* fhp, void* buf);
 int zsys_modnext(int modid);
 int zsys_modfnext(int modid);
+int zsys_modstat(int modid, void* stat);
+int zsys_modfind(const char* modname);
+int zsys_kldload(const char* file);
+int zsys_kldunload(int fileid);
+int zsys_kldunloadf(int fileid, int flags);
+int zsys_kldfind(const char* file);
+int zsys_kldnext(int fileid);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
