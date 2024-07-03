@@ -147,6 +147,18 @@ int zsys_jail_attach(int jid);
 int zsys_jail_remove(int jid);
 int zsys_jail_get(void* iov, unsigned niov, int flags);
 int zsys_jail_set(void* iov, unsigned niov, int flags);
+int zsys___acl_aclcheck_fd(int fd, int type, void* aclp);
+int zsys___acl_aclcheck_file(const char* path, int type, void* aclp);
+int zsys___acl_aclcheck_link(const char* path, int type, void* aclp);
+int zsys___acl_delete_fd(int fd, int type);
+int zsys___acl_delete_file(const char* path, int type);
+int zsys___acl_delete_link(const char* path, int type);
+int zsys___acl_get_fd(int fd, int type, void* aclp);
+int zsys___acl_get_file(const char* path, int type, void* aclp);
+int zsys___acl_get_link(const char* path, int type, void* aclp);
+int zsys___acl_set_fd(int fd, int type, void* aclp);
+int zsys___acl_set_file(const char* path, int type, void* aclp);
+int zsys___acl_set_link(const char* path, int type, void* aclp);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

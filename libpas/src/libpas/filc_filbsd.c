@@ -80,6 +80,10 @@
 #include <sys/linker.h>
 #include <sys/jail.h>
 
+#define _ACL_PRIVATE 1
+#include <sys/acl.h>
+#undef _ACL_PRIVATE
+
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
 
@@ -2694,6 +2698,91 @@ int filc_native_zsys_jail_set(filc_thread* my_thread, filc_ptr iov_ptr, unsigned
 {
     struct iovec* iov = filc_prepare_iovec(my_thread, iov_ptr, (int)niov, filc_read_access);
     return FILC_SYSCALL(my_thread, jail_set(iov, niov, flags));
+}
+
+int filc_native_zsys___acl_aclcheck_fd(filc_thread* my_thread, int fd, int type, filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    return FILC_SYSCALL(my_thread, __acl_aclcheck_fd(fd, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_aclcheck_file(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                         filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(
+        my_thread, __acl_aclcheck_file(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_aclcheck_link(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                         filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(
+        my_thread, __acl_aclcheck_link(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_delete_fd(filc_thread* my_thread, int fd, int type)
+{
+    return FILC_SYSCALL(my_thread, __acl_delete_fd(fd, type));
+}
+
+int filc_native_zsys___acl_delete_file(filc_thread* my_thread, filc_ptr path_ptr, int type)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_delete_file(path, type));
+}
+
+int filc_native_zsys___acl_delete_link(filc_thread* my_thread, filc_ptr path_ptr, int type)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_delete_link(path, type));
+}
+
+int filc_native_zsys___acl_get_fd(filc_thread* my_thread, int fd, int type, filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    return FILC_SYSCALL(my_thread, __acl_get_fd(fd, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_get_file(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                    filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_get_file(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_get_link(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                    filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_get_link(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_set_fd(filc_thread* my_thread, int fd, int type, filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    return FILC_SYSCALL(my_thread, __acl_set_fd(fd, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_set_file(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                    filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_set_file(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys___acl_set_link(filc_thread* my_thread, filc_ptr path_ptr, int type,
+                                    filc_ptr aclp_ptr)
+{
+    filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, __acl_set_link(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

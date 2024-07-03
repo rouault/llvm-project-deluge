@@ -425,6 +425,18 @@ forFilBSD {
     addSig "int", "zsys_jail_detach", "int"
     addSig "int", "zsys_jail_get", "filc_ptr", "unsigned", "int"
     addSig "int", "zsys_jail_set", "filc_ptr", "unsigned", "int"
+    addSig "int", "zsys___acl_aclcheck_fd", "int", "int", "filc_ptr"
+    addSig "int", "zsys___acl_aclcheck_file", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys___acl_aclcheck_link", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys___acl_delete_fd", "int", "int"
+    addSig "int", "zsys___acl_delete_file", "filc_ptr", "int"
+    addSig "int", "zsys___acl_delete_link", "filc_ptr", "int"
+    addSig "int", "zsys___acl_get_fd", "int", "int", "filc_ptr"
+    addSig "int", "zsys___acl_get_file", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys___acl_get_link", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys___acl_set_fd", "int", "int", "filc_ptr"
+    addSig "int", "zsys___acl_set_file", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys___acl_set_link", "filc_ptr", "int", "filc_ptr"
 }
 
 case ARGV[0]
