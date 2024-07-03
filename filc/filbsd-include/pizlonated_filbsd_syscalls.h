@@ -102,6 +102,7 @@ int zsys_ffclock_getestimate(void* cest);
 int zsys_ffclock_setestimate(void* cest);
 int zsys_clock_getcpuclockid2(long long id, int which, void* clock_id);
 int zsys_minherit(void* addr, __SIZE_TYPE__ len, int inherit);
+int zsys_issetugid(void);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

@@ -5650,16 +5650,18 @@ long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_p
     return result;
 }
 
-int filc_native_zsys_chown(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned owner, unsigned group)
+int filc_native_zsys_chown(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned owner,
+                           unsigned group)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    filc_exit(my_thread);
-    int result = chown(pathname, owner, group);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, chown(pathname, owner, group));
+}
+
+int filc_native_zsys_lchown(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned owner,
+                            unsigned group)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, lchown(pathname, owner, group));
 }
 
 int filc_native_zsys_rename(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
@@ -6040,14 +6042,20 @@ int filc_native_zsys_futimens(filc_thread* my_thread, int fd, filc_ptr times_ptr
 
 int filc_native_zsys_fchown(filc_thread* my_thread, int fd, unsigned uid, unsigned gid)
 {
-    filc_exit(my_thread);
-    int result = fchown(fd, uid, gid);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, fchown(fd, uid, gid));
+}
+
+int filc_native_zsys_fchownat(filc_thread* my_thread, int user_fd, filc_ptr pathname_ptr, unsigned uid,
+                              unsigned gid, int user_flags)
+{
+    int fd = filc_from_user_atfd(user_fd);
+    int flags;
+    if (!from_user_fstatat_flag(user_flags, &flags)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, fchownat(fd, pathname, uid, gid, flags));
 }
 
 int filc_native_zsys_fchdir(filc_thread* my_thread, int fd)

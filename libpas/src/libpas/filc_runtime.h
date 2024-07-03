@@ -1876,7 +1876,19 @@ PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread
 
 PAS_API size_t filc_mul_size(size_t a, size_t b);
 
-/* FIXME: We should totally use this macro a lot more. */
+/* Helper for calling a syscall that might set errno.
+
+   NOTE: This exits before executing the syscall_call expression!
+
+   This is both a blessing and a curse!
+
+   Blessing: you don't have to write the filc_exit/filc_enter boilerplate.
+
+   Curse: you cannot have anything in the syscall_call expression that uses any
+   filc API that requires being entered. You can call things like filc_ptr_ptr()
+   but almost nothing else.
+
+   FIXME: We should totally use this macro a lot more. */
 #define FILC_SYSCALL(my_thread, syscall_call) ({ \
         filc_thread* syscall_thread = (my_thread); \
         filc_exit(syscall_thread); \

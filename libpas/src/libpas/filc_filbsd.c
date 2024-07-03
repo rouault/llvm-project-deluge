@@ -2316,6 +2316,14 @@ int filc_native_zsys_minherit(filc_thread* my_thread, filc_ptr addr_ptr, size_t 
     return FILC_SYSCALL(my_thread, minherit(filc_ptr_ptr(addr_ptr), len, inherit));
 }
 
+int filc_native_zsys_issetugid(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    int result = issetugid();
+    filc_enter(my_thread);
+    return result;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

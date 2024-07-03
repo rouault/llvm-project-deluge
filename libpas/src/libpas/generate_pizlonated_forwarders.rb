@@ -218,6 +218,7 @@ addSig "int", "zsys_setregid", "unsigned", "unsigned"
 addSig "int", "zsys_nanosleep", "filc_ptr", "filc_ptr"
 addSig "long", "zsys_readlink", "filc_ptr", "filc_ptr", "size_t"
 addSig "int", "zsys_chown", "filc_ptr", "unsigned", "unsigned"
+addSig "int", "zsys_lchown", "filc_ptr", "unsigned", "unsigned"
 addSig "ssize_t", "zsys_sendmsg", "int", "filc_ptr", "int"
 addSig "ssize_t", "zsys_recvmsg", "int", "filc_ptr", "int"
 addSig "int", "zsys_rename", "filc_ptr", "filc_ptr"
@@ -237,6 +238,7 @@ addSig "int", "zsys_shutdown", "int", "int"
 addSig "int", "zsys_rmdir", "filc_ptr"
 addSig "int", "zsys_futimens", "int", "filc_ptr"
 addSig "int", "zsys_fchown", "int", "unsigned", "unsigned"
+addSig "int", "zsys_fchownat", "int", "filc_ptr", "unsigned", "unsigned", "int"
 addSig "int", "zsys_fchdir", "int"
 addSig "void", "zsys_sync"
 addSig "int", "zsys_access", "filc_ptr", "int"
@@ -368,6 +370,7 @@ forFilBSD {
     addSig "int", "zsys_ffclock_setestimate", "filc_ptr"
     addSig "int", "zsys_getcpuclockid2", "long long", "int", "filc_ptr"
     addSig "int", "zsys_minherit", "filc_ptr", "size_t", "int"
+    addSig "int", "zsys_issetugid"
 }
 
 case ARGV[0]
