@@ -73,8 +73,6 @@ int zsys_ntp_gettime(void* timeval);
 long zsys_pathconf(const char* path, int name);
 long zsys_lpathconf(const char* path, int name);
 long zsys_fpathconf(int fd, int name);
-int zsys_mlock(const void* addr, __SIZE_TYPE__ len);
-int zsys_munlock(const void* addr, __SIZE_TYPE__ len);
 int zsys_setrlimit(int resource, const void* rlp);
 int zsys___sysctl(const int* name, unsigned namelen, void* oldp, __SIZE_TYPE__ oldlenp,
                   const void* newp, __SIZE_TYPE__ newlen);
@@ -128,6 +126,12 @@ int zsys_kldunload(int fileid);
 int zsys_kldunloadf(int fileid, int flags);
 int zsys_kldfind(const char* file);
 int zsys_kldnext(int fileid);
+int zsys_getresgid(unsigned* rgid, unsigned* egid, unsigned* sgid);
+int zsys_getresuid(unsigned* ruid, unsigned* euid, unsigned* suid);
+int zsys_setresgid(unsigned rgid, unsigned egid, unsigned sgid);
+int zsys_setresuid(unsigned ruid, unsigned euid, unsigned suid);
+int zsys_kldfirstmod(int fileid);
+int zsys_kldstat(int fileid, void* stat);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

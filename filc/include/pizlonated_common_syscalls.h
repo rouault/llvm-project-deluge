@@ -138,5 +138,10 @@ long zsys_pread(int fd, void* buf, __SIZE_TYPE__ nbytes, long offset);
 long zsys_preadv(int fd, const void* iov, int iovcnt, long offset);
 long zsys_pwrite(int fd, const void* buf, __SIZE_TYPE__ nbytes, long offset);
 long zsys_pwritev(int fd, const void* iov, int iovcnt, long offset);
+int zsys_getsid(int pid);
+int zsys_mlock(const void* addr, __SIZE_TYPE__ len);
+int zsys_munlock(const void* addr, __SIZE_TYPE__ len);
+int zsys_mlockall(int flags);
+int zsys_munlockall(void);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

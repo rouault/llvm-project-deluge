@@ -6207,6 +6207,59 @@ long filc_native_zsys_pwritev(filc_thread* my_thread, int fd, filc_ptr user_iov_
     return FILC_SYSCALL(my_thread, pwritev(fd, iov, iovcnt, offset));
 }
 
+int filc_native_zsys_getsid(filc_thread* my_thread, int pid)
+{
+    return FILC_SYSCALL(my_thread, getsid(pid));
+}
+
+static int mlock_impl(filc_thread* my_thread, filc_ptr addr_ptr, size_t len,
+                      int (*actual_mlock)(const void*, size_t))
+{
+    filc_check_access_common(addr_ptr, len, filc_read_access, NULL);
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    return FILC_SYSCALL(my_thread, actual_mlock(filc_ptr_ptr(addr_ptr), len));
+}
+
+int filc_native_zsys_mlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
+{
+    return mlock_impl(my_thread, addr_ptr, len, mlock);
+}
+
+int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
+{
+    return mlock_impl(my_thread, addr_ptr, len, munlock);
+}
+
+static bool from_user_mlockall_flags(int user_flags, int* flags)
+{
+    if (!FILC_MUSL) {
+        *flags = user_flags;
+        return true;
+    }
+
+    *flags = 0;
+    if (filc_check_and_clear(&user_flags, 1))
+        *flags |= MCL_CURRENT;
+    if (filc_check_and_clear(&user_flags, 2))
+        *flags |= MCL_FUTURE;
+    return !user_flags;
+}
+
+int filc_native_zsys_mlockall(filc_thread* my_thread, int user_flags)
+{
+    int flags;
+    if (!from_user_mlockall_flags(user_flags, &flags)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    return FILC_SYSCALL(my_thread, mlockall(flags));
+}
+
+int filc_native_zsys_munlockall(filc_thread* my_thread)
+{
+    return FILC_SYSCALL(my_thread, munlockall());
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

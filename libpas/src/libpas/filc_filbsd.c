@@ -1959,31 +1959,6 @@ long filc_native_zsys_fpathconf(filc_thread* my_thread, int fd, int name)
     return result;
 }
 
-static int mlock_impl(filc_thread* my_thread, filc_ptr addr_ptr, size_t len,
-                      int (*actual_mlock)(const void*, size_t))
-{
-    filc_check_access_common(addr_ptr, len, filc_read_access, NULL);
-    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
-    filc_exit(my_thread);
-    int result = actual_mlock(filc_ptr_ptr(addr_ptr), len);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_mlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
-{
-    return mlock_impl(my_thread, addr_ptr, len, mlock);
-}
-
-int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
-{
-    return mlock_impl(my_thread, addr_ptr, len, munlock);
-}
-
 int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rlp_ptr)
 {
     filc_check_read_int(rlp_ptr, sizeof(struct rlimit), NULL);
@@ -2494,6 +2469,49 @@ int filc_native_zsys_kldfind(filc_thread* my_thread, filc_ptr file_ptr)
 int filc_native_zsys_kldnext(filc_thread* my_thread, int fileid)
 {
     return FILC_SYSCALL(my_thread, kldnext(fileid));
+}
+
+int filc_native_zsys_getresgid(filc_thread* my_thread, filc_ptr rgid_ptr, filc_ptr egid_ptr,
+                               filc_ptr sgid_ptr)
+{
+    filc_cpt_write_int(my_thread, rgid_ptr, sizeof(gid_t));
+    filc_cpt_write_int(my_thread, egid_ptr, sizeof(gid_t));
+    filc_cpt_write_int(my_thread, sgid_ptr, sizeof(gid_t));
+    return FILC_SYSCALL(my_thread, getresgid((gid_t*)filc_ptr_ptr(rgid_ptr),
+                                             (gid_t*)filc_ptr_ptr(egid_ptr),
+                                             (gid_t*)filc_ptr_ptr(sgid_ptr)));
+}
+
+int filc_native_zsys_getresuid(filc_thread* my_thread, filc_ptr ruid_ptr, filc_ptr euid_ptr,
+                               filc_ptr suid_ptr)
+{
+    filc_cpt_write_int(my_thread, ruid_ptr, sizeof(uid_t));
+    filc_cpt_write_int(my_thread, euid_ptr, sizeof(uid_t));
+    filc_cpt_write_int(my_thread, suid_ptr, sizeof(uid_t));
+    return FILC_SYSCALL(my_thread, getresuid((uid_t*)filc_ptr_ptr(ruid_ptr),
+                                             (uid_t*)filc_ptr_ptr(euid_ptr),
+                                             (uid_t*)filc_ptr_ptr(suid_ptr)));
+}
+
+int filc_native_zsys_setresgid(filc_thread* my_thread, unsigned rgid, unsigned egid, unsigned sgid)
+{
+    return FILC_SYSCALL(my_thread, setresgid(rgid, egid, sgid));
+}
+
+int filc_native_zsys_setresuid(filc_thread* my_thread, unsigned ruid, unsigned euid, unsigned suid)
+{
+    return FILC_SYSCALL(my_thread, setresuid(ruid, euid, suid));
+}
+
+int filc_native_zsys_kldfirstmod(filc_thread* my_thread, int fileid)
+{
+    return FILC_SYSCALL(my_thread, kldfirstmod(fileid));
+}
+
+int filc_native_zsys_kldstat(filc_thread* my_thread, int fileid, filc_ptr stat_ptr)
+{
+    filc_cpt_write_int(my_thread, stat_ptr, sizeof(struct kld_file_stat));
+    return FILC_SYSCALL(my_thread, kldstat(fileid, (struct kld_file_stat*)filc_ptr_ptr(stat_ptr)));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
