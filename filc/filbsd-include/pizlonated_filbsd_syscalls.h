@@ -137,6 +137,16 @@ int zsys_sched_setparam(int pid, const void* param);
 int zsys_sched_getparam(int pid, void* param);
 int zsys_sched_setscheduler(int pid, int policy, const void* param);
 int zsys_sched_getscheduler(int pid);
+int zsys_sched_get_priority_max(int policy);
+int zsys_sched_get_priority_min(int policy);
+int zsys_sched_rr_get_interval(int pid, void* interval);
+int zsys_utrace(const void* addr, __SIZE_TYPE__ len);
+int zsys_kldsym(int fileid, int cmd, void* data);
+int zsys_jail(void* jail);
+int zsys_jail_attach(int jid);
+int zsys_jail_remove(int jid);
+int zsys_jail_get(void* iov, unsigned niov, int flags);
+int zsys_jail_set(void* iov, unsigned niov, int flags);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

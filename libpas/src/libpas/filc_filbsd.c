@@ -78,6 +78,7 @@
 #include <sys/param.h>
 #include <sys/module.h>
 #include <sys/linker.h>
+#include <sys/jail.h>
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
@@ -2547,6 +2548,152 @@ int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int pol
 int filc_native_zsys_sched_getscheduler(filc_thread* my_thread, int pid)
 {
     return FILC_SYSCALL(my_thread, sched_getscheduler(pid));
+}
+
+int filc_native_zsys_sched_get_priority_min(filc_thread* my_thread, int policy)
+{
+    return FILC_SYSCALL(my_thread, sched_get_priority_min(policy));
+}
+
+int filc_native_zsys_sched_get_priority_max(filc_thread* my_thread, int policy)
+{
+    return FILC_SYSCALL(my_thread, sched_get_priority_max(policy));
+}
+
+int filc_native_zsys_sched_rr_get_interval(filc_thread* my_thread, int pid, filc_ptr interval_ptr)
+{
+    filc_cpt_write_int(my_thread, interval_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(
+        my_thread, sched_rr_get_interval(pid, (struct timespec*)filc_ptr_ptr(interval_ptr)));
+}
+
+int filc_native_zsys_utrace(filc_thread* my_thread, filc_ptr addr_ptr, size_t len)
+{
+    filc_cpt_read_int(my_thread, addr_ptr, len);
+    return FILC_SYSCALL(my_thread, utrace(filc_ptr_ptr(addr_ptr), len));
+}
+
+struct user_kld_sym_lookup {
+    int		version;	/* set to sizeof(struct kld_sym_lookup) */
+    filc_ptr    symname;	/* Symbol name we are looking up */
+    u_long	symvalue;
+    size_t	symsize;
+};
+
+static void check_user_kld_sym_lookup(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(ptr, struct user_kld_sym_lookup, version, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_kld_sym_lookup, symname, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kld_sym_lookup, symvalue, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kld_sym_lookup, symsize, access_kind);
+}
+
+int filc_native_zsys_kldsym(filc_thread* my_thread, int fileid, int cmd, filc_ptr data_ptr)
+{
+    check_user_kld_sym_lookup(data_ptr, filc_read_access);
+    struct kld_sym_lookup args;
+    struct user_kld_sym_lookup* user_args = (struct user_kld_sym_lookup*)filc_ptr_ptr(data_ptr);
+    pas_zero_memory(&args, sizeof(args));
+    args.version = user_args->version;
+    args.symname = filc_check_and_get_tmp_str(
+        my_thread, filc_ptr_load(my_thread, &user_args->symname));
+    int result = FILC_SYSCALL(my_thread, kldsym(fileid, cmd, &args));
+    if (!result) {
+        check_user_kld_sym_lookup(data_ptr, filc_write_access);
+        user_args->symvalue = args.symvalue;
+        user_args->symsize = args.symsize;
+    }
+    return result;
+}
+
+struct user_jail {
+	uint32_t	version;
+	filc_ptr        path;
+	filc_ptr        hostname;
+	filc_ptr        jailname;
+	uint32_t	ip4s;
+	uint32_t	ip6s;
+	filc_ptr        ip4;
+	filc_ptr        ip6;
+};
+
+static void check_user_jail(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(ptr, struct user_jail, version, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_jail, path, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_jail, hostname, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_jail, jailname, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_jail, ip4s, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_jail, ip6s, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_jail, ip4, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_jail, ip6, access_kind);
+}
+
+int filc_native_zsys_jail(filc_thread* my_thread, filc_ptr jail_ptr)
+{
+    check_user_jail(jail_ptr, filc_read_access);
+    struct jail args;
+    struct user_jail* user_args = (struct user_jail*)filc_ptr_ptr(jail_ptr);
+    pas_zero_memory(&args, sizeof(args));
+    args.version = user_args->version;
+    args.path = filc_check_and_get_tmp_str(my_thread, filc_ptr_load(my_thread, &user_args->path));
+    args.hostname = filc_check_and_get_tmp_str(
+        my_thread, filc_ptr_load(my_thread, &user_args->hostname));
+    args.jailname = filc_check_and_get_tmp_str(
+        my_thread, filc_ptr_load(my_thread, &user_args->jailname));
+    args.ip4s = user_args->ip4s;
+    args.ip6s = user_args->ip6s;
+    filc_ptr ip4_ptr = filc_ptr_load(my_thread, &user_args->ip4);
+    filc_cpt_read_int(my_thread, ip4_ptr, filc_mul_size(sizeof(struct in_addr), args.ip4s));
+    args.ip4 = (struct in_addr*)filc_ptr_ptr(ip4_ptr);
+    filc_ptr ip6_ptr = filc_ptr_load(my_thread, &user_args->ip6);
+    filc_cpt_read_int(my_thread, ip6_ptr, filc_mul_size(sizeof(struct in6_addr), args.ip6s));
+    args.ip6 = (struct in6_addr*)filc_ptr_ptr(ip6_ptr);
+    return FILC_SYSCALL(my_thread, jail(&args));
+}
+
+int filc_native_zsys_jail_attach(filc_thread* my_thread, int jid)
+{
+    return FILC_SYSCALL(my_thread, jail_attach(jid));
+}
+
+int filc_native_zsys_jail_remove(filc_thread* my_thread, int jid)
+{
+    return FILC_SYSCALL(my_thread, jail_remove(jid));
+}
+
+static struct iovec* prepare_key_value_query_iovec(filc_thread* my_thread, filc_ptr iov_ptr,
+                                                   unsigned niov)
+{
+    struct iovec* iov;
+    size_t index;
+    FILC_CHECK(
+        !(niov % 2),
+        NULL,
+        "niov must be even (niov = %u).", niov);
+    iov = filc_bmalloc_allocate_tmp(my_thread, filc_mul_size(sizeof(struct iovec), niov));
+    for (index = 0; index < niov; index += 2) {
+        filc_prepare_iovec_entry(
+            my_thread, filc_ptr_with_offset(iov_ptr, filc_mul_size(sizeof(filc_user_iovec), index)),
+            iov + index, filc_read_access);
+        filc_prepare_iovec_entry(
+            my_thread,
+            filc_ptr_with_offset(iov_ptr, filc_mul_size(sizeof(filc_user_iovec), index + 1)),
+            iov + index + 1, filc_write_access);
+    }
+    return iov;
+}
+
+int filc_native_zsys_jail_get(filc_thread* my_thread, filc_ptr iov_ptr, unsigned niov, int flags)
+{
+    struct iovec* iov = prepare_key_value_query_iovec(my_thread, iov_ptr, niov);
+    return FILC_SYSCALL(my_thread, jail_get(iov, niov, flags));
+}
+
+int filc_native_zsys_jail_set(filc_thread* my_thread, filc_ptr iov_ptr, unsigned niov, int flags)
+{
+    struct iovec* iov = filc_prepare_iovec(my_thread, iov_ptr, (int)niov, filc_read_access);
+    return FILC_SYSCALL(my_thread, jail_set(iov, niov, flags));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

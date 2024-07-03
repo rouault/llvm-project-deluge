@@ -143,5 +143,6 @@ int zsys_mlock(const void* addr, __SIZE_TYPE__ len);
 int zsys_munlock(const void* addr, __SIZE_TYPE__ len);
 int zsys_mlockall(int flags);
 int zsys_munlockall(void);
+int zsys_sigpending(void* set);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

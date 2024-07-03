@@ -4375,7 +4375,6 @@ struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int 
                                  filc_access_kind access_kind)
 {
     struct iovec* iov;
-    size_t iov_size;
     size_t index;
     FILC_CHECK(
         iovcnt >= 0,
@@ -6258,6 +6257,16 @@ int filc_native_zsys_mlockall(filc_thread* my_thread, int user_flags)
 int filc_native_zsys_munlockall(filc_thread* my_thread)
 {
     return FILC_SYSCALL(my_thread, munlockall());
+}
+
+int filc_native_zsys_sigpending(filc_thread* my_thread, filc_ptr set_ptr)
+{
+    sigset_t set;
+    if (FILC_SYSCALL(my_thread, sigpending(&set)) < 0)
+        return -1;
+    filc_check_user_sigset(set_ptr, filc_write_access);
+    filc_to_user_sigset(&set, (filc_user_sigset*)filc_ptr_ptr(set_ptr));
+    return 0;
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
