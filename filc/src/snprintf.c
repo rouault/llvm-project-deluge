@@ -716,7 +716,7 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
                     if (max == -1)
                         max = zstrlen(text);
                     fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
-                    zfree(text);
+                    zgc_free(text);
                     break;
                 }
 
@@ -758,16 +758,16 @@ done:
 
 	while (chunks) {
 		cnk = chunks->next;
-		if (chunks->min_star) zfree(chunks->min_star);
-		if (chunks->max_star) zfree(chunks->max_star);
-		zfree(chunks);
+		if (chunks->min_star) zgc_free(chunks->min_star);
+		if (chunks->max_star) zgc_free(chunks->max_star);
+		zgc_free(chunks);
 		chunks = cnk;
 	}
 	if (clist) {
 		for (pnum = 0; pnum < max_pos; pnum++) {
-			if (clist[pnum].chunks) zfree(clist[pnum].chunks);
+			if (clist[pnum].chunks) zgc_free(clist[pnum].chunks);
 		}
-		zfree(clist);
+		zgc_free(clist);
 	}
 	return ret;
 }
@@ -1122,7 +1122,7 @@ static void dopr_outch(char *buffer, size_t *currlen, size_t maxlen, char c)
 }
 
 static struct pr_chunk *new_chunk(void) {
-    struct pr_chunk *new_c = zalloc(sizeof(struct pr_chunk));
+    struct pr_chunk *new_c = zgc_alloc(sizeof(struct pr_chunk));
 
 	if (!new_c)
 		return NULL;
@@ -1158,15 +1158,15 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 		max = chunk->num;
 
 		if (*list == NULL) {
-                    l = zalloc(sizeof(struct pr_chunk_x) * max);
+                    l = zgc_alloc(sizeof(struct pr_chunk_x) * max);
                     pos = 0;
 		} else {
-                    l = zrealloc(*list, sizeof(struct pr_chunk_x) * max);
+                    l = zgc_realloc(*list, sizeof(struct pr_chunk_x) * max);
                     pos = max_num;
 		}
 		if (l == NULL) {
 			for (i = 0; i < max; i++) {
-				if ((*list)[i].chunks) zfree((*list)[i].chunks);
+				if ((*list)[i].chunks) zgc_free((*list)[i].chunks);
 			}
 			return 0;
 		}
@@ -1182,13 +1182,13 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 	i = chunk->num - 1;
 	cnum = l[i].num + 1;
 	if (l[i].chunks == NULL) {
-            c = zalloc(sizeof(struct pr_chunk *) * cnum);
+            c = zgc_alloc(sizeof(struct pr_chunk *) * cnum);
 	} else {
-            c = zrealloc(l[i].chunks, sizeof(struct pr_chunk *) * cnum);
+            c = zgc_realloc(l[i].chunks, sizeof(struct pr_chunk *) * cnum);
 	}
 	if (c == NULL) {
 		for (i = 0; i < max; i++) {
-			if (l[i].chunks) zfree(l[i].chunks);
+			if (l[i].chunks) zgc_free(l[i].chunks);
 		}
 		return 0;
 	}
@@ -1245,7 +1245,7 @@ char* zvasprintf(const char* format, __builtin_va_list args)
     if (snprintf_result < 0)
         return NULL;
 
-    result = zalloc(snprintf_result + 1);
+    result = zgc_alloc(snprintf_result + 1);
     if (!result)
         NULL;
 

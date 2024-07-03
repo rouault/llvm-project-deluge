@@ -49,7 +49,7 @@ int main()
     pthread_mutex_init(&lock, &recursive_attr);
 
     for (i = NTHREADS; i--;) {
-        stuff* s = zalloc(sizeof(stuff));
+        stuff* s = zgc_alloc(sizeof(stuff));
         s->str = zasprintf("thread = %u", i);
         ZASSERT(!pthread_create(threads + i, NULL, thread_main, s));
     }

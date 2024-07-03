@@ -2,7 +2,7 @@
 
 int main(int argc, char** argv)
 {
-    zfree(zfree);
+    zgc_free(zgc_free);
     zprintf("Nie dobrze\n");
     return 0;
 }

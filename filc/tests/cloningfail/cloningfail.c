@@ -16,17 +16,17 @@ struct bar {
 
 int main(int argc, char** argv)
 {
-    struct foo* f = zalloc(sizeof(struct foo) * 42);
+    struct foo* f = zgc_alloc(sizeof(struct foo) * 42);
     unsigned index;
     for (index = 42; index--;) {
         f[index].z = 0;
         f[index].w = 0;
     }
     
-    struct bar* b = zalloc(__builtin_offsetof(struct bar, d) + 666 * sizeof(float));
-    unsigned* a = zalloc(sizeof(unsigned) * 100);
+    struct bar* b = zgc_alloc(__builtin_offsetof(struct bar, d) + 666 * sizeof(float));
+    unsigned* a = zgc_alloc(sizeof(unsigned) * 100);
 
-    struct foo* f2 = zalloc(zlength(f));
+    struct foo* f2 = zgc_alloc(zlength(f));
 
     zprintf("Spoko\n");
     

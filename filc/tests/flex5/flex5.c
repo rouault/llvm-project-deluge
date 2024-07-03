@@ -14,10 +14,10 @@ struct bar {
 
 int main(int argc, char** argv)
 {
-    struct bar* b = zalloc(sizeof(struct bar) + sizeof(unsigned short) * 3333);
+    struct bar* b = zgc_alloc(sizeof(struct bar) + sizeof(unsigned short) * 3333);
     b->x = 42;
-    b->y = zalloc(sizeof(struct foo));
-    b->y->x = zalloc(sizeof(struct bar));
+    b->y = zgc_alloc(sizeof(struct foo));
+    b->y->x = zgc_alloc(sizeof(struct bar));
     b->y->y = 1410;
     unsigned index;
     for (index = 3333; index--;)

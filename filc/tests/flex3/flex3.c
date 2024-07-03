@@ -13,10 +13,10 @@ struct bar {
 
 int main(int argc, char** argv)
 {
-    struct bar* b = zalloc(__builtin_offsetof(struct bar, z) + 3333 * sizeof(unsigned short));
+    struct bar* b = zgc_alloc(__builtin_offsetof(struct bar, z) + 3333 * sizeof(unsigned short));
     b->x = 42;
-    b->y = zalloc(sizeof(struct foo));
-    b->y->x = zalloc(__builtin_offsetof(struct bar, z));
+    b->y = zgc_alloc(sizeof(struct foo));
+    b->y->x = zgc_alloc(__builtin_offsetof(struct bar, z));
     b->y->y = 1410;
     unsigned index;
     for (index = 3333; index--;)

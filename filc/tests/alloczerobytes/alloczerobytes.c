@@ -11,7 +11,7 @@ static void check(char* p)
 
 int main()
 {
-    char* p = zalloc(0);
+    char* p = zgc_alloc(0);
     check(p);
 
     return 0;

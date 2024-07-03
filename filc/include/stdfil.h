@@ -54,13 +54,14 @@ typedef _Bool filc_bool;
    transitions. For example, if you access some word in this object using int, then the type of that
    word becomes int and stays that until the memory is freed.
 
-   libc's malloc just forwards to this. There is no difference between calling `malloc` and `zalloc`. */
-void* zalloc(__SIZE_TYPE__ count);
+   libc's malloc just forwards to this. There is no difference between calling `malloc` and
+   `zgc_alloc`. */
+void* zgc_alloc(__SIZE_TYPE__ count);
 
 /* Allocate `count` bytes of memory with the GC, aligned to `alignment`. Supports very large alignments,
-   up to at least 128k (may support even larger ones in the future). Like with `zalloc`, the memory
+   up to at least 128k (may support even larger ones in the future). Like with `zgc_alloc`, the memory
    starts out with unset type. */
-void* zaligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+void* zgc_aligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 
 /* Reallocates the object pointed at by `old_ptr` to now have `count` bytes, and returns the new
    pointer. `old_ptr` must satisfy `old_ptr == zgetlower(old_ptr)`, otherwise the runtime panics your
@@ -68,15 +69,17 @@ void* zaligned_alloc(__SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
    initialized to unset type. For the memory that is copied, the type is preserved.
 
    libc's realloc just forwards to this. There is no difference between calling `realloc` and
-   `zrealloc`. */
-void* zrealloc(void* old_ptr, __SIZE_TYPE__ count);
+   `zgc_realloc`. */
+void* zgc_realloc(void* old_ptr, __SIZE_TYPE__ count);
 
-/* Just like `zrealloc`, but allows you to specify arbitrary alignment on the newly allocated memory. */
-void* zaligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
+/* Just like `zgc_realloc`, but allows you to specify arbitrary alignment on the newly allocated
+   memory. */
+void* zgc_aligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 
 /* Frees the object pointed to by `ptr`. `ptr` must satisfy `ptr == zgetlower(ptr)`, otherwise the
-   runtime panics your process. `ptr` must point to memory allocated by `zalloc`, `zaligned_alloc`,
-   `zrealloc`, or `zaligned_realloc`, and that memory must not have been freed yet.
+   runtime panics your process. `ptr` must point to memory allocated by `zgc_alloc`,
+   `zgc_aligned_alloc`, `zgc_realloc`, or `zgc_aligned_realloc`, and that memory must not have been
+   freed yet.
    
    Freeing objects is optional in Fil-C, since Fil-C is garbage collected.
    
@@ -97,8 +100,8 @@ void* zaligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ cou
      Switching to the free singleton is not user-visible, except via ptr introspection like `%P` or
      `zptr_to_new_string`.
    
-   libc's free just forwards to this. There is no difference between calling `free` and `zfree`. */
-void zfree(void* ptr);
+   libc's free just forwards to this. There is no difference between calling `free` and `zgc_free`. */
+void zgc_free(void* ptr);
 
 /* Accessors for the bounds.
  
@@ -202,8 +205,8 @@ void* zretagptr(void* newptr, void* oldptr, unsigned long mask);
    But if you copy ints to ints, then the actual bytes are copied. */
 void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
 
-/* Allocates a new string (with zalloc(char, strlen+1)) and prints a dump of the ptr to that string.
-   Returns that string. You have to zfree the string when you're done with it.
+/* Allocates a new string (with zgc_alloc(char, strlen+1)) and prints a dump of the ptr to that string.
+   Returns that string. You have to zgc_free the string when you're done with it.
 
    This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);

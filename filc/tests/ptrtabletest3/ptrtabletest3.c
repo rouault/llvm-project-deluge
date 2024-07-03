@@ -10,12 +10,12 @@ __attribute__((__noinline__)) static void doit(void)
     zptrtable* table = zptrtable_new();
     if (zis_runtime_testing_enabled())
         ZASSERT(ztesting_get_num_ptrtables() == 1);
-    int** objects = zalloc(sizeof(int*) * num_objects);
-    unsigned long* indices = zalloc(sizeof(unsigned long) * num_objects);
+    int** objects = zgc_alloc(sizeof(int*) * num_objects);
+    unsigned long* indices = zgc_alloc(sizeof(unsigned long) * num_objects);
     unsigned index;
     for (index = num_objects; index--;) {
         zprintf("First run, index = %u\n", index);
-        objects[index] = zalloc(sizeof(int));
+        objects[index] = zgc_alloc(sizeof(int));
         indices[index] = zptrtable_encode(table, objects[index]);
         ZASSERT(indices[index]);
         unsigned index2;
@@ -32,11 +32,11 @@ __attribute__((__noinline__)) static void doit(void)
         ZASSERT(zptrtable_decode(table, indices[index]) == objects[index]);
     }
     for (index = 0; index < num_objects; index += 2)
-        zfree(objects[index]);
+        zgc_free(objects[index]);
     zgc_request_and_wait();
     for (index = 0; index < num_objects; index += 2) {
         zprintf("Second run, index = %u\n", index);
-        int* object = zalloc(sizeof(int));
+        int* object = zgc_alloc(sizeof(int));
         unsigned long object_index = zptrtable_encode(table, object);
         ZASSERT(object_index);
         ZASSERT(zptrtable_decode(table, object_index) == object);
@@ -57,7 +57,7 @@ __attribute__((__noinline__)) static void doit(void)
     }
     for (index = 0; index < num_objects; index += 2) {
         zprintf("Second run, index = %u\n", index);
-        int* object = zalloc(sizeof(int));
+        int* object = zgc_alloc(sizeof(int));
         unsigned long object_index = zptrtable_encode(table, object);
         ZASSERT(object_index);
         ZASSERT(zptrtable_decode(table, object_index) == object);

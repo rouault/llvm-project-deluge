@@ -2,7 +2,7 @@
 
 int main()
 {
-    zfree(zalloc(200000) + 1);
+    zgc_free(zgc_alloc(200000) + 1);
     return 0;
 }
 

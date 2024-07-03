@@ -10,7 +10,7 @@ struct foo {
 
 int main()
 {
-    char* p = (char*)zalloc(sizeof(struct foo) * 5);
+    char* p = (char*)zgc_alloc(sizeof(struct foo) * 5);
 
     ZASSERT(zptrphase(p) == -1);
     ZASSERT(!zisint(p));

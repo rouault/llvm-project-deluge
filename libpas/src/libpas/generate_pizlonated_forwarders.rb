@@ -103,11 +103,11 @@ def forFilBSD
     $defines.pop
 end
 
-addSig "filc_ptr", "zalloc", "size_t"
-addSig "filc_ptr", "zaligned_alloc", "size_t", "size_t"
-addSig "filc_ptr", "zrealloc", "filc_ptr", "size_t"
-addSig "filc_ptr", "zaligned_realloc", "filc_ptr", "size_t", "size_t"
-addSig "void", "zfree", "filc_ptr"
+addSig "filc_ptr", "zgc_alloc", "size_t"
+addSig "filc_ptr", "zgc_aligned_alloc", "size_t", "size_t"
+addSig "filc_ptr", "zgc_realloc", "filc_ptr", "size_t"
+addSig "filc_ptr", "zgc_aligned_realloc", "filc_ptr", "size_t", "size_t"
+addSig "void", "zgc_free", "filc_ptr"
 addSig "filc_ptr", "zgetlower", "filc_ptr"
 addSig "filc_ptr", "zgetupper", "filc_ptr"
 addSig "bool", "zisunset", "filc_ptr"

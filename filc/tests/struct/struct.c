@@ -6,7 +6,7 @@ struct foo {
 };
 
 int main(void) {
-    struct foo* ptr = zalloc(sizeof(struct foo));
+    struct foo* ptr = zgc_alloc(sizeof(struct foo));
     ptr->x = 42;
     ptr->string = "hello";
     if (ptr->x == 42)

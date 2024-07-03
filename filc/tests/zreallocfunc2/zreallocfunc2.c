@@ -2,7 +2,7 @@
 
 int main(int argc, char** argv)
 {
-    zrealloc(main, 0);
+    zgc_realloc(main, 0);
     zprintf("Nie dobrze\n");
     return 0;
 }

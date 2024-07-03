@@ -107,7 +107,7 @@ void createtask(int id,
                 void* v1,
                 void* v2)
 {
-    struct task *t = zalloc(sizeof(struct task));
+    struct task *t = zgc_alloc(sizeof(struct task));
 
     tasktab[id] = t;
     t->t_link   = tasklist;
@@ -124,7 +124,7 @@ void createtask(int id,
 struct packet *pkt(struct packet *link, int id, int kind)
 {
     int i;
-    struct packet *p = zalloc(sizeof(struct packet));
+    struct packet *p = zgc_alloc(sizeof(struct packet));
 
     for (i=0; i<=BUFSIZE; i++)
         p->p_a2[i] = 0;

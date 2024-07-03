@@ -4,15 +4,15 @@
         for (unsigned i = iterations; i--;) { \
             int **ptrs[elements]; \
             for (unsigned j = elements; j--;) { \
-                ptrs[j] = zalloc(sizeof(int*)); \
-                *ptrs[j] = zalloc(sizeof(int)); \
+                ptrs[j] = zgc_alloc(sizeof(int*)); \
+                *ptrs[j] = zgc_alloc(sizeof(int)); \
                 **ptrs[j] = j; \
             } \
             for (unsigned j = elements; j--;) { \
                 if (**ptrs[j] != j) \
                     zprint("ERROR\n"); \
-                zfree(*ptrs[j]); \
-                zfree(ptrs[j]); \
+                zgc_free(*ptrs[j]); \
+                zgc_free(ptrs[j]); \
             } \
         } \
     } while (0)

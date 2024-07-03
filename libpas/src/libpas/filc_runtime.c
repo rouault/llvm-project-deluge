@@ -2294,12 +2294,12 @@ void filc_pin_tracked(filc_thread* my_thread, filc_object* object)
     filc_native_frame_pin(my_thread->top_native_frame, object);
 }
 
-filc_ptr filc_native_zalloc(filc_thread* my_thread, size_t size)
+filc_ptr filc_native_zgc_alloc(filc_thread* my_thread, size_t size)
 {
     return filc_ptr_create_with_manual_tracking(filc_allocate(my_thread, size));
 }
 
-filc_ptr filc_native_zaligned_alloc(filc_thread* my_thread, size_t alignment, size_t size)
+filc_ptr filc_native_zgc_aligned_alloc(filc_thread* my_thread, size_t alignment, size_t size)
 {
     return filc_ptr_create_with_manual_tracking(filc_allocate_with_alignment(my_thread, size, alignment));
 }
@@ -2319,28 +2319,28 @@ static filc_object* object_for_deallocate(filc_ptr ptr)
     return filc_ptr_object(ptr);
 }
 
-filc_ptr filc_native_zrealloc(filc_thread* my_thread, filc_ptr old_ptr, size_t size)
+filc_ptr filc_native_zgc_realloc(filc_thread* my_thread, filc_ptr old_ptr, size_t size)
 {
     static const bool verbose = false;
     
     if (!filc_ptr_ptr(old_ptr))
-        return filc_native_zalloc(my_thread, size);
+        return filc_native_zgc_alloc(my_thread, size);
     if (verbose)
         pas_log("zrealloc to size = %zu\n", size);
     return filc_ptr_create_with_manual_tracking(
         filc_reallocate(my_thread, object_for_deallocate(old_ptr), size));
 }
 
-filc_ptr filc_native_zaligned_realloc(filc_thread* my_thread,
-                                      filc_ptr old_ptr, size_t alignment, size_t size)
+filc_ptr filc_native_zgc_aligned_realloc(filc_thread* my_thread,
+                                         filc_ptr old_ptr, size_t alignment, size_t size)
 {
     if (!filc_ptr_ptr(old_ptr))
-        return filc_native_zaligned_alloc(my_thread, alignment, size);
+        return filc_native_zgc_aligned_alloc(my_thread, alignment, size);
     return filc_ptr_create_with_manual_tracking(
         filc_reallocate_with_alignment(my_thread, object_for_deallocate(old_ptr), alignment, size));
 }
 
-void filc_native_zfree(filc_thread* my_thread, filc_ptr ptr)
+void filc_native_zgc_free(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
     if (!filc_ptr_ptr(ptr))

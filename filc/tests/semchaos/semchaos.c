@@ -41,7 +41,7 @@ int main()
     sem_init(&lock, 0, 1);
 
     for (i = NTHREADS; i--;) {
-        stuff* s = zalloc(sizeof(stuff));
+        stuff* s = zgc_alloc(sizeof(stuff));
         s->str = zasprintf("thread = %u", i);
         ZASSERT(!pthread_create(threads + i, NULL, thread_main, s));
     }

@@ -20,7 +20,7 @@ static void* thread_main(void* arg)
 {
     unsigned i;
     for (i = REPEAT; i--;) {
-        foo* f = zalloc(sizeof(foo));
+        foo* f = zgc_alloc(sizeof(foo));
         f->value = i;
         foo* h = head;
         f->next = h;

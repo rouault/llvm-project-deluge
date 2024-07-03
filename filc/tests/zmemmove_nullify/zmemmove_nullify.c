@@ -67,10 +67,10 @@ static void foo_bar(struct foo* f, struct bar* b,
 
 int main()
 {
-    struct foo* f = zalloc(sizeof(struct foo) * 10);
-    struct bar* b = zalloc(sizeof(struct bar) * 15);
-    struct foo* f2 = zalloc(sizeof(struct foo) * 10);
-    struct bar* b2 = zalloc(sizeof(struct bar) * 15);
+    struct foo* f = zgc_alloc(sizeof(struct foo) * 10);
+    struct bar* b = zgc_alloc(sizeof(struct bar) * 15);
+    struct foo* f2 = zgc_alloc(sizeof(struct foo) * 10);
+    struct bar* b2 = zgc_alloc(sizeof(struct bar) * 15);
 
     foo_bar(f, b, f2, b2);
 
@@ -82,7 +82,7 @@ int main()
     
     foo_bar(f2, b2, f, b);
 
-    char* buf = zalloc(100);
+    char* buf = zgc_alloc(100);
     const char* str = "tam to tak tego tam";
     zmemmove_nullify(buf, str, strlen(str) + 1);
     ZASSERT(!strcmp(buf, str));
