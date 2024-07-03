@@ -409,6 +409,11 @@ forFilBSD {
     addSig "int", "zsys_setresuid", "unsigned", "unsigned", "unsigned"
     addSig "int", "zsys_kldfirstmod", "int"
     addSig "int", "zsys_kldstat", "int", "filc_ptr"
+    addSig "int", "zsys___getcwd", "filc_ptr", "size_t"
+    addSig "int", "zsys_sched_setparam", "int", "filc_ptr"
+    addSig "int", "zsys_sched_getparam", "int", "filc_ptr"
+    addSig "int", "zsys_sched_setscheduler", "int", "int", "filc_ptr"
+    addSig "int", "zsys_sched_getscheduler", "int"
 }
 
 case ARGV[0]

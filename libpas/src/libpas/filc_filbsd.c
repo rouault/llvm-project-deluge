@@ -2514,6 +2514,41 @@ int filc_native_zsys_kldstat(filc_thread* my_thread, int fileid, filc_ptr stat_p
     return FILC_SYSCALL(my_thread, kldstat(fileid, (struct kld_file_stat*)filc_ptr_ptr(stat_ptr)));
 }
 
+int __getcwd(char* buf, size_t size);
+
+int filc_native_zsys___getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_t size)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, size);
+    return FILC_SYSCALL(my_thread, __getcwd((char*)filc_ptr_ptr(buf_ptr), size));
+}
+
+int filc_native_zsys_sched_setparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
+{
+    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(
+        my_thread, sched_setparam(pid, (const struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_getparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
+{
+    filc_cpt_write_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(my_thread, sched_getparam(pid, (struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int policy,
+                                        filc_ptr param_buf)
+{
+    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(
+        my_thread, sched_setscheduler(pid, policy,
+                                      (const struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_getscheduler(filc_thread* my_thread, int pid)
+{
+    return FILC_SYSCALL(my_thread, sched_getscheduler(pid));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

@@ -132,6 +132,11 @@ int zsys_setresgid(unsigned rgid, unsigned egid, unsigned sgid);
 int zsys_setresuid(unsigned ruid, unsigned euid, unsigned suid);
 int zsys_kldfirstmod(int fileid);
 int zsys_kldstat(int fileid, void* stat);
+int zsys___getcwd(char* buf, __SIZE_TYPE__ size);
+int zsys_sched_setparam(int pid, const void* param);
+int zsys_sched_getparam(int pid, void* param);
+int zsys_sched_setscheduler(int pid, int policy, const void* param);
+int zsys_sched_getscheduler(int pid);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
