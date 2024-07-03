@@ -2422,6 +2422,28 @@ int filc_native_zsys_aio_mlock(filc_thread* my_thread, filc_ptr iocb_ptr)
     return -1;
 }
 
+int filc_native_zsys_fhopen(filc_thread* my_thread, filc_ptr fhp_ptr, int flags)
+{
+    filc_cpt_read_int(my_thread, fhp_ptr, sizeof(fhandle_t));
+    return FILC_SYSCALL(my_thread, fhopen((const fhandle_t*)filc_ptr_ptr(fhp_ptr), flags));
+}
+
+int filc_native_zsys_fhstat(filc_thread* my_thread, filc_ptr fhp_ptr, filc_ptr sb_ptr)
+{
+    filc_cpt_read_int(my_thread, fhp_ptr, sizeof(fhandle_t));
+    filc_cpt_write_int(my_thread, sb_ptr, sizeof(struct stat));
+    return FILC_SYSCALL(my_thread, fhstat((const fhandle_t*)filc_ptr_ptr(fhp_ptr),
+                                          (struct stat*)filc_ptr_ptr(sb_ptr)));
+}
+
+int filc_native_zsys_fhstatfs(filc_thread* my_thread, filc_ptr fhp_ptr, filc_ptr buf_ptr)
+{
+    filc_cpt_read_int(my_thread, fhp_ptr, sizeof(fhandle_t));
+    filc_cpt_write_int(my_thread, buf_ptr, sizeof(struct statfs));
+    return FILC_SYSCALL(my_thread, fhstatfs((const fhandle_t*)filc_ptr_ptr(fhp_ptr),
+                                            (struct statfs*)filc_ptr_ptr(buf_ptr)));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

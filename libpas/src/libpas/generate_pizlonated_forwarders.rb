@@ -388,6 +388,9 @@ forFilBSD {
     addSig "long", "zsys_aio_waitcomplete", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_aio_fsync", "int", "filc_ptr"
     addSig "int", "zsys_aio_mlock", "filc_ptr"
+    addSig "int", "zsys_fhopen", "filc_ptr", "int"
+    addSig "int", "zsys_fhstat", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_fhstatfs", "filc_ptr", "filc_ptr"
 }
 
 case ARGV[0]

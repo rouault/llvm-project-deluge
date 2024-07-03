@@ -116,6 +116,9 @@ int zsys_aio_cancel(int fildes, void* iocb);
 long zsys_aio_waitcomplete(void** iocbp, void* timeout);
 int zsys_aio_fsync(int op, void* iocb);
 int zsys_aio_mlock(void* iocb);
+int zsys_fhopen(const void* fhp, int flags);
+int zsys_fhstat(const void* fhp, void* sb);
+int zsys_fhstatfs(const void* fhp, void* buf);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
