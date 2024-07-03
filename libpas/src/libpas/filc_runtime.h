@@ -1514,7 +1514,7 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origi
 
 /* CPT stands for Check Pin Tracked.
 
-   This is check_access_int followed by filc_pin_tracked.
+   This is filc_check_access_int followed by filc_pin_tracked.
 
    This does all of the things that make it safe to pass a pointer to Fil-C memory to the kernel,
    assuming that the kernel call is taking a primitive buffer. But even if you get it wrong and the
@@ -1527,6 +1527,11 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origi
 
    Pin: pins the memory so that any attempt to free or munmap it will fail. This also asserts that
    the memory is not free, but that's redundant (if it had been free, the check would have failed).
+   Note that pinning is only essential for mmaps, not for normal allocations, since the fact that
+   the memory is known to GC as a root means even freeing it won't actually cause it to get reused
+   until the root goes away. But for mmaps, pinning is essential because munmap really does free the
+   memory immediately and the GC root is just the capability. Munmap will fail with a safety panic if
+   the pointed-at memory is pinned, so pinning prevents that race.
 
    Track: registers the memory with the top filc_native_frame, so that it's unpinned automatically
    when the native frame pops. This means that you don't have to unpin the memory yourself. Tracking
@@ -1548,7 +1553,17 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origi
    Since the read() syscall writes to the buffer, we filc_cpt_write_int. Once we have done this, it's
    safe to do a FILC_SYSCALL and pass the filc_ptr_ptr(buf) to it, since the memory is now definitely
    writable and its state cannot change due to the pin. When the function returns, the native thunk
-   wrapper will pop the native frame, which will unpin the buffer automatically. */
+   wrapper will pop the native frame, which will unpin the buffer automatically.
+
+   Note that a lot of code uses filc_check_access_int and then either filc_pin_tracked or just
+   filc_pin, but that's only because that code was written because I had the insight to combine them
+   into just this one call. That code might get left alone under the "if it ain't broke don't fix it"
+   doctrine.
+
+   Also note that for some things, this call is totally wrong. Consider aio, which results in the
+   kernel holding onto the buffer past the return of the syscall. In that case, you'll want to use
+   filc_pin directly. There are likely to be other cases where you have to use the other APIs for some
+   subtle reasons. */
 void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, uintptr_t bytes,
                          filc_access_kind kind);
 
