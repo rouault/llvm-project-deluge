@@ -2324,6 +2324,104 @@ int filc_native_zsys_issetugid(filc_thread* my_thread)
     return result;
 }
 
+int filc_native_zsys_aio_read(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_read not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_readv(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_readv not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_write(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_write not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_writev(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_writev not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_lio_listio(filc_thread* my_thread, int mode, filc_ptr list_ptr, int niocb,
+                                filc_ptr timeout_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(mode);
+    PAS_UNUSED_PARAM(list_ptr);
+    PAS_UNUSED_PARAM(niocb);
+    PAS_UNUSED_PARAM(timeout_ptr);
+    filc_internal_panic(NULL, "zsys_lio_listio not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_return(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_return not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_suspend(filc_thread* my_thread, filc_ptr iocbs_ptr, int niocb,
+                                 filc_ptr timeout_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocbs_ptr);
+    PAS_UNUSED_PARAM(niocb);
+    PAS_UNUSED_PARAM(timeout_ptr);
+    filc_internal_panic(NULL, "zsys_aio_suspend not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_error(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_error not implemented.");
+    return -1;
+}
+
+long filc_native_zsys_aio_waitcomplete(filc_thread* my_thread, filc_ptr iocbp_ptr,
+                                       filc_ptr timeout_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocbp_ptr);
+    PAS_UNUSED_PARAM(timeout_ptr);
+    filc_internal_panic(NULL, "zsys_aio_waitcomplete not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_fsync(filc_thread* my_thread, int op, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(op);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_fsync not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_aio_mlock(filc_thread* my_thread, filc_ptr iocb_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(iocb_ptr);
+    filc_internal_panic(NULL, "zsys_aio_mlock not implemented.");
+    return -1;
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

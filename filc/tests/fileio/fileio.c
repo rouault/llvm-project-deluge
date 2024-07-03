@@ -39,6 +39,7 @@ int main(int argc, char** argv)
     fclose(fin);
 
     fd = open("filc/tests/fileio/test.txt", O_RDONLY);
+    ZASSERT(fd > 2);
     int fd2 = fcntl(fd, F_DUPFD, 100);
     ZASSERT(fd2 >= 100);
     __builtin_memset(buf, 0, sizeof(buf));
@@ -63,6 +64,7 @@ int main(int argc, char** argv)
     ZASSERT(!close(fd2));
     
     fd = open("filc/tests/fileio/test.txt", O_RDONLY);
+    ZASSERT(fd > 2);
     flock.l_type = F_WRLCK;
     res = fcntl(fd, F_GETLK, &flock);
     ZASSERT(!res);
@@ -153,6 +155,21 @@ int main(int argc, char** argv)
 
     ZASSERT(read(666, buf, 100) == -1);
     ZASSERT(errno == EBADF);
+
+    fd = open("filc/test-output/fileio/piotest.txt", O_CREAT | O_RDWR, 0644);
+    ZASSERT(fd > 2);
+    const char* str = "This is a test. I repeat, this is a test.";
+    ZASSERT(pwrite(fd, str, strlen(str), 0) == strlen(str));
+    memset(buf, 0, sizeof(buf));
+    ZASSERT(pread(fd, buf, 14, 10) == 14);
+    ZASSERT(!strcmp(buf, "test. I repeat"));
+    str = "A co to to";
+    ZASSERT(pwrite(fd, str, strlen(str), 13) == strlen(str));
+    memset(buf, 0, sizeof(buf));
+    ZASSERT(pread(fd, buf, 100, 1) == 40);
+    str = "his is a tesA co to tot, this is a test.";
+    ZASSERT(!strcmp(buf, str));
+    close(fd);
 
     return 0;
 }

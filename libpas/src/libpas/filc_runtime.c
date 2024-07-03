@@ -6179,6 +6179,34 @@ int filc_native_zsys_setpgid(filc_thread* my_thread, int pid, int pgrp)
     return result;
 }
 
+long filc_native_zsys_pread(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t nbytes,
+                            long offset)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, pread(fd, filc_ptr_ptr(buf_ptr), nbytes, offset));
+}
+
+long filc_native_zsys_preadv(filc_thread* my_thread, int fd, filc_ptr user_iov_ptr, int iovcnt,
+                             long offset)
+{
+    struct iovec* iov = filc_prepare_iovec(my_thread, user_iov_ptr, iovcnt, filc_write_access);
+    return FILC_SYSCALL(my_thread, preadv(fd, iov, iovcnt, offset));
+}
+
+long filc_native_zsys_pwrite(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t nbytes,
+                             long offset)
+{
+    filc_cpt_read_int(my_thread, buf_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, pwrite(fd, filc_ptr_ptr(buf_ptr), nbytes, offset));
+}
+
+long filc_native_zsys_pwritev(filc_thread* my_thread, int fd, filc_ptr user_iov_ptr, int iovcnt,
+                              long offset)
+{
+    struct iovec* iov = filc_prepare_iovec(my_thread, user_iov_ptr, iovcnt, filc_read_access);
+    return FILC_SYSCALL(my_thread, pwritev(fd, iov, iovcnt, offset));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

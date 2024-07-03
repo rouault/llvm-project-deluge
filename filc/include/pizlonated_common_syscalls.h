@@ -134,5 +134,9 @@ int zsys_getgroups(int size, unsigned* list);
 int zsys_getpgrp(void);
 int zsys_getpgid(int pid);
 int zsys_setpgid(int pid, int pgrp);
+long zsys_pread(int fd, void* buf, __SIZE_TYPE__ nbytes, long offset);
+long zsys_preadv(int fd, const void* iov, int iovcnt, long offset);
+long zsys_pwrite(int fd, const void* buf, __SIZE_TYPE__ nbytes, long offset);
+long zsys_pwritev(int fd, const void* iov, int iovcnt, long offset);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

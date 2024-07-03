@@ -104,6 +104,18 @@ int zsys_ffclock_setestimate(void* cest);
 int zsys_clock_getcpuclockid2(long long id, int which, void* clock_id);
 int zsys_minherit(void* addr, __SIZE_TYPE__ len, int inherit);
 int zsys_issetugid(void);
+int zsys_aio_read(void* iocb);
+int zsys_aio_readv(void* iocb);
+int zsys_aio_write(void* iocb);
+int zsys_aio_writev(void* iocb);
+int zsys_lio_listio(int mode, void** list, int nent, void* sig);
+int zsys_aio_return(void* iocb);
+int zsys_aio_suspend(const void* const* iocbs, int niocb, const void* timeout);
+int zsys_aio_error(const void* iocb);
+int zsys_aio_cancel(int fildes, void* iocb);
+long zsys_aio_waitcomplete(void** iocbp, void* timeout);
+int zsys_aio_fsync(int op, void* iocb);
+int zsys_aio_mlock(void* iocb);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
