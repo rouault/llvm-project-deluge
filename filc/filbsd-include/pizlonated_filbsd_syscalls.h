@@ -52,6 +52,7 @@ int zsys_getrusage(int who, void* rusage);
 int zsys_flock(int fd, int operation);
 int zsys_mkfifo(const char* path, unsigned short mode);
 int zsys_chmod(const char* pathname, unsigned short mode);
+int zsys_lchmod(const char* pathname, unsigned short mode);
 int zsys_fchmod(int fd, unsigned short mode);
 int zsys_mkdirat(int dirfd, const char* pathname, unsigned short mode);
 int zsys_mkdir(const char* path, unsigned short mode);

@@ -1185,13 +1185,13 @@ int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned 
 int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    filc_exit(my_thread);
-    int result = chmod(pathname, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, chmod(pathname, mode));
+}
+
+int filc_native_zsys_lchmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, lchmod(pathname, mode));
 }
 
 int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned short mode)

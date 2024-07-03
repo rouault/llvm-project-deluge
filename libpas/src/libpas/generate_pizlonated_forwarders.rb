@@ -321,6 +321,7 @@ forFilBSD {
     addSig "int", "zsys_flock", "int", "int"
     addSig "int", "zsys_mkfifo", "filc_ptr", "unsigned short"
     addSig "int", "zsys_chmod", "filc_ptr", "unsigned short"
+    addSig "int", "zsys_lchmod", "filc_ptr", "unsigned short"
     addSig "int", "zsys_fchmod", "int", "unsigned short"
     addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned short"
     addSig "int", "zsys_mkdir", "filc_ptr", "unsigned short"
