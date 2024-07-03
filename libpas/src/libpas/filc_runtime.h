@@ -1514,7 +1514,41 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origi
 
 /* CPT stands for Check Pin Tracked.
 
-   This is check_access_int followed by filc_pin_tracked. */
+   This is check_access_int followed by filc_pin_tracked.
+
+   This does all of the things that make it safe to pass a pointer to Fil-C memory to the kernel,
+   assuming that the kernel call is taking a primitive buffer. But even if you get it wrong and the
+   kernel expected a buffer with pointers, then the worst that can happen is a filc_safety_panic.
+
+   What this does in detail:
+
+   Check: it checks that the pointer points to integer memory of the given size, and that it can be
+   accessed for read or write (depending on filc_access_kind).
+
+   Pin: pins the memory so that any attempt to free or munmap it will fail. This also asserts that
+   the memory is not free, but that's redundant (if it had been free, the check would have failed).
+
+   Track: registers the memory with the top filc_native_frame, so that it's unpinned automatically
+   when the native frame pops. This means that you don't have to unpin the memory yourself. Tracking
+   also means that the GC will see the memory as a root, though that's redundant in almost all cases
+   (you're likely dealing with a pointer that came from an argument, which is already tracked, or a
+   pointer you got from filc_ptr_load, which is also already tracked).
+
+   Normally you use this by calling filc_cpt_read_int/filc_cpt_write_int, which are shorthands that
+   pass filc_read_access/filc_write_access as the `kind`, respectively.
+
+   A great example of how to use this is zsys_read, so I'll describe that here:
+
+       ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
+       {
+           filc_cpt_write_int(my_thread, buf, size);
+           return FILC_SYSCALL(my_thread, read(fd, filc_ptr_ptr(buf), size));
+       }
+
+   Since the read() syscall writes to the buffer, we filc_cpt_write_int. Once we have done this, it's
+   safe to do a FILC_SYSCALL and pass the filc_ptr_ptr(buf) to it, since the memory is now definitely
+   writable and its state cannot change due to the pin. When the function returns, the native thunk
+   wrapper will pop the native frame, which will unpin the buffer automatically. */
 void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, uintptr_t bytes,
                          filc_access_kind kind);
 
@@ -1523,7 +1557,10 @@ void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
 void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin);
 
+/* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_read_access). */
 void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
+
+/* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access). */
 void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
 
 #define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
