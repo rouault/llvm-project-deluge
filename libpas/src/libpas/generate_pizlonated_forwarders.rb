@@ -246,7 +246,6 @@ addSig "int", "zsys_fchownat", "int", "filc_ptr", "unsigned", "unsigned", "int"
 addSig "int", "zsys_fchdir", "int"
 addSig "void", "zsys_sync"
 addSig "int", "zsys_access", "filc_ptr", "int"
-addSig "int", "zsys_eaccess", "filc_ptr", "int"
 addSig "int", "zsys_symlink", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_mprotect", "filc_ptr", "size_t", "int"
 addSig "int", "zsys_getgroups", "int", "filc_ptr"
@@ -471,6 +470,7 @@ forFilBSD {
     addSig "int", "zsys___mac_set_link", "filc_ptr", "filc_ptr"
     addSig "int", "zsys___mac_set_proc", "filc_ptr"
     addSig "int", "zsys___mac_execve", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_eaccess", "filc_ptr", "int"
 }
 
 case ARGV[0]

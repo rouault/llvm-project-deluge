@@ -6211,12 +6211,6 @@ int filc_native_zsys_access(filc_thread* my_thread, filc_ptr path_ptr, int mode)
     return FILC_SYSCALL(my_thread, access(path, mode));
 }
 
-int filc_native_zsys_eaccess(filc_thread* my_thread, filc_ptr path_ptr, int mode)
-{
-    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    return FILC_SYSCALL(my_thread, eaccess(path, mode));
-}
-
 int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)
 {
     char* oldname = filc_check_and_get_tmp_str(my_thread, oldname_ptr);

@@ -3109,6 +3109,12 @@ int filc_native_zsys___mac_execve(filc_thread* my_thread, filc_ptr fname_ptr, fi
     return FILC_SYSCALL(my_thread, mac_execve(fname, argv, env, mac));
 }
 
+int filc_native_zsys_eaccess(filc_thread* my_thread, filc_ptr path_ptr, int mode)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, eaccess(path, mode));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */

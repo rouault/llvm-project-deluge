@@ -128,7 +128,6 @@ int zsys_fchownat(int fd, const char* path, unsigned uid, unsigned gid, int flag
 int zsys_fchdir(int fd);
 void zsys_sync(void);
 int zsys_access(const char* path, int mode);
-int zsys_eaccess(const char* path, int mode);
 int zsys_symlink(const char* oldname, const char* newname);
 int zsys_mprotect(void* addr, __SIZE_TYPE__ len, int prot);
 int zsys_getgroups(int size, unsigned* list);
