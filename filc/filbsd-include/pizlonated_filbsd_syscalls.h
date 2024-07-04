@@ -159,6 +159,24 @@ int zsys___acl_get_link(const char* path, int type, void* aclp);
 int zsys___acl_set_fd(int fd, int type, void* aclp);
 int zsys___acl_set_file(const char* path, int type, void* aclp);
 int zsys___acl_set_link(const char* path, int type, void* aclp);
+int zsys_extattr_delete_fd(int fd, int attrnamespace, const char* attrname);
+int zsys_extattr_delete_file(const char* path, int attrnamespace, const char* attrname);
+int zsys_extattr_delete_link(const char* path, int attrnamespace, const char* attrname);
+long zsys_extattr_get_fd(int fd, int attrnamespace, const char* attrname, void* data,
+                         __SIZE_TYPE__ nbytes);
+long zsys_extattr_get_file(const char* path, int attrnamespace, const char* attrname, void* data,
+                           __SIZE_TYPE__ nbytes);
+long zsys_extattr_get_link(const char* path, int attrnamespace, const char* attrname, void* data,
+                           __SIZE_TYPE__ nbytes);
+long zsys_extattr_list_fd(int fd, int attrnamespace, void* data, __SIZE_TYPE__ nbytes);
+long zsys_extattr_list_file(const char* path, int attrnamespace, void* data, __SIZE_TYPE__ nbytes);
+long zsys_extattr_list_link(const char* path, int attrnamespace, void* data, __SIZE_TYPE__ nbytes);
+long zsys_extattr_set_fd(int fd, int attrnamespace, const char* attrname, const void* data,
+                         __SIZE_TYPE__ nbytes);
+long zsys_extattr_set_file(const char* path, int attrnamespace, const char* attrname,
+                           const void* data, __SIZE_TYPE__ nbytes);
+long zsys_extattr_set_link(const char* path, int attrnamespace, const char* attrname,
+                           const void* data, __SIZE_TYPE__ nbytes);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

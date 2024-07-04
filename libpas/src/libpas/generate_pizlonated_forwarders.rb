@@ -300,8 +300,10 @@ forMusl {
     addSig "long", "zsys_sysconf_override", "int"
     addSig "int", "zsys_numcores"
     addSig "int", "zsys_getentropy", "filc_ptr", "size_t"
-    addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
-    addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_posix_spawn", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr",
+           "filc_ptr"
+    addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr",
+           "filc_ptr"
     addSig "int", "zsys_chmod", "filc_ptr", "unsigned"
     addSig "int", "zsys_fchmod", "int", "unsigned"
     addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned"
@@ -353,7 +355,8 @@ forFilBSD {
     addSig "long", "zsys_lpathconf", "filc_ptr", "int"
     addSig "long", "zsys_fpathconf", "int", "int"
     addSig "int", "zsys_setrlimit", "int", "filc_ptr"
-    addSig "int", "zsys___sysctl", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr", "size_t"
+    addSig "int", "zsys___sysctl", "filc_ptr", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr",
+           "size_t"
     addSig "int", "zsys_undelete", "filc_ptr"
     addSig "int", "zsys_semget", "long", "int", "int"
     addSig "int", "zsys_semctl", "int", "int", "int", "..."
@@ -437,6 +440,18 @@ forFilBSD {
     addSig "int", "zsys___acl_set_fd", "int", "int", "filc_ptr"
     addSig "int", "zsys___acl_set_file", "filc_ptr", "int", "filc_ptr"
     addSig "int", "zsys___acl_set_link", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys_extattr_delete_fd", "int", "int", "filc_ptr"
+    addSig "int", "zsys_extattr_delete_file", "filc_ptr", "int", "filc_ptr"
+    addSig "int", "zsys_extattr_delete_link", "filc_ptr", "int", "filc_ptr"
+    addSig "long", "zsys_extattr_get_fd", "int", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_get_file", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_get_link", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_list_fd", "int", "int", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_list_file", "filc_ptr", "int", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_list_link", "filc_ptr", "int", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_set_fd", "int", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_set_file", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "long", "zsys_extattr_set_link", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
 }
 
 case ARGV[0]

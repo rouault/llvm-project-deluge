@@ -79,6 +79,7 @@
 #include <sys/module.h>
 #include <sys/linker.h>
 #include <sys/jail.h>
+#include <sys/extattr.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -2783,6 +2784,113 @@ int filc_native_zsys___acl_set_link(filc_thread* my_thread, filc_ptr path_ptr, i
     filc_cpt_write_int(my_thread, aclp_ptr, sizeof(struct acl));
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, __acl_set_link(path, type, (struct acl*)filc_ptr_ptr(aclp_ptr)));
+}
+
+int filc_native_zsys_extattr_delete_fd(filc_thread* my_thread, int fd, int attrnamespace,
+                                       filc_ptr attrname_ptr)
+{
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    return FILC_SYSCALL(my_thread, extattr_delete_fd(fd, attrnamespace, attrname));
+}
+
+int filc_native_zsys_extattr_delete_file(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                         filc_ptr attrname_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    return FILC_SYSCALL(my_thread, extattr_delete_file(path, attrnamespace, attrname));
+}
+
+int filc_native_zsys_extattr_delete_link(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                         filc_ptr attrname_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    return FILC_SYSCALL(my_thread, extattr_delete_link(path, attrnamespace, attrname));
+}
+
+long filc_native_zsys_extattr_get_fd(filc_thread* my_thread, int fd, int attrnamespace,
+                                     filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_get_fd(fd, attrnamespace, attrname, filc_ptr_ptr(data_ptr),
+                                                  nbytes));
+}
+
+long filc_native_zsys_extattr_get_file(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                       filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_get_file(path, attrnamespace, attrname,
+                                                    filc_ptr_ptr(data_ptr), nbytes));
+}
+
+long filc_native_zsys_extattr_get_link(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                       filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_get_link(path, attrnamespace, attrname,
+                                                    filc_ptr_ptr(data_ptr), nbytes));
+}
+
+long filc_native_zsys_extattr_list_fd(filc_thread* my_thread, int fd, int attrnamespace,
+                                      filc_ptr data_ptr, size_t nbytes)
+{
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_list_fd(fd, attrnamespace, filc_ptr_ptr(data_ptr),
+                                                   nbytes));
+}
+
+long filc_native_zsys_extattr_list_file(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                        filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_list_file(path, attrnamespace, filc_ptr_ptr(data_ptr),
+                                                     nbytes));
+}
+
+long filc_native_zsys_extattr_list_link(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                        filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    filc_cpt_write_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_list_link(path, attrnamespace, filc_ptr_ptr(data_ptr),
+                                                     nbytes));
+}
+
+long filc_native_zsys_extattr_set_fd(filc_thread* my_thread, int fd, int attrnamespace,
+                                     filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_read_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_set_fd(fd, attrnamespace, attrname, filc_ptr_ptr(data_ptr),
+                                                  nbytes));
+}
+
+long filc_native_zsys_extattr_set_file(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                       filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_read_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_set_file(path, attrnamespace, attrname,
+                                                    filc_ptr_ptr(data_ptr), nbytes));
+}
+
+long filc_native_zsys_extattr_set_link(filc_thread* my_thread, filc_ptr path_ptr, int attrnamespace,
+                                       filc_ptr attrname_ptr, filc_ptr data_ptr, size_t nbytes)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    filc_cpt_read_int(my_thread, data_ptr, nbytes);
+    return FILC_SYSCALL(my_thread, extattr_set_link(path, attrnamespace, attrname,
+                                                    filc_ptr_ptr(data_ptr), nbytes));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
