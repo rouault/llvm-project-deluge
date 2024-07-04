@@ -728,6 +728,14 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-threads=" + Twine(NumThreads)));
   }
 
+  if ((true)) {
+    SmallString<128> P(getToolChain().getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+
   if (getToolChain().ShouldLinkCXXStdlib(Args))
     getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
 
@@ -735,11 +743,6 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs);
   bool ForceLinkBuiltins = Args.hasArg(options::OPT_fapple_link_rtlib);
   if ((true)) {
-    SmallString<128> P(getToolChain().getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-    CmdArgs.push_back(Args.MakeArgString("-L" + P));
-    CmdArgs.push_back("-rpath");
-    CmdArgs.push_back(Args.MakeArgString(P));
     CmdArgs.push_back("-lpizlo");
     
     // libpizlo depends on libSystem, so lets make sure it's there.
@@ -2622,12 +2625,6 @@ void DarwinClang::AddCXXStdlibLibArgs(const ArgList &Args,
 
   switch (Type) {
   case ToolChain::CST_Libcxx: {
-    SmallString<128> P(getDriver().InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-    CmdArgs.push_back(Args.MakeArgString("-L" + P));
-    CmdArgs.push_back("-rpath");
-    CmdArgs.push_back(Args.MakeArgString(P));
-    
     CmdArgs.push_back("-lc++");
     if (Args.hasArg(options::OPT_fexperimental_library))
       CmdArgs.push_back("-lc++experimental");
