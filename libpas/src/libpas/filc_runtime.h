@@ -117,6 +117,7 @@ PAS_BEGIN_EXTERN_C;
 
 struct filc_constant_relocation;
 struct filc_constexpr_node;
+struct filc_exact_ptr_table;
 struct filc_exception_and_int;
 struct filc_frame;
 struct filc_function_origin;
@@ -135,6 +136,7 @@ struct filc_ptr_uintptr_hash_map_entry;
 struct filc_return_buffer;
 struct filc_signal_handler;
 struct filc_thread;
+struct filc_uintptr_ptr_hash_map_entry;
 struct filc_user_iovec;
 struct pas_basic_heap_runtime_config;
 struct pas_stream;
@@ -142,6 +144,7 @@ struct pas_thread_local_cache_node;
 struct verse_heap_object_set;
 typedef struct filc_constant_relocation filc_constant_relocation;
 typedef struct filc_constexpr_node filc_constexpr_node;
+typedef struct filc_exact_ptr_table filc_exact_ptr_table;
 typedef struct filc_exception_and_int filc_exception_and_int;
 typedef struct filc_frame filc_frame;
 typedef struct filc_function_origin filc_function_origin;
@@ -160,6 +163,7 @@ typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
 typedef struct filc_return_buffer filc_return_buffer;
 typedef struct filc_signal_handler filc_signal_handler;
 typedef struct filc_thread filc_thread;
+typedef struct filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry;
 typedef struct filc_user_iovec filc_user_iovec;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_stream pas_stream;
@@ -220,6 +224,9 @@ typedef uint16_t filc_object_flags;
 #define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)11)    /* Indicates the special jmp_buf
                                                                      type. The lower points at the
                                                                      payload. */
+#define FILC_WORD_TYPE_EXACT_PTR_TABLE    ((filc_word_type)12)    /* Indicates the special
+                                                                     exact_ptr_table. The lower points
+                                                                     at the payload. */
 
 #define FILC_WORD_SIZE                    sizeof(pas_uint128)
  
@@ -616,6 +623,76 @@ PAS_CREATE_HASHTABLE(filc_ptr_uintptr_hash_map,
                      filc_ptr_uintptr_hash_map_entry,
                      filc_ptr_uintptr_hash_map_key);
 
+typedef uintptr_t filc_uintptr_ptr_hash_map_key;
+
+struct filc_uintptr_ptr_hash_map_entry {
+    uintptr_t key;
+    filc_ptr value;
+};
+
+static inline filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry_create_empty(void)
+{
+    filc_uintptr_ptr_hash_map_entry result;
+    result.key = 0;
+    result.value.word = 0;
+    return result;
+}
+
+static inline filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry_create_deleted(void)
+{
+    filc_uintptr_ptr_hash_map_entry result;
+    result.key = 0;
+    result.value.word = 1;
+    return result;
+}
+
+static inline bool filc_uintptr_ptr_hash_map_entry_is_empty_or_deleted(
+    filc_uintptr_ptr_hash_map_entry entry)
+{
+    if (!entry.key) {
+        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
+        return true;
+    }
+    return false;
+}
+
+static inline bool filc_uintptr_ptr_hash_map_entry_is_empty(filc_uintptr_ptr_hash_map_entry entry)
+{
+    if (!entry.key) {
+        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
+        return !entry.value.word;
+    }
+    return false;
+}
+
+static inline bool filc_uintptr_ptr_hash_map_entry_is_deleted(filc_uintptr_ptr_hash_map_entry entry)
+{
+    if (!entry.key) {
+        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
+        return entry.value.word;
+    }
+    return false;
+}
+
+static inline uintptr_t filc_uintptr_ptr_hash_map_entry_get_key(filc_uintptr_ptr_hash_map_entry entry)
+{
+    return entry.key;
+}
+
+static inline unsigned filc_uintptr_ptr_hash_map_key_get_hash(uintptr_t key)
+{
+    return pas_hash_intptr(key);
+}
+
+static inline bool filc_uintptr_ptr_hash_map_key_is_equal(uintptr_t a, uintptr_t b)
+{
+    return a == b;
+}
+
+PAS_CREATE_HASHTABLE(filc_uintptr_ptr_hash_map,
+                     filc_uintptr_ptr_hash_map_entry,
+                     filc_uintptr_ptr_hash_map_key);
+
 struct filc_ptr_table {
     pas_lock lock;
     filc_ptr_uintptr_hash_map encode_map;
@@ -629,6 +706,18 @@ struct filc_ptr_table_array {
     size_t num_entries;
     size_t capacity;
     filc_ptr ptrs[];
+};
+
+/* FIXME: This could *easily* be a lock-free map from ptr to object. In fact, it
+   could even be a uintptr_t-to-object map anyway.
+
+   FIXME: It would be awesome if for allocations with automatic storage duration,
+   like stack allocations, this held onto them as weak refs. But that's not needed
+   for the main use case - kevent - where the udata is always a malloc allocation
+   or a global. */
+struct filc_exact_ptr_table {
+    pas_lock lock;
+    filc_uintptr_ptr_hash_map decode_map;
 };
 
 struct filc_exception_and_int {
@@ -1071,7 +1160,8 @@ static inline filc_object* filc_object_for_special_payload(void* payload)
                        result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
-                       result->word_types[0] == FILC_WORD_TYPE_JMP_BUF);
+                       result->word_types[0] == FILC_WORD_TYPE_JMP_BUF ||
+                       result->word_types[0] == FILC_WORD_TYPE_EXACT_PTR_TABLE);
     return result;
 }
 
@@ -1397,6 +1487,7 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
     case FILC_WORD_TYPE_DL_HANDLE:
     case FILC_WORD_TYPE_JMP_BUF:
+    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
         return true;
     default:
         return false;
@@ -1408,6 +1499,7 @@ static inline bool filc_special_word_type_has_destructor(filc_word_type word_typ
     switch (word_type) {
     case FILC_WORD_TYPE_THREAD:
     case FILC_WORD_TYPE_PTR_TABLE:
+    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
         return true;
     case FILC_WORD_TYPE_FUNCTION:
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
@@ -1491,10 +1583,23 @@ void filc_ptr_table_destruct(filc_ptr_table* ptr_table);
 uintptr_t filc_ptr_table_encode(filc_thread* my_thread, filc_ptr_table* ptr_table, filc_ptr ptr);
 filc_ptr filc_ptr_table_decode_with_manual_tracking(
     filc_ptr_table* ptr_table, uintptr_t encoded_ptr);
+filc_ptr filc_ptr_table_decode(filc_thread* my_thread, filc_ptr_table* ptr_table,
+                               uintptr_t encoded_ptr);
 void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_array* stack);
 
 filc_ptr_table_array* filc_ptr_table_array_create(filc_thread* my_thread, size_t capacity);
 void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_object_array* stack);
+
+filc_exact_ptr_table* filc_exact_ptr_table_create(filc_thread* my_thread);
+void filc_exact_ptr_table_destruct(filc_exact_ptr_table* ptr_table);
+uintptr_t filc_exact_ptr_table_encode(filc_thread* my_thread, filc_exact_ptr_table* ptr_table,
+                                      filc_ptr ptr);
+filc_ptr filc_exact_ptr_table_decode_with_manual_tracking(
+    filc_exact_ptr_table* ptr_table, uintptr_t encoded_ptr);
+filc_ptr filc_exact_ptr_table_decode(filc_thread* my_thread, filc_exact_ptr_table* ptr_table,
+                                     uintptr_t encoded_ptr);
+void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table,
+                                             filc_object_array* stack);
 
 /* munmap() can free memory while we're exited. If we use memory while exited, and it might be
    mmap memory, then we must pin it first. This will cause munmap() to fail.

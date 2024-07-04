@@ -1533,6 +1533,9 @@ void filc_word_type_dump(filc_word_type type, pas_stream* stream)
     case FILC_WORD_TYPE_JMP_BUF:
         pas_stream_printf(stream, "jmp_buf");
         return;
+    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+        pas_stream_printf(stream, "exact_ptr_table");
+        return;
     default:
         pas_stream_printf(stream, "?%u", type);
         return;
@@ -2146,6 +2149,14 @@ filc_ptr filc_ptr_table_decode_with_manual_tracking(filc_ptr_table* ptr_table, u
     return result;
 }
 
+filc_ptr filc_ptr_table_decode(filc_thread* my_thread, filc_ptr_table* ptr_table,
+                               uintptr_t encoded_ptr)
+{
+    filc_ptr result = filc_ptr_table_decode_with_manual_tracking(ptr_table, encoded_ptr);
+    filc_thread_track_object(my_thread, filc_ptr_object(result));
+    return result;
+}
+
 void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_array* stack)
 {
     static const bool verbose = false;
@@ -2241,6 +2252,100 @@ void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_o
     size_t index;
     for (index = array->num_entries; index--;)
         fugc_mark(stack, filc_ptr_object(filc_ptr_load_with_manual_tracking(array->ptrs + index)));
+}
+
+filc_exact_ptr_table* filc_exact_ptr_table_create(filc_thread* my_thread)
+{
+    filc_exact_ptr_table* result = (filc_exact_ptr_table*)filc_allocate_special(
+        my_thread, sizeof(filc_exact_ptr_table), FILC_WORD_TYPE_EXACT_PTR_TABLE)->lower;
+
+    pas_lock_construct(&result->lock);
+    filc_uintptr_ptr_hash_map_construct(&result->decode_map);
+
+    return result;
+}
+
+void filc_exact_ptr_table_destruct(filc_exact_ptr_table* ptr_table)
+{
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Destructing exact_ptrtable\n");
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    filc_uintptr_ptr_hash_map_destruct(&ptr_table->decode_map, &allocation_config);
+}
+
+uintptr_t filc_exact_ptr_table_encode(filc_thread* my_thread, filc_exact_ptr_table* ptr_table,
+                                      filc_ptr ptr)
+{
+    if (!filc_ptr_object(ptr)
+        || (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+        return (uintptr_t)filc_ptr_ptr(ptr);
+    
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+
+    filc_uintptr_ptr_hash_map_entry decode_entry;
+    decode_entry.key = (uintptr_t)filc_ptr_ptr(ptr);
+    filc_ptr_store(my_thread, &decode_entry.value, ptr);
+    
+    pas_lock_lock(&ptr_table->lock);
+    filc_uintptr_ptr_hash_map_set(&ptr_table->decode_map, decode_entry, NULL, &allocation_config);
+    pas_lock_unlock(&ptr_table->lock);
+    
+    return (uintptr_t)filc_ptr_ptr(ptr);
+}
+
+filc_ptr filc_exact_ptr_table_decode_with_manual_tracking(filc_exact_ptr_table* ptr_table,
+                                                          uintptr_t encoded_ptr)
+{
+    if (!ptr_table->decode_map.key_count)
+        return filc_ptr_forge_invalid((void*)encoded_ptr);
+    pas_lock_lock(&ptr_table->lock);
+    filc_uintptr_ptr_hash_map_entry result =
+        filc_uintptr_ptr_hash_map_get(&ptr_table->decode_map, encoded_ptr);
+    pas_lock_unlock(&ptr_table->lock);
+    if (filc_ptr_is_totally_null(result.value))
+        return filc_ptr_forge_invalid((void*)encoded_ptr);
+    PAS_ASSERT((uintptr_t)filc_ptr_ptr(result.value) == encoded_ptr);
+    return result.value;
+}
+
+filc_ptr filc_exact_ptr_table_decode(filc_thread* my_thread, filc_exact_ptr_table* ptr_table,
+                                     uintptr_t encoded_ptr)
+{
+    filc_ptr result = filc_exact_ptr_table_decode_with_manual_tracking(ptr_table, encoded_ptr);
+    filc_thread_track_object(my_thread, filc_ptr_object(result));
+    return result;
+}
+
+void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table, filc_object_array* stack)
+{
+    static const bool verbose = false;
+    if (verbose)
+        pas_log("Marking exact ptr table at %p.\n", ptr_table);
+
+    pas_lock_lock(&ptr_table->lock);
+    
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+
+    filc_uintptr_ptr_hash_map new_decode_map;
+    filc_uintptr_ptr_hash_map_construct(&new_decode_map);
+    size_t index;
+    for (index = ptr_table->decode_map.table_size; index--;) {
+        filc_uintptr_ptr_hash_map_entry entry = ptr_table->decode_map.table[index];
+        if (filc_uintptr_ptr_hash_map_entry_is_empty_or_deleted(entry))
+            continue;
+        if (filc_ptr_object(entry.value)->flags & FILC_OBJECT_FLAG_FREE)
+            continue;
+        fugc_mark(stack, filc_ptr_object(entry.value));
+        filc_uintptr_ptr_hash_map_add_new(&new_decode_map, entry, NULL, &allocation_config);
+    }
+    filc_uintptr_ptr_hash_map_destruct(&ptr_table->decode_map, &allocation_config);
+    ptr_table->decode_map = new_decode_map;
+    
+    pas_lock_unlock(&ptr_table->lock);
 }
 
 void filc_pin(filc_object* object)
@@ -2360,6 +2465,12 @@ filc_ptr filc_native_zgetupper(filc_thread* my_thread, filc_ptr ptr)
     return filc_ptr_with_ptr(ptr, filc_ptr_upper(ptr));
 }
 
+bool filc_native_zhasvalidcap(filc_thread* my_thread, filc_ptr ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    return filc_ptr_object(ptr) && !(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE);
+}
+
 bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
@@ -2418,6 +2529,26 @@ filc_ptr filc_native_zptrtable_decode(filc_thread* my_thread, filc_ptr table_ptr
         (filc_ptr_table*)filc_ptr_ptr(table_ptr), encoded_ptr);
 }
 
+filc_ptr filc_native_zexact_ptrtable_new(filc_thread* my_thread)
+{
+    return filc_ptr_for_special_payload_with_manual_tracking(filc_exact_ptr_table_create(my_thread));
+}
+
+size_t filc_native_zexact_ptrtable_encode(filc_thread* my_thread, filc_ptr table_ptr, filc_ptr ptr)
+{
+    filc_check_access_special(table_ptr, FILC_WORD_TYPE_EXACT_PTR_TABLE, NULL);
+    return filc_exact_ptr_table_encode(my_thread, (filc_exact_ptr_table*)filc_ptr_ptr(table_ptr), ptr);
+}
+
+filc_ptr filc_native_zexact_ptrtable_decode(filc_thread* my_thread, filc_ptr table_ptr,
+                                            size_t encoded_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    filc_check_access_special(table_ptr, FILC_WORD_TYPE_EXACT_PTR_TABLE, NULL);
+    return filc_exact_ptr_table_decode_with_manual_tracking(
+        (filc_exact_ptr_table*)filc_ptr_ptr(table_ptr), encoded_ptr);
+}
+
 size_t filc_native_ztesting_get_num_ptrtables(filc_thread* my_thread)
 {
     PAS_UNUSED_PARAM(my_thread);
@@ -2446,7 +2577,8 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
                     object->word_types[0] == FILC_WORD_TYPE_DL_HANDLE ||
-                    object->word_types[0] == FILC_WORD_TYPE_JMP_BUF,
+                    object->word_types[0] == FILC_WORD_TYPE_JMP_BUF ||
+                    object->word_types[0] == FILC_WORD_TYPE_EXACT_PTR_TABLE,
                     origin);
         if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION &&
             object->word_types[0] != FILC_WORD_TYPE_DL_HANDLE)

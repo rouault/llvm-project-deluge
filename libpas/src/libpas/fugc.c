@@ -213,6 +213,10 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
         filc_jmp_buf_mark_outgoing_ptrs(
             (filc_jmp_buf*)filc_object_special_payload(object), stack);
         break;
+    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+        filc_exact_ptr_table_mark_outgoing_ptrs(
+            (filc_exact_ptr_table*)filc_object_special_payload(object), stack);
+        break;
     default:
         pas_log("Got a bad special ptr type: ");
         filc_word_type_dump(word_type, &pas_log_stream.base);
@@ -256,6 +260,9 @@ static void destruct_object_callback(void* raw_object, void* arg)
         break;
     case FILC_WORD_TYPE_PTR_TABLE:
         filc_ptr_table_destruct((filc_ptr_table*)filc_object_special_payload(object));
+        break;
+    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+        filc_exact_ptr_table_destruct((filc_exact_ptr_table*)filc_object_special_payload(object));
         break;
     default:
         PAS_ASSERT(!"Encountered object in destructor space that should not have destructor.");

@@ -127,6 +127,9 @@ void* zgetupper(void* ptr);
         (__typeof__((ptr) + 0))zgetupper(__d_ptr) - __d_ptr; \
     })
 
+/* Tells if the pointer has a capability and that capability is not free. */
+filc_bool zhasvalidcap(void* ptr);
+
 /* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
    succeed, since this does not check type. For example, valid function pointers are zinbounds but
    cannot be "accessed" regardless of type (can only be called if in bounds). */
@@ -252,6 +255,21 @@ typedef struct zptrtable zptrtable;
 zptrtable* zptrtable_new(void);
 __SIZE_TYPE__ zptrtable_encode(zptrtable* table, void* ptr);
 void* zptrtable_decode(zptrtable* table, __SIZE_TYPE__ encoded_ptr);
+
+/* The exact_ptrtable is like ptrtable, but:
+
+   - The encoded ptr is always exactly the pointer's integer value.
+
+   - Decoding is slower and may have to grab a lock.
+
+   - Decoding a pointer to a freed object gives exactly the pointer's integer value but with a null
+     capability (so you cannot dereference it). */
+struct zexact_ptrtable;
+typedef struct zexact_ptrtable zexact_ptrtable;
+
+zexact_ptrtable* zexact_ptrtable_new(void);
+__SIZE_TYPE__ zexact_ptrtable_encode(zexact_ptrtable* table, void* ptr);
+void* zexact_ptrtable_decode(zexact_ptrtable* table, __SIZE_TYPE__ encoded_ptr);
 
 /* This function is just for testing zptrtable and it only returns accurate data if
    zis_runtime_testing_enabled(). */

@@ -80,6 +80,7 @@
 #include <sys/linker.h>
 #include <sys/jail.h>
 #include <sys/extattr.h>
+#include <sys/event.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -87,11 +88,14 @@
 
 static pas_lock roots_lock = PAS_LOCK_INITIALIZER;
 static filc_object* profil_samples_root = NULL;
+static filc_exact_ptr_table* kevent_ptr_table = NULL;
 
 void filc_mark_user_global_roots(filc_object_array* mark_stack)
 {
     pas_lock_lock(&roots_lock);
     fugc_mark(mark_stack, profil_samples_root);
+    if (kevent_ptr_table)
+        fugc_mark(mark_stack, filc_object_for_special_payload(kevent_ptr_table));
     pas_lock_unlock(&roots_lock);
 }
 
@@ -2900,6 +2904,115 @@ int filc_native_zsys_extattrctl(filc_thread* my_thread, filc_ptr path_ptr, int c
     char* filename = filc_check_and_get_tmp_str(my_thread, filename_ptr);
     char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
     return FILC_SYSCALL(my_thread, extattrctl(path, cmd, filename, attrnamespace, attrname));
+}
+
+static filc_exact_ptr_table* get_kevent_ptr_table(filc_thread* my_thread)
+{
+    filc_exact_ptr_table* result = kevent_ptr_table;
+    pas_fence();
+    if (result)
+        return result;
+    result = filc_exact_ptr_table_create(my_thread);
+    pas_fence();
+    pas_lock_lock(&roots_lock);
+    if (kevent_ptr_table)
+        result = kevent_ptr_table;
+    else {
+        /* Don't need a filc_store_barrier because the ptr table is black. */
+        kevent_ptr_table = result;
+    }
+    pas_lock_unlock(&roots_lock);
+    return result;
+}
+
+static void* encode_kevent_udata(filc_thread* my_thread, filc_ptr udata_ptr)
+{
+    return (void*)filc_exact_ptr_table_encode(my_thread, get_kevent_ptr_table(my_thread), udata_ptr);
+}
+
+static filc_ptr decode_kevent_udata(filc_thread* my_thread, void* udata)
+{
+    return filc_exact_ptr_table_decode(my_thread, get_kevent_ptr_table(my_thread), (uintptr_t)udata);
+}
+
+struct user_kevent {
+	__uintptr_t	ident;		/* identifier for this event */
+	short		filter;		/* filter for event */
+	unsigned short	flags;		/* action flags for kqueue */
+	unsigned int	fflags;		/* filter flag value */
+	__int64_t	data;		/* filter data value */
+	filc_ptr        udata;		/* opaque user data identifier */
+	__uint64_t	ext[4];		/* extensions */
+};
+
+static void check_user_kevent(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, ident, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, filter, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, flags, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, fflags, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, data, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_kevent, udata, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_kevent, ext, access_kind);
+}
+
+int filc_native_zsys_kqueue(filc_thread* my_thread)
+{
+    return FILC_SYSCALL(my_thread, kqueue());
+}
+
+int filc_native_zsys_kqueuex(filc_thread* my_thread, unsigned flags)
+{
+    return FILC_SYSCALL(my_thread, kqueuex(flags));
+}
+
+int filc_native_zsys_kevent(filc_thread* my_thread, int kq, filc_ptr changelist_ptr, int nchanges,
+                            filc_ptr eventlist_ptr, int nevents, filc_ptr timeout_ptr)
+{
+    size_t index;
+    struct kevent* changelist = (struct kevent*)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size(nchanges, sizeof(struct kevent)));
+    for (index = 0; index < (size_t)nchanges; ++index) {
+        filc_ptr entry_ptr =
+            filc_ptr_with_offset(changelist_ptr, filc_mul_size(index, sizeof(struct user_kevent)));
+        check_user_kevent(entry_ptr, filc_read_access);
+        struct kevent* entry = changelist + index;
+        struct user_kevent* user_entry = (struct user_kevent*)filc_ptr_ptr(entry_ptr);
+        entry->ident = user_entry->ident;
+        entry->filter = user_entry->filter;
+        entry->flags = user_entry->flags;
+        entry->fflags = user_entry->fflags;
+        entry->data = user_entry->data;
+        entry->udata = encode_kevent_udata(my_thread, user_entry->udata);
+        PAS_ASSERT(sizeof(entry->ext) == sizeof(user_entry->ext));
+        memcpy(entry->ext, user_entry->ext, sizeof(entry->ext));
+    }
+    filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+    struct kevent* eventlist = (struct kevent*)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size(nevents, sizeof(struct kevent)));
+    int result = FILC_SYSCALL(
+        my_thread,
+        kevent(kq, changelist, nchanges, eventlist, nevents,
+               (const struct timespec*)filc_ptr_ptr(timeout_ptr)));
+    if (result < 0)
+        return result;
+    PAS_ASSERT(result <= nevents);
+    for (index = 0; index < (size_t)result; ++index) {
+        filc_ptr change_ptr =
+            filc_ptr_with_offset(eventlist_ptr, filc_mul_size(index, sizeof(struct user_kevent)));
+        check_user_kevent(change_ptr, filc_write_access);
+        struct kevent* change = eventlist + index;
+        struct user_kevent* user_change = (struct user_kevent*)filc_ptr_ptr(change_ptr);
+        user_change->ident = change->ident;
+        user_change->filter = change->filter;
+        user_change->flags = change->flags;
+        user_change->fflags = change->fflags;
+        user_change->data = change->data;
+        user_change->udata = decode_kevent_udata(my_thread, change->udata);
+        PAS_ASSERT(sizeof(change->ext) == sizeof(user_change->ext));
+        memcpy(user_change->ext, change->ext, sizeof(change->ext));
+    }
+    return result;
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

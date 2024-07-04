@@ -179,6 +179,10 @@ long zsys_extattr_set_link(const char* path, int attrnamespace, const char* attr
                            const void* data, __SIZE_TYPE__ nbytes);
 int zsys_extattrctl(const char* path, int cmd, const char* filename, int attrnamespace,
                     const char* attrname);
+int zsys_kqueue(void);
+int zsys_kqueuex(unsigned flags);
+int zsys_kevent(int kq, const void* changelist, int nchanges, void* eventlist, int nevents,
+                const void* timeout);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
