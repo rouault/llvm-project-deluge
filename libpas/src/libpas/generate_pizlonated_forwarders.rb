@@ -452,6 +452,7 @@ forFilBSD {
     addSig "long", "zsys_extattr_set_fd", "int", "int", "filc_ptr", "filc_ptr", "size_t"
     addSig "long", "zsys_extattr_set_file", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
     addSig "long", "zsys_extattr_set_link", "filc_ptr", "int", "filc_ptr", "filc_ptr", "size_t"
+    addSig "int", "zsys_extattrctl", "filc_ptr", "int", "filc_ptr", "int", "filc_ptr"
 }
 
 case ARGV[0]

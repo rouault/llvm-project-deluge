@@ -177,6 +177,8 @@ long zsys_extattr_set_file(const char* path, int attrnamespace, const char* attr
                            const void* data, __SIZE_TYPE__ nbytes);
 long zsys_extattr_set_link(const char* path, int attrnamespace, const char* attrname,
                            const void* data, __SIZE_TYPE__ nbytes);
+int zsys_extattrctl(const char* path, int cmd, const char* filename, int attrnamespace,
+                    const char* attrname);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

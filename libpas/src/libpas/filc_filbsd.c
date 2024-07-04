@@ -2893,6 +2893,15 @@ long filc_native_zsys_extattr_set_link(filc_thread* my_thread, filc_ptr path_ptr
                                                     filc_ptr_ptr(data_ptr), nbytes));
 }
 
+int filc_native_zsys_extattrctl(filc_thread* my_thread, filc_ptr path_ptr, int cmd,
+                                filc_ptr filename_ptr, int attrnamespace, filc_ptr attrname_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    char* filename = filc_check_and_get_tmp_str(my_thread, filename_ptr);
+    char* attrname = filc_check_and_get_tmp_str(my_thread, attrname_ptr);
+    return FILC_SYSCALL(my_thread, extattrctl(path, cmd, filename, attrnamespace, attrname));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */
