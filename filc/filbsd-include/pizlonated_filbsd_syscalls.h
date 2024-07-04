@@ -183,6 +183,16 @@ int zsys_kqueue(void);
 int zsys_kqueuex(unsigned flags);
 int zsys_kevent(int kq, const void* changelist, int nchanges, void* eventlist, int nevents,
                 const void* timeout);
+int zsys___mac_get_fd(int fd, void* mac);
+int zsys___mac_get_file(const char* path, void* mac);
+int zsys___mac_get_link(const char* path, void* mac);
+int zsys___mac_get_pid(int pid, void* mac);
+int zsys___mac_get_proc(void* mac);
+int zsys___mac_set_fd(int fd, void* mac);
+int zsys___mac_set_file(const char* path, void* mac);
+int zsys___mac_set_link(const char* path, void* mac);
+int zsys___mac_set_proc(void* mac);
+int zsys___mac_execve(const char* fname, char** argv, char** env, void* mac);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

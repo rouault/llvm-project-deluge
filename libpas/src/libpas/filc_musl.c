@@ -3765,12 +3765,8 @@ static int posix_spawn_impl(filc_thread* my_thread, filc_ptr pid_ptr, filc_ptr p
         filc_set_errno(EINVAL);
         return -1;
     }
-    size_t argv_len;
-    size_t envp_len;
-    char** argv;
-    char** envp;
-    filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr, &argv_len, &argv);
-    filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr, &envp_len, &envp);
+    char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
+    char** envp = filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr);
     int pid;
     filc_exit(my_thread);
     int result;

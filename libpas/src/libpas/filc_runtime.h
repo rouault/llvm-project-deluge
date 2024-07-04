@@ -2020,10 +2020,8 @@ PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_i
 
 PAS_API int filc_from_user_atfd(int fd);
 
-PAS_API void filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
-                                                             filc_ptr user_array_ptr,
-                                                             size_t* array_length,
-                                                             char*** array);
+PAS_API char** filc_check_and_get_null_terminated_string_array(
+    filc_thread* my_thread, filc_ptr user_array_ptr);
 
 PAS_API void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread);
 #if !FILC_MUSL

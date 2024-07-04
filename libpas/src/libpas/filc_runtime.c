@@ -5623,32 +5623,29 @@ static size_t length_of_null_terminated_ptr_array(filc_ptr array_ptr)
     }
 }
 
-void filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
-                                                     filc_ptr user_array_ptr,
-                                                     size_t* array_length,
-                                                     char*** array)
+char** filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
+                                                       filc_ptr user_array_ptr)
 {
-    *array_length = length_of_null_terminated_ptr_array(user_array_ptr);
-    *array = (char**)filc_bmalloc_allocate_tmp(
-        my_thread, filc_mul_size((*array_length + 1), sizeof(char*)));
-    (*array)[*array_length] = NULL;
+    size_t array_length;
+    char** array;
+    array_length = length_of_null_terminated_ptr_array(user_array_ptr);
+    array = (char**)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size((array_length + 1), sizeof(char*)));
+    (array)[array_length] = NULL;
     size_t index;
-    for (index = *array_length; index--;) {
-        (*array)[index] = filc_check_and_get_tmp_str(
+    for (index = array_length; index--;) {
+        (array)[index] = filc_check_and_get_tmp_str(
             my_thread, filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(user_array_ptr) + index));
     }
+    return array;
 }
 
 int filc_native_zsys_execve(filc_thread* my_thread, filc_ptr pathname_ptr, filc_ptr argv_ptr,
                             filc_ptr envp_ptr)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    size_t argv_len;
-    size_t envp_len;
-    char** argv;
-    char** envp;
-    filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr, &argv_len, &argv);
-    filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr, &envp_len, &envp);
+    char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
+    char** envp = filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr);
     filc_exit(my_thread);
     int result = execve(pathname, argv, envp);
     int my_errno = errno;
@@ -6211,14 +6208,13 @@ void filc_native_zsys_sync(filc_thread* my_thread)
 int filc_native_zsys_access(filc_thread* my_thread, filc_ptr path_ptr, int mode)
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_exit(my_thread);
-    int result = access(path, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, access(path, mode));
+}
+
+int filc_native_zsys_eaccess(filc_thread* my_thread, filc_ptr path_ptr, int mode)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, eaccess(path, mode));
 }
 
 int filc_native_zsys_symlink(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr newname_ptr)

@@ -81,6 +81,7 @@
 #include <sys/jail.h>
 #include <sys/extattr.h>
 #include <sys/event.h>
+#include <sys/mac.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3013,6 +3014,99 @@ int filc_native_zsys_kevent(filc_thread* my_thread, int kq, filc_ptr changelist_
         memcpy(user_change->ext, change->ext, sizeof(change->ext));
     }
     return result;
+}
+
+struct user_mac {
+    size_t m_buflen;
+    filc_ptr m_string;
+};
+
+static void check_user_mac(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_INT_FIELD(ptr, struct user_mac, m_buflen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_mac, m_string, access_kind);
+}
+
+static struct mac* from_user_mac(filc_thread* my_thread, filc_ptr mac_ptr,
+                                 filc_access_kind access_kind)
+{
+    check_user_mac(mac_ptr, filc_read_access);
+    struct user_mac* user_mac = (struct user_mac*)filc_ptr_ptr(mac_ptr);
+    size_t buflen = user_mac->m_buflen;
+    filc_ptr string_ptr = filc_ptr_load(my_thread, &user_mac->m_string);
+    filc_cpt_access_int(my_thread, string_ptr, buflen, access_kind);
+    struct mac* result = filc_bmalloc_allocate_tmp(my_thread, sizeof(struct mac));
+    result->m_buflen = buflen;
+    result->m_string = (char*)filc_ptr_ptr(string_ptr);
+    return result;
+}
+
+int filc_native_zsys___mac_get_fd(filc_thread* my_thread, int fd, filc_ptr mac_ptr)
+{
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_write_access);
+    return FILC_SYSCALL(my_thread, mac_get_fd(fd, mac));
+}
+
+int filc_native_zsys___mac_get_file(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr mac_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_write_access);
+    return FILC_SYSCALL(my_thread, mac_get_file(path, mac));
+}
+
+int filc_native_zsys___mac_get_link(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr mac_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_write_access);
+    return FILC_SYSCALL(my_thread, mac_get_file(path, mac));
+}
+
+int filc_native_zsys___mac_get_pid(filc_thread* my_thread, int pid, filc_ptr mac_ptr)
+{
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_write_access);
+    return FILC_SYSCALL(my_thread, mac_get_pid(pid, mac));
+}
+
+int filc_native_zsys___mac_get_proc(filc_thread* my_thread, filc_ptr mac_ptr)
+{
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_write_access);
+    return FILC_SYSCALL(my_thread, mac_get_proc(mac));
+}
+
+int filc_native_zsys___mac_set_fd(filc_thread* my_thread, int fd, filc_ptr mac_ptr)
+{
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_read_access);
+    return FILC_SYSCALL(my_thread, mac_set_fd(fd, mac));
+}
+
+int filc_native_zsys___mac_set_file(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr mac_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_read_access);
+    return FILC_SYSCALL(my_thread, mac_set_file(path, mac));
+}
+
+int filc_native_zsys___mac_set_link(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr mac_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_read_access);
+    return FILC_SYSCALL(my_thread, mac_set_file(path, mac));
+}
+
+int filc_native_zsys___mac_set_proc(filc_thread* my_thread, filc_ptr mac_ptr)
+{
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_read_access);
+    return FILC_SYSCALL(my_thread, mac_set_proc(mac));
+}
+
+int filc_native_zsys___mac_execve(filc_thread* my_thread, filc_ptr fname_ptr, filc_ptr argv_ptr,
+                                  filc_ptr env_ptr, filc_ptr mac_ptr)
+{
+    char* fname = filc_check_and_get_tmp_str(my_thread, fname_ptr);
+    char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
+    char** env = filc_check_and_get_null_terminated_string_array(my_thread, env_ptr);
+    struct mac* mac = from_user_mac(my_thread, mac_ptr, filc_read_access);
+    return FILC_SYSCALL(my_thread, mac_execve(fname, argv, env, mac));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
