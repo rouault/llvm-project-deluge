@@ -495,14 +495,13 @@ struct filc_thread {
     
     uint64_t num_deferred_signals[FILC_MAX_USER_SIGNUM + 1];
 
-#if !FILC_MUSL
     /* On platforms that implement ioctl (and similar syscalls) by passing the data
        down to the kernel directly, we need to have some way of telling the kernel
        how much data we are able to pass. Ioctl doesn't take a length. So, we do it
        by having a guard page. */
     char* space_with_guard_page;
     char* guard_page;
-#endif /* !FILC_MUSL */
+    bool space_with_guard_page_is_readonly;
 };
 
 struct filc_global_initialization_context {
@@ -2024,10 +2023,47 @@ PAS_API char** filc_check_and_get_null_terminated_string_array(
     filc_thread* my_thread, filc_ptr user_array_ptr);
 
 PAS_API void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread);
-#if !FILC_MUSL
 PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
                                                                      size_t desired_size);
-#endif /* !FILC_MUSL */
+PAS_API void filc_thread_make_space_with_guard_page_readonly(filc_thread* my_thread);
+
+/* Calls syscall_callback with the data from arg_ptr copied into memory guarded by a
+   guard page that indicates the end of accessible primitive memory in arg_ptr. If
+   the data that arg_ptr points to is readonly, then it passes the syscall memory
+   that is readonly by way of memory protections. If arg_ptr is not accessible and
+   it's a small enough integer, it's passed through.
+
+   syscall_callback() is passed the pointer to the guarded memory as guarded_arg,
+   and the user_arg is passed through as a closure.
+
+   syscall_callback() is called exited. If you want to save the result of the
+   syscall, use user_arg.
+
+   syscall_callback() should leave errno as it was after the syscall invocation and
+   should not otherwise touch it. If you do any other syscalls before making the
+   syscall, then make sure to zero errno before making the actual syscall.
+
+   If syscall_callback() fails with EFAULT, this assumes that the EFAULT is due to
+   the arg not being accessible in the way that the kernel ways, so it either tries
+   again with a larger slice (if it can) or it safety panics. The reason for the
+   retry is that if arg_ptr points to a giant amount of integer memory, we don't
+   want to copy all of that memory into guarded memory unless we know that the
+   kernel will want all of it.
+
+   If syscall_callback() returns with any error other than EFAULT, then this does
+   filc_set_errno() and returns.
+
+   If syscall_callback() returns with no error, and arg_ptr pointed to read-write
+   memory, then it copies the data from the guarded memory into arg_ptr's memory
+   and returns.
+
+   If syscall_callback() returns with no error and arg_ptr is a small integer or
+   points to readonly memory, then this just returns. */
+PAS_API void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
+                                                filc_ptr arg_ptr,
+                                                void (*syscall_callback)(void* guarded_arg,
+                                                                         void* user_arg),
+                                                void* user_arg);
 
 PAS_API size_t filc_mul_size(size_t a, size_t b);
 

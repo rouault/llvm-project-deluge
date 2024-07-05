@@ -269,7 +269,7 @@ static void posix_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capa
 }
 #endif // _WIN32
 
-void pas_page_malloc_protect_reservation(void* base, size_t size)
+static void manage_protection(void* base, size_t size, int prot)
 {
     static const bool verbose = false;
     
@@ -279,10 +279,25 @@ void pas_page_malloc_protect_reservation(void* base, size_t size)
     PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
 
     if (verbose)
-        pas_log("protecting %p...%p\n", base, (char*)base + size);
+        pas_log("protecting %p...%p with %d\n", base, (char*)base + size, prot);
 
-    result = mprotect(base, size, PROT_NONE);
+    result = mprotect(base, size, prot);
     PAS_ASSERT(!result);
+}
+
+void pas_page_malloc_protect_reservation(void* base, size_t size)
+{
+    manage_protection(base, size, PROT_NONE);
+}
+
+void pas_page_malloc_unprotect_reservation(void* base, size_t size)
+{
+    manage_protection(base, size, PROT_READ | PROT_WRITE);
+}
+
+void pas_page_malloc_make_readonly(void* base, size_t size)
+{
+    manage_protection(base, size, PROT_READ);
 }
 
 #ifdef _WIN32

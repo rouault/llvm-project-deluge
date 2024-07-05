@@ -119,104 +119,31 @@ void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
 }
 
 typedef struct {
+    int fd;
+    unsigned long request;
     int result;
-    int my_errno;
-} ioctl_result;
+} ioctl_data;
 
-static ioctl_result do_ioctl(filc_thread* my_thread, int fd, unsigned long request, void* ptr)
+static void ioctl_callback(void* guarded_arg, void* user_arg)
 {
-    ioctl_result result;
-    filc_exit(my_thread);
-    result.result = ioctl(fd, request, ptr);
-    result.my_errno = errno;
-    filc_enter(my_thread);
-    return result;
-}
-
-static int handle_ioctl_result_excluding_fault(ioctl_result result)
-{
-    if (result.result < 0) {
-        PAS_ASSERT(result.result == -1);
-        PAS_ASSERT(result.my_errno != EFAULT);
-        filc_set_errno(result.my_errno);
-    }
-    return result.result;
-}
-
-static int handle_ioctl_result(ioctl_result result, unsigned long request)
-{
-    if (result.result < 0 && result.my_errno == EFAULT) {
-        filc_safety_panic(
-            NULL,
-            "passed NULL as the argument to ioctl request %lu but the kernel wanted a real argument.",
-            request);
-    }
-    return handle_ioctl_result_excluding_fault(result);
+    ioctl_data* data = (ioctl_data*)user_arg;
+    data->result = ioctl(data->fd, data->result, guarded_arg);
 }
 
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_ptr args)
 {
     if (filc_ptr_available(args) < FILC_WORD_SIZE)
-        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL), request);
+        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
 
     filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
     if (!filc_ptr_ptr(arg_ptr))
-        return handle_ioctl_result(do_ioctl(my_thread, fd, request, NULL), request);
+        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
 
-    size_t extent_limit = 128;
-    char* base = (char*)filc_ptr_ptr(arg_ptr);
-    filc_object* object = filc_ptr_object(arg_ptr);
-    size_t maximum_extent = filc_ptr_available(arg_ptr);
-    for(;;) {
-        size_t limited_extent = pas_min_uintptr(maximum_extent, extent_limit);
-        size_t index;
-        for (index = 0; index < limited_extent; ++index) {
-            filc_word_type word_type = filc_object_get_word_type(
-                object, filc_object_word_type_index_for_ptr(object, base + index));
-            if (word_type != FILC_WORD_TYPE_UNSET && word_type != FILC_WORD_TYPE_INT) {
-                limited_extent = index;
-                break;
-            }
-        }
-
-        char* input_copy = bmalloc_allocate(limited_extent);
-        for (index = 0; index < limited_extent; ++index) {
-            char value = base[index];
-            if (value)
-                filc_check_read_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
-            input_copy[index] = value;
-        }
-
-        char* start_of_space =
-            filc_thread_get_end_of_space_with_guard_page_with_size(my_thread, limited_extent)
-            - limited_extent;
-        memcpy(start_of_space, input_copy, limited_extent);
-
-        ioctl_result result = do_ioctl(my_thread, fd, request, start_of_space);
-        if (result.result >= 0 || result.my_errno != EFAULT) {
-            if (result.result >= 0) {
-                for (index = 0; index < limited_extent; ++index) {
-                    if (start_of_space[index] == input_copy[index])
-                        continue;
-                    filc_check_write_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
-                    base[index] = start_of_space[index];
-                }
-            }
-            bmalloc_deallocate(input_copy);
-            return handle_ioctl_result_excluding_fault(result);
-        }
-
-        PAS_ASSERT(result.result == -1 && result.my_errno == EFAULT);
-        bmalloc_deallocate(input_copy);
-        if (extent_limit > limited_extent) {
-            filc_safety_panic(
-                NULL,
-                "was only able to pass %zu int bytes to ioctl request %lu but the kernel wanted more "
-                "(arg ptr = %s).",
-                extent_limit, request, filc_ptr_to_new_string(arg_ptr));
-        }
-        PAS_ASSERT(!pas_mul_uintptr_overflow(extent_limit, 2, &extent_limit));
-    }
+    ioctl_data data;
+    data.fd = fd;
+    data.request = request;
+    filc_call_syscall_with_guarded_ptr(my_thread, arg_ptr, ioctl_callback, &data);
+    return data.result;
 }
 
 int filc_native_zsys_socket(filc_thread* my_thread, int domain, int type, int protocol)

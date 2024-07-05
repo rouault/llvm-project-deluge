@@ -6742,9 +6742,6 @@ unsigned filc_native_zunpark(filc_thread* my_thread, filc_ptr address_ptr, unsig
 
 void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread)
 {
-#if FILC_MUSL
-    PAS_UNUSED_PARAM(my_thread);
-#else /* FILC_MUSL -> so !FILC_MUSL */
     if (!my_thread->space_with_guard_page) {
         PAS_ASSERT(!my_thread->guard_page);
         return;
@@ -6755,10 +6752,8 @@ void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread)
         my_thread->guard_page - my_thread->space_with_guard_page + pas_page_malloc_alignment());
     my_thread->space_with_guard_page = NULL;
     my_thread->guard_page = NULL;
-#endif /* FILC_MUSL -> so end of !FILC_MUSL */
 }
 
-#if !FILC_MUSL
 char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
                                                              size_t desired_size)
 {
@@ -6766,6 +6761,12 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
     if ((size_t)(my_thread->guard_page - my_thread->space_with_guard_page) >= desired_size) {
         PAS_ASSERT(my_thread->space_with_guard_page);
         PAS_ASSERT(my_thread->guard_page);
+        if (my_thread->space_with_guard_page_is_readonly) {
+            pas_page_malloc_unprotect_reservation(
+                my_thread->space_with_guard_page,
+                my_thread->guard_page - my_thread->space_with_guard_page);
+            my_thread->space_with_guard_page_is_readonly = false;
+        }
         return my_thread->guard_page;
     }
     filc_thread_destroy_space_with_guard_page(my_thread);
@@ -6777,9 +6778,104 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
     pas_page_malloc_protect_reservation((char*)result.result + size, pas_page_malloc_alignment());
     my_thread->space_with_guard_page = (char*)result.result;
     my_thread->guard_page = (char*)result.result + size;
+    my_thread->space_with_guard_page_is_readonly = false;
     return (char*)result.result + size;
 }
-#endif /* !FILC_MUSL */
+
+void filc_thread_make_space_with_guard_page_readonly(filc_thread* my_thread)
+{
+    if (my_thread->space_with_guard_page_is_readonly)
+        return;
+    pas_page_malloc_make_readonly(
+        my_thread->space_with_guard_page,
+        my_thread->guard_page - my_thread->space_with_guard_page);
+    my_thread->space_with_guard_page_is_readonly = true;
+}
+
+void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
+                                        filc_ptr arg_ptr,
+                                        void (*syscall_callback)(void* guarded_arg,
+                                                                 void* user_arg),
+                                        void* user_arg)
+{
+    static const uintptr_t min_address = 16384;
+    
+    if (filc_ptr_ptr(arg_ptr) < (void*)min_address) {
+        PAS_ASSERT(!filc_ptr_object(arg_ptr) || filc_ptr_ptr(arg_ptr) < filc_ptr_lower(arg_ptr));
+        filc_exit(my_thread);
+        errno = 0;
+        syscall_callback(filc_ptr_ptr(arg_ptr), user_arg);
+        int my_errno = errno;
+        filc_enter(my_thread);
+        if (my_errno)
+            filc_set_errno(my_errno);
+        return;
+    }
+
+    size_t extent_limit = 128;
+    char* base = (char*)filc_ptr_ptr(arg_ptr);
+    filc_object* object = filc_ptr_object(arg_ptr);
+    size_t maximum_extent = filc_ptr_available(arg_ptr);
+    for(;;) {
+        size_t limited_extent = pas_min_uintptr(maximum_extent, extent_limit);
+        size_t index;
+        for (index = 0; index < limited_extent; ++index) {
+            filc_word_type word_type = filc_object_get_word_type(
+                object, filc_object_word_type_index_for_ptr(object, base + index));
+            if (word_type != FILC_WORD_TYPE_UNSET && word_type != FILC_WORD_TYPE_INT) {
+                limited_extent = index;
+                break;
+            }
+        }
+
+        char* input_copy = bmalloc_allocate(limited_extent);
+        for (index = 0; index < limited_extent; ++index) {
+            char value = base[index];
+            if (value)
+                filc_check_read_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
+            input_copy[index] = value;
+        }
+
+        char* start_of_space =
+            filc_thread_get_end_of_space_with_guard_page_with_size(my_thread, limited_extent)
+            - limited_extent;
+        memcpy(start_of_space, input_copy, limited_extent);
+
+        bool is_readonly = !!(object->flags & FILC_OBJECT_FLAG_READONLY);
+        if (is_readonly)
+            filc_thread_make_space_with_guard_page_readonly(my_thread);
+
+        filc_exit(my_thread);
+        errno = 0;
+        syscall_callback(start_of_space, user_arg);
+        int my_errno = errno;
+        filc_enter(my_thread);
+        if (my_errno != EFAULT) {
+            if (!my_errno && !is_readonly) {
+                for (index = 0; index < limited_extent; ++index) {
+                    if (start_of_space[index] == input_copy[index])
+                        continue;
+                    filc_check_write_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
+                    base[index] = start_of_space[index];
+                }
+            }
+            if (my_errno)
+                filc_set_errno(my_errno);
+            bmalloc_deallocate(input_copy);
+            return;
+        }
+
+        bmalloc_deallocate(input_copy);
+        if (extent_limit > limited_extent) {
+            filc_safety_panic(
+                NULL,
+                "was only able to pass %zu int bytes to the syscall but the kernel wanted more "
+                "(arg ptr = %s).",
+                extent_limit, filc_ptr_to_new_string(arg_ptr));
+        }
+        PAS_ASSERT(!pas_mul_uintptr_overflow(extent_limit, 2, &extent_limit));
+    }
+}
 
 size_t filc_mul_size(size_t a, size_t b)
 {

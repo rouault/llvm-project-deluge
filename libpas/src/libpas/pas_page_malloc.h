@@ -88,6 +88,8 @@ PAS_API void pas_page_malloc_zero_fill(void* base, size_t size);
 
 PAS_API bool pas_page_malloc_lock(void* base, size_t size); /* Returns false if locked page limit exceeded. */
 PAS_API void pas_page_malloc_protect_reservation(void* base, size_t size);
+PAS_API void pas_page_malloc_unprotect_reservation(void* base, size_t size);
+PAS_API void pas_page_malloc_make_readonly(void* base, size_t size);
 
 /* This even works if size < pas_page_malloc_alignment so long as the range [base, base+size) is
    entirely within a page according to pas_page_malloc_alignment. */
