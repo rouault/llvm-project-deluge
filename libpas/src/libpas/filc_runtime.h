@@ -1612,6 +1612,9 @@ void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
 
 void filc_check_access_common(filc_ptr, size_t bytes, filc_access_kind kind,
                               const filc_origin* origin);
+
+/* NOTE: At some point, we should let this exit, but we should be careful: if it exits then all
+   checks we did previously have to at least go through check_accessible again. */
 void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind kind,
                            const filc_origin* origin);
 void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);

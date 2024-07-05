@@ -86,6 +86,7 @@
 #include <sys/uuid.h>
 #include <kenv.h>
 #include <sys/regression.h>
+#include <sys/_semaphore.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3141,6 +3142,65 @@ int filc_native_zsys_kenv(filc_thread* my_thread, int action, filc_ptr name_ptr,
 int filc_native_zsys___setugid(filc_thread* my_thread, int flag)
 {
     return FILC_SYSCALL(my_thread, __setugid(flag));
+}
+
+int filc_native_zsys_ksem_close(filc_thread* my_thread, long id)
+{
+    return FILC_SYSCALL(my_thread, ksem_close(id));
+}
+
+int filc_native_zsys_ksem_post(filc_thread* my_thread, long id)
+{
+    return FILC_SYSCALL(my_thread, ksem_post(id));
+}
+
+int filc_native_zsys_ksem_wait(filc_thread* my_thread, long id)
+{
+    return FILC_SYSCALL(my_thread, ksem_wait(id));
+}
+
+int filc_native_zsys_ksem_trywait(filc_thread* my_thread, long id)
+{
+    return FILC_SYSCALL(my_thread, ksem_trywait(id));
+}
+
+int filc_native_zsys_ksem_timedwait(filc_thread* my_thread, long id, filc_ptr abstime_ptr)
+{
+    filc_cpt_read_int(my_thread, abstime_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(
+        my_thread, ksem_timedwait(id, (const struct timespec*)filc_ptr_ptr(abstime_ptr)));
+}
+
+int filc_native_zsys_ksem_init(filc_thread* my_thread, filc_ptr id_ptr, unsigned value)
+{
+    filc_cpt_write_int(my_thread, id_ptr, sizeof(semid_t));
+    return FILC_SYSCALL(my_thread, ksem_init((semid_t*)filc_ptr_ptr(id_ptr), value));
+}
+
+int filc_native_zsys_ksem_open(filc_thread* my_thread, filc_ptr id_ptr, filc_ptr name_ptr, int oflag,
+                               unsigned short mode, unsigned value)
+{
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
+    filc_cpt_write_int(my_thread, id_ptr, sizeof(semid_t));
+    return FILC_SYSCALL(
+        my_thread, ksem_open((semid_t*)filc_ptr_ptr(id_ptr), name, oflag, mode, value));
+}
+
+int filc_native_zsys_ksem_unlink(filc_thread* my_thread, filc_ptr name_ptr)
+{
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
+    return FILC_SYSCALL(my_thread, ksem_unlink(name));
+}
+
+int filc_native_zsys_ksem_getvalue(filc_thread* my_thread, long id, filc_ptr val_ptr)
+{
+    filc_cpt_write_int(my_thread, val_ptr, sizeof(int));
+    return FILC_SYSCALL(my_thread, ksem_getvalue(id, (int*)filc_ptr_ptr(val_ptr)));
+}
+
+int filc_native_zsys_ksem_destroy(filc_thread* my_thread, long id)
+{
+    return FILC_SYSCALL(my_thread, ksem_destroy(id));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

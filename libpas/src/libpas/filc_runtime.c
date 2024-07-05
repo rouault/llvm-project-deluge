@@ -2659,7 +2659,13 @@ static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
     /* FIXME: Eventually, we'll want this to exit.
      
        If we do make it exit, then we'll have to make sure that we check that the object is not
-       FREE, since any exit might observe munmap. */
+       FREE, since any exit might observe munmap.
+
+       And - that will mean that any checks done before the check_int will have to check FREE again
+       (i.e. check_accessible).
+
+       This suggests that when we do this, we should make it optional and then be very carefuly where
+       we deploy it. */
 
     for (word_type_index = first_word_type_index;
          word_type_index <= last_word_type_index;

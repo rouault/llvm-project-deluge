@@ -202,6 +202,16 @@ int zsys_sendfile(int fd, int s, long offset, __SIZE_TYPE__ nbytes, void* hdtr, 
 int zsys_uuidgen(void* store, int count);
 int zsys_kenv(int action, const char* name, char* value, int len);
 int zsys___setugid(int flag);
+int zsys_ksem_close(long id);
+int zsys_ksem_post(long id);
+int zsys_ksem_wait(long id);
+int zsys_ksem_trywait(long id);
+int zsys_ksem_timeswait(long id, const void* abstime);
+int zsys_ksem_init(long* idp, unsigned value);
+int zsys_ksem_open(long* idp, const char* name, int oflag, unsigned short mode, unsigned value);
+int zsys_ksem_unlink(const char* name);
+int zsys_ksem_getvalue(long id, int* val);
+int zsys_ksem_destroy(long id);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
