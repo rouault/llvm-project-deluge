@@ -31,7 +31,9 @@
 int zsys_unmount(const char* dir, int flags);
 int zsys_nmount(void* iov, unsigned niov, int flags);
 int zsys_chflags(const char* path, unsigned long flags);
+int zsys_lchflags(const char* path, unsigned long flags);
 int zsys_fchflags(int fd, unsigned long flags);
+int zsys_chflagsat(int fd, const char* path, unsigned long flags, int atflag);
 int zsys_profil(char* samples, __SIZE_TYPE__ size, unsigned long offset, int scale);
 int zsys_setlogin(const char* name);
 int zsys_acct(const char* file);
@@ -197,6 +199,7 @@ int zsys_eaccess(const char* path, int mode);
 int zsys_mac_syscall(const char* policyname, int call, void* arg);
 int zsys_sendfile(int fd, int s, long offset, __SIZE_TYPE__ nbytes, void* hdtr, long* sbytes,
                   int flags);
+int zsys_uuidgen(void* store, int count);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

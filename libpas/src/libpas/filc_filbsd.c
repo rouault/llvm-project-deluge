@@ -83,6 +83,7 @@
 #include <sys/event.h>
 #include <sys/mac.h>
 #include <sys/uio.h>
+#include <sys/uuid.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -816,26 +817,25 @@ int filc_native_zsys_nmount(filc_thread* my_thread, filc_ptr iov_ptr, unsigned n
 int filc_native_zsys_chflags(filc_thread* my_thread, filc_ptr path_ptr, unsigned long flags)
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_exit(my_thread);
-    int result = chflags(path, flags);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, chflags(path, flags));
+}
+
+int filc_native_zsys_lchflags(filc_thread* my_thread, filc_ptr path_ptr, unsigned long flags)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, lchflags(path, flags));
 }
 
 int filc_native_zsys_fchflags(filc_thread* my_thread, int fd, unsigned long flags)
 {
-    filc_exit(my_thread);
-    int result = fchflags(fd, flags);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, fchflags(fd, flags));
+}
+
+int filc_native_zsys_chflagsat(filc_thread* my_thread, int fd, filc_ptr path_ptr, unsigned long flags,
+                               int atflag)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, chflagsat(fd, path, flags, atflag));
 }
 
 int filc_native_zsys_profil(filc_thread* my_thread, filc_ptr samples_ptr, size_t size,
@@ -3100,6 +3100,12 @@ int filc_native_zsys_sendfile(filc_thread* my_thread, int fd, int s, long offset
         filc_cpt_write_int(my_thread, sbytes_ptr, sizeof(long));
     return FILC_SYSCALL(my_thread, sendfile(fd, s, offset, nbytes, hdtr,
                                             (off_t*)filc_ptr_ptr(sbytes_ptr), flags));
+}
+
+int filc_native_zsys_uuidgen(filc_thread* my_thread, filc_ptr store_ptr, int count)
+{
+    filc_cpt_write_int(my_thread, store_ptr, filc_mul_size(sizeof(struct uuid), count));
+    return FILC_SYSCALL(my_thread, uuidgen((struct uuid*)filc_ptr_ptr(store_ptr), count));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
