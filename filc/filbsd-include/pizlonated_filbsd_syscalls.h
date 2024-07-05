@@ -201,6 +201,7 @@ int zsys_sendfile(int fd, int s, long offset, __SIZE_TYPE__ nbytes, void* hdtr, 
                   int flags);
 int zsys_uuidgen(void* store, int count);
 int zsys_kenv(int action, const char* name, char* value, int len);
+int zsys___setugid(int flag);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

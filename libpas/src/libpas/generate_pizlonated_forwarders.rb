@@ -477,6 +477,7 @@ forFilBSD {
     addSig "int", "zsys_sendfile", "int", "int", "long", "size_t", "filc_ptr", "filc_ptr", "int"
     addSig "int", "zsys_uuidgen", "filc_ptr", "int"
     addSig "int", "zsys_kenv", "int", "filc_ptr", "filc_ptr", "int"
+    addSig "int", "zsys___setugid", "int"
 }
 
 case ARGV[0]

@@ -85,6 +85,7 @@
 #include <sys/uio.h>
 #include <sys/uuid.h>
 #include <kenv.h>
+#include <sys/regression.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3135,6 +3136,11 @@ int filc_native_zsys_kenv(filc_thread* my_thread, int action, filc_ptr name_ptr,
         return -1;
     }
     return FILC_SYSCALL(my_thread, kenv(action, name, value, len));
+}
+
+int filc_native_zsys___setugid(filc_thread* my_thread, int flag)
+{
+    return FILC_SYSCALL(my_thread, __setugid(flag));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
