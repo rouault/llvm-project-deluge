@@ -84,6 +84,7 @@
 #include <sys/mac.h>
 #include <sys/uio.h>
 #include <sys/uuid.h>
+#include <kenv.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3106,6 +3107,34 @@ int filc_native_zsys_uuidgen(filc_thread* my_thread, filc_ptr store_ptr, int cou
 {
     filc_cpt_write_int(my_thread, store_ptr, filc_mul_size(sizeof(struct uuid), count));
     return FILC_SYSCALL(my_thread, uuidgen((struct uuid*)filc_ptr_ptr(store_ptr), count));
+}
+
+int filc_native_zsys_kenv(filc_thread* my_thread, int action, filc_ptr name_ptr, filc_ptr value_ptr,
+                          int len)
+{
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
+    char* value;
+    switch (action) {
+    case KENV_GET:
+    case KENV_DUMP:
+    case KENV_DUMP_LOADER:
+    case KENV_DUMP_STATIC:
+        filc_cpt_write_int(my_thread, value_ptr, len);
+        value = (char*)filc_ptr_ptr(value_ptr);
+        break;
+    case KENV_SET:
+        filc_cpt_read_int(my_thread, value_ptr, len);
+        value = (char*)filc_ptr_ptr(value_ptr);
+        break;
+    case KENV_UNSET:
+        value = NULL;
+        len = 0;
+        break;
+    default:
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    return FILC_SYSCALL(my_thread, kenv(action, name, value, len));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
