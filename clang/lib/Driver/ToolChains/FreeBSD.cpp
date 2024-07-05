@@ -338,6 +338,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // Once we switch to using the FreeBSD libc, then we'll have to actually emit -lpthread as
     // necessary, and we'll probably have to emit -lm for C++, too.
     Args.ClaimAllArgs(options::OPT_pthread);
+    if (D.CCCIsCXX())
+      CmdArgs.push_back("/usr/lib/libm.so");
     CmdArgs.push_back("/usr/lib/libc.so");
     CmdArgs.push_back("-lpizlo");
     if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,

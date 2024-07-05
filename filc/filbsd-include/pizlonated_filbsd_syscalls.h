@@ -194,6 +194,9 @@ int zsys___mac_set_link(const char* path, void* mac);
 int zsys___mac_set_proc(void* mac);
 int zsys___mac_execve(const char* fname, char** argv, char** env, void* mac);
 int zsys_eaccess(const char* path, int mode);
+int zsys_mac_syscall(const char* policyname, int call, void* arg);
+int zsys_sendfile(int fd, int s, long offset, __SIZE_TYPE__ nbytes, void* hdtr, long* sbytes,
+                  int flags);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

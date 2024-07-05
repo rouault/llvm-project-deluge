@@ -82,6 +82,7 @@
 #include <sys/extattr.h>
 #include <sys/event.h>
 #include <sys/mac.h>
+#include <sys/uio.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3040,6 +3041,65 @@ int filc_native_zsys_eaccess(filc_thread* my_thread, filc_ptr path_ptr, int mode
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, eaccess(path, mode));
+}
+
+typedef struct {
+    char* policyname;
+    int call;
+    int result;
+} mac_syscall_data;
+
+static void mac_syscall_callback(void* guarded_arg,
+                                 void* user_arg)
+{
+    mac_syscall_data* data = (mac_syscall_data*)user_arg;
+    data->result = mac_syscall(data->policyname, data->call, guarded_arg);
+}
+
+int filc_native_zsys_mac_syscall(filc_thread* my_thread, filc_ptr policyname_ptr, int call,
+                                 filc_ptr arg_ptr)
+{
+    mac_syscall_data data;
+    data.policyname = filc_check_and_get_tmp_str(my_thread, policyname_ptr);
+    data.call = call;
+    filc_call_syscall_with_guarded_ptr(my_thread, arg_ptr, mac_syscall_callback, &data);
+    return data.result;
+}
+
+struct user_sf_hdtr {
+	filc_ptr headers;	/* pointer to an array of header struct iovec's */
+	int hdr_cnt;		/* number of header iovec's */
+	filc_ptr trailers;	/* pointer to an array of trailer struct iovec's */
+	int trl_cnt;		/* number of trailer iovec's */
+};
+
+static void check_user_sf_hdtr(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(ptr, struct user_sf_hdtr, headers, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_sf_hdtr, hdr_cnt, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_sf_hdtr, trailers, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_sf_hdtr, trl_cnt, access_kind);
+}
+
+int filc_native_zsys_sendfile(filc_thread* my_thread, int fd, int s, long offset, size_t nbytes,
+                              filc_ptr hdtr_ptr, filc_ptr sbytes_ptr, int flags)
+{
+    struct sf_hdtr* hdtr = NULL;
+    if (filc_ptr_ptr(hdtr_ptr)) {
+        hdtr = alloca(sizeof(struct sf_hdtr));
+        check_user_sf_hdtr(hdtr_ptr, filc_read_access);
+        struct user_sf_hdtr* user_hdtr = (struct user_sf_hdtr*)filc_ptr_ptr(hdtr_ptr);
+        filc_ptr headers_ptr = filc_ptr_load(my_thread, &user_hdtr->headers);
+        hdtr->hdr_cnt = user_hdtr->hdr_cnt;
+        hdtr->headers = filc_prepare_iovec(my_thread, headers_ptr, hdtr->hdr_cnt, filc_read_access);
+        filc_ptr trailers_ptr = filc_ptr_load(my_thread, &user_hdtr->trailers);
+        hdtr->trl_cnt = user_hdtr->trl_cnt;
+        hdtr->trailers = filc_prepare_iovec(my_thread, trailers_ptr, hdtr->trl_cnt, filc_read_access);
+    }
+    if (filc_ptr_ptr(sbytes_ptr))
+        filc_cpt_write_int(my_thread, sbytes_ptr, sizeof(long));
+    return FILC_SYSCALL(my_thread, sendfile(fd, s, offset, nbytes, hdtr,
+                                            (off_t*)filc_ptr_ptr(sbytes_ptr), flags));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
