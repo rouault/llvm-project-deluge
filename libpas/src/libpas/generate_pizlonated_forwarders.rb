@@ -488,6 +488,15 @@ forFilBSD {
     addSig "int", "zsys_ksem_unlink", "filc_ptr"
     addSig "int", "zsys_ksem_getvalue", "long", "filc_ptr"
     addSig "int", "zsys_ksem_destroy", "long"
+    addSig "int", "zsys_audit", "filc_ptr", "int"
+    addSig "int", "zsys_auditon", "int", "filc_ptr", "int"
+    addSig "int", "zsys_auditctl", "filc_ptr"
+    addSig "int", "zsys_getauid", "filc_ptr"
+    addSig "int", "zsys_setauid", "filc_ptr"
+    addSig "int", "zsys_getaudit", "filc_ptr"
+    addSig "int", "zsys_setaudit", "filc_ptr"
+    addSig "int", "zsys_getaudit_addr", "filc_ptr", "int"
+    addSig "int", "zsys_setaudit_addr", "filc_ptr", "int"
 }
 
 case ARGV[0]

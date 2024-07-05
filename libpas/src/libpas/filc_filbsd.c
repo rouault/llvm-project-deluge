@@ -87,6 +87,7 @@
 #include <kenv.h>
 #include <sys/regression.h>
 #include <sys/_semaphore.h>
+#include <bsm/audit.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3201,6 +3202,62 @@ int filc_native_zsys_ksem_getvalue(filc_thread* my_thread, long id, filc_ptr val
 int filc_native_zsys_ksem_destroy(filc_thread* my_thread, long id)
 {
     return FILC_SYSCALL(my_thread, ksem_destroy(id));
+}
+
+int filc_native_zsys_audit(filc_thread* my_thread, filc_ptr record_ptr, int length)
+{
+    filc_cpt_read_int(my_thread, record_ptr, length);
+    return FILC_SYSCALL(my_thread, audit(filc_ptr_ptr(record_ptr), length));
+}
+
+int filc_native_zsys_auditon(filc_thread* my_thread, int cmd, filc_ptr data_ptr, int length)
+{
+    filc_cpt_write_int(my_thread, data_ptr, length);
+    return FILC_SYSCALL(my_thread, auditon(cmd, filc_ptr_ptr(data_ptr), length));
+}
+
+int filc_native_zsys_auditctl(filc_thread* my_thread, filc_ptr path_ptr)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, auditctl(path));
+}
+
+int filc_native_zsys_getauid(filc_thread* my_thread, filc_ptr uid_ptr)
+{
+    filc_cpt_write_int(my_thread, uid_ptr, sizeof(au_id_t));
+    return FILC_SYSCALL(my_thread, getauid((au_id_t*)filc_ptr_ptr(uid_ptr)));
+}
+
+int filc_native_zsys_setauid(filc_thread* my_thread, filc_ptr uid_ptr)
+{
+    filc_cpt_read_int(my_thread, uid_ptr, sizeof(au_id_t));
+    return FILC_SYSCALL(my_thread, setauid((const au_id_t*)filc_ptr_ptr(uid_ptr)));
+}
+
+int filc_native_zsys_getaudit(filc_thread* my_thread, filc_ptr info_ptr)
+{
+    filc_cpt_write_int(my_thread, info_ptr, sizeof(struct auditinfo));
+    return FILC_SYSCALL(my_thread, getaudit((struct auditinfo*)filc_ptr_ptr(info_ptr)));
+}
+
+int filc_native_zsys_setaudit(filc_thread* my_thread, filc_ptr info_ptr)
+{
+    filc_cpt_read_int(my_thread, info_ptr, sizeof(struct auditinfo));
+    return FILC_SYSCALL(my_thread, setaudit((const struct auditinfo*)filc_ptr_ptr(info_ptr)));
+}
+
+int filc_native_zsys_getaudit_addr(filc_thread* my_thread, filc_ptr addr_ptr, int length)
+{
+    filc_cpt_write_int(my_thread, addr_ptr, length);
+    return FILC_SYSCALL(my_thread, getaudit_addr((struct auditinfo_addr*)filc_ptr_ptr(addr_ptr),
+                                                 length));
+}
+
+int filc_native_zsys_setaudit_addr(filc_thread* my_thread, filc_ptr addr_ptr, int length)
+{
+    filc_cpt_read_int(my_thread, addr_ptr, length);
+    return FILC_SYSCALL(my_thread, setaudit_addr((const struct auditinfo_addr*)filc_ptr_ptr(addr_ptr),
+                                                 length));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

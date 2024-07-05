@@ -206,12 +206,21 @@ int zsys_ksem_close(long id);
 int zsys_ksem_post(long id);
 int zsys_ksem_wait(long id);
 int zsys_ksem_trywait(long id);
-int zsys_ksem_timeswait(long id, const void* abstime);
+int zsys_ksem_timedwait(long id, const void* abstime);
 int zsys_ksem_init(long* idp, unsigned value);
 int zsys_ksem_open(long* idp, const char* name, int oflag, unsigned short mode, unsigned value);
 int zsys_ksem_unlink(const char* name);
 int zsys_ksem_getvalue(long id, int* val);
 int zsys_ksem_destroy(long id);
+int zsys_audit(const void* record, int length);
+int zsys_auditon(int cmd, void* data, int length);
+int zsys_auditctl(const char* path);
+int zsys_getauid(unsigned* uid);
+int zsys_setauid(const unsigned* uid);
+int zsys_getaudit(void* info);
+int zsys_setaudit(const void* info);
+int zsys_getaudit_addr(void* addr, int length);
+int zsys_setaudit_addr(const void* addr, int length);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
