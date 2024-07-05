@@ -221,6 +221,14 @@ int zsys_getaudit(void* info);
 int zsys_setaudit(const void* info);
 int zsys_getaudit_addr(void* addr, int length);
 int zsys_setaudit_addr(const void* addr, int length);
+int zsys_kmq_notify(int oshandle, const void* event);
+int zsys_kmq_open(const char* name, int oflag, unsigned short mode, const void* attr);
+int zsys_kmq_setattr(int oshandle, const void* new_attr, void* old_attr);
+long zsys_kmq_timedreceive(int oshandle, char* buf, __SIZE_TYPE__ len, unsigned* prio,
+                           const void* timeout);
+int zsys_kmq_timedsend(int oshandle, const char* buf, __SIZE_TYPE__ len, unsigned prio,
+                       const void* timeout);
+int zsys_kmq_unlink(const char* name);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

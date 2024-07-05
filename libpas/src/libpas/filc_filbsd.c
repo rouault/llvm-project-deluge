@@ -88,6 +88,7 @@
 #include <sys/regression.h>
 #include <sys/_semaphore.h>
 #include <bsm/audit.h>
+#include <sys/mqueue.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3258,6 +3259,74 @@ int filc_native_zsys_setaudit_addr(filc_thread* my_thread, filc_ptr addr_ptr, in
     filc_cpt_read_int(my_thread, addr_ptr, length);
     return FILC_SYSCALL(my_thread, setaudit_addr((const struct auditinfo_addr*)filc_ptr_ptr(addr_ptr),
                                                  length));
+}
+
+int kmq_notify(int, const struct sigevent *);
+int kmq_open(const char *, int, mode_t, const struct mq_attr *);
+int kmq_setattr(int, const struct mq_attr *, struct mq_attr *);
+ssize_t	kmq_timedreceive(int, char *, size_t, unsigned *, const struct timespec *);
+int kmq_timedsend(int, const char *, size_t, unsigned, const struct timespec *);
+int kmq_unlink(const char *);
+
+int filc_native_zsys_kmq_notify(filc_thread* my_thread, int oshandle, filc_ptr event_ptr)
+{
+    if (filc_ptr_ptr(event_ptr))
+        filc_cpt_read_int(my_thread, event_ptr, sizeof(struct sigevent));
+    return FILC_SYSCALL(my_thread, kmq_notify(oshandle,
+                                              (const struct sigevent*)filc_ptr_ptr(event_ptr)));
+}
+
+int filc_native_zsys_kmq_open(filc_thread* my_thread, filc_ptr name_ptr, int oflag,
+                              unsigned short mode, filc_ptr attr_ptr)
+{
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
+    if (filc_ptr_ptr(attr_ptr))
+        filc_cpt_read_int(my_thread, attr_ptr, sizeof(struct mq_attr));
+    return FILC_SYSCALL(my_thread, kmq_open(name, oflag, mode,
+                                            (const struct mq_attr*)filc_ptr_ptr(attr_ptr)));
+}
+
+int filc_native_zsys_kmq_setattr(filc_thread* my_thread, int oshandle, filc_ptr new_attr_ptr,
+                                 filc_ptr old_attr_ptr)
+{
+    if (filc_ptr_ptr(old_attr_ptr))
+        filc_cpt_write_int(my_thread, old_attr_ptr, sizeof(struct mq_attr));
+    if (filc_ptr_ptr(new_attr_ptr))
+        filc_cpt_read_int(my_thread, new_attr_ptr, sizeof(struct mq_attr));
+    return FILC_SYSCALL(my_thread, kmq_setattr(oshandle,
+                                               (const struct mq_attr*)filc_ptr_ptr(new_attr_ptr),
+                                               (struct mq_attr*)filc_ptr_ptr(old_attr_ptr)));
+}
+
+long filc_native_zsys_kmq_timedreceive(filc_thread* my_thread, int oshandle, filc_ptr buf_ptr,
+                                       size_t len, filc_ptr prio_ptr, filc_ptr timeout_ptr)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, len);
+    if (filc_ptr_ptr(prio_ptr))
+        filc_cpt_write_int(my_thread, prio_ptr, sizeof(unsigned));
+    if (filc_ptr_ptr(timeout_ptr))
+        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(
+        my_thread, kmq_timedreceive(oshandle, (char*)filc_ptr_ptr(buf_ptr), len,
+                                    (unsigned*)filc_ptr_ptr(prio_ptr),
+                                    (const struct timespec*)filc_ptr_ptr(timeout_ptr)));
+}
+
+int filc_native_zsys_kmq_timedsend(filc_thread* my_thread, int oshandle, filc_ptr buf_ptr, size_t len,
+                                   unsigned prio, filc_ptr timeout_ptr)
+{
+    filc_cpt_read_int(my_thread, buf_ptr, len);
+    if (filc_ptr_ptr(timeout_ptr))
+        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(my_thread, kmq_timedsend(oshandle, (const char*)filc_ptr_ptr(buf_ptr), len,
+                                                 prio,
+                                                 (const struct timespec*)filc_ptr_ptr(timeout_ptr)));
+}
+
+int filc_native_zsys_kmq_unlink(filc_thread* my_thread, filc_ptr name_ptr)
+{
+    char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
+    return FILC_SYSCALL(my_thread, kmq_unlink(name));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

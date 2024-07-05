@@ -497,6 +497,12 @@ forFilBSD {
     addSig "int", "zsys_setaudit", "filc_ptr"
     addSig "int", "zsys_getaudit_addr", "filc_ptr", "int"
     addSig "int", "zsys_setaudit_addr", "filc_ptr", "int"
+    addSig "int", "zsys_kmq_notify", "int", "filc_ptr"
+    addSig "int", "zsys_kmq_open", "filc_ptr", "int", "unsigned short", "filc_ptr"
+    addSig "int", "zsys_kmq_setattr", "int", "filc_ptr", "filc_ptr"
+    addSig "long", "zsys_kmq_timedreceive", "int", "filc_ptr", "size_t", "filc_ptr", "filc_ptr"
+    addSig "int", "zsys_kmq_timedsend", "int", "filc_ptr", "size_t", "unsigned", "filc_ptr"
+    addSig "int", "zsys_kmq_unlink", "filc_ptr"
 }
 
 case ARGV[0]
