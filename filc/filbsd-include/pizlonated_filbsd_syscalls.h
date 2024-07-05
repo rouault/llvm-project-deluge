@@ -229,6 +229,7 @@ long zsys_kmq_timedreceive(int oshandle, char* buf, __SIZE_TYPE__ len, unsigned*
 int zsys_kmq_timedsend(int oshandle, const char* buf, __SIZE_TYPE__ len, unsigned prio,
                        const void* timeout);
 int zsys_kmq_unlink(const char* name);
+int zsys__umtx_op(void* obj, int op, unsigned long value, void* uaddr, void* uaddr2);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

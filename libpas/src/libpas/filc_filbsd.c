@@ -89,6 +89,7 @@
 #include <sys/_semaphore.h>
 #include <bsm/audit.h>
 #include <sys/mqueue.h>
+#include <sys/umtx.h>
 
 #define _ACL_PRIVATE 1
 #include <sys/acl.h>
@@ -3327,6 +3328,108 @@ int filc_native_zsys_kmq_unlink(filc_thread* my_thread, filc_ptr name_ptr)
 {
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, kmq_unlink(name));
+}
+
+static void setup_umtx_timeout(filc_thread* my_thread, void** uaddr, void** uaddr2,
+                               filc_ptr uaddr_ptr, filc_ptr uaddr2_ptr)
+{
+    if (filc_ptr_ptr(uaddr2_ptr)) {
+        if ((size_t)filc_ptr_ptr(uaddr_ptr) > sizeof(struct timespec)) {
+            *uaddr = filc_ptr_ptr(uaddr_ptr);
+            filc_cpt_read_int(my_thread, uaddr2_ptr, (size_t)*uaddr);
+        } else
+            filc_cpt_read_int(my_thread, uaddr2_ptr, sizeof(struct timespec));
+        *uaddr2 = filc_ptr_ptr(uaddr2_ptr);
+    }
+}
+
+int filc_native_zsys__umtx_op(filc_thread* my_thread, filc_ptr obj_ptr, int op, unsigned long val,
+                              filc_ptr uaddr_ptr, filc_ptr uaddr2_ptr)
+{
+    void* obj = filc_ptr_ptr(obj_ptr);
+    void* uaddr = NULL;
+    void* uaddr2 = NULL;
+    switch (op) {
+    case UMTX_OP_MUTEX_LOCK:
+    case UMTX_OP_MUTEX_WAIT:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct umutex));
+        setup_umtx_timeout(my_thread, &uaddr, &uaddr2, uaddr_ptr, uaddr2_ptr);
+        break;
+    case UMTX_OP_MUTEX_UNLOCK:
+    case UMTX_OP_MUTEX_TRYLOCK:
+    case UMTX_OP_MUTEX_WAKE2:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct umutex));
+        break;
+    case UMTX_OP_SET_CEILING:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct umutex));
+        filc_cpt_write_int(my_thread, uaddr_ptr, sizeof(unsigned));
+        uaddr = filc_ptr_ptr(uaddr_ptr);
+        break;
+    case UMTX_OP_WAIT:
+        filc_cpt_read_int(my_thread, obj_ptr, sizeof(long));
+        setup_umtx_timeout(my_thread, &uaddr, &uaddr2, uaddr_ptr, uaddr2_ptr);
+        break;
+    case UMTX_OP_WAIT_UINT:
+    case UMTX_OP_WAIT_UINT_PRIVATE:
+        filc_cpt_read_int(my_thread, obj_ptr, sizeof(unsigned));
+        setup_umtx_timeout(my_thread, &uaddr, &uaddr2, uaddr_ptr, uaddr2_ptr);
+        break;
+    case UMTX_OP_WAKE:
+    case UMTX_OP_WAKE_PRIVATE:
+        /* We can pass the ptr through to the kernel without checks since it's just being used as
+           the queue key. */
+        break;
+    case UMTX_OP_CV_WAIT:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct ucond));
+        filc_cpt_write_int(my_thread, uaddr_ptr, sizeof(struct umutex));
+        uaddr = filc_ptr_ptr(uaddr_ptr);
+        filc_cpt_read_int(my_thread, uaddr2_ptr, sizeof(struct timespec));
+        uaddr2 = filc_ptr_ptr(uaddr2_ptr);
+        break;
+    case UMTX_OP_CV_SIGNAL:
+    case UMTX_OP_CV_BROADCAST:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct ucond));
+        break;
+    case UMTX_OP_RW_RDLOCK:
+    case UMTX_OP_RW_WRLOCK:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct urwlock));
+        setup_umtx_timeout(my_thread, &uaddr, &uaddr2, uaddr_ptr, uaddr2_ptr);
+        break;
+    case UMTX_OP_RW_UNLOCK:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct urwlock));
+        break;
+    case UMTX_OP_SEM2_WAKE:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct _usem2));
+        break;
+    case UMTX_OP_SEM2_WAIT:
+        filc_cpt_write_int(my_thread, obj_ptr, sizeof(struct _usem2));
+        setup_umtx_timeout(my_thread, &uaddr, &uaddr2, uaddr_ptr, uaddr2_ptr);
+        break;
+    case UMTX_OP_SET_MIN_TIMEOUT:
+        obj = NULL;
+        break;
+    case UMTX_OP_NWAKE_PRIVATE:
+        filc_cpt_read_int(my_thread, obj_ptr, filc_mul_size(sizeof(filc_ptr), val));
+        break;
+    case UMTX_OP_SHM:
+        /* Not 100% sure about this, but whatever.
+
+           I think this is OK because the uaddr_ptr is just used as a key and the kernel doesn't
+           modify anything at this address. */
+        obj = NULL;
+        uaddr = filc_ptr_ptr(uaddr_ptr);
+        break;
+    case UMTX_OP_ROBUST_LISTS:
+        /* We cannot support this feature, since it involves the kernel fiddling with pointers in
+           our address space. It's just too crazy of a feature for comfort. Also, nobody uses robust
+           mutexes. They are the ultimate checkbox feature. */
+        filc_set_errno(ENOSYS);
+        return -1;
+    default:
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    return FILC_SYSCALL(my_thread, _umtx_op(obj, op, val, uaddr, uaddr2));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

@@ -503,6 +503,7 @@ forFilBSD {
     addSig "long", "zsys_kmq_timedreceive", "int", "filc_ptr", "size_t", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_kmq_timedsend", "int", "filc_ptr", "size_t", "unsigned", "filc_ptr"
     addSig "int", "zsys_kmq_unlink", "filc_ptr"
+    addSig "int", "zsys__umtx_op", "filc_ptr", "int", "unsigned long", "filc_ptr", "filc_ptr"
 }
 
 case ARGV[0]
