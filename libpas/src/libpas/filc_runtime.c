@@ -6397,6 +6397,12 @@ int filc_native_zsys_sigpending(filc_thread* my_thread, filc_ptr set_ptr)
     return 0;
 }
 
+int filc_native_zsys_truncate(filc_thread* my_thread, filc_ptr path_ptr, long length)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, truncate(path, length));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

@@ -262,6 +262,7 @@ addSig "int", "zsys_munlock", "filc_ptr", "size_t"
 addSig "int", "zsys_mlockall", "int"
 addSig "int", "zsys_munlockall"
 addSig "int", "zsys_sigpending", "filc_ptr"
+addSig "int", "zsys_truncate", "filc_ptr", "long"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
@@ -504,6 +505,7 @@ forFilBSD {
     addSig "int", "zsys_kmq_timedsend", "int", "filc_ptr", "size_t", "unsigned", "filc_ptr"
     addSig "int", "zsys_kmq_unlink", "filc_ptr"
     addSig "int", "zsys__umtx_op", "filc_ptr", "int", "unsigned long", "filc_ptr", "filc_ptr"
+    addSig "void", "zsys_abort2", "filc_ptr", "int", "filc_ptr"
 }
 
 case ARGV[0]

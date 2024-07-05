@@ -3343,6 +3343,19 @@ static void setup_umtx_timeout(filc_thread* my_thread, void** uaddr, void** uadd
     }
 }
 
+static void** from_raw_ptr_array(filc_thread* my_thread, filc_ptr ptrs_array, int nptrs)
+{
+    void** result = filc_bmalloc_allocate_tmp(my_thread, filc_mul_size(sizeof(void*), nptrs));
+    size_t index;
+    for (index = (size_t)nptrs; index--;) {
+        filc_ptr ptr_ptr = filc_ptr_with_offset(ptrs_array, filc_mul_size(sizeof(filc_ptr), index));
+        filc_check_read_ptr(ptr_ptr, NULL);
+        result[index] = filc_ptr_ptr(
+            filc_ptr_load_with_manual_tracking((filc_ptr*)filc_ptr_ptr(ptr_ptr)));
+    }
+    return result;
+}
+
 int filc_native_zsys__umtx_op(filc_thread* my_thread, filc_ptr obj_ptr, int op, unsigned long val,
                               filc_ptr uaddr_ptr, filc_ptr uaddr2_ptr)
 {
@@ -3408,9 +3421,10 @@ int filc_native_zsys__umtx_op(filc_thread* my_thread, filc_ptr obj_ptr, int op, 
     case UMTX_OP_SET_MIN_TIMEOUT:
         obj = NULL;
         break;
-    case UMTX_OP_NWAKE_PRIVATE:
-        filc_cpt_read_int(my_thread, obj_ptr, filc_mul_size(sizeof(filc_ptr), val));
+    case UMTX_OP_NWAKE_PRIVATE: {
+        obj = from_raw_ptr_array(my_thread, obj_ptr, val);
         break;
+    }
     case UMTX_OP_SHM:
         /* Not 100% sure about this, but whatever.
 
@@ -3430,6 +3444,15 @@ int filc_native_zsys__umtx_op(filc_thread* my_thread, filc_ptr obj_ptr, int op, 
         return -1;
     }
     return FILC_SYSCALL(my_thread, _umtx_op(obj, op, val, uaddr, uaddr2));
+}
+
+void filc_native_zsys_abort2(filc_thread* my_thread, filc_ptr why_ptr, int nargs, filc_ptr args_ptr)
+{
+    char* why = filc_check_and_get_tmp_str(my_thread, why_ptr);
+    void** args = from_raw_ptr_array(my_thread, args_ptr, nargs);
+    filc_exit(my_thread);
+    abort2(why, nargs, args);
+    filc_safety_panic(NULL, "abort2 failed.");
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

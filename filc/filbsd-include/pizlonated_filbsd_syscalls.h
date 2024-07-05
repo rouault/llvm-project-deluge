@@ -230,6 +230,7 @@ int zsys_kmq_timedsend(int oshandle, const char* buf, __SIZE_TYPE__ len, unsigne
                        const void* timeout);
 int zsys_kmq_unlink(const char* name);
 int zsys__umtx_op(void* obj, int op, unsigned long value, void* uaddr, void* uaddr2);
+void zsys_abort2(const char* why, int nargs, void** args);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 
