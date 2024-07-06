@@ -76,6 +76,12 @@ build/$(OBJPREFIX)-verifier-%.o: src/verifier/%.cpp
 build/$(OBJPREFIX)-pas-pizlo-release-filc_runtime.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-pizlo-test-filc_runtime.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-test-filc_runtime.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-release-filc_musl.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-test-filc_musl.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-test-filc_musl.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-release-filc_filbsd.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-test-filc_filbsd.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-test-filc_filbsd.o: src/libpas/filc_native.h
 
 ../$(PREFIXDIR)/lib/filc_crt.o: $(MAINSRC)
 	$(PASCC) -c -o ../$(PREFIXDIR)/lib/filc_crt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=1
