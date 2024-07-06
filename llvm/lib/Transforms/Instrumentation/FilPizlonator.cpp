@@ -3491,9 +3491,11 @@ public:
 
         std::vector<PHINode*> Phis;
         for (Instruction* I : Instructions) {
-          if (PHINode* Phi = dyn_cast<PHINode>(I))
+          if (PHINode* Phi = dyn_cast<PHINode>(I)) {
             Phis.push_back(Phi);
-          else if (!Phis.empty()) {
+            continue;
+          }
+          if (!Phis.empty()) {
             for (PHINode* Phi : Phis)
               recordObjects(Phi, I);
             Phis.clear();
@@ -3505,6 +3507,7 @@ public:
           else
             recordObjects(I, I->getNextNode());
         }
+        assert(Phis.empty());
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I); });
         for (Instruction* I : Instructions)
           lowerInstruction(I, LowRawNull);
