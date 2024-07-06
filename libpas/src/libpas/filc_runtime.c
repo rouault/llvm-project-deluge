@@ -6403,6 +6403,21 @@ int filc_native_zsys_truncate(filc_thread* my_thread, filc_ptr path_ptr, long le
     return FILC_SYSCALL(my_thread, truncate(path, length));
 }
 
+int filc_native_zsys_linkat(filc_thread* my_thread, int user_fd1, filc_ptr path1_ptr, int user_fd2,
+                            filc_ptr path2_ptr, int user_flags)
+{
+    int fd1 = filc_from_user_atfd(user_fd1);
+    char* path1 = filc_check_and_get_tmp_str(my_thread, path1_ptr);
+    int fd2 = filc_from_user_atfd(user_fd2);
+    char* path2 = filc_check_and_get_tmp_str(my_thread, path2_ptr);
+    int flags;
+    if (!from_user_fstatat_flag(user_flags, &flags)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    return FILC_SYSCALL(my_thread, linkat(fd1, path1, fd2, path2, flags));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

@@ -231,6 +231,12 @@ int zsys_kmq_timedsend(int oshandle, const char* buf, __SIZE_TYPE__ len, unsigne
 int zsys_kmq_unlink(const char* name);
 int zsys__umtx_op(void* obj, int op, unsigned long value, void* uaddr, void* uaddr2);
 void zsys_abort2(const char* why, int nargs, void** args);
+int zsys_futimesat(int fd, const char* path, const void* times);
+int zsys_fexecve(int fd, char*const* argv, char*const* envp);
+int zsys_fchmodat(int fd, const char* path, unsigned short mode, int flag);
+int zsys_cpuset_getaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize, void* mask);
+int zsys_cpuset_setaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize,
+                            const void* mask);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

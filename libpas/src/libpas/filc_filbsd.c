@@ -2085,13 +2085,18 @@ int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
         filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
     }
     filc_exit(my_thread);
-    int result = futimes(fd, (const struct timeval*)filc_ptr_ptr(times_ptr));
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    return FILC_SYSCALL(my_thread, futimes(fd, (const struct timeval*)filc_ptr_ptr(times_ptr)));
+}
+
+int filc_native_zsys_futimesat(filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, futimesat(fd, path,
+                                             (const struct timeval*)filc_ptr_ptr(times_ptr)));
 }
 
 int ktimer_create(clockid_t, struct sigevent *__restrict, int *__restrict);
@@ -3453,6 +3458,36 @@ void filc_native_zsys_abort2(filc_thread* my_thread, filc_ptr why_ptr, int nargs
     filc_exit(my_thread);
     abort2(why, nargs, args);
     filc_safety_panic(NULL, "abort2 failed.");
+}
+
+int filc_native_zsys_fexecve(filc_thread* my_thread, int fd, filc_ptr argv_ptr, filc_ptr envp_ptr)
+{
+    char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
+    char** envp = filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr);
+    return FILC_SYSCALL(my_thread, fexecve(fd, argv, envp));
+}
+
+int filc_native_zsys_fchmodat(filc_thread* my_thread, int fd, filc_ptr path_ptr, unsigned short mode,
+                              int flag)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, fchmodat(fd, path, mode, flag));
+}
+
+int filc_native_zsys_cpuset_getaffinity(filc_thread* my_thread, int level, int which, long long id,
+                                        size_t setsize, filc_ptr mask_ptr)
+{
+    filc_cpt_write_int(my_thread, mask_ptr, setsize);
+    return FILC_SYSCALL(my_thread, cpuset_getaffinity(level, which, id, setsize,
+                                                      (cpuset_t*)filc_ptr_ptr(mask_ptr)));
+}
+
+int filc_native_zsys_cpuset_setaffinity(filc_thread* my_thread, int level, int which, long long id,
+                                        size_t setsize, filc_ptr mask_ptr)
+{
+    filc_cpt_read_int(my_thread, mask_ptr, setsize);
+    return FILC_SYSCALL(my_thread, cpuset_setaffinity(level, which, id, setsize,
+                                                      (const cpuset_t*)filc_ptr_ptr(mask_ptr)));
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */

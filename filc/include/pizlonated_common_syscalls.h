@@ -145,5 +145,6 @@ int zsys_mlockall(int flags);
 int zsys_munlockall(void);
 int zsys_sigpending(void* set);
 int zsys_truncate(const char* path, long length);
+int zsys_linkat(int fd1, const char* name1, int fd2, const char* name2, int flag);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */
