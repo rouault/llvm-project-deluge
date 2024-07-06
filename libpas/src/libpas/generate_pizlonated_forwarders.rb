@@ -512,6 +512,9 @@ forFilBSD {
     addSig "int", "zsys_fchmodat", "int", "filc_ptr", "unsigned short", "int"
     addSig "int", "zsys_cpuset_getaffinity", "int", "int", "long long", "size_t", "filc_ptr"
     addSig "int", "zsys_cpuset_setaffinity", "int", "int", "long long", "size_t", "filc_ptr"
+    addSig "int", "zsys_cpuset", "filc_ptr"
+    addSig "int", "zsys_cpuset_setid", "int", "long long", "int"
+    addSig "int", "zsys_cpuset_getid", "int", "int", "long long", "filc_ptr"
 }
 
 case ARGV[0]

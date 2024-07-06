@@ -237,6 +237,9 @@ int zsys_fchmodat(int fd, const char* path, unsigned short mode, int flag);
 int zsys_cpuset_getaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize, void* mask);
 int zsys_cpuset_setaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize,
                             const void* mask);
+int zsys_cpuset(int* setid);
+int zsys_cpuset_setid(int which, long long id, int setid);
+int zsys_cpuset_getid(int level, int which, long long id, int* setid);
 
 #endif /* PIZLONATED_FILBSD_SYSCALLS_H */
 

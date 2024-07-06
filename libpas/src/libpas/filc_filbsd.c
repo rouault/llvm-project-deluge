@@ -3490,6 +3490,25 @@ int filc_native_zsys_cpuset_setaffinity(filc_thread* my_thread, int level, int w
                                                       (const cpuset_t*)filc_ptr_ptr(mask_ptr)));
 }
 
+int filc_native_zsys_cpuset(filc_thread* my_thread, filc_ptr setid_ptr)
+{
+    filc_cpt_write_int(my_thread, setid_ptr, sizeof(cpusetid_t));
+    return FILC_SYSCALL(my_thread, cpuset((cpusetid_t*)filc_ptr_ptr(setid_ptr)));
+}
+
+int filc_native_zsys_cpuset_setid(filc_thread* my_thread, int which, long long id, int setid)
+{
+    return FILC_SYSCALL(my_thread, cpuset_setid(which, id, setid));
+}
+
+int filc_native_zsys_cpuset_getid(filc_thread* my_thread, int level, int which, long long id,
+                                  filc_ptr setid_ptr)
+{
+    filc_cpt_write_int(my_thread, setid_ptr, sizeof(cpusetid_t));
+    return FILC_SYSCALL(my_thread, cpuset_getid(level, which, id,
+                                                (cpusetid_t*)filc_ptr_ptr(setid_ptr)));
+}
+
 #endif /* PAS_ENABLE_FILC && FILC_FILBSD */
 
 #endif /* LIBPAS_ENABLED */
