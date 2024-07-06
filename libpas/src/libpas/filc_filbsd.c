@@ -1117,68 +1117,6 @@ int filc_native_zsys_flock(filc_thread* my_thread, int fd, int operation)
     return result;
 }
 
-int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned short mode)
-{
-    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_exit(my_thread);
-    int result = mkfifo(path, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
-{
-    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    return FILC_SYSCALL(my_thread, chmod(pathname, mode));
-}
-
-int filc_native_zsys_lchmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
-{
-    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    return FILC_SYSCALL(my_thread, lchmod(pathname, mode));
-}
-
-int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned short mode)
-{
-    filc_exit(my_thread);
-    int result = fchmod(fd, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_mkdirat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr, unsigned short mode)
-{
-    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    filc_exit(my_thread);
-    int result = mkdirat(dirfd, pathname, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned short mode)
-{
-    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    filc_exit(my_thread);
-    int result = mkdir(pathname, mode);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
 static int utimes_impl(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr,
                        int (*actual_utimes)(const char*, const struct timeval*))
 {
@@ -3465,13 +3403,6 @@ int filc_native_zsys_fexecve(filc_thread* my_thread, int fd, filc_ptr argv_ptr, 
     char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
     char** envp = filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr);
     return FILC_SYSCALL(my_thread, fexecve(fd, argv, envp));
-}
-
-int filc_native_zsys_fchmodat(filc_thread* my_thread, int fd, filc_ptr path_ptr, unsigned short mode,
-                              int flag)
-{
-    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    return FILC_SYSCALL(my_thread, fchmodat(fd, path, mode, flag));
 }
 
 int filc_native_zsys_cpuset_getaffinity(filc_thread* my_thread, int level, int which, long long id,

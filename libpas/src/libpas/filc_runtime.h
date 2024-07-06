@@ -749,6 +749,12 @@ struct filc_jmp_buf {
     filc_object* objects[];
 };
 
+#if FILC_FILBSD
+typedef unsigned short pizlonated_mode_t;
+#else
+typedef unsigned pizlonated_mode_t;
+#endif
+
 #if FILC_MUSL
 struct filc_user_itimerval;
 struct filc_user_rlimit;
@@ -1853,6 +1859,14 @@ static inline size_t filc_ptr_get_next_size_t(filc_ptr* ptr)
     slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(size_t), alignof(size_t));
     filc_check_read_int(slot_ptr, sizeof(size_t), NULL);
     return *(size_t*)filc_ptr_ptr(slot_ptr);
+}
+
+static inline pizlonated_mode_t filc_ptr_get_next_pizlonated_mode_t(filc_ptr* ptr)
+{
+    filc_ptr slot_ptr;
+    slot_ptr = filc_ptr_get_next_bytes(ptr, sizeof(pizlonated_mode_t), alignof(pizlonated_mode_t));
+    filc_check_read_int(slot_ptr, sizeof(pizlonated_mode_t), NULL);
+    return *(pizlonated_mode_t*)filc_ptr_ptr(slot_ptr);
 }
 
 static inline double filc_ptr_get_next_double(filc_ptr* ptr)

@@ -77,9 +77,6 @@ int zsys_posix_spawn(int* pid, const char* path, const void* file_actions, const
                      char*const* argv, char*const* envp);
 int zsys_posix_spawnp(int* pid, const char* path, const void* file_actions, const void* attrp,
                       char*const* argv, char*const* envp);
-int zsys_chmod(const char* pathname, unsigned mode);
-int zsys_fchmod(int fd, unsigned mode);
-int zsys_mkdirat(int dirfd, const char* pathname, unsigned mode);
 
 #endif /* PIZLONATED_MUSL_SYSCALLS_H */
 

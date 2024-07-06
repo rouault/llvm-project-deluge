@@ -26,7 +26,7 @@
 def checkType(type)
     case type
     when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
-         "ssize_t", 'unsigned short', 'unsigned long long', 'long long'
+         "ssize_t", 'unsigned short', 'unsigned long long', 'long long', 'pizlonated_mode_t'
     else
         raise "Bad type #{type}"
     end
@@ -264,6 +264,13 @@ addSig "int", "zsys_munlockall"
 addSig "int", "zsys_sigpending", "filc_ptr"
 addSig "int", "zsys_truncate", "filc_ptr", "long"
 addSig "int", "zsys_linkat", "int", "filc_ptr", "int", "filc_ptr", "int"
+addSig "int", "zsys_chmod", "filc_ptr", "pizlonated_mode_t"
+addSig "int", "zsys_lchmod", "filc_ptr", "pizlonated_mode_t"
+addSig "int", "zsys_fchmod", "int", "pizlonated_mode_t"
+addSig "int", "zsys_mkfifo", "filc_ptr", "pizlonated_mode_t"
+addSig "int", "zsys_mkdirat", "int", "filc_ptr", "pizlonated_mode_t"
+addSig "int", "zsys_mkdir", "filc_ptr", "pizlonated_mode_t"
+addSig "int", "zsys_fchmodat", "int", "filc_ptr", "pizlonated_mode_t", "int"
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
 addSig "unsigned", "zthread_self_id"
@@ -310,9 +317,6 @@ forMusl {
            "filc_ptr"
     addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr",
            "filc_ptr"
-    addSig "int", "zsys_chmod", "filc_ptr", "unsigned"
-    addSig "int", "zsys_fchmod", "int", "unsigned"
-    addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned"
 }
 forFilBSD {
     addSig "int", "zsys_unmount", "filc_ptr", "int"
@@ -339,12 +343,6 @@ forFilBSD {
     addSig "int", "zsys_settimeofday", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_getrusage", "int", "filc_ptr"
     addSig "int", "zsys_flock", "int", "int"
-    addSig "int", "zsys_mkfifo", "filc_ptr", "unsigned short"
-    addSig "int", "zsys_chmod", "filc_ptr", "unsigned short"
-    addSig "int", "zsys_lchmod", "filc_ptr", "unsigned short"
-    addSig "int", "zsys_fchmod", "int", "unsigned short"
-    addSig "int", "zsys_mkdirat", "int", "filc_ptr", "unsigned short"
-    addSig "int", "zsys_mkdir", "filc_ptr", "unsigned short"
     addSig "int", "zsys_utimes", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_lutimes", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_adjtime", "filc_ptr", "filc_ptr"
@@ -509,7 +507,6 @@ forFilBSD {
     addSig "void", "zsys_abort2", "filc_ptr", "int", "filc_ptr"
     addSig "int", "zsys_futimesat", "int", "filc_ptr", "filc_ptr"
     addSig "int", "zsys_fexecve", "int", "filc_ptr", "filc_ptr"
-    addSig "int", "zsys_fchmodat", "int", "filc_ptr", "unsigned short", "int"
     addSig "int", "zsys_cpuset_getaffinity", "int", "int", "long long", "size_t", "filc_ptr"
     addSig "int", "zsys_cpuset_setaffinity", "int", "int", "long long", "size_t", "filc_ptr"
     addSig "int", "zsys_cpuset", "filc_ptr"

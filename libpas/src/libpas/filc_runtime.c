@@ -4707,13 +4707,13 @@ int filc_to_user_open_flags(int flags)
 int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_flags, filc_ptr args)
 {
     int flags = filc_from_user_open_flags(user_flags);
-    int mode = 0;
-    if (flags >= 0 && (flags & O_CREAT))
-        mode = filc_ptr_get_next_int(&args);
     if (flags < 0) {
         filc_set_errno(EINVAL);
         return -1;
     }
+    pizlonated_mode_t mode = 0;
+    if (flags >= 0 && (flags & O_CREAT))
+        mode = filc_ptr_get_next_pizlonated_mode_t(&args);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
@@ -6416,6 +6416,55 @@ int filc_native_zsys_linkat(filc_thread* my_thread, int user_fd1, filc_ptr path1
         return -1;
     }
     return FILC_SYSCALL(my_thread, linkat(fd1, path1, fd2, path2, flags));
+}
+
+int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, chmod(pathname, mode));
+}
+
+int filc_native_zsys_lchmod(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, lchmod(pathname, mode));
+}
+
+int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, pizlonated_mode_t mode)
+{
+    return FILC_SYSCALL(my_thread, fchmod(fd, mode));
+}
+
+int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, pizlonated_mode_t mode)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, mkfifo(path, mode));
+}
+
+int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr,
+                             pizlonated_mode_t mode)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, mkdirat(filc_from_user_atfd(user_dirfd), pathname, mode));
+}
+
+int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+{
+    char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
+    return FILC_SYSCALL(my_thread, mkdir(pathname, mode));
+}
+
+int filc_native_zsys_fchmodat(filc_thread* my_thread, int user_fd, filc_ptr path_ptr,
+                              pizlonated_mode_t mode, int user_flag)
+{
+    int fd = filc_from_user_atfd(user_fd);
+    int flag;
+    if (!from_user_fstatat_flag(user_flag, &flag)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, fchmodat(fd, path, mode, flag));
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

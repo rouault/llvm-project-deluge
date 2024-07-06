@@ -52,12 +52,6 @@ int zsys_gettimeofday(void* tp, void* tzp);
 int zsys_settimeofday(const void* tp, const void* tzp);
 int zsys_getrusage(int who, void* rusage);
 int zsys_flock(int fd, int operation);
-int zsys_mkfifo(const char* path, unsigned short mode);
-int zsys_chmod(const char* pathname, unsigned short mode);
-int zsys_lchmod(const char* pathname, unsigned short mode);
-int zsys_fchmod(int fd, unsigned short mode);
-int zsys_mkdirat(int dirfd, const char* pathname, unsigned short mode);
-int zsys_mkdir(const char* path, unsigned short mode);
 int zsys_utimes(const char* path, const void* times);
 int zsys_lutimes(const char* path, const void* times);
 int zsys_adjtime(const void* delta, void* olddelta);
@@ -233,7 +227,6 @@ int zsys__umtx_op(void* obj, int op, unsigned long value, void* uaddr, void* uad
 void zsys_abort2(const char* why, int nargs, void** args);
 int zsys_futimesat(int fd, const char* path, const void* times);
 int zsys_fexecve(int fd, char*const* argv, char*const* envp);
-int zsys_fchmodat(int fd, const char* path, unsigned short mode, int flag);
 int zsys_cpuset_getaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize, void* mask);
 int zsys_cpuset_setaffinity(int level, int which, long long id, __SIZE_TYPE__ setsize,
                             const void* mask);

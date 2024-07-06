@@ -27,6 +27,7 @@
 #define PIZLONATED_COMMON_SYSCALLS_H
 
 #include <stdfil.h>
+#include <pizlonated_types.h>
 
 /* This file defines pizlonated syscall APIs that are common between all POSIX target variants.
 
@@ -146,5 +147,12 @@ int zsys_munlockall(void);
 int zsys_sigpending(void* set);
 int zsys_truncate(const char* path, long length);
 int zsys_linkat(int fd1, const char* name1, int fd2, const char* name2, int flag);
+int zsys_chmod(const char* pathname, pizlonated_mode_t mode);
+int zsys_lchmod(const char* pathname, pizlonated_mode_t mode);
+int zsys_fchmod(int fd, pizlonated_mode_t mode);
+int zsys_mkfifo(const char* path, pizlonated_mode_t mode);
+int zsys_mkdirat(int dirfd, const char* pathname, pizlonated_mode_t mode);
+int zsys_mkdir(const char* path, pizlonated_mode_t mode);
+int zsys_fchmodat(int fd, const char* path, pizlonated_mode_t mode, int flag);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */
