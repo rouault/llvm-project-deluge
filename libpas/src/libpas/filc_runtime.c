@@ -3181,6 +3181,7 @@ void filc_memcpy_for_zreturn(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
     filc_push_frame(my_thread, frame);
 
     filc_check_access_common(src, count, filc_read_access, NULL);
+    filc_check_access_common(dst, count, filc_write_access, NULL);
     memmove_impl(my_thread, dst, src, count, filc_unbarriered, filc_not_pollchecked);
     
     filc_pop_frame(my_thread, frame);
