@@ -2871,28 +2871,12 @@ void filc_low_level_ptr_safe_bzero_with_exit(
     filc_unpin(object);
 }
 
-void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
-                 const filc_origin* passed_origin)
+/* Assumes the dst pointer is traked by GC. Assumes that count is nonzero. */
+PAS_ALWAYS_INLINE static void memset_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value,
+                                          size_t count)
 {
     static const bool verbose = false;
     char* raw_ptr;
-    
-    if (!count)
-        return;
-    
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
-
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 1);
-    struct {
-        FILC_FRAME_BODY;
-        filc_object* objects[1];
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
-    frame->objects[0] = filc_ptr_object(ptr);
-    filc_push_frame(my_thread, frame);
     
     raw_ptr = filc_ptr_ptr(ptr);
     
@@ -2914,7 +2898,7 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
         if (aligned_start > end || aligned_end < start) {
             check_int(ptr, count, NULL);
             memset(raw_ptr, 0, count);
-            goto done;
+            return;
         }
         if (aligned_start > start) {
             check_int(ptr, aligned_start - start, NULL);
@@ -2927,13 +2911,35 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
             check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
             memset(aligned_end, 0, end - aligned_end);
         }
-        goto done;
-    } else {
-        check_int(ptr, count, NULL);
-        filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
+        return;
     }
+    
+    check_int(ptr, count, NULL);
+    filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
+}
 
-done:
+void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
+                 const filc_origin* passed_origin)
+{
+    if (!count)
+        return;
+    
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 1);
+    struct {
+        FILC_FRAME_BODY;
+        filc_object* objects[1];
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    frame->objects[0] = filc_ptr_object(ptr);
+    filc_push_frame(my_thread, frame);
+
+    memset_impl(my_thread, ptr, value, count);
+
     filc_pop_frame(my_thread, frame);
 }
 
@@ -2971,6 +2977,8 @@ static void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr sr
     PAS_ASSERT(!"Bad part");
 }
 
+/* Assumes you've done check_access_common on the dst/src. Assumes that the dst/src are tracked by
+   GC. Assumes that count is nonzero. */
 PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
                                            size_t count, filc_barrier_mode barriered,
                                            filc_pollcheck_mode pollchecked)
@@ -3243,6 +3251,23 @@ filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr
     bmalloc_deallocate(ret_object);
     
     return result;
+}
+
+void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)
+{
+    if (!count)
+        return;
+    memset_impl(my_thread, dst_ptr, value, count);
+}
+
+void filc_native_zmemmove(filc_thread* my_thread, filc_ptr dst_ptr, filc_ptr src_ptr, size_t count)
+{
+    if (!count)
+        return;
+    
+    filc_check_access_common(src_ptr, count, filc_read_access, NULL);
+    filc_check_access_common(dst_ptr, count, filc_write_access, NULL);
+    memmove_impl(my_thread, dst_ptr, src_ptr, count, filc_barriered, filc_pollchecked);
 }
 
 int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)

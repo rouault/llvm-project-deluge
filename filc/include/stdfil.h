@@ -192,6 +192,46 @@ void* zxorptr(void* ptr, unsigned long bits);
    you have some kind of tagging in `~mask`. */
 void* zretagptr(void* newptr, void* oldptr, unsigned long mask);
 
+/* Direct access to the runtime's internal memset/memmove.
+
+   Using the normal memset/memmove may result in the compiler optimizing them to loads and stores,
+   which then go through normal checking. But the runtime's internal implementations are much more
+   forgiving:
+
+   - zmemset with a zero value does not set the type of the memory; it just leaves it alone. This means
+     that after the zmemset-to-zero executes, you can still use the memory using whatever type you
+     like. The only exception is if you memset a misaligned smidgen (like not all 16 bytes of a word).
+     In that case, the type is set to int.
+
+     Note that you will get this behavior from any memset/bzero or even zeroing loop inferred as bzero
+     that the compiler doesn't then turn into direct stores.
+
+   - zmemmove will detect when it's copying zeroes. Any pointer-wide zeroes in the source will leave the
+     destination memory in whatever type it had previously. This is true even if the source is
+     misaligned relative to the destination. The main copying loop moves over the destination in a word
+     aligned manner, so if the "phase" of the src and dst relative to word size is different, the loop
+     is performing misaligned loads from the source. If such a misaligned load yields a zero - even as
+     a result of a race - then the destination is also zeroed (atomically) and its type is left
+     unchanged.
+
+     Note that you will get this behavior for any memcpy/memmove or even coping loop inferred as memcpy
+     that the compiler doesn't then turn into direct loads/stores.
+
+   Hence:
+
+   - If you're zeroing or copying memory (with loops or calls) in a way that obeys the C types, then
+     you don't have to do anything; it'll just work.
+
+   - If you're zeroing or copying memory (with loops or calls) in a way that plays fast and loose with
+     types, then you might have to call these functions instead.
+
+   It's worth noting that loops that copy/set pointers will never get turned into memset/memcpy, since
+   the MemCpyOptimizer avoids doing so for nonintegral pointers. Fil-C uses nonintegral pointers. But
+   the reverse is true. You might have a loop that copies bytes; that might get turned int a memcpy,
+   and then it might get the forgiving behavior. */
+void zmemset(void* dst, unsigned value, __SIZE_TYPE__ count);
+void zmemmove(void* dst, void* src, __SIZE_TYPE__ count);
+
 /* The pointer-nullifying memmove.
    
    This memmove will kill your process if anything goes out of bounds.
