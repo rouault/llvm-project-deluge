@@ -207,10 +207,10 @@ ConstantAggregateBuilderBase::addPlaceholderWithSize(llvm::Type *type) {
   auto position = addPlaceholder();
 
   // Advance the offset past that field.
-  auto &layout = Builder.CGM.getDataLayout();
+  auto &layout = Builder.CGM.getDataLayoutBeforeFilC();
   if (!Packed)
-    offset = offset.alignTo(CharUnits::fromQuantity(layout.getABITypeAlignBeforeFilC(type)));
-  offset += CharUnits::fromQuantity(layout.getTypeStoreSizeBeforeFilC(type));
+    offset = offset.alignTo(CharUnits::fromQuantity(layout.getABITypeAlign(type)));
+  offset += CharUnits::fromQuantity(layout.getTypeStoreSize(type));
 
   CachedOffsetEnd = Builder.Buffer.size();
   CachedOffsetFromGlobal = offset;
@@ -241,7 +241,7 @@ CharUnits ConstantAggregateBuilderBase::getOffsetFromGlobalTo(size_t end) const{
 
   // Perform simple layout on the elements in cacheEnd..<end.
   if (cacheEnd != end) {
-    auto &layout = Builder.CGM.getDataLayout();
+    auto &layout = Builder.CGM.getDataLayoutBeforeFilC();
     do {
       llvm::Constant *element = Builder.Buffer[cacheEnd];
       assert(element != nullptr &&
@@ -249,8 +249,8 @@ CharUnits ConstantAggregateBuilderBase::getOffsetFromGlobalTo(size_t end) const{
       llvm::Type *elementType = element->getType();
       if (!Packed)
         offset = offset.alignTo(
-            CharUnits::fromQuantity(layout.getABITypeAlignBeforeFilC(elementType)));
-      offset += CharUnits::fromQuantity(layout.getTypeStoreSizeBeforeFilC(elementType));
+            CharUnits::fromQuantity(layout.getABITypeAlign(elementType)));
+      offset += CharUnits::fromQuantity(layout.getTypeStoreSize(elementType));
     } while (++cacheEnd != end);
   }
 

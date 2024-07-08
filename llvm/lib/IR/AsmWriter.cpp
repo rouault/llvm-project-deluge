@@ -2803,6 +2803,9 @@ void AssemblyWriter::printModule(const Module *M) {
   const std::string &DL = M->getDataLayoutStr();
   if (!DL.empty())
     Out << "target datalayout = \"" << DL << "\"\n";
+  const std::string &DLAfterFilC = M->getDataLayoutAfterFilCStr();
+  if (!DLAfterFilC.empty())
+    Out << "target datalayout_after_filc = \"" << DLAfterFilC << "\"\n";
   if (!M->getTargetTriple().empty())
     Out << "target triple = \"" << M->getTargetTriple() << "\"\n";
 

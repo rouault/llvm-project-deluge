@@ -615,7 +615,7 @@ ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy, bool isVariadic,
     if (getTarget().isRenderScriptTarget()) {
       return coerceToIntArray(RetTy, getContext(), getVMContext());
     }
-    if (getDataLayout().isBigEndian())
+    if (getDataLayoutBeforeFilC().isBigEndian())
       // Return in 32 bit integer integer type (as if loaded by LDR, AAPCS 5.4)
       return ABIArgInfo::getDirect(llvm::Type::getInt32Ty(getVMContext()));
 
@@ -710,7 +710,7 @@ bool ARMSwiftABIInfo::isLegalVectorType(CharUnits VectorSize, llvm::Type *EltTy,
                                         unsigned NumElts) const {
   if (!llvm::isPowerOf2_32(NumElts))
     return false;
-  unsigned size = CGT.getDataLayout().getTypeStoreSizeInBitsBeforeFilC(EltTy);
+  unsigned size = CGT.getDataLayoutBeforeFilC().getTypeStoreSizeInBits(EltTy);
   if (size > 64)
     return false;
   if (VectorSize.getQuantity() != 8 &&

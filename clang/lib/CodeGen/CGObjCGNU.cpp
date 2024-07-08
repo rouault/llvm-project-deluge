@@ -277,7 +277,7 @@ protected:
       // int size; (only in GNUstep v2 ABI.
       if (isRuntime(ObjCRuntime::GNUstep, 2)) {
         llvm::DataLayout td(&TheModule);
-        Fields.addInt(IntTy, td.getTypeSizeInBitsBeforeFilC(PropertyMetadataTy) /
+        Fields.addInt(IntTy, td.getTypeSizeInBits(PropertyMetadataTy) /
             CGM.getContext().getCharWidth());
       }
       // struct objc_property_list *next;
@@ -1172,7 +1172,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
     MethodList.addInt(IntTy, Methods.size());
     // int size; // sizeof(struct objc_method_description)
     llvm::DataLayout td(&TheModule);
-    MethodList.addInt(IntTy, td.getTypeSizeInBitsBeforeFilC(ObjCMethodDescTy) /
+    MethodList.addInt(IntTy, td.getTypeSizeInBits(ObjCMethodDescTy) /
         CGM.getContext().getCharWidth());
     // struct objc_method_description[]
     auto MethodArray = MethodList.beginArray(ObjCMethodDescTy);
@@ -1831,7 +1831,7 @@ class CGObjCGNUstep2 : public CGObjCGNUstep {
         PtrToInt8Ty,
         Int32Ty,
         Int32Ty);
-      ivarListBuilder.addInt(SizeTy, td.getTypeSizeInBitsBeforeFilC(ObjCIvarTy) /
+      ivarListBuilder.addInt(SizeTy, td.getTypeSizeInBits(ObjCIvarTy) /
           CGM.getContext().getCharWidth());
       // struct objc_ivar ivars[]
       auto ivarArrayBuilder = ivarListBuilder.beginArray();
@@ -2180,7 +2180,7 @@ CGObjCGNU::CGObjCGNU(CodeGenModule &cgm, unsigned runtimeABIVersion,
   Int64Ty = llvm::Type::getInt64Ty(VMContext);
 
   IntPtrTy =
-      CGM.getDataLayout().getPointerSizeInBits() == 32 ? Int32Ty : Int64Ty;
+      CGM.getDataLayoutAfterFilC().getPointerSizeInBits() == 32 ? Int32Ty : Int64Ty;
 
   // Object type
   QualType UnqualIdTy = CGM.getContext().getObjCIdType();
@@ -2885,7 +2885,7 @@ GenerateMethodList(StringRef ClassName,
   if (isV2ABI) {
     // size_t size;
     llvm::DataLayout td(&TheModule);
-    MethodList.addInt(SizeTy, td.getTypeSizeInBitsBeforeFilC(ObjCMethodTy) /
+    MethodList.addInt(SizeTy, td.getTypeSizeInBits(ObjCMethodTy) /
         CGM.getContext().getCharWidth());
     ObjCMethodTy =
       llvm::StructType::get(CGM.getLLVMContext(), {
@@ -3028,7 +3028,7 @@ llvm::Constant *CGObjCGNU::GenerateClassStructure(
   if (isMeta) {
     llvm::DataLayout td(&TheModule);
     Elements.addInt(LongTy,
-                    td.getTypeSizeInBitsBeforeFilC(ClassTy) /
+                    td.getTypeSizeInBits(ClassTy) /
                       CGM.getContext().getCharWidth());
   } else
     Elements.add(InstanceSize);
@@ -3289,7 +3289,7 @@ void CGObjCGNU::GenerateProtocolHolderCategory() {
 /// bitfield / with the 63rd bit set will be 1<<64.
 llvm::Constant *CGObjCGNU::MakeBitField(ArrayRef<bool> bits) {
   int bitCount = bits.size();
-  int ptrBits = CGM.getDataLayout().getPointerSizeInBits();
+  int ptrBits = CGM.getDataLayoutAfterFilC().getPointerSizeInBits();
   if (bitCount < ptrBits) {
     uint64_t val = 1;
     for (int i=0 ; i<bitCount ; ++i) {
@@ -3856,7 +3856,7 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
     // Runtime version, used for ABI compatibility checking.
     module.addInt(LongTy, RuntimeVersion);
     // sizeof(ModuleTy)
-    module.addInt(LongTy, CGM.getDataLayout().getTypeStoreSizeBeforeFilC(moduleTy));
+    module.addInt(LongTy, CGM.getDataLayoutBeforeFilC().getTypeStoreSize(moduleTy));
 
     // The path to the source file where this module was declared
     SourceManager &SM = CGM.getContext().getSourceManager();

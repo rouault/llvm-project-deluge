@@ -828,6 +828,6 @@ unsigned CodeGenTypes::getTargetAddressSpace(QualType T) const {
   // program address space is used. Otherwise, the target picks
   // the best address space based on the type information
   return T->isFunctionType() && !T.hasAddressSpace()
-             ? getDataLayout().getProgramAddressSpace()
+             ? getDataLayoutBeforeFilC().getProgramAddressSpace()
              : getContext().getTargetAddressSpace(T.getAddressSpace());
 }

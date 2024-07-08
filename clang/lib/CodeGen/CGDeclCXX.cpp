@@ -1048,7 +1048,7 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
       EmitInvariantStart(
           Guard.getPointer(),
           CharUnits::fromQuantity(
-              CGM.getDataLayout().getTypeAllocSizeBeforeFilC(GuardVal->getType())));
+              CGM.getDataLayoutBeforeFilC().getTypeAllocSize(GuardVal->getType())));
     }
 
     RunCleanupsScope Scope(*this);

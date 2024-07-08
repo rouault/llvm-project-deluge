@@ -1,6 +1,7 @@
 ; ModuleID = 'hello.c'
 source_filename = "hello.c"
-target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target datalayout = "e-m:o-p:128:128:128:64:64-ni:0-i64:64-i128:128-n32:64-S128"
+target datalayout_after_filc = "e-m:o-i64:64-i128:128-n32:64-S128"
 target triple = "arm64-apple-macosx12.0.0"
 
 @str = private unnamed_addr constant [7 x i8] c"Hello!\00", align 1

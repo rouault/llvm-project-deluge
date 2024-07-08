@@ -13,9 +13,9 @@ static void handler(int signo)
 int main()
 {
     signal(SIGUSR1, handler);
-    unsigned i;
+    volatile unsigned i;
     for (i = 1000; i--;) {
-        int x = 42;
+        volatile int x = 42;
         int result = setjmp(jb);
         if (result) {
             ZASSERT(result == 1410);

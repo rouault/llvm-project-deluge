@@ -186,8 +186,13 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : Triple(T) {
 // Out of line virtual dtor for TargetInfo.
 TargetInfo::~TargetInfo() {}
 
-void TargetInfo::resetDataLayout(StringRef DL, const char *ULP) {
-  DataLayoutString = DL.str();
+void TargetInfo::resetDataLayout(StringRef, const char *) {
+  llvm_unreachable("YOLO version of resetDataLayout called");
+}
+
+void TargetInfo::resetDataLayout(StringRef DLBeforeFilC, StringRef DLAfterFilC, const char *ULP) {
+  DataLayoutStringBeforeFilC = DLBeforeFilC.str();
+  DataLayoutStringAfterFilC = DLAfterFilC.str();
   UserLabelPrefix = ULP;
 }
 

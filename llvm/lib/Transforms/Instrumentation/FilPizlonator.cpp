@@ -379,7 +379,8 @@ class Pizlonator {
   
   LLVMContext& C;
   Module &M;
-  DataLayout& DL;
+  const DataLayout& DLBefore;
+  const DataLayout& DL;
 
   unsigned PtrBits;
   Type* VoidTy;
@@ -656,13 +657,13 @@ class Pizlonator {
     Type* LowT = lowerTypeImpl(T);
     assert(T->isSized() == LowT->isSized());
     if (T->isSized()) {
-      if (DL.getTypeStoreSizeBeforeFilC(T) != DL.getTypeStoreSize(LowT)) {
+      if (DLBefore.getTypeStoreSize(T) != DL.getTypeStoreSize(LowT)) {
         errs() << "Error lowering type: " << *T << "\n"
                << "Type after lowering: " << *LowT << "\n"
-               << "Predicted lowered size: " << DL.getTypeStoreSizeBeforeFilC(T) << "\n"
+               << "Predicted lowered size: " << DLBefore.getTypeStoreSize(T) << "\n"
                << "Actual lowered size: " << DL.getTypeStoreSize(LowT) << "\n";
       }
-      assert(DL.getTypeStoreSizeBeforeFilC(T) == DL.getTypeStoreSize(LowT));
+      assert(DLBefore.getTypeStoreSize(T) == DL.getTypeStoreSize(LowT));
     }
     LoweredTypes[T] = LowT;
     return LowT;
@@ -2750,7 +2751,7 @@ class Pizlonator {
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_thread_local_initializer_root", Initializer);
         Value* Result = CallInst::Create(
           Malloc,
-          { ConstantInt::get(IntPtrTy, DL.getTypeAllocSizeBeforeFilC(G->getInitializer()->getType())) },
+          { ConstantInt::get(IntPtrTy, DLBefore.getTypeAllocSize(G->getInitializer()->getType())) },
           "filc_thread_local_allocate", RootBB);
         new StoreInst(G->getInitializer(), Result, RootBB);
         ReturnInst::Create(C, Result, RootBB);
@@ -3031,12 +3032,19 @@ class Pizlonator {
 
 public:
   Pizlonator(Module &M)
-    : C(M.getContext()), M(M), DL(const_cast<DataLayout&>(M.getDataLayout())) {
+    : C(M.getContext()), M(M), DLBefore(M.getDataLayout()), DL(M.getDataLayoutAfterFilC()) {
   }
 
   void run() {
     if (verbose)
       errs() << "Going to town on module:\n" << M << "\n";
+
+    assert(DLBefore.getPointerSizeInBits(TargetAS) == 128);
+    assert(DLBefore.getPointerABIAlignment(TargetAS) == 16);
+    assert(DLBefore.isNonIntegralAddressSpace(TargetAS));
+    assert(DL.getPointerSizeInBits(TargetAS) == 64);
+    assert(DL.getPointerABIAlignment(TargetAS) == 8);
+    assert(!DL.isNonIntegralAddressSpace(TargetAS));
 
     PtrBits = DL.getPointerSizeInBits(TargetAS);
     VoidTy = Type::getVoidTy(C);
@@ -3568,6 +3576,8 @@ public:
       G->replaceAllUsesWith(UndefValue::get(G->getType())); // FIXME - should be zero
     for (GlobalValue* G : ToDelete)
       G->eraseFromParent();
+
+    M.setDataLayout(M.getDataLayoutAfterFilC());
     
     if (verbose)
       errs() << "Here's the pizlonated module:\n" << M << "\n";

@@ -363,7 +363,7 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
   CharUnits VarSize = CGM.getContext().getTypeSizeInChars(D.getType()) +
                       D.getFlexibleArrayInitChars(getContext());
   CharUnits CstSize = CharUnits::fromQuantity(
-      CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Init->getType()));
+      CGM.getDataLayoutBeforeFilC().getTypeAllocSize(Init->getType()));
   assert(VarSize == CstSize && "Emitted constant has unexpected size");
 #endif
 
@@ -1058,8 +1058,8 @@ static llvm::Constant *constStructWithPadding(CodeGenModule &CGM,
                                               IsPattern isPattern,
                                               llvm::StructType *STy,
                                               llvm::Constant *constant) {
-  const llvm::DataLayout &DL = CGM.getDataLayout();
-  const llvm::StructLayout *Layout = DL.getStructLayoutBeforeFilC(STy);
+  const llvm::DataLayout &DL = CGM.getDataLayoutBeforeFilC();
+  const llvm::StructLayout *Layout = DL.getStructLayout(STy);
   llvm::Type *Int8Ty = llvm::IntegerType::getInt8Ty(CGM.getLLVMContext());
   unsigned SizeSoFar = 0;
   SmallVector<llvm::Constant *, 8> Values;
@@ -1080,7 +1080,7 @@ static llvm::Constant *constStructWithPadding(CodeGenModule &CGM,
     if (CurOp != NewOp)
       NestedIntact = false;
     Values.push_back(NewOp);
-    SizeSoFar = CurOff + DL.getTypeAllocSizeBeforeFilC(CurOp->getType());
+    SizeSoFar = CurOff + DL.getTypeAllocSize(CurOp->getType());
   }
   unsigned TotalSize = Layout->getSizeInBytes();
   if (SizeSoFar < TotalSize) {
@@ -1194,7 +1194,7 @@ static void emitStoresForConstant(CodeGenModule &CGM, const VarDecl &D,
                                   CGBuilderTy &Builder,
                                   llvm::Constant *constant, bool IsAutoInit) {
   auto *Ty = constant->getType();
-  uint64_t ConstantSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Ty);
+  uint64_t ConstantSize = CGM.getDataLayoutBeforeFilC().getTypeAllocSize(Ty);
   if (!ConstantSize)
     return;
 
@@ -1229,7 +1229,7 @@ static void emitStoresForConstant(CodeGenModule &CGM, const VarDecl &D,
 
   // If the initializer is a repeated byte pattern, use memset.
   llvm::Value *Pattern =
-      shouldUseMemSetToInitialize(constant, ConstantSize, CGM.getDataLayout());
+      shouldUseMemSetToInitialize(constant, ConstantSize, CGM.getDataLayoutAfterFilC());
   if (Pattern) {
     uint64_t Value = 0x00;
     if (!isa<llvm::UndefValue>(Pattern)) {
@@ -1355,7 +1355,7 @@ llvm::Value *CodeGenFunction::EmitLifetimeStart(llvm::TypeSize Size,
     return nullptr;
 
   assert(Addr->getType()->getPointerAddressSpace() ==
-             CGM.getDataLayout().getAllocaAddrSpace() &&
+             CGM.getDataLayoutBeforeFilC().getAllocaAddrSpace() &&
          "Pointer should be in alloca address space");
   llvm::Value *SizeV = llvm::ConstantInt::get(
       Int64Ty, Size.isScalable() ? -1 : Size.getFixedValue());
@@ -1368,7 +1368,7 @@ llvm::Value *CodeGenFunction::EmitLifetimeStart(llvm::TypeSize Size,
 
 void CodeGenFunction::EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr) {
   assert(Addr->getType()->getPointerAddressSpace() ==
-             CGM.getDataLayout().getAllocaAddrSpace() &&
+             CGM.getDataLayoutBeforeFilC().getAllocaAddrSpace() &&
          "Pointer should be in alloca address space");
   Addr = Builder.CreateBitCast(Addr, AllocaInt8PtrTy);
   llvm::CallInst *C =
@@ -1585,7 +1585,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
         // is rare.
         if (!Bypasses.IsBypassed(&D) &&
             !(!getLangOpts().CPlusPlus && hasLabelBeenSeenInCurrentScope())) {
-          llvm::TypeSize Size = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(allocaTy);
+          llvm::TypeSize Size = CGM.getDataLayoutBeforeFilC().getTypeAllocSize(allocaTy);
           emission.SizeForLifetimeMarkers =
               EmitLifetimeStart(Size, AllocaAddr.getPointer());
         }
@@ -2559,7 +2559,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
         getLangOpts().OpenCL ? LangAS::opencl_private : LangAS::Default;
     if (SrcLangAS != DestLangAS) {
       assert(getContext().getTargetAddressSpace(SrcLangAS) ==
-             CGM.getDataLayout().getAllocaAddrSpace());
+             CGM.getDataLayoutBeforeFilC().getAllocaAddrSpace());
       auto DestAS = getContext().getTargetAddressSpace(DestLangAS);
       auto *T = llvm::PointerType::get(getLLVMContext(), DestAS);
       DeclPtr =

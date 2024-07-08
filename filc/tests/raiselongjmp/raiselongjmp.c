@@ -12,7 +12,7 @@ static void handler(int signo)
 
 int main()
 {
-    int x = 42;
+    volatile int x = 42;
     int result = setjmp(jb);
     if (result) {
         ZASSERT(result == 1410);

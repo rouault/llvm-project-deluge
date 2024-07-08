@@ -723,12 +723,17 @@ public:
     RegParmMax = 6;
 
     // Pointers are 32-bit in x32.
-    resetDataLayout(IsX32 ? "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-"
-                            "i64:64-f80:128-n8:16:32:64-S128"
-                          : IsWinCOFF ? "e-m:w-p270:32:32-p271:32:32-p272:64:"
-                                        "64-i64:64-f80:128-n8:16:32:64-S128"
-                                      : "e-m:e-p270:32:32-p271:32:32-p272:64:"
-                                        "64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
+    if (IsX32)
+      resetDataLayout("e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-"
+                      "i64:64-f80:128-n8:16:32:64-S128");
+    else if (IsWinCOFF)
+      resetDataLayout("e-m:w-p270:32:32-p271:32:32-p272:64:"
+                      "64-i64:64-f80:128-n8:16:32:64-S128");
+    else
+      resetDataLayout("e-m:e-p:128:128:128:64:64-ni:0-p270:32:32-p271:32:32-p272:64:"
+                      "64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                      "e-m:e-p270:32:32-p271:32:32-p272:64:"
+                      "64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
 
     // Use fpret only for long double.
     RealTypeUsesObjCFPRetMask = (unsigned)FloatModeKind::LongDouble;

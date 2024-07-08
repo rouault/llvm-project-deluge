@@ -55,11 +55,11 @@ static llvm::Type *getCommonType(llvm::Type *first, llvm::Type *second) {
 }
 
 static CharUnits getTypeStoreSizeBeforeFilC(CodeGenModule &CGM, llvm::Type *type) {
-  return CharUnits::fromQuantity(CGM.getDataLayout().getTypeStoreSizeBeforeFilC(type));
+  return CharUnits::fromQuantity(CGM.getDataLayoutBeforeFilC().getTypeStoreSize(type));
 }
 
 static CharUnits getTypeAllocSizeBeforeFilC(CodeGenModule &CGM, llvm::Type *type) {
-  return CharUnits::fromQuantity(CGM.getDataLayout().getTypeAllocSizeBeforeFilC(type));
+  return CharUnits::fromQuantity(CGM.getDataLayoutBeforeFilC().getTypeAllocSize(type));
 }
 
 void SwiftAggLowering::addTypedData(QualType type, CharUnits begin) {
@@ -592,7 +592,7 @@ SwiftAggLowering::getCoerceAndExpandTypes() const {
     }
 
     if (!packed && !entry.Begin.isMultipleOf(CharUnits::fromQuantity(
-                       CGM.getDataLayout().getABITypeAlign(entry.Type))))
+                       CGM.getDataLayoutBeforeFilC().getABITypeAlign(entry.Type))))
       packed = true;
 
     elts.push_back(entry.Type);
@@ -660,7 +660,7 @@ CharUnits swiftcall::getNaturalAlignment(CodeGenModule &CGM, llvm::Type *type) {
   // rounded up to a power of 2.
   auto size = (unsigned long long) getTypeStoreSizeBeforeFilC(CGM, type).getQuantity();
   size = llvm::bit_ceil(size);
-  assert(CGM.getDataLayout().getABITypeAlign(type) <= size);
+  assert(CGM.getDataLayoutBeforeFilC().getABITypeAlign(type) <= size);
   return CharUnits::fromQuantity(size);
 }
 

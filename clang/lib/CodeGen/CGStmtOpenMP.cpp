@@ -6112,7 +6112,7 @@ static std::pair<bool, RValue> emitOMPAtomicRMW(CodeGenFunction &CGF, LValue X,
       return true;
 
     if (T->isFloatingPointTy() && (BO == BO_Add || BO == BO_Sub))
-      return llvm::isPowerOf2_64(CGF.CGM.getDataLayout().getTypeStoreSizeBeforeFilC(T));
+      return llvm::isPowerOf2_64(CGF.CGM.getDataLayoutBeforeFilC().getTypeStoreSize(T));
 
     return false;
   };

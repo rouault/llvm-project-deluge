@@ -745,8 +745,11 @@ public:
   const CodeGenOptions &getCodeGenOpts() const { return CodeGenOpts; }
   llvm::Module &getModule() const { return TheModule; }
   DiagnosticsEngine &getDiags() const { return Diags; }
-  const llvm::DataLayout &getDataLayout() const {
+  const llvm::DataLayout &getDataLayoutBeforeFilC() const {
     return TheModule.getDataLayout();
+  }
+  const llvm::DataLayout &getDataLayoutAfterFilC() const {
+    return TheModule.getDataLayoutAfterFilC();
   }
   const TargetInfo &getTarget() const { return Target; }
   const llvm::Triple &getTriple() const { return Target.getTriple(); }

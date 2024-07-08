@@ -74,9 +74,13 @@
 #include "llvm/Transforms/Instrumentation/SanitizerCoverage.h"
 #include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
 #include "llvm/Transforms/ObjCARC.h"
+#include "llvm/Transforms/Scalar/DeadStoreElimination.h"
 #include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/JumpThreading.h"
+#include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Utils/Debugify.h"
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
@@ -931,6 +935,16 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
     PB.registerPipelineStartEPCallback(
         [](ModulePassManager &MPM, OptimizationLevel Level) {
+          if (Level != OptimizationLevel::O0) {
+            FunctionPassManager EarlyFPM;
+            EarlyFPM.addPass(LowerExpectIntrinsicPass());
+            EarlyFPM.addPass(SimplifyCFGPass());
+            EarlyFPM.addPass(SROAPass(SROAOptions::ModifyCFG));
+            EarlyFPM.addPass(EarlyCSEPass());
+            EarlyFPM.addPass(DSEPass());
+            MPM.addPass(createModuleToFunctionPassAdaptor(
+                          std::move(EarlyFPM), /*EagerlyInvalidate =*/ true));
+          }
           MPM.addPass(FilPizlonatorPass());
         });
 
@@ -1132,8 +1146,8 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 
   if (RequiresCodeGen && !TM)
     return;
-  if (TM)
-    TheModule->setDataLayout(TM->createDataLayout());
+  //if (TM)
+  //  TheModule->setDataLayout(TM->createDataLayout());
 
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();

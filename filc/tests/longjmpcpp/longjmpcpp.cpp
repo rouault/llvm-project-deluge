@@ -9,7 +9,7 @@ extern "C" void* opaque(void*);
 int main(int argc, char** argv)
 {
     try {
-        int x = (int)(uintptr_t)opaque((void*)42);
+        volatile int x = (int)(uintptr_t)opaque((void*)42);
         jmp_buf jb;
         if (setjmp(jb)) {
             cout << "x = " << x << endl;

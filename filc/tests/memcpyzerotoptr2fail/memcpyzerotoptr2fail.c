@@ -17,7 +17,7 @@ int main()
     char* buf = malloc(3 + sizeof(foo2));
     memset(buf, 42, 3 + sizeof(foo2));
 
-    memcpy(&foo2, buf + 3, sizeof(foo2));
+    zmemmove(&foo2, buf + 3, sizeof(foo2));
 
     zprintf("foo2.a = %d\n", foo2.a);
     zprintf("foo2.b = %s\n", foo2.b);

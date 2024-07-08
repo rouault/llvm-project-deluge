@@ -20,7 +20,7 @@ int main()
     a.z = 3;
     a.w = 4;
 
-    memmove(&a, &a.str, sizeof(struct foo) - __builtin_offsetof(struct foo, str));
+    zmemmove(&a, &a.str, sizeof(struct foo) - __builtin_offsetof(struct foo, str));
 
     return 0;
 }

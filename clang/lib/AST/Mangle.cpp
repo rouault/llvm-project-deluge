@@ -161,7 +161,7 @@ void MangleContext::mangleName(GlobalDecl GD, raw_ostream &Out) {
         getASTContext().getTargetInfo().getUserLabelPrefix();
 #ifndef NDEBUG
     char GlobalPrefix =
-        llvm::DataLayout(getASTContext().getTargetInfo().getDataLayoutString())
+        llvm::DataLayout(getASTContext().getTargetInfo().getDataLayoutStringBeforeFilC())
             .getGlobalPrefix();
     assert((UserLabelPrefix.empty() && !GlobalPrefix) ||
            (UserLabelPrefix.size() == 1 && UserLabelPrefix[0] == GlobalPrefix));
@@ -396,7 +396,7 @@ class ASTNameGenerator::Implementation {
 public:
   explicit Implementation(ASTContext &Ctx)
       : MC(Ctx.createMangleContext()),
-        DL(Ctx.getTargetInfo().getDataLayoutString()) {}
+        DL(Ctx.getTargetInfo().getDataLayoutStringBeforeFilC()) {}
 
   bool writeName(const Decl *D, raw_ostream &OS) {
     // First apply frontend mangling.

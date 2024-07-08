@@ -198,6 +198,7 @@ private:
                                   ///< Format: (arch)(sub)-(vendor)-(sys0-(abi)
   NamedMDSymTabType NamedMDSymTab;  ///< NamedMDNode names.
   DataLayout DL;                  ///< DataLayout associated with the module
+  DataLayout DLAfterFilC;
   StringMap<unsigned>
       CurrentIntrinsicIds; ///< Keep track of the current unique id count for
                            ///< the specified intrinsic basename.
@@ -249,9 +250,14 @@ public:
   const std::string &getDataLayoutStr() const {
     return DL.getStringRepresentation();
   }
+  const std::string &getDataLayoutAfterFilCStr() const {
+    return DLAfterFilC.getStringRepresentation();
+  }
 
   /// Get the data layout for the module's target platform.
   const DataLayout &getDataLayout() const;
+
+  const DataLayout &getDataLayoutAfterFilC() const;
 
   /// Get the target triple which is a string describing the target host.
   /// @returns a string containing the target triple.
@@ -296,6 +302,9 @@ public:
   /// Set the data layout
   void setDataLayout(StringRef Desc);
   void setDataLayout(const DataLayout &Other);
+
+  void setDataLayoutAfterFilC(StringRef Desc);
+  void setDataLayoutAfterFilC(const DataLayout &Other);
 
   /// Set the target triple.
   void setTargetTriple(StringRef T) { TargetTriple = std::string(T); }

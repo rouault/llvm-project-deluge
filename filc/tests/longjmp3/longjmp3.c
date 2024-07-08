@@ -3,7 +3,7 @@
 
 static void doit(int mode)
 {
-    int x = 42;
+    volatile int x = 42;
     jmp_buf jb1;
     jmp_buf jb2;
     jmp_buf jb3;

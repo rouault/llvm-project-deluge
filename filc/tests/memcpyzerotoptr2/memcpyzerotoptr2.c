@@ -23,7 +23,7 @@ int main()
     char* buf = malloc(3 + sizeof(foo1));
     zmemmove_nullify(buf + 3, &foo1, sizeof(foo1));
 
-    memcpy(&foo2, buf + 3, sizeof(foo1));
+    zmemmove(&foo2, buf + 3, sizeof(foo1));
 
     zprintf("foo2.a = %d\n", foo2.a);
     zprintf("foo2.b = %s\n", foo2.b);

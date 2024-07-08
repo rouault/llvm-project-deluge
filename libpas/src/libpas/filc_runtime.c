@@ -2983,6 +2983,16 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
                                            size_t count, filc_barrier_mode barriered,
                                            filc_pollcheck_mode pollchecked)
 {
+    static const bool verbose = false;
+
+    if (verbose) {
+        pas_log("Doing memmove to %s from %s with count %zu\n",
+                filc_ptr_to_new_string(dst),
+                filc_ptr_to_new_string(src),
+                count);
+        filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    }
+    
     filc_object* dst_object = filc_ptr_object(dst);
     filc_object* src_object = filc_ptr_object(src);
 
@@ -3106,8 +3116,6 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* passed_origin)
 {
-    static const bool verbose = false;
-    
     if (!count)
         return;
     

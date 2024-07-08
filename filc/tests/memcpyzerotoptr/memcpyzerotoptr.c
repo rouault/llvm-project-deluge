@@ -27,7 +27,7 @@ int main()
     foo.c = 42;
     foo.d = "world";
 
-    memcpy(&bar, &foo, sizeof(foo));
+    zmemmove(&bar, &foo, sizeof(foo));
 
     zprintf("bar.a = %s\n", bar.a);
     zprintf("bar.b = %s\n", bar.b);

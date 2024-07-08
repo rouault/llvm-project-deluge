@@ -92,7 +92,7 @@ llvm::Function *GetOpenMPVprintfDeclaration(CodeGenModule &CGM) {
 
 std::pair<llvm::Value *, llvm::TypeSize>
 packArgsIntoNVPTXFormatBuffer(CodeGenFunction *CGF, const CallArgList &Args) {
-  const llvm::DataLayout &DL = CGF->CGM.getDataLayout();
+  const llvm::DataLayout &DL = CGF->CGM.getDataLayoutBeforeFilC();
   llvm::LLVMContext &Ctx = CGF->CGM.getLLVMContext();
   CGBuilderTy &Builder = CGF->Builder;
 
@@ -121,7 +121,7 @@ packArgsIntoNVPTXFormatBuffer(CodeGenFunction *CGF, const CallArgList &Args) {
     }
     llvm::Value *BufferPtr =
         Builder.CreatePointerCast(Alloca, llvm::Type::getInt8PtrTy(Ctx));
-    return {BufferPtr, DL.getTypeAllocSizeBeforeFilC(AllocaTy)};
+    return {BufferPtr, DL.getTypeAllocSize(AllocaTy)};
   }
 }
 

@@ -1958,7 +1958,7 @@ RValue CodeGenFunction::emitBuiltinOSLogFormat(const CallExpr &E) {
     }
 
     unsigned ArgValSize =
-        CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(ArgVal->getType());
+        CGM.getDataLayoutBeforeFilC().getTypeSizeInBits(ArgVal->getType());
     llvm::IntegerType *IntTy = llvm::Type::getIntNTy(getLLVMContext(),
                                                      ArgValSize);
     ArgVal = Builder.CreateBitOrPointerCast(ArgVal, IntTy);
@@ -5055,7 +5055,7 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
       auto Tmp = CreateMemTemp(SizeArrayTy, "block_sizes");
       llvm::Value *TmpPtr = Tmp.getPointer();
       llvm::Value *TmpSize = EmitLifetimeStart(
-          CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Tmp.getElementType()), TmpPtr);
+          CGM.getDataLayoutBeforeFilC().getTypeAllocSize(Tmp.getElementType()), TmpPtr);
       llvm::Value *ElemPtr;
       // Each of the following arguments specifies the size of the corresponding
       // argument passed to the enqueued block.
@@ -5069,7 +5069,7 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
         auto *V =
             Builder.CreateZExtOrTrunc(EmitScalarExpr(E->getArg(I)), SizeTy);
         Builder.CreateAlignedStore(
-            V, GEP, CGM.getDataLayout().getPrefTypeAlignBeforeFilC(SizeTy));
+            V, GEP, CGM.getDataLayoutBeforeFilC().getPrefTypeAlign(SizeTy));
       }
       return std::tie(ElemPtr, TmpSize, TmpPtr);
     };
@@ -8067,7 +8067,7 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
       return Builder.CreateIntToPtr(Val, RealResTy);
     else {
       llvm::Type *IntResTy = llvm::IntegerType::get(
-          getLLVMContext(), CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(RealResTy));
+          getLLVMContext(), CGM.getDataLayoutBeforeFilC().getTypeSizeInBits(RealResTy));
       return Builder.CreateBitCast(Builder.CreateTruncOrBitCast(Val, IntResTy),
                                    RealResTy);
     }
@@ -8109,7 +8109,7 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
     else {
       llvm::Type *IntTy = llvm::IntegerType::get(
           getLLVMContext(),
-          CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(StoreVal->getType()));
+          CGM.getDataLayoutBeforeFilC().getTypeSizeInBits(StoreVal->getType()));
       StoreVal = Builder.CreateBitCast(StoreVal, IntTy);
       StoreVal = Builder.CreateZExtOrBitCast(StoreVal, Int32Ty);
     }
@@ -10246,7 +10246,7 @@ Value *CodeGenFunction::EmitAArch64BuiltinExpr(unsigned BuiltinID,
       return Builder.CreateIntToPtr(Val, RealResTy);
 
     llvm::Type *IntResTy = llvm::IntegerType::get(
-        getLLVMContext(), CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(RealResTy));
+        getLLVMContext(), CGM.getDataLayoutBeforeFilC().getTypeSizeInBits(RealResTy));
     return Builder.CreateBitCast(Builder.CreateTruncOrBitCast(Val, IntResTy),
                                  RealResTy);
   }
@@ -10287,7 +10287,7 @@ Value *CodeGenFunction::EmitAArch64BuiltinExpr(unsigned BuiltinID,
     else {
       llvm::Type *IntTy = llvm::IntegerType::get(
           getLLVMContext(),
-          CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(StoreVal->getType()));
+          CGM.getDataLayoutBeforeFilC().getTypeSizeInBits(StoreVal->getType()));
       StoreVal = Builder.CreateBitCast(StoreVal, IntTy);
       StoreVal = Builder.CreateZExtOrBitCast(StoreVal, Int64Ty);
     }
@@ -16925,7 +16925,7 @@ Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
     return emitPPCLoadReserveIntrinsic(*this, BuiltinID, E);
   case PPC::BI__builtin_ppc_mfspr: {
     Value *Op0 = EmitScalarExpr(E->getArg(0));
-    llvm::Type *RetType = CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(VoidPtrTy) == 32
+    llvm::Type *RetType = CGM.getDataLayoutAfterFilC().getTypeSizeInBits(VoidPtrTy) == 32
                               ? Int32Ty
                               : Int64Ty;
     Function *F = CGM.getIntrinsic(Intrinsic::ppc_mfspr, RetType);
@@ -16934,7 +16934,7 @@ Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
   case PPC::BI__builtin_ppc_mtspr: {
     Value *Op0 = EmitScalarExpr(E->getArg(0));
     Value *Op1 = EmitScalarExpr(E->getArg(1));
-    llvm::Type *RetType = CGM.getDataLayout().getTypeSizeInBitsBeforeFilC(VoidPtrTy) == 32
+    llvm::Type *RetType = CGM.getDataLayoutAfterFilC().getTypeSizeInBits(VoidPtrTy) == 32
                               ? Int32Ty
                               : Int64Ty;
     Function *F = CGM.getIntrinsic(Intrinsic::ppc_mtspr, RetType);
@@ -19228,7 +19228,7 @@ struct BuiltinAlignArgs {
     if (SrcType->isPointerTy()) {
       IntType = IntegerType::get(
           CGF.getLLVMContext(),
-          CGF.CGM.getDataLayout().getIndexTypeSizeInBits(SrcType));
+          CGF.CGM.getDataLayoutBeforeFilC().getIndexTypeSizeInBits(SrcType));
     } else {
       assert(SrcType->isIntegerTy());
       IntType = cast<llvm::IntegerType>(SrcType);

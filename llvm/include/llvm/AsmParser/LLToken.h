@@ -89,6 +89,7 @@ enum Kind {
   kw_source_filename,
   kw_unwind,
   kw_datalayout,
+  kw_datalayout_after_filc,
   kw_volatile,
   kw_atomic,
   kw_unordered,

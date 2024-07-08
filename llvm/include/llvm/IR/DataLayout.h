@@ -43,12 +43,6 @@ using LLVMTargetDataRef = struct LLVMOpaqueTargetData *;
 
 namespace llvm {
 
-// What a fucking awful hack. If someone did this to my compiler, I'd hire assassins.
-enum FilCMode {
-  BeforeFilC,
-  AfterFilC
-};
-
 class GlobalVariable;
 class LLVMContext;
 class Module;
@@ -98,11 +92,12 @@ struct PointerAlignElem {
   uint32_t TypeBitWidth;
   uint32_t AddressSpace;
   uint32_t IndexBitWidth;
+  uint32_t PayloadBitWidth;
 
   /// Initializer
   static PointerAlignElem getInBits(uint32_t AddressSpace, Align ABIAlign,
                                     Align PrefAlign, uint32_t TypeBitWidth,
-                                    uint32_t IndexBitWidth);
+                                    uint32_t IndexBitWidth, uint32_t PayloadBitWidth);
 
   bool operator==(const PointerAlignElem &rhs) const;
 };
@@ -179,13 +174,13 @@ private:
   /// Returns an error description on failure.
   Error setPointerAlignmentInBits(uint32_t AddrSpace, Align ABIAlign,
                                   Align PrefAlign, uint32_t TypeBitWidth,
-                                  uint32_t IndexBitWidth);
+                                  uint32_t IndexBitWidth, uint32_t PayloadBitWidth);
 
   /// Internal helper to get alignment for integer of given bitwidth.
   Align getIntegerAlignment(uint32_t BitWidth, bool abi_or_pref) const;
 
   /// Internal helper method that returns requested alignment for type.
-  Align getAlignment(Type *Ty, bool abi_or_pref, FilCMode DM) const;
+  Align getAlignment(Type *Ty, bool abi_or_pref) const;
 
   /// Attempts to parse a target data specification string and reports an error
   /// if the string is malformed.
@@ -366,7 +361,7 @@ public:
   }
 
   /// Layout pointer alignment
-  Align getPointerABIAlignment(unsigned AS) const; // used from CGOpenMPRuntime.cpp
+  Align getPointerABIAlignment(unsigned AS) const;
 
   /// Return target's alignment for stack-based pointers
   /// FIXME: The defaults need to be removed once all of
@@ -413,6 +408,10 @@ public:
     return getPointerAlignElem(AS).TypeBitWidth;
   }
 
+  unsigned getPointerPayloadSizeInBits(unsigned AS = 0) const {
+    return getPointerAlignElem(AS).PayloadBitWidth;
+  }
+
   /// Returns the maximum index size over all address spaces.
   unsigned getMaxIndexSizeInBits() const {
     return getMaxIndexSize() * 8;
@@ -433,6 +432,8 @@ public:
   /// Layout size of the index used in GEP calculation.
   /// The function should be called with pointer or vector of pointers type.
   unsigned getIndexTypeSizeInBits(Type *Ty) const;
+
+  unsigned getPointerPayloadSizeInBits(Type *) const;
 
   unsigned getPointerTypeSize(Type *Ty) const {
     return getPointerTypeSizeInBits(Ty) / 8;
@@ -462,8 +463,7 @@ public:
   ///
   /// For example, returns 36 for i36 and 80 for x86_fp80. The type passed must
   /// have a size (Type::isSized() must return true).
-  TypeSize getTypeSizeInBits(Type *Ty, FilCMode = AfterFilC) const;
-  TypeSize getTypeSizeInBitsBeforeFilC(Type *Ty) const { return getTypeSizeInBits(Ty, BeforeFilC); }
+  TypeSize getTypeSizeInBits(Type *Ty) const;
 
   /// Returns the maximum number of bytes that may be overwritten by
   /// storing the specified type.
@@ -472,11 +472,10 @@ public:
   /// the runtime size will be a positive integer multiple of the base size.
   ///
   /// For example, returns 5 for i36 and 10 for x86_fp80.
-  TypeSize getTypeStoreSize(Type *Ty, FilCMode DM = AfterFilC) const {
-    TypeSize BaseSize = getTypeSizeInBits(Ty, DM);
+  TypeSize getTypeStoreSize(Type *Ty) const {
+    TypeSize BaseSize = getTypeSizeInBits(Ty);
     return {divideCeil(BaseSize.getKnownMinValue(), 8), BaseSize.isScalable()};
   }
-  TypeSize getTypeStoreSizeBeforeFilC(Type *Ty) const { return getTypeStoreSize(Ty, BeforeFilC); }
 
   /// Returns the maximum number of bits that may be overwritten by
   /// storing the specified type; always a multiple of 8.
@@ -485,10 +484,9 @@ public:
   /// the runtime size will be a positive integer multiple of the base size.
   ///
   /// For example, returns 40 for i36 and 80 for x86_fp80.
-  TypeSize getTypeStoreSizeInBits(Type *Ty, FilCMode DM = AfterFilC) const {
-    return 8 * getTypeStoreSize(Ty, DM);
+  TypeSize getTypeStoreSizeInBits(Type *Ty) const {
+    return 8 * getTypeStoreSize(Ty);
   }
-  TypeSize getTypeStoreSizeInBitsBeforeFilC(Type *Ty) const { return getTypeStoreSizeInBits(Ty, BeforeFilC); }
 
   /// Returns true if no extra padding bits are needed when storing the
   /// specified type.
@@ -506,11 +504,10 @@ public:
   ///
   /// This is the amount that alloca reserves for this type. For example,
   /// returns 12 or 16 for x86_fp80, depending on alignment.
-  TypeSize getTypeAllocSize(Type *Ty, FilCMode DM = AfterFilC) const {
+  TypeSize getTypeAllocSize(Type *Ty) const {
     // Round up to the next alignment boundary.
-    return alignTo(getTypeStoreSize(Ty, DM), getABITypeAlign(Ty, DM).value());
+    return alignTo(getTypeStoreSize(Ty), getABITypeAlign(Ty).value());
   }
-  TypeSize getTypeAllocSizeBeforeFilC(Type *Ty) const { return getTypeAllocSize(Ty, BeforeFilC); }
 
   /// Returns the offset in bits between successive objects of the
   /// specified type, including alignment padding; always a multiple of 8.
@@ -520,20 +517,18 @@ public:
   ///
   /// This is the amount that alloca reserves for this type. For example,
   /// returns 96 or 128 for x86_fp80, depending on alignment.
-  TypeSize getTypeAllocSizeInBits(Type *Ty, FilCMode DM = AfterFilC) const {
-    return 8 * getTypeAllocSize(Ty, DM);
+  TypeSize getTypeAllocSizeInBits(Type *Ty) const {
+    return 8 * getTypeAllocSize(Ty);
   }
-  TypeSize getTypeAllocSizeInBitsBeforeFilC(Type *Ty) const { return getTypeAllocSizeInBits(Ty, BeforeFilC); }
 
   /// Returns the minimum ABI-required alignment for the specified type.
-  Align getABITypeAlign(Type *Ty, FilCMode DM = AfterFilC) const; // Used from all over
-  Align getABITypeAlignBeforeFilC(Type *Ty) const { return getABITypeAlign(Ty, BeforeFilC); }
+  Align getABITypeAlign(Type *Ty) const;
 
   /// Helper function to return `Alignment` if it's set or the result of
   /// `getABITypeAlign(Ty)`, in any case the result is a valid alignment.
   inline Align getValueOrABITypeAlignment(MaybeAlign Alignment,
-                                          Type *Ty, FilCMode DM = AfterFilC) const {
-    return Alignment ? *Alignment : getABITypeAlign(Ty, DM);
+                                          Type *Ty) const {
+    return Alignment ? *Alignment : getABITypeAlign(Ty);
   }
 
   /// Returns the minimum ABI-required alignment for an integer type of
@@ -548,14 +543,13 @@ public:
   /// This is always at least as good as the ABI alignment.
   /// FIXME: Deprecate this function once migration to Align is over.
   LLVM_DEPRECATED("use getPrefTypeAlign instead", "getPrefTypeAlign")
-  uint64_t getPrefTypeAlignment(Type *Ty, FilCMode DM = AfterFilC) const;
+  uint64_t getPrefTypeAlignment(Type *Ty) const;
 
   /// Returns the preferred stack/global alignment for the specified
   /// type.
   ///
   /// This is always at least as good as the ABI alignment.
-  Align getPrefTypeAlign(Type *Ty, FilCMode DM = AfterFilC) const;
-  Align getPrefTypeAlignBeforeFilC(Type *Ty) const { return getPrefTypeAlign(Ty, BeforeFilC); }
+  Align getPrefTypeAlign(Type *Ty) const;
 
   /// Returns an integer type with size at least as big as that of a
   /// pointer in the given address space.
@@ -610,8 +604,7 @@ public:
   /// struct, its size, and the offsets of its fields.
   ///
   /// Note that this information is lazily cached.
-  const StructLayout *getStructLayout(StructType *Ty, FilCMode DM = AfterFilC) const;
-  const StructLayout *getStructLayoutBeforeFilC(StructType *Ty) const { return getStructLayout(Ty, BeforeFilC); }
+  const StructLayout *getStructLayout(StructType *Ty) const;
 
   /// Returns the preferred alignment of the specified global.
   ///
@@ -670,7 +663,7 @@ public:
 private:
   friend class DataLayout; // Only DataLayout can create this class
 
-  StructLayout(StructType *ST, const DataLayout &DL, FilCMode DM);
+  StructLayout(StructType *ST, const DataLayout &DL);
 
   size_t numTrailingObjects(OverloadToken<TypeSize>) const {
     return NumElements;
@@ -679,25 +672,21 @@ private:
 
 // The implementation of this method is provided inline as it is particularly
 // well suited to constant folding when called on a specific Type subclass.
-inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty, FilCMode DM) const {
+inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty) const {
   assert(Ty->isSized() && "Cannot getTypeInfo() on a type that is unsized!");
   switch (Ty->getTypeID()) {
   case Type::LabelTyID:
     return TypeSize::Fixed(getPointerSizeInBits(0));
-  case Type::PointerTyID: {
-    TypeSize Result = TypeSize::Fixed(getPointerSizeInBits(Ty->getPointerAddressSpace()));
-    if (DM == BeforeFilC && Ty->getPointerAddressSpace() == 0)
-      Result *= 2;
-    return Result;
-  }
+  case Type::PointerTyID:
+    return TypeSize::Fixed(getPointerSizeInBits(Ty->getPointerAddressSpace()));
   case Type::ArrayTyID: {
     ArrayType *ATy = cast<ArrayType>(Ty);
     return ATy->getNumElements() *
-      getTypeAllocSizeInBits(ATy->getElementType(), DM);
+           getTypeAllocSizeInBits(ATy->getElementType());
   }
   case Type::StructTyID:
     // Get the layout annotation... which is lazily created on demand.
-    return getStructLayout(cast<StructType>(Ty), DM)->getSizeInBits();
+    return getStructLayout(cast<StructType>(Ty))->getSizeInBits();
   case Type::IntegerTyID:
     return TypeSize::Fixed(Ty->getIntegerBitWidth());
   case Type::HalfTyID:
@@ -722,12 +711,12 @@ inline TypeSize DataLayout::getTypeSizeInBits(Type *Ty, FilCMode DM) const {
     VectorType *VTy = cast<VectorType>(Ty);
     auto EltCnt = VTy->getElementCount();
     uint64_t MinBits = EltCnt.getKnownMinValue() *
-      getTypeSizeInBits(VTy->getElementType(), DM).getFixedValue();
+                       getTypeSizeInBits(VTy->getElementType()).getFixedValue();
     return TypeSize(MinBits, EltCnt.isScalable());
   }
   case Type::TargetExtTyID: {
     Type *LayoutTy = cast<TargetExtType>(Ty)->getLayoutType();
-    return getTypeSizeInBits(LayoutTy, DM);
+    return getTypeSizeInBits(LayoutTy);
   }
   default:
     llvm_unreachable("DataLayout::getTypeSizeInBits(): Unsupported type");

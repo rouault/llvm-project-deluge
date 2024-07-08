@@ -9,8 +9,9 @@ int foo(char* string)
 
 float* bar(double value)
 {
-    float x = (float)value;
-    return &x;
+    float* x = (float*)zgc_alloc(sizeof(float));
+    *x = (float)value;
+    return x;
 }
 
 int call_foo(void* the_foo, char* string)

@@ -488,6 +488,13 @@ bool LLParser::parseTargetDefinition(std::string &TentativeDLStr,
     if (parseStringConstant(TentativeDLStr))
       return true;
     return false;
+  case lltok::kw_datalayout_after_filc:
+    Lex.Lex();
+    if (parseToken(lltok::equal, "expected '=' after target datalayout_after_filc") ||
+        parseStringConstant(Str))
+      return true;
+    M->setDataLayoutAfterFilC(Str);
+    return false;
   }
 }
 

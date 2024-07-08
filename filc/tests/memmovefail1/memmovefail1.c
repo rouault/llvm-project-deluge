@@ -20,7 +20,7 @@ int main()
     a.z = 3;
     a.w = 4;
 
-    memmove(&a, &a.y, sizeof(a));
+    zmemmove(&a, &a.y, sizeof(a));
 
     return 0;
 }

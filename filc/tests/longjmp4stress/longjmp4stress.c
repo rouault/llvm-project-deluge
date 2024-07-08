@@ -3,7 +3,7 @@
 
 static void doit()
 {
-    int x = 42;
+    volatile int x = 42;
     jmp_buf jb;
     int result;
     if ((result = setjmp(jb))) {

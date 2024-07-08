@@ -2468,12 +2468,12 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     } else {
       guardTy = CGF.Int64Ty;
       guardAlignment =
-          CharUnits::fromQuantity(CGM.getDataLayout().getABITypeAlign(guardTy));
+          CharUnits::fromQuantity(CGM.getDataLayoutBeforeFilC().getABITypeAlign(guardTy));
     }
   }
   llvm::PointerType *guardPtrTy = llvm::PointerType::get(
       CGF.CGM.getLLVMContext(),
-      CGF.CGM.getDataLayout().getDefaultGlobalsAddressSpace());
+      CGF.CGM.getDataLayoutBeforeFilC().getDefaultGlobalsAddressSpace());
 
   // Create the guard variable if we don't already have it (as we
   // might if we're double-emitting this function body).

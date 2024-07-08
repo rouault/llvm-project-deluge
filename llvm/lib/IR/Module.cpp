@@ -71,7 +71,7 @@ template class llvm::SymbolTableListTraits<GlobalIFunc>;
 
 Module::Module(StringRef MID, LLVMContext &C)
     : Context(C), ValSymTab(std::make_unique<ValueSymbolTable>(-1)),
-      ModuleID(std::string(MID)), SourceFileName(std::string(MID)), DL("") {
+      ModuleID(std::string(MID)), SourceFileName(std::string(MID)), DL(""), DLAfterFilC("") {
   Context.addModule(this);
 }
 
@@ -393,9 +393,19 @@ void Module::setDataLayout(StringRef Desc) {
   DL.reset(Desc);
 }
 
-void Module::setDataLayout(const DataLayout &Other) { DL = Other; }
+void Module::setDataLayout(const DataLayout &Other) {
+  DL = Other;
+}
+
+void Module::setDataLayoutAfterFilC(StringRef Desc) {
+  DLAfterFilC.reset(Desc);
+}
+
+void Module::setDataLayoutAfterFilC(const DataLayout &Other) { DLAfterFilC = Other; }
 
 const DataLayout &Module::getDataLayout() const { return DL; }
+
+const DataLayout &Module::getDataLayoutAfterFilC() const { return DLAfterFilC; }
 
 DICompileUnit *Module::debug_compile_units_iterator::operator*() const {
   return cast<DICompileUnit>(CUs->getOperand(Idx));

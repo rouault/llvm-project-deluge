@@ -4,9 +4,9 @@
 
 int main(int argc, char** argv)
 {
-    unsigned i;
+    volatile unsigned i;
     for (i = 1000; i--;) {
-        int x = 42;
+        volatile int x = 42;
         jmp_buf jb;
         if (setjmp(jb)) {
             ZASSERT(x == 666);

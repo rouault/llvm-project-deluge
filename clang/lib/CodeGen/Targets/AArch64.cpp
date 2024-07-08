@@ -412,7 +412,7 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy,
       return coerceToIntArray(RetTy, getContext(), getVMContext());
     }
 
-    if (Size <= 64 && getDataLayout().isLittleEndian()) {
+    if (Size <= 64 && getDataLayoutBeforeFilC().isLittleEndian()) {
       // Composite types are returned in lower bits of a 64-bit register for LE,
       // and in higher bits for BE. However, integer types are always returned
       // in lower bits for both LE and BE, and they are not rounded up to
@@ -663,7 +663,7 @@ Address AArch64ABIInfo::EmitAAPCSVAArg(Address VAListAddr, QualType Ty,
 
     // On big-endian platforms, the value will be right-aligned in its slot.
     int Offset = 0;
-    if (CGF.CGM.getDataLayout().isBigEndian() &&
+    if (CGF.CGM.getDataLayoutBeforeFilC().isBigEndian() &&
         BaseTyInfo.Width.getQuantity() < 16)
       Offset = 16 - BaseTyInfo.Width.getQuantity();
 
@@ -685,7 +685,7 @@ Address AArch64ABIInfo::EmitAAPCSVAArg(Address VAListAddr, QualType Ty,
 
     // It might be right-aligned in its slot.
     CharUnits SlotSize = BaseAddr.getAlignment();
-    if (CGF.CGM.getDataLayout().isBigEndian() && !IsIndirect &&
+    if (CGF.CGM.getDataLayoutBeforeFilC().isBigEndian() && !IsIndirect &&
         (IsHFA || !isAggregateTypeForABI(Ty)) &&
         TySize < SlotSize) {
       CharUnits Offset = SlotSize - TySize;
@@ -739,7 +739,7 @@ Address AArch64ABIInfo::EmitAAPCSVAArg(Address VAListAddr, QualType Ty,
   // Write the new value of __stack for the next call to va_arg
   CGF.Builder.CreateStore(NewStack, stack_p);
 
-  if (CGF.CGM.getDataLayout().isBigEndian() && !isAggregateTypeForABI(Ty) &&
+  if (CGF.CGM.getDataLayoutBeforeFilC().isBigEndian() && !isAggregateTypeForABI(Ty) &&
       TySize < StackSlotSize) {
     CharUnits Offset = StackSlotSize - TySize;
     OnStackAddr = CGF.Builder.CreateConstInBoundsByteGEP(OnStackAddr, Offset);

@@ -230,7 +230,8 @@ protected:
   bool HasStrictFP;
 
   unsigned char MaxAtomicPromoteWidth, MaxAtomicInlineWidth;
-  std::string DataLayoutString;
+  std::string DataLayoutStringBeforeFilC;
+  std::string DataLayoutStringAfterFilC;
   const char *UserLabelPrefix;
   const char *MCountName;
   unsigned char RegParmMax, SSERegParmMax;
@@ -268,6 +269,8 @@ protected:
   // UserLabelPrefix must match DL's getGlobalPrefix() when interpreted
   // as a DataLayout object.
   void resetDataLayout(StringRef DL, const char *UserLabelPrefix = "");
+  void resetDataLayout(StringRef DLBeforeFilC, StringRef DLAfterFilC,
+                       const char *UserLabelPrefix = "");
 
   // Target features that are read-only and should not be disabled/enabled
   // by command line options. Such features are for emitting predefined
@@ -1219,9 +1222,13 @@ public:
     return std::nullopt;
   }
 
-  const char *getDataLayoutString() const {
-    assert(!DataLayoutString.empty() && "Uninitialized DataLayout!");
-    return DataLayoutString.c_str();
+  const char *getDataLayoutStringBeforeFilC() const {
+    assert(!DataLayoutStringBeforeFilC.empty() && "Uninitialized DataLayoutBeforeFilC!");
+    return DataLayoutStringBeforeFilC.c_str();
+  }
+  const char *getDataLayoutStringAfterFilC() const {
+    assert(!DataLayoutStringAfterFilC.empty() && "Uninitialized DataLayoutBeforeFilC!");
+    return DataLayoutStringAfterFilC.c_str();
   }
 
   struct GCCRegAlias {

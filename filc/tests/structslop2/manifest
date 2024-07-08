@@ -1,0 +1,5 @@
+return:
+  success
+output-includes:
+  - "(1) 42"
+  - "(2) 1"

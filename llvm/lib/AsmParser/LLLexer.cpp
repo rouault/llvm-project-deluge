@@ -543,6 +543,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(source_filename);
   KEYWORD(unwind);
   KEYWORD(datalayout);
+  KEYWORD(datalayout_after_filc);
   KEYWORD(volatile);
   KEYWORD(atomic);
   KEYWORD(unordered);

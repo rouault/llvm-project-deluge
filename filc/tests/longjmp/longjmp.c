@@ -5,7 +5,7 @@ void* opaque(void*);
 
 int main(int argc, char** argv)
 {
-    int x = (int)opaque((void*)42);
+    volatile int x = (int)opaque((void*)42);
     jmp_buf jb;
     if (setjmp(jb)) {
         printf("x = %d\n", x);

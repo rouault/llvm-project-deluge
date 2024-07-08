@@ -47,11 +47,11 @@ struct ConstantAggregateBuilderUtils {
 
   CharUnits getAlignment(const llvm::Constant *C) const {
     return CharUnits::fromQuantity(
-        CGM.getDataLayout().getABITypeAlignBeforeFilC(C->getType()));
+        CGM.getDataLayoutBeforeFilC().getABITypeAlign(C->getType()));
   }
 
   CharUnits getSize(llvm::Type *Ty) const {
-    return CharUnits::fromQuantity(CGM.getDataLayout().getTypeAllocSizeBeforeFilC(Ty));
+    return CharUnits::fromQuantity(CGM.getDataLayoutBeforeFilC().getTypeAllocSize(Ty));
   }
 
   CharUnits getSize(const llvm::Constant *C) const {
@@ -201,7 +201,7 @@ bool ConstantAggregateBuilder::addBits(llvm::APInt Bits, uint64_t OffsetInBits,
     llvm::APInt BitsThisChar = Bits;
     if (BitsThisChar.getBitWidth() < CharWidth)
       BitsThisChar = BitsThisChar.zext(CharWidth);
-    if (CGM.getDataLayout().isBigEndian()) {
+    if (CGM.getDataLayoutBeforeFilC().isBigEndian()) {
       // Figure out how much to shift by. We may need to left-shift if we have
       // less than one byte of Bits left.
       int Shift = Bits.getBitWidth() - CharWidth + OffsetWithinChar;
@@ -235,7 +235,7 @@ bool ConstantAggregateBuilder::addBits(llvm::APInt Bits, uint64_t OffsetInBits,
 
       // Figure out which bits we want and discard the rest.
       llvm::APInt UpdateMask(CharWidth, 0);
-      if (CGM.getDataLayout().isBigEndian())
+      if (CGM.getDataLayoutBeforeFilC().isBigEndian())
         UpdateMask.setBits(CharWidth - OffsetWithinChar - WantedBits,
                            CharWidth - OffsetWithinChar);
       else
@@ -270,7 +270,7 @@ bool ConstantAggregateBuilder::addBits(llvm::APInt Bits, uint64_t OffsetInBits,
       break;
 
     // Remove the consumed bits from Bits.
-    if (!CGM.getDataLayout().isBigEndian())
+    if (!CGM.getDataLayoutBeforeFilC().isBigEndian())
       Bits.lshrInPlace(WantedBits);
     Bits = Bits.trunc(Bits.getBitWidth() - WantedBits);
 
@@ -338,7 +338,7 @@ bool ConstantAggregateBuilder::split(size_t Index, CharUnits Hint) {
       // Must be a struct.
       auto *ST = cast<llvm::StructType>(CA->getType());
       const llvm::StructLayout *Layout =
-          CGM.getDataLayout().getStructLayoutBeforeFilC(ST);
+          CGM.getDataLayoutBeforeFilC().getStructLayout(ST);
       replace(Offsets, Index, Index + 1,
               llvm::map_range(
                   llvm::seq(0u, CA->getNumOperands()), [&](unsigned Op) {
@@ -1084,8 +1084,8 @@ public:
       SmallVector<llvm::Type*, 2> Types;
       Elts.push_back(C);
       Types.push_back(C->getType());
-      unsigned CurSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(C->getType());
-      unsigned TotalSize = CGM.getDataLayout().getTypeAllocSizeBeforeFilC(destTy);
+      unsigned CurSize = CGM.getDataLayoutBeforeFilC().getTypeAllocSize(C->getType());
+      unsigned TotalSize = CGM.getDataLayoutBeforeFilC().getTypeAllocSize(destTy);
 
       assert(CurSize <= TotalSize && "Union size mismatch!");
       if (unsigned NumPadBytes = TotalSize - CurSize) {
@@ -1889,7 +1889,7 @@ ConstantLValueEmitter::tryEmitAbsolute(llvm::Type *destTy) {
   // Convert the integer to a pointer-sized integer before converting it
   // to a pointer.
   // FIXME: signedness depends on the original integer type.
-  auto intptrTy = CGM.getDataLayout().getIntPtrType(destPtrTy);
+  auto intptrTy = CGM.getDataLayoutBeforeFilC().getIntPtrType(destPtrTy);
   llvm::Constant *C;
   C = llvm::ConstantExpr::getIntegerCast(getOffset(), intptrTy,
                                          /*isSigned*/ false);
