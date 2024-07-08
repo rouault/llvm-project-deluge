@@ -1,4 +1,6 @@
 return:
   success
+only-on-platform:
+  darwin
 output-includes:
   - "Hello"

@@ -379,8 +379,8 @@ class Pizlonator {
   
   LLVMContext& C;
   Module &M;
-  const DataLayout& DLBefore;
-  const DataLayout& DL;
+  const DataLayout DLBefore;
+  const DataLayout DL;
 
   unsigned PtrBits;
   Type* VoidTy;
@@ -2143,8 +2143,11 @@ class Pizlonator {
           return true;
         }
         
-        if (shouldPassThrough(F))
+        if (shouldPassThrough(F)) {
+          for (Use& Arg : CI->args())
+            lowerConstantOperand(Arg, CI, LowRawNull);
           return true;
+        }
       }
     }
     
@@ -3072,6 +3075,10 @@ public:
 
     prepare();
 
+    // Super important that we do this *before* emitting code, because otherwise, llvm will assume
+    // that the alignment of any lowered ptr loads/stores we emit is 16 bytes.
+    M.setDataLayout(M.getDataLayoutAfterFilC());
+    
     if (verbose)
       errs() << "Prepared module:\n" << M << "\n";
 
@@ -3190,6 +3197,8 @@ public:
 
     std::vector<GlobalValue*> ToDelete;
     auto HandleGlobal = [&] (GlobalValue* G) {
+      if (verbose)
+        errs() << "Handling global: " << G->getName() << "\n";
       Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
                                         "pizlonated_" + G->getName(), &M);
       GlobalToGetter[G] = NewF;
@@ -3210,6 +3219,12 @@ public:
                                                        GlobalValue::InternalLinkage, F->getAddressSpace(),
                                                        "Jf_" + F->getName(), &M);
       }
+    }
+    if (verbose) {
+      errs() << "ToDelete values:";
+      for (GlobalValue* GV : ToDelete)
+        errs() << " " << GV->getName();
+      errs() << "\n";
     }
     
     if (GlobalVariable* GlobalCtors = M.getGlobalVariable("llvm.global_ctors")) {
@@ -3570,15 +3585,22 @@ public:
     Dummy->deleteValue();
     FutureReturnBuffer->deleteValue();
 
+    if (verbose)
+      errs() << "Deleting ToErase values.\n";
     for (Instruction* I : ToErase)
       I->deleteValue();
+    if (verbose)
+      errs() << "RAUWing ToDelete values.\n";
     for (GlobalValue* G : ToDelete)
       G->replaceAllUsesWith(UndefValue::get(G->getType())); // FIXME - should be zero
-    for (GlobalValue* G : ToDelete)
+    if (verbose)
+      errs() << "Erasing ToDelete values.\n";
+    for (GlobalValue* G : ToDelete) {
+      if (verbose)
+        errs() << "Erasing " << G->getName() << "\n";
       G->eraseFromParent();
+    }
 
-    M.setDataLayout(M.getDataLayoutAfterFilC());
-    
     if (verbose)
       errs() << "Here's the pizlonated module:\n" << M << "\n";
     verifyModule(M);

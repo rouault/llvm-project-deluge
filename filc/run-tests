@@ -31,14 +31,18 @@ require 'fileutils'
 require 'getoptlong'
 
 $runTests = true
+$verbose = false
 
 GetoptLong.new(
-    [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ]
+    [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ],
+    [ '--verbose', '-v', GetoptLong::NO_ARGUMENT ]
 ).each {
     | opt, arg |
     case opt
     when '--no-run'
         $runTests = false
+    when '--verbose'
+        $verbose = true
     else
         raise
     end
@@ -95,6 +99,13 @@ $testDirectory.each_entry {
     outputPath = $testOutputDirectory + entry
     outputPath.mkpath
     manifest = YAML.load_file(fullPath + "manifest")
+    onlyOnPlatform = manifest["only-on-platform"]
+    if onlyOnPlatform and RUBY_PLATFORM !~ Regexp.new(onlyOnPlatform)
+        if $verbose
+            puts "Skipping #{entry}, requires #{onlyOnPlatform}"
+        end
+        next
+    end
     expectedReturn = manifest["return"]
     raise unless expectedReturn == "success" or expectedReturn == "failure" or
         expectedReturn == "crash" or expectedReturn == "compileFailure"
