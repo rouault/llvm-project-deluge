@@ -27,5 +27,6 @@ set -e
 set -x
 
 rm -rf musl zlib-1.3 openssl-3.2.0 curl-8.5.0 deluded-openssh-portable pcre-8.39
-rm -rf pizlonated-jpeg-6b
+rm -rf pizlonated-jpeg-6b pizlonated-bzip2 pizlonated-xz pizlonated-mg
+
 

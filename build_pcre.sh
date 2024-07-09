@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -28,42 +28,12 @@
 set -e
 set -x
 
-rm -rf pizfix
+cd pcre-8.39
 
-# Stash filbsdrt instead of deleting it, in case we want to quickly recover it.
-if test -d filbsdrt
-then
-    rm -rf filbsdrt-saved
-    mv filbsdrt filbsdrt-saved
-fi
-
-mkdir -p build
-
-if test $OS = macosx
-then
-    mkdir -p runtime-build
-    
-    if test ! -f runtime-build/runtime-build-ok1
-    then
-        (cd runtime-build &&
-             cmake -S ../llvm-project-clean/llvm -B . -G Ninja \
-                   -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                   -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt &&
-             ninja &&
-             touch runtime-build-ok1)
-    fi
-fi
-
-./configure_llvm.sh
-./simple_build.sh
-
-./build_zlib.sh
-./build_bzip2.sh
-./build_xz.sh
-./build_openssl.sh
-./build_curl.sh
-./build_openssh.sh
-./build_pcre.sh
-./build_jpeg-6b.sh
-./build_mg.sh
-
+($MAKE distclean || echo whatever)
+autoreconf
+CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
+    --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
+    --enable-pcregrep-libz
+$MAKE -j `sysctl -n hw.ncpu`
+$MAKE install

@@ -58,5 +58,7 @@ handle_git https://github.com/pizlonator/deluded-curl-8.5.0.git curl-8.5.0
 handle_git https://github.com/pizlonator/deluded-openssh-portable.git deluded-openssh-portable
 handle_git https://github.com/pizlonator/pizlonated-pcre-8.39.git pcre-8.39
 handle_git https://github.com/pizlonator/pizlonated-jpeg-6b.git pizlonated-jpeg-6b
-
+handle_git https://github.com/pizlonator/pizlonated-bzip2.git pizlonated-bzip2
+handle_git https://github.com/pizlonator/pizlonated-xz.git pizlonated-xz
+handle_git https://github.com/pizlonator/pizlonated-mg.git pizlonated-mg
 
