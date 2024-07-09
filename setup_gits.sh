@@ -30,16 +30,33 @@ set -x
 
 if test $OS = macosx
 then
-    (git clone . llvm-project-clean && \
-         cd llvm-project-clean && \
-         git checkout 6009708b4367171ccdbf4b5905cb6a803753fe18)
+    if test ! -d llvm-project-clean
+    then
+        (git clone . llvm-project-clean && \
+             cd llvm-project-clean && \
+             git checkout 6009708b4367171ccdbf4b5905cb6a803753fe18)
+    fi
 fi
 
-git clone https://github.com/pizlonator/deluded-musl musl
+handle_git()
+{
+    remote_path=$1
+    local_path=$2
+    if test -d $local_path
+    then
+        (cd $local_path && git pull --rebase $remote_path)
+    else
+        git clone $remote_path $local_path
+    fi
+}
 
-git clone https://github.com/pizlonator/deluded-zlib-1.3.git zlib-1.3
-git clone https://github.com/pizlonator/deluded-openssl-3.2.0.git openssl-3.2.0
-git clone https://github.com/pizlonator/deluded-curl-8.5.0.git curl-8.5.0
-git clone https://github.com/pizlonator/deluded-openssh-portable.git
-git clone https://github.com/pizlonator/pizlonated-pcre-8.39.git pcre-8.39
+handle_git https://github.com/pizlonator/deluded-musl musl
+
+handle_git https://github.com/pizlonator/deluded-zlib-1.3.git zlib-1.3
+handle_git https://github.com/pizlonator/deluded-openssl-3.2.0.git openssl-3.2.0
+handle_git https://github.com/pizlonator/deluded-curl-8.5.0.git curl-8.5.0
+handle_git https://github.com/pizlonator/deluded-openssh-portable.git deluded-openssh-portable
+handle_git https://github.com/pizlonator/pizlonated-pcre-8.39.git pcre-8.39
+handle_git https://github.com/pizlonator/pizlonated-jpeg-6b.git pizlonated-jpeg-6b
+
 

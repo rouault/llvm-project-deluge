@@ -94,3 +94,13 @@ fi
        --enable-pcregrep-libz &&
      $MAKE -j `sysctl -n hw.ncpu` &&
      $MAKE install)
+
+(cd pizlonated-jpeg-6b &&
+     ($MAKE distclean || echo whatever) &&
+     CC="xcrun $PWD/../build/bin/clang -O -g -Wno-implicit-int" \
+       ./configure --prefix=$PWD/../pizfix &&
+     $MAKE -j `sysctl -n hw.ncpu` &&
+     $MAKE install &&
+     $MAKE install-lib)
+
+

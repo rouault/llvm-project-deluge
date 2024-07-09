@@ -1287,6 +1287,18 @@ static void signal_pizlonator(int signum)
        - Service threads have all of our signals blocked from the start.
        
        - Newly created threads have signals blocked until they set the thread. */
+    if (!thread) {
+        pas_log("Received a user signal on non-user thread!\n");
+        pas_log("Native signum: %d\n", signum);
+        pas_log("User signum: %d\n", user_signum);
+        pas_log("Signals mask:");
+        sigset_t oldset;
+        pthread_sigmask(0, NULL, &oldset);
+        for (int sig = 1; sig < 32; ++sig) {
+            if (sigismember(&oldset, sig))
+                pas_log(" %d", sig);
+        }
+    }
     PAS_ASSERT(thread);
     
     if ((thread->state & FILC_THREAD_STATE_ENTERED) || thread->special_signal_deferral_depth) {
