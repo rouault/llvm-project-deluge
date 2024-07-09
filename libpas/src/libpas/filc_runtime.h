@@ -966,16 +966,15 @@ static inline void filc_pop_frame(filc_thread* my_thread, filc_frame* frame)
 
 static inline void filc_ptr_array_construct(filc_ptr_array* array)
 {
-    static const unsigned initial_capacity = 5;
-    
-    array->array = bmalloc_allocate(sizeof(void*) * initial_capacity);
+    array->array = NULL;
     array->size = 0;
-    array->capacity = initial_capacity;
+    array->capacity = 0;
 }
 
 static inline void filc_ptr_array_destruct(filc_ptr_array* array)
 {
-    bmalloc_deallocate(array->array);
+    if (array->array)
+        bmalloc_deallocate(array->array);
 }
 
 void filc_ptr_array_add(filc_ptr_array* array, void* ptr);
@@ -989,7 +988,8 @@ static inline void filc_object_array_construct(filc_object_array* array)
 
 static inline void filc_object_array_destruct(filc_object_array* array)
 {
-    bmalloc_deallocate(array->objects);
+    if (array->objects)
+        bmalloc_deallocate(array->objects);
 }
 
 PAS_API void filc_object_array_push(filc_object_array* array, filc_object* object);

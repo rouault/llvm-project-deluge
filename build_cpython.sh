@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -23,9 +23,17 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-./build_all_fast.sh
-./build_all_slow.sh
+cd pizlonated-cpython
+
+($MAKE distclean || whatever)
+CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure \
+    --with-pydebug --without-mimalloc --without-pymalloc --without-freelists \
+    --prefix=$PWD/../pizfix
+$MAKE -j `sysctl -n hw.ncpu`
+$MAKE install
 

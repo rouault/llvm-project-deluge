@@ -124,6 +124,7 @@ int zsys_fsync(int fd);
 int zsys_shutdown(int fd, int how);
 int zsys_rmdir(const char* path);
 int zsys_futimens(int fd, const void* times);
+int zsys_utimensat(int dirfd, const char* path, const void* times, int flags);
 int zsys_fchown(int fd, unsigned uid, unsigned gid);
 int zsys_fchownat(int fd, const char* path, unsigned uid, unsigned gid, int flags);
 int zsys_fchdir(int fd);
@@ -154,5 +155,6 @@ int zsys_mkfifo(const char* path, pizlonated_mode_t mode);
 int zsys_mkdirat(int dirfd, const char* pathname, pizlonated_mode_t mode);
 int zsys_mkdir(const char* path, pizlonated_mode_t mode);
 int zsys_fchmodat(int fd, const char* path, pizlonated_mode_t mode, int flag);
+int zsys_unlinkat(int dirfd, const char* path, int flags);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

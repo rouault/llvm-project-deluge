@@ -61,4 +61,6 @@ handle_git https://github.com/pizlonator/pizlonated-jpeg-6b.git pizlonated-jpeg-
 handle_git https://github.com/pizlonator/pizlonated-bzip2.git pizlonated-bzip2
 handle_git https://github.com/pizlonator/pizlonated-xz.git pizlonated-xz
 handle_git https://github.com/pizlonator/pizlonated-mg.git pizlonated-mg
+handle_git https://github.com/pizlonator/pizlonated-sqlite.git pizlonated-sqlite
+handle_git https://github.com/pizlonator/pizlonated-cpython.git pizlonated-cpython
 
