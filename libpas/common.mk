@@ -82,6 +82,9 @@ build/$(OBJPREFIX)-pas-test-filc_musl.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-pizlo-release-filc_filbsd.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-pizlo-test-filc_filbsd.o: src/libpas/filc_native.h
 build/$(OBJPREFIX)-pas-test-filc_filbsd.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-release-filc_start_program.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-pizlo-test-filc_start_program.o: src/libpas/filc_native.h
+build/$(OBJPREFIX)-pas-test-filc_start_program.o: src/libpas/filc_native.h
 
 ../$(PREFIXDIR)/lib/filc_crt.o: $(MAINSRC)
 	$(PASCC) -c -o ../$(PREFIXDIR)/lib/filc_crt.o $(MAINSRC) $(MAINCFLAGS) -DUSE_LIBC=1
