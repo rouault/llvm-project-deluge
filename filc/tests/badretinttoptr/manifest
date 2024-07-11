@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - filc panic
-  - "cannot access 16 bytes as ptr, word is non-ptr"
+  - "return type mismatch"
 output-excludes:
   - "f returned"

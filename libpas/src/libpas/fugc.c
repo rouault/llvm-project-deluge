@@ -234,7 +234,6 @@ static void mark_outgoing_ptrs(filc_object_array* stack, filc_object* object)
     static const bool verbose = false;
     if (verbose)
         pas_log("Marking outgoing objects from %p\n", object);
-    PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
     if ((object->flags & FILC_OBJECT_FLAG_SPECIAL)) {
         mark_outgoing_special_ptrs(stack, object);
         return;

@@ -410,50 +410,6 @@ void zunfenced_atomic_store_ptr(void** ptr, void* new_value);
 void* zatomic_load_ptr(void** ptr);
 void* zunfenced_atomic_load_ptr(void** ptr);
 
-/* Returns a readonly snapshot of the passed-in arguments object. The arguments are laid out as if you
-   had written a struct with the arguments as fields. */
-void* zargs(void);
-
-/* The return buffer size used by all C code. When C code returns something larger than this, it does so
-   by passing an argument that points to a return buffer. */
-#define ZC_RET_BYTES 16
-
-/* Calls the `callee` with the arguments being a snapshot of the passed-in `args` object. The `args`
-   object does not have to be readonly, but can be. Allows the `callee` to return up to `ret_bytes` data
-   as the result, and returns it as a new readonly allocation. Note that in almost all cases, `ret_bytes`
-   has to be ZC_RET_BYTES. It'll only be something else when dealing with something other than C being
-   compiled to LLVM IR.
-
-   FIXME: This currently does not support unwinding and exceptions.
-
-   Here's an example of how to use this together with zargs() and zreturn() to create a function that is
-   a strong alias for another function:
-
-       void alias(void) { zreturn(zcall(target_function, zargs(), ZC_RET_BYTES), ZC_RET_BYTES); }
-
-   This works because taking/returning void in alias() only has the effect of making alias() itself not
-   check anything about its arguments or return. */
-void* zcall(void* callee, void* args, __SIZE_TYPE__ ret_bytes);
-
-/* Simplified version of `zcall` that returns a value of type `ret_type`. Note this only works for return
-   types that wouldn't be returned by passing a return argument. */
-#define zcall_value(callee, args, ret_type) (*(ret_type*)zcall((callee), (args), ZC_RET_BYTES))
-
-/* Returns from the caller with the first `ret_bytes` bytes of the `rets` object as the return value.
-   Snapshots the `rets` object, which may or may not be readonly. The type of `rets` does not have to
-   agree with the C return type. */
-__attribute__((__noreturn__)) void zreturn(void* rets, __SIZE_TYPE__ ret_bytes);
-
-/* Simplified version of `zreturn` that takes a value. */
-#define zreturn_value(value) do { \
-        __typeof__(value) __fc_tmp = (value); \
-        zreturn(&(__fc_tmp), sizeof(__fc_tmp)); \
-    } while (0)
-
-/* Polymorphic forwarding function. Calls the target_function with the caller's arguments and causes the
-   caller to return with the target_function's return value. Only works for C/C++ functions. */
-#define zcforward(target_function) zreturn(zcall((target_function), zargs(), ZC_RET_BYTES), ZC_RET_BYTES)
-
 enum zpark_result {
     zpark_condition_failed,
     zpark_timed_out,

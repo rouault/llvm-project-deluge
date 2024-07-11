@@ -1,4 +1,6 @@
 return:
   success
+exclude-modes:
+  - STW
 output-includes:
   - "Sukces!"

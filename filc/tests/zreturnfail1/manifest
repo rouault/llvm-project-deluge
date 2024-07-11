@@ -1,4 +1,0 @@
-return:
-  failure
-output-includes:
-  - "filc panic"

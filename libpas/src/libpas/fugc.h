@@ -51,7 +51,6 @@ static inline void fugc_mark(filc_object_array* mark_stack, filc_object* object)
         pas_log("Marking object %p\n", object);
     if (!object)
         return;
-    PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
     if ((object->flags & FILC_OBJECT_FLAG_GLOBAL))
         return;
     if (!verse_heap_set_is_marked_relaxed(object, true))

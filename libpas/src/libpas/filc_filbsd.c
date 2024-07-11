@@ -138,12 +138,12 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
     data->result = ioctl(data->fd, data->result, guarded_arg);
 }
 
-int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_ptr args)
+int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_cc_cursor* args)
 {
-    if (filc_ptr_available(args) < FILC_WORD_SIZE)
+    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE))
         return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
 
-    filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+    filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
     if (!filc_ptr_ptr(arg_ptr))
         return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
 
@@ -501,7 +501,7 @@ einval:
     return -1;
 }
 
-int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_ptr args)
+int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_cc_cursor* args)
 {
     static const bool verbose = false;
     
@@ -548,14 +548,14 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_ptr arg
     int arg_int = 0;
     void* arg_ptr = NULL;
     if (have_arg_int)
-        arg_int = filc_ptr_get_next_int(&args);
+        arg_int = filc_cc_cursor_get_next_int(args, int);
     else if (have_arg_flock) {
-        filc_ptr flock_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_ptr flock_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_access_int(flock_ptr, sizeof(struct flock), arg_flock_access_kind, NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(flock_ptr));
         arg_ptr = filc_ptr_ptr(flock_ptr);
     } else if (have_arg_kinfo_file) {
-        filc_ptr kinfo_file_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_ptr kinfo_file_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_write_int(kinfo_file_ptr, sizeof(struct kinfo_file), NULL);
         filc_pin_tracked(my_thread, filc_ptr_object(kinfo_file_ptr));
         arg_ptr = filc_ptr_ptr(kinfo_file_ptr);
@@ -1913,7 +1913,8 @@ int filc_native_zsys_semget(filc_thread* my_thread, long key, int nsems, int fla
     return -1;
 }
 
-int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd, filc_ptr args)
+int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd,
+                            filc_cc_cursor* args)
 {
     PAS_UNUSED_PARAM(my_thread);
     PAS_UNUSED_PARAM(semid);

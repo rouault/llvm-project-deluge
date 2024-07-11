@@ -10,7 +10,7 @@
     abort(); \
 } while (0)
 
-static const size_t num_nodes = 10000;
+static const size_t num_nodes = 40000;
 static const size_t repeat = 10;
 
 struct foo;

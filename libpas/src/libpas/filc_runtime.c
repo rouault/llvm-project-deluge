@@ -103,6 +103,32 @@ filc_object* filc_free_singleton;
 
 filc_object_array filc_global_variable_roots;
 
+const filc_cc_type filc_empty_cc_type = {
+    .num_words = 0,
+    .word_types = { }
+};
+
+const filc_cc_type filc_void_cc_type = {
+    .num_words = 1,
+    .word_types = {
+        FILC_WORD_TYPE_UNSET
+    }
+};
+
+const filc_cc_type filc_int_cc_type = {
+    .num_words = 1,
+    .word_types = {
+        FILC_WORD_TYPE_INT
+    }
+};
+
+const filc_cc_type filc_ptr_cc_type = {
+    .num_words = 1,
+    .word_types = {
+        FILC_WORD_TYPE_PTR
+    }
+};
+
 void filc_check_user_sigset(filc_ptr ptr, filc_access_kind access_kind)
 {
     filc_check_access_int(ptr, sizeof(filc_user_sigset), access_kind, NULL);
@@ -812,16 +838,10 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
        Also, we're choosing not to rely on the fact that functions are global and we track them anyway. */
     filc_ptr function_ptr = filc_ptr_load(my_thread, &handler->function_ptr);
 
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-    filc_ptr args = filc_ptr_create(my_thread, filc_allocate_int(my_thread, sizeof(int)));
-    *(int*)filc_ptr_ptr(args) = signum;
     /* This check shouldn't be necessary; we do it out of an abundance of paranoia! */
     filc_check_function_call(function_ptr);
-    bool (*function)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(function_ptr);
-    filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(!function(my_thread, args, rets));
-    filc_unlock_top_native_frame(my_thread);
+    filc_call_user_void_int(
+        my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(function_ptr), signum);
 
     filc_pop_native_frame(my_thread, &native_frame);
     filc_pop_frame(my_thread, frame);
@@ -1204,6 +1224,11 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     for (frame = my_thread->top_frame; frame; frame = frame->parent) {
         PAS_ASSERT(frame->origin);
         PAS_ASSERT(frame->origin->function_origin);
+        if (verbose) {
+            pas_log("Marking roots for ");
+            filc_origin_dump(frame->origin, &pas_log_stream.base);
+            pas_log("\n");
+        }
         for (index = frame->origin->function_origin->num_objects; index--;) {
             if (verbose)
                 pas_log("Marking thread root %p\n", frame->objects[index]);
@@ -1369,10 +1394,6 @@ void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "free");
     }
-    if (flags & FILC_OBJECT_FLAG_RETURN_BUFFER) {
-        pas_stream_print_comma(stream, comma, ",");
-        pas_stream_printf(stream, "return_buffer");
-    }
     if (flags & FILC_OBJECT_FLAG_SPECIAL) {
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "special");
@@ -1509,6 +1530,74 @@ char* filc_ptr_to_new_string(filc_ptr ptr)
     return ptr_to_new_string_impl(ptr, &allocation_config);
 }
 
+void filc_cc_type_dump_for_cursor(const filc_cc_type* type, size_t word_type_index, pas_stream* stream)
+{
+    if (!type) {
+        /* This shouldn't happen, but we have a story for dumping it anyway to make debugging easier. */
+        pas_stream_printf(stream, "<null>");
+        return;
+    }
+    if (!type->num_words) {
+        pas_stream_printf(stream, "empty");
+        return;
+    }
+    size_t index;
+    for (index = 0; index < type->num_words; ++index) {
+        if (word_type_index == index)
+            pas_stream_printf(stream, "[");
+        filc_word_type_dump(type->word_types[index], stream);
+        if (word_type_index == index)
+            pas_stream_printf(stream, "]");
+    }
+}
+
+void filc_cc_type_dump(const filc_cc_type* type, pas_stream* stream)
+{
+    filc_cc_type_dump_for_cursor(type, SIZE_MAX, stream);
+}
+
+void filc_cc_ptr_dump(filc_cc_ptr cc_ptr, pas_stream* stream)
+{
+    pas_stream_printf(stream, "%p,", cc_ptr.base);
+    filc_cc_type_dump(cc_ptr.type, stream);
+}
+
+void filc_cc_cursor_dump(filc_cc_cursor cursor, pas_stream* stream)
+{
+    pas_stream_printf(stream, "%p,%p,", cursor.cursor, cursor.cc_ptr.base);
+    filc_cc_type_dump_for_cursor(cursor.cc_ptr.type, filc_cc_cursor_word_type_index(cursor), stream);
+}
+
+char* filc_cc_type_to_new_string(const filc_cc_type* type)
+{
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    filc_cc_type_dump(type, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
+char* filc_cc_ptr_to_new_string(filc_cc_ptr cc_ptr)
+{
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    filc_cc_ptr_dump(cc_ptr, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
+char* filc_cc_cursor_to_new_string(filc_cc_cursor cursor)
+{
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    filc_cc_cursor_dump(cursor, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
 void filc_word_type_dump(filc_word_type type, pas_stream* stream)
 {
     switch (type) {
@@ -1569,7 +1658,6 @@ char* filc_word_type_to_new_string(filc_word_type type)
 
 void filc_store_barrier_slow(filc_thread* my_thread, filc_object* object)
 {
-    PAS_TESTING_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
     fugc_mark(&my_thread->mark_stack, object);
@@ -1583,7 +1671,9 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
 void filc_check_access_common(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
                               const filc_origin* origin)
 {
-    if (PAS_ENABLE_TESTING)
+    static const bool extreme_assert = false;
+    
+    if (extreme_assert)
         filc_validate_ptr(ptr, origin);
 
     FILC_CHECK(
@@ -1650,6 +1740,20 @@ void filc_check_access_special(filc_ptr ptr, filc_word_type word_type, const fil
         origin,
         "cannot access pointer as %s, object has wrong special type (ptr = %s).",
         filc_word_type_to_new_string(word_type), filc_ptr_to_new_string(ptr));
+}
+
+void filc_cc_args_check_failure(
+    filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin)
+{
+    filc_safety_panic(origin, "argument type mismatch (args = %s, expected type = %s).",
+                      filc_cc_ptr_to_new_string(args), filc_cc_type_to_new_string(expected_type));
+}
+
+void filc_cc_rets_check_failure(
+    filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin)
+{
+    filc_safety_panic(origin, "return type mismatch (rets = %s, expected type = %s).",
+                      filc_cc_ptr_to_new_string(rets), filc_cc_type_to_new_string(expected_type));
 }
 
 static void check_not_free(filc_ptr ptr, const filc_origin* origin)
@@ -1766,7 +1870,6 @@ filc_object* filc_allocate_with_existing_data(
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_FREE));
-    PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_SPECIAL));
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_GLOBAL));
 
@@ -1934,14 +2037,12 @@ static filc_object* finish_reallocate(
             }
             /* Surely need the barrier since the destination object is black and the source object is
                whatever. */
-            if (word_type == FILC_WORD_TYPE_PTR) {
-                filc_ptr ptr;
-                ptr.word = word;
-                filc_store_barrier(my_thread, filc_ptr_object(ptr));
-            }
-            /* No need for fences or anything like that since the object has not escaped; not even the
-               GC can see it. That's because we don't have pollchecks or exits here, which is itself a
-               perf bug, see above. */
+            if (word_type == FILC_WORD_TYPE_PTR)
+                filc_store_barrier_for_word(my_thread, word);
+            /* It's definitely fine to set the word_type without CAS because we still own the object.
+               I think that it's fine to set the word_type without any fences because we've done a
+               barrier anyway, so pointed-to object is tracked in this GC cycle. And for a new GC cycle
+               to start, we'd need to cross a pollcheck, and which point everything gets fenced. */
             result->word_types[index] = word_type;
             __c11_atomic_store((_Atomic pas_uint128*)(dst + index), word, __ATOMIC_RELAXED);
             break;
@@ -2001,7 +2102,6 @@ void filc_free_yolo(filc_thread* my_thread, filc_object* object)
             NULL,
             "cannot free pinned object %s.",
             filc_object_to_new_string(object));
-        PAS_TESTING_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
         filc_object_flags new_flags = old_flags | FILC_OBJECT_FLAG_FREE;
         if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
             break;
@@ -2376,7 +2476,6 @@ void filc_pin(filc_object* object)
             NULL,
             "cannot pin free object %s.",
             filc_object_to_new_string(object));
-        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
         filc_object_flags new_flags = old_flags + ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
         FILC_CHECK(
             new_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT,
@@ -2398,7 +2497,6 @@ void filc_unpin(filc_object* object)
         filc_object_flags old_flags = object->flags;
         PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_FREE)); /* should never happen */
         PAS_ASSERT(old_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
-        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_RETURN_BUFFER));
         PAS_ASSERT(old_flags >= ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT));
         filc_object_flags new_flags = old_flags - ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
         if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
@@ -2616,40 +2714,12 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
     }
 }
 
-void filc_validate_normal_object(filc_object* object, const filc_origin* origin)
-{
-    FILC_ASSERT(!(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER), origin);
-    filc_validate_object(object, origin);
-}
-
-void filc_validate_return_buffer_object(filc_object* object, const filc_origin* origin)
-{
-    FILC_ASSERT(object->flags & FILC_OBJECT_FLAG_RETURN_BUFFER, origin);
-    FILC_ASSERT(!(object->flags & FILC_OBJECT_FLAG_SPECIAL), origin);
-    FILC_ASSERT(!(object->flags & FILC_OBJECT_FLAG_FREE), origin);
-    filc_validate_object(object, origin);
-}
-
 void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin)
 {
     if (filc_ptr_is_boxed_int(ptr))
         return;
 
     filc_validate_object(filc_ptr_object(ptr), origin);
-}
-
-void filc_validate_normal_ptr(filc_ptr ptr, const filc_origin* origin)
-{
-    if (filc_ptr_is_boxed_int(ptr))
-        return;
-
-    filc_validate_normal_object(filc_ptr_object(ptr), origin);
-}
-
-void filc_validate_return_buffer_ptr(filc_ptr ptr, const filc_origin* origin)
-{
-    FILC_ASSERT(!filc_ptr_is_boxed_int(ptr), origin);
-    filc_validate_return_buffer_object(filc_ptr_object(ptr), origin);
 }
 
 filc_ptr filc_native_zptr_to_new_string(filc_thread* my_thread, filc_ptr ptr)
@@ -2886,7 +2956,7 @@ void filc_low_level_ptr_safe_bzero_with_exit(
     filc_unpin(object);
 }
 
-/* Assumes the dst pointer is traked by GC. Assumes that count is nonzero. */
+/* Assumes the dst pointer is tracked by GC. Assumes that count is nonzero. */
 PAS_ALWAYS_INLINE static void memset_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value,
                                           size_t count)
 {
@@ -2992,11 +3062,9 @@ static void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr sr
     PAS_ASSERT(!"Bad part");
 }
 
-/* Assumes you've done check_access_common on the dst/src. Assumes that the dst/src are tracked by
-   GC. Assumes that count is nonzero. */
+/* Assumes that the dst/src are tracked by GC. Assumes that count is nonzero. */
 PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
-                                           size_t count, filc_barrier_mode barriered,
-                                           filc_pollcheck_mode pollchecked)
+                                           size_t count)
 {
     static const bool verbose = false;
 
@@ -3008,6 +3076,9 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
         filc_thread_dump_stack(my_thread, &pas_log_stream.base);
     }
     
+    filc_check_access_common(dst, count, filc_write_access, NULL);
+    filc_check_access_common(src, count, filc_read_access, NULL);
+
     filc_object* dst_object = filc_ptr_object(dst);
     filc_object* src_object = filc_ptr_object(src);
 
@@ -3099,11 +3170,8 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
                     filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
                     filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             }
-            if (src_word_type == FILC_WORD_TYPE_PTR && barriered) {
-                filc_ptr ptr;
-                ptr.word = src_word;
-                filc_store_barrier(my_thread, filc_ptr_object(ptr));
-            }
+            if (src_word_type == FILC_WORD_TYPE_PTR)
+                filc_store_barrier_for_word(my_thread, src_word);
             __c11_atomic_store((_Atomic pas_uint128*)cur_dst, src_word, __ATOMIC_RELAXED);
             break;
         }
@@ -3118,7 +3186,7 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
             cur_dst_word_index--;
             cur_src_word_index--;
         }
-        if (pollchecked && filc_pollcheck(my_thread, NULL)) {
+        if (filc_pollcheck(my_thread, NULL)) {
             check_accessible(dst, NULL);
             check_accessible(src, NULL);
         }
@@ -3152,128 +3220,33 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     frame->objects[1] = src_object;
     filc_push_frame(my_thread, frame);
     
-    filc_check_access_common(dst, count, filc_write_access, NULL);
-    filc_check_access_common(src, count, filc_read_access, NULL);
-
-    memmove_impl(my_thread, dst, src, count, filc_barriered, filc_pollchecked);
+    memmove_impl(my_thread, dst, src, count);
 
     filc_pop_frame(my_thread, frame);
 }
 
-filc_ptr filc_clone_readonly_for_zargs(filc_thread* my_thread, filc_ptr ptr)
+filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr, size_t offset)
 {
-    if (!filc_ptr_available(ptr))
+    if (!filc_cc_ptr_size(cc_ptr))
         return filc_ptr_forge_null();
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "zargs", 2);
-    struct {
-        FILC_FRAME_BODY;
-        filc_object* objects[2];
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
-    frame->objects[0] = filc_ptr_object(ptr);
-    filc_push_frame(my_thread, frame);
-    
-    filc_check_access_common(ptr, filc_ptr_available(ptr), filc_read_access, NULL);
-    
     filc_object* result_object = allocate_impl(
-        my_thread, filc_ptr_available(ptr), FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET);
-    frame->objects[1] = result_object;
-    filc_ptr result = filc_ptr_create_with_manual_tracking(result_object);
-    memmove_impl(my_thread, result, ptr, filc_ptr_available(ptr), filc_barriered, filc_pollchecked);
-
-    filc_pop_frame(my_thread, frame);
-    return result;
-}
-
-void filc_memcpy_for_zreturn(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
-                             const filc_origin* passed_origin)
-{
-    PAS_ASSERT(filc_ptr_object(dst));
-    PAS_ASSERT(filc_ptr_object(dst)->flags & FILC_OBJECT_FLAG_RETURN_BUFFER);
-
-    if (!count)
-        return;
-
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
-
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "zreturn", 1);
-    struct {
-        FILC_FRAME_BODY;
-        filc_object* objects[1];
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
-    frame->objects[0] = filc_ptr_object(src);
-    filc_push_frame(my_thread, frame);
-
-    filc_check_access_common(src, count, filc_read_access, NULL);
-    filc_check_access_common(dst, count, filc_write_access, NULL);
-    memmove_impl(my_thread, dst, src, count, filc_unbarriered, filc_not_pollchecked);
-    
-    filc_pop_frame(my_thread, frame);
-}
-
-filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr,
-                           size_t ret_bytes)
-{
-    filc_check_function_call(callee_ptr);
-
-    filc_ptr args_copy;
-    if (!filc_ptr_available(args_ptr))
-        args_copy = filc_ptr_forge_null();
-    else {
-        filc_check_access_common(args_ptr, filc_ptr_available(args_ptr), filc_read_access, NULL);
-
-        /* It's weird but true that the ABI args are not readonly right now. Not a problem we need to
-           solve yet. */
-        args_copy = filc_ptr_create(my_thread, filc_allocate(my_thread, filc_ptr_available(args_ptr)));
-        memmove_impl(my_thread, args_copy, args_ptr, filc_ptr_available(args_ptr), filc_barriered,
-                     filc_pollchecked);
+        my_thread, filc_cc_ptr_size(cc_ptr), FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET);
+    size_t index;
+    pas_uint128* dst_base = (pas_uint128*)result_object->lower;
+    pas_uint128* src_base = (pas_uint128*)cc_ptr.base;
+    for (index = cc_ptr.type->num_words; index--;) {
+        filc_word_type word_type = cc_ptr.type->word_types[index];
+        PAS_TESTING_ASSERT(filc_is_valid_actual_cc_type(word_type));
+        pas_uint128 word = src_base[index];
+        if (word_type == FILC_WORD_TYPE_PTR)
+            filc_store_barrier_for_word(my_thread, word);
+        result_object->word_types[index] = word_type;
+        dst_base[index] = word;
     }
-
-    size_t num_words;
-    size_t offset_to_payload;
-    size_t total_size;
-    prepare_allocate(&ret_bytes, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
-    PAS_ASSERT(FILC_WORD_SIZE == BMALLOC_MINALIGN_SIZE);
-    filc_object* ret_object = (filc_object*)bmalloc_allocate(total_size);
-    initialize_object(ret_object, ret_bytes, num_words, offset_to_payload, FILC_OBJECT_FLAG_RETURN_BUFFER,
-                      FILC_WORD_TYPE_UNSET);
-    filc_ptr rets = filc_ptr_create_with_manual_tracking(ret_object);
-
-    /* We allocate the result_object before the call as a hack to avoid triggering a pollcheck between
-       when the callee returns and when we grab its return values.
-
-       NOTE: We could *almost* pass this as the return buffer, except:
-
-       - This object is readonly, but the return buffer isn't.
-       
-       - When storing to this object, we need barriers, but the callee won't barrier when storing to
-         its return buffer. */
-    filc_ptr result = filc_ptr_create(
-        my_thread, allocate_impl(my_thread, ret_bytes, FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET));
-
-    filc_lock_top_native_frame(my_thread);
-    bool (*callee)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callee_ptr);
-    /* FIXME: The only things stopping us from allowing exceptions to be thrown are:
-
-       - generate_pizlonated_forwarders.rb will say that our frame can't catch.
-
-       - We'll need some way of deallocating ret_object upon unwind. */
-    PAS_ASSERT(!callee(my_thread, args_copy, rets));
-    filc_unlock_top_native_frame(my_thread);
-
-    /* FIXME: This doesn't really need the full complexirty of memmove_impl, but who cares. */
-    memmove_impl(my_thread, result, rets, ret_bytes, filc_barriered, filc_not_pollchecked);
-
-    bmalloc_deallocate(ret_object);
+    pas_store_store_fence();
     
-    return result;
+    return filc_ptr_with_offset(filc_ptr_create_with_manual_tracking(result_object), offset);
 }
 
 void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)
@@ -3287,10 +3260,7 @@ void filc_native_zmemmove(filc_thread* my_thread, filc_ptr dst_ptr, filc_ptr src
 {
     if (!count)
         return;
-    
-    filc_check_access_common(src_ptr, count, filc_read_access, NULL);
-    filc_check_access_common(dst_ptr, count, filc_write_access, NULL);
-    memmove_impl(my_thread, dst_ptr, src_ptr, count, filc_barriered, filc_pollchecked);
+    memmove_impl(my_thread, dst_ptr, src_ptr, count);
 }
 
 int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)
@@ -3576,12 +3546,8 @@ static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONAT
     filc_frame* frame = (filc_frame*)&actual_frame;
     frame->origin = &origin;
     filc_push_frame(my_thread, frame);
-    
-    filc_return_buffer return_buffer;
-    filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(
-        !global_ctor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer)));
-    filc_unlock_top_native_frame(my_thread);
+
+    filc_call_user_void(my_thread, global_ctor);
 
     filc_pop_frame(my_thread, frame);
 }
@@ -3656,11 +3622,7 @@ void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE))
     frame->origin = &origin;
     filc_push_frame(my_thread, frame);
 
-    filc_return_buffer return_buffer;
-    filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(
-        !global_dtor(my_thread, filc_ptr_forge_null(), filc_ptr_for_int_return_buffer(&return_buffer)));
-    filc_unlock_top_native_frame(my_thread);
+    filc_call_user_void(my_thread, global_dtor);
 
     filc_pop_frame(my_thread, frame);
     filc_exit(my_thread);
@@ -3952,21 +3914,6 @@ static void check_stack_frame_description(
     FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, eh_data, access_kind);
 }
 
-struct stack_scan_callback_args {
-    filc_ptr description_ptr;
-    filc_ptr arg_ptr;
-};
-
-typedef struct stack_scan_callback_args stack_scan_callback_args;
-
-static void check_stack_scan_callback_args(
-    filc_ptr stack_scan_callback_args_ptr, filc_access_kind access_kind)
-{
-    FILC_CHECK_PTR_FIELD(
-        stack_scan_callback_args_ptr, stack_scan_callback_args, description_ptr, access_kind);
-    FILC_CHECK_PTR_FIELD(stack_scan_callback_args_ptr, stack_scan_callback_args, arg_ptr, access_kind);
-}
-
 void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr arg_ptr)
 {
     filc_check_function_call(callback_ptr);
@@ -4016,19 +3963,7 @@ void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc
             eh_data = filc_ptr_forge_null();
         filc_ptr_store(my_thread, &description->eh_data, eh_data);
 
-        filc_ptr args_ptr = filc_ptr_create(
-            my_thread, filc_allocate(my_thread, sizeof(stack_scan_callback_args)));
-        check_stack_scan_callback_args(args_ptr, filc_write_access);
-        stack_scan_callback_args* args = (stack_scan_callback_args*)filc_ptr_ptr(args_ptr);
-        filc_ptr_store(my_thread, &args->description_ptr, description_ptr);
-        filc_ptr_store(my_thread, &args->arg_ptr, arg_ptr);
-
-        filc_lock_top_native_frame(my_thread);
-        filc_return_buffer return_buffer;
-        filc_ptr rets_ptr = filc_ptr_for_int_return_buffer(&return_buffer);
-        PAS_ASSERT(!callback(my_thread, args_ptr, rets_ptr));
-        filc_unlock_top_native_frame(my_thread);
-        if (!*(bool*)filc_ptr_ptr(rets_ptr))
+        if (!filc_call_user_bool_ptr_ptr(my_thread, callback, description_ptr, arg_ptr))
             return;
     }
 }
@@ -4092,28 +4027,6 @@ static void check_unwind_exception(filc_ptr unwind_exception_ptr, filc_access_ki
     FILC_CHECK_PTR_FIELD(unwind_exception_ptr, unwind_exception, exception_cleanup, access_kind);
 }
 
-struct unwind_personality_args {
-    int version;
-    unwind_action actions;
-    unwind_exception_class exception_class;
-    filc_ptr exception_object;
-    filc_ptr context;
-};
-
-typedef struct unwind_personality_args unwind_personality_args;
-
-static void check_unwind_personality_args(
-    filc_ptr unwind_personality_args_ptr, filc_access_kind access_kind)
-{
-    FILC_CHECK_INT_FIELD(unwind_personality_args_ptr, unwind_personality_args, version, access_kind);
-    FILC_CHECK_INT_FIELD(unwind_personality_args_ptr, unwind_personality_args, actions, access_kind);
-    FILC_CHECK_INT_FIELD(
-        unwind_personality_args_ptr, unwind_personality_args, exception_class, access_kind);
-    FILC_CHECK_PTR_FIELD(
-        unwind_personality_args_ptr, unwind_personality_args, exception_object, access_kind);
-    FILC_CHECK_PTR_FIELD(unwind_personality_args_ptr, unwind_personality_args, context, access_kind);
-}
-
 static unwind_reason_code call_personality(
     filc_thread* my_thread, filc_frame* current_frame, int version, unwind_action actions,
     filc_ptr exception_object_ptr, filc_ptr context_ptr)
@@ -4137,27 +4050,10 @@ static unwind_reason_code call_personality(
     filc_ptr personality_ptr = current_frame->origin->function_origin->personality_getter(NULL);
     filc_thread_track_object(my_thread, filc_ptr_object(personality_ptr));
     filc_check_function_call(personality_ptr);
-    
-    filc_ptr personality_args_ptr = filc_ptr_create(
-        my_thread, filc_allocate(my_thread, sizeof(unwind_personality_args)));
-    check_unwind_personality_args(personality_args_ptr, filc_write_access);
-    unwind_personality_args* personality_args =
-        (unwind_personality_args*)filc_ptr_ptr(personality_args_ptr);
-    
-    personality_args->version = version;
-    personality_args->actions = actions;
-    personality_args->exception_class = exception_class;
-    filc_ptr_store(my_thread, &personality_args->exception_object, exception_object_ptr);
-    filc_ptr_store(my_thread, &personality_args->context, context_ptr);
-    
-    filc_lock_top_native_frame(my_thread);
-    filc_return_buffer return_buffer;
-    filc_ptr personality_rets_ptr = filc_ptr_for_int_return_buffer(&return_buffer);
-    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(personality_ptr))(
-                   my_thread, personality_args_ptr, personality_rets_ptr));
-    filc_unlock_top_native_frame(my_thread);
-    
-    return *(unwind_reason_code*)filc_ptr_ptr(personality_rets_ptr);
+
+    return (unwind_reason_code)filc_call_user_eh_personality(
+        my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(personality_ptr),
+        version, actions, exception_class, exception_object_ptr, context_ptr);
 }
 
 filc_exception_and_int filc_native__Unwind_RaiseException(
@@ -4210,6 +4106,8 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
 static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr, filc_ptr exception_object_ptr,
                              filc_frame* found_frame, filc_frame* current_frame)
 {
+    static const bool verbose = false;
+    
     /* Middle of Phase 2 */
     
     PAS_ASSERT(current_frame->origin);
@@ -4241,6 +4139,11 @@ static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr, filc_
     for (index = FILC_NUM_UNWIND_REGISTERS; index--;) {
         PAS_ASSERT(filc_ptr_is_totally_null(my_thread->unwind_registers[index]));
         my_thread->unwind_registers[index] = filc_ptr_load(my_thread, context->registers + index);
+        if (verbose) {
+            pas_log("Unwind register %u: ", index);
+            filc_ptr_dump(my_thread->unwind_registers[index], &pas_log_stream.base);
+            pas_log("\n");
+        }
     }
     return true;
 }
@@ -4495,13 +4398,7 @@ void filc_set_user_errno(int errno_value)
         NULL,
         "errno handler not registered when trying to set errno = %d.", errno_value);
     filc_thread* my_thread = filc_get_my_thread();
-    filc_ptr args = filc_ptr_create(my_thread, filc_allocate_int(my_thread, sizeof(int)));
-    *(int*)filc_ptr_ptr(args) = errno_value;
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-    filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(!pizlonated_errno_handler(my_thread, args, rets));
-    filc_unlock_top_native_frame(my_thread);
+    filc_call_user_void_int(my_thread, pizlonated_errno_handler, errno_value);
 }
 
 void filc_set_errno(int errno_value)
@@ -4523,14 +4420,7 @@ static void set_dlerror(const char* error)
         NULL,
         "dlerror handler not registered when trying to set dlerror = %s.", error);
     filc_thread* my_thread = filc_get_my_thread();
-    filc_ptr args = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(filc_ptr)));
-    filc_check_write_ptr(args, NULL);
-    filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(args), filc_strdup(my_thread, error));
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-    filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(!pizlonated_dlerror_handler(my_thread, args, rets));
-    filc_unlock_top_native_frame(my_thread);
+    filc_call_user_void_ptr(my_thread, pizlonated_dlerror_handler, filc_strdup(my_thread, error));
 }
 
 void filc_extract_user_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_ptr,
@@ -4753,7 +4643,8 @@ int filc_to_user_open_flags(int flags)
     return result;
 }
 
-int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_flags, filc_ptr args)
+int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_flags,
+                          filc_cc_cursor* args)
 {
     int flags = filc_from_user_open_flags(user_flags);
     if (flags < 0) {
@@ -4762,7 +4653,7 @@ int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_fl
     }
     pizlonated_mode_t mode = 0;
     if (flags >= 0 && (flags & O_CREAT))
-        mode = filc_ptr_get_next_pizlonated_mode_t(&args);
+        mode = filc_cc_cursor_get_next_int(args, pizlonated_mode_t);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
@@ -6621,27 +6512,16 @@ static void* start_thread(void* arg)
     filc_native_frame native_frame;
     filc_push_native_frame(thread, &native_frame);
 
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_ptr_return_buffer(&return_buffer);
-
-    filc_ptr args = filc_ptr_create(thread, filc_allocate(thread, sizeof(filc_ptr)));
-    filc_check_write_ptr(args, NULL);
-    filc_ptr_store(thread, (filc_ptr*)filc_ptr_ptr(args), filc_ptr_load(thread, &thread->arg_ptr));
+    filc_ptr arg_ptr = filc_ptr_load(thread, &thread->arg_ptr);
     filc_ptr_store(thread, &thread->arg_ptr, filc_ptr_forge_null());
-
-    filc_lock_top_native_frame(thread);
 
     if (verbose)
         pas_log("thread %u calling main function\n", tid);
 
-    PAS_ASSERT(!thread->thread_main(thread, args, rets));
+    filc_ptr result = filc_call_user_ptr_ptr(thread, thread->thread_main, arg_ptr);
 
     if (verbose)
         pas_log("thread %u main function returned\n", tid);
-
-    filc_unlock_top_native_frame(thread);
-    filc_ptr result = *(filc_ptr*)filc_ptr_ptr(rets);
-    filc_thread_track_object(thread, filc_ptr_object(result));
 
     pas_system_mutex_lock(&thread->lock);
     PAS_ASSERT(!thread->has_stopped);
@@ -6776,37 +6656,13 @@ typedef struct {
 static bool zpark_if_validate_callback(void* arg)
 {
     zpark_if_data* data = (zpark_if_data*)arg;
-
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-
-    filc_ptr args = filc_ptr_create(
-        data->my_thread, filc_allocate(data->my_thread, sizeof(filc_ptr)));
-    filc_check_write_ptr(args, NULL);
-    filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
-
-    filc_lock_top_native_frame(data->my_thread);
-    PAS_ASSERT(!data->condition(data->my_thread, args, rets));
-    filc_unlock_top_native_frame(data->my_thread);
-
-    return *(bool*)filc_ptr_ptr(rets);
+    return filc_call_user_bool_ptr(data->my_thread, data->condition, data->arg_ptr);
 }
 
 static void zpark_if_before_sleep_callback(void* arg)
 {
     zpark_if_data* data = (zpark_if_data*)arg;
-
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-
-    filc_ptr args = filc_ptr_create(
-        data->my_thread, filc_allocate(data->my_thread, sizeof(filc_ptr)));
-    filc_check_write_ptr(args, NULL);
-    filc_ptr_store(data->my_thread, (filc_ptr*)filc_ptr_ptr(args), data->arg_ptr);
-
-    filc_lock_top_native_frame(data->my_thread);
-    PAS_ASSERT(!data->before_sleep(data->my_thread, args, rets));
-    filc_unlock_top_native_frame(data->my_thread);
+    filc_call_user_void_ptr(data->my_thread, data->before_sleep, data->arg_ptr);
 }
 
 int filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr condition_ptr,
@@ -6847,23 +6703,9 @@ typedef struct {
 static void zunpark_one_callback(filc_unpark_result result, void* arg)
 {
     zunpark_one_data* data = (zunpark_one_data*)arg;
-
-    filc_return_buffer return_buffer;
-    filc_ptr rets = filc_ptr_for_int_return_buffer(&return_buffer);
-
-    filc_ptr args = filc_ptr_create(
-        data->my_thread, filc_allocate(data->my_thread, sizeof(zunpark_one_callback_args)));
-    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, did_unpark_thread, filc_write_access);
-    FILC_CHECK_INT_FIELD(args, zunpark_one_callback_args, may_have_more_threads, filc_write_access);
-    FILC_CHECK_PTR_FIELD(args, zunpark_one_callback_args, arg_ptr, filc_write_access);
-    zunpark_one_callback_args* raw_args = (zunpark_one_callback_args*)filc_ptr_ptr(args);
-    raw_args->did_unpark_thread = result.did_unpark_thread;
-    raw_args->may_have_more_threads = result.may_have_more_threads;
-    filc_ptr_store(data->my_thread, &raw_args->arg_ptr, data->arg_ptr);
-
-    filc_lock_top_native_frame(data->my_thread);
-    PAS_ASSERT(!data->callback(data->my_thread, args, rets));
-    filc_unlock_top_native_frame(data->my_thread);
+    filc_call_user_void_bool_bool_ptr(
+        data->my_thread, data->callback, result.did_unpark_thread, result.may_have_more_threads,
+        data->arg_ptr);
 }
 
 void filc_native_zunpark_one(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr callback_ptr,

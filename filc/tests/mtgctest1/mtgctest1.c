@@ -11,8 +11,8 @@
     abort(); \
 } while (0)
 
-static size_t num_nodes = 10000;
-static size_t repeat = 3;
+static size_t num_nodes = 20000;
+static size_t repeat = 4;
 static size_t num_threads = 10;
 
 struct foo;

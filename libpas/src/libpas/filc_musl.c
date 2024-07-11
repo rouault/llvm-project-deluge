@@ -808,7 +808,7 @@ static void from_musl_winsize(struct musl_winsize* musl_winsize, struct winsize*
     winsize->ws_ypixel = musl_winsize->ws_ypixel;
 }
 
-int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_ptr args)
+int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_cc_cursor* args)
 {
     static const bool verbose = false;
     
@@ -826,7 +826,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         if (tcgetattr(fd, &termios) < 0)
             goto error;
         filc_enter(my_thread);
-        musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        musl_termios_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_write_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
         musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         to_musl_termios(&termios, musl_termios);
@@ -838,7 +838,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         struct termios termios;
         struct musl_termios* musl_termios;
         filc_ptr musl_termios_ptr;
-        musl_termios_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        musl_termios_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_read_int(musl_termios_ptr, sizeof(struct musl_termios), NULL);
         musl_termios = (struct musl_termios*)filc_ptr_ptr(musl_termios_ptr);
         if (!from_musl_termios(musl_termios, &termios)) {
@@ -868,7 +868,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         return 0;
     }
     case 0x540E: /* TIOCSCTTY */ {
-        filc_ptr arg_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
         if (filc_ptr_ptr(arg_ptr))
             filc_check_read_int(arg_ptr, sizeof(int), NULL);
         filc_pin(filc_ptr_object(arg_ptr));
@@ -889,7 +889,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         if (result < 0)
             goto error;
         filc_enter(my_thread);
-        musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        musl_winsize_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_write_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         to_musl_winsize(&winsize, musl_winsize);
@@ -899,7 +899,7 @@ int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request
         filc_ptr musl_winsize_ptr;
         struct musl_winsize* musl_winsize;
         struct winsize winsize;
-        musl_winsize_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        musl_winsize_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_read_int(musl_winsize_ptr, sizeof(struct musl_winsize), NULL);
         musl_winsize = (struct musl_winsize*)filc_ptr_ptr(musl_winsize_ptr);
         from_musl_winsize(musl_winsize, &winsize);
@@ -3810,7 +3810,7 @@ struct musl_flock {
     int l_pid;
 };
 
-int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_ptr args)
+int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_cc_cursor* args)
 {
     static const bool verbose = false;
     
@@ -3873,9 +3873,9 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int musl_cmd, filc_pt
     struct musl_flock* musl_flock;
     pas_zero_memory(&arg_flock, sizeof(arg_flock));
     if (have_arg_int)
-        arg_int = filc_ptr_get_next_int(&args);
+        arg_int = filc_cc_cursor_get_next_int(args, int);
     if (have_arg_flock) {
-        musl_flock_ptr = filc_ptr_get_next_ptr(my_thread, &args);
+        musl_flock_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_check_read_int(musl_flock_ptr, sizeof(struct musl_flock), NULL);
         musl_flock = (struct musl_flock*)filc_ptr_ptr(musl_flock_ptr);
         switch (musl_flock->l_type) {

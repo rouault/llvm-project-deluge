@@ -12,8 +12,8 @@
 
 using namespace std;
 
-constexpr size_t num_threads = 3;
-constexpr size_t repeats = 5000;
+constexpr size_t num_threads = 5;
+constexpr size_t repeats = 15000;
 constexpr size_t num_toplevel_keys = 1000;
 constexpr size_t num_inner_keys = 1000;
 constexpr size_t max_nodes_to_add = 10;
