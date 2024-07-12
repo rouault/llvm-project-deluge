@@ -752,7 +752,11 @@ when "src/libpas/filc_native_forwarders.c"
                 outp.puts "    rets.base = &rets_obj;"
             else
                 outp.puts "    pas_uint128 rets_obj = 0;"
-                outp.puts "    rets.type = &filc_int_cc_type;"
+                if signature.rets == "void"
+                    outp.puts "    rets.type = &filc_void_cc_type;"
+                else
+                    outp.puts "    rets.type = &filc_int_cc_type;"
+                end
                 outp.puts "    rets.base = &rets_obj;"
             end
             outp.puts "    filc_lock_top_native_frame(my_thread);"

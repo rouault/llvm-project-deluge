@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "return type mismatch"
+output-excludes:
+  - "wtf"
