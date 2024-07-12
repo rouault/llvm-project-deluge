@@ -1,0 +1,7 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "cannot access pointer as function, object has wrong special type"
+output-excludes:
+  - "wtf"
