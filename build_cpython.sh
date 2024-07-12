@@ -30,7 +30,7 @@ set -x
 
 cd pizlonated-cpython
 
-($MAKE distclean || whatever)
+($MAKE distclean || echo whatever)
 CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure \
     --with-pydebug --without-mimalloc --without-pymalloc --without-freelists \
     --disable-test-modules --prefix=$PWD/../pizfix
