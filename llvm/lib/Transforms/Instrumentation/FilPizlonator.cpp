@@ -15,6 +15,7 @@
 
 #include "llvm/Transforms/Instrumentation/FilPizlonator.h"
 
+#include <llvm/Analysis/CFG.h>
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Operator.h>
@@ -409,7 +410,7 @@ class Pizlonator {
   BitCastInst* Dummy;
 
   // Low-level functions used by codegen.
-  FunctionCallee Pollcheck;
+  FunctionCallee PollcheckOutline;
   FunctionCallee StoreBarrier;
   FunctionCallee GetNextBytesForVAArg;
   FunctionCallee AllocateFunction;
@@ -3303,7 +3304,7 @@ public:
     FutureArgBuffer = makeDummy(LowRawPtrTy);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
 
-    Pollcheck = M.getOrInsertFunction("filc_pollcheck_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    PollcheckOutline = M.getOrInsertFunction("filc_pollcheck_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
     StoreBarrier = M.getOrInsertFunction("filc_store_barrier_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
     AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
@@ -3548,6 +3549,12 @@ public:
         OldF = F;
         NewF = FunctionToHiddenFunction[F];
         assert(NewF);
+
+        SmallVector<std::pair<const BasicBlock*, const BasicBlock*>> BackEdges;
+        FindFunctionBackedges(*F, BackEdges);
+        std::unordered_set<const BasicBlock*> LoopFooters;
+        for (std::pair<const BasicBlock*, const BasicBlock*>& Edge : BackEdges)
+          LoopFooters.insert(Edge.first);
       
         MyThread = NewF->getArg(0);
         FixupTypes(F, NewF);
@@ -3573,10 +3580,11 @@ public:
             captureTypesIfNecessary(&I);
           }
 
-          // LMAO who needs backwards edge analysis when you don't give a fugc about perf?
-          CallInst::Create(
-              Pollcheck, { MyThread, getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
+          if (LoopFooters.count(BB)) {
+            CallInst::Create(
+              PollcheckOutline, { MyThread, getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
               BB->getTerminator());
+          }
         }
 
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);
