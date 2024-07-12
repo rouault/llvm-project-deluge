@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "alignment requirement"

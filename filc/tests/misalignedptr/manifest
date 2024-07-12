@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "cannot access memory as ptr without 16-byte alignment"
