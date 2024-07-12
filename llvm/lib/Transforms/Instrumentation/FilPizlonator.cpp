@@ -449,6 +449,7 @@ class Pizlonator {
   FunctionCallee PromoteArgsToHeap;
   FunctionCallee CCArgsCheckFailure;
   FunctionCallee CCRetsCheckFailure;
+  FunctionCallee _Setjmp;
 
   Constant* EmptyCCType;
   Constant* VoidCCType;
@@ -2296,27 +2297,31 @@ class Pizlonator {
           assert(CI->getFunctionType() == F->getFunctionType());
           assert(CI->hasFnAttr(Attribute::ReturnsTwice));
           assert(Setjmps.count(CI));
+          Value* ValueArg;
+          if (F->getName() == "sigsetjmp") {
+            assert(CI->arg_size() == 2);
+            ValueArg = CI->getArgOperand(1);
+          } else {
+            assert(CI->arg_size() == 1);
+            ValueArg = ConstantInt::get(Int32Ty, 0);
+          }
           unsigned FrameIndex = Setjmps[CI];
           CallInst* Create = CallInst::Create(
             JmpBufCreate,
-            { MyThread, ConstantInt::get(Int32Ty, static_cast<int>(getJmpBufKindForSetjmp(F))) },
+            { MyThread, ConstantInt::get(Int32Ty, static_cast<int>(getJmpBufKindForSetjmp(F))),
+              ValueArg },
             "filc_jmp_buf_create", CI);
           Create->setDebugLoc(CI->getDebugLoc());
           Value* UserJmpBuf = CI->getArgOperand(0);
           checkWritePtr(UserJmpBuf, CI);
           storePtr(ptrForSpecialPayload(Create, CI), ptrPtr(UserJmpBuf, CI), CI);
           recordObjectAtIndex(objectForSpecialPayload(Create, CI), FrameIndex, CI);
-          CI->getArgOperandUse(0) = Create;
-          if (InvokeInst* II = dyn_cast<InvokeInst>(CI)) {
-            std::vector<Value*> Args;
-            for (Value* Arg : CI->args())
-              Args.push_back(Arg);
-            CallInst* NewCI = CallInst::Create(F, Args, "filc_setjmp", CI);
-            CI->replaceAllUsesWith(NewCI);
-            NewCI->setDebugLoc(CI->getDebugLoc());
+          CallInst* NewCI = CallInst::Create(_Setjmp, { Create }, "filc_setjmp", CI);
+          CI->replaceAllUsesWith(NewCI);
+          NewCI->setDebugLoc(CI->getDebugLoc());
+          if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
             BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
-            CI->eraseFromParent();
-          }
+          CI->eraseFromParent();
           return true;
         }
 
@@ -3339,10 +3344,12 @@ public:
     RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
     LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
     ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty);
+    JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty);
     PromoteArgsToHeap = M.getOrInsertFunction("filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy, IntPtrTy);
     CCArgsCheckFailure = M.getOrInsertFunction("filc_cc_args_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
     CCRetsCheckFailure = M.getOrInsertFunction("filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
+    _Setjmp = M.getOrInsertFunction("_setjmp", Int32Ty, LowRawPtrTy);
+    cast<Function>(_Setjmp.getCallee())->addFnAttr(Attribute::ReturnsTwice);
 
     EmptyCCType = M.getOrInsertGlobal("filc_empty_cc_type", CCTypeTy);
     VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);

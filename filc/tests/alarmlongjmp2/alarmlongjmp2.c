@@ -5,20 +5,20 @@
 #include <stdio.h>
 #include <setjmp.h>
 
-static jmp_buf jb;
+static sigjmp_buf jb;
 
 static void handler(int signo)
 {
     ZASSERT(signo == SIGALRM);
-    longjmp(jb, 1);
+    siglongjmp(jb, 1);
 }
 
 int main()
 {
     signal(SIGALRM, handler);
     unsigned i;
-    for (i = 10; i--;) {
-        if (setjmp(jb))
+    for (i = 100; i--;) {
+        if (sigsetjmp(jb, 1))
             continue;
         ualarm(1000, 0);
         for (;;)

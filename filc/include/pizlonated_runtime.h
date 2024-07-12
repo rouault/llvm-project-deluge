@@ -46,6 +46,11 @@ void zlongjmp(zjmp_buf* jmp_buf, int value);
 void z_longjmp(zjmp_buf* jmp_buf, int value);
 void zsiglongjmp(zjmp_buf* jmp_buf, int value);
 
+/* Configure the behavior of setjmp/longjmp with respect to signal masks.
+
+   The default is that it does not. */
+void zmake_setjmp_save_sigmask(filc_bool save_sigmask);
+
 /* Global constructors that run before this function is called are deferred until this function is
    called. Libc, or the Fil-C runtime, calls this function. If you try to call this function a second
    time, you get a Fil-C panic. */

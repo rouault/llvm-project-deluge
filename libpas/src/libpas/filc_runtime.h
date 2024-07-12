@@ -743,10 +743,9 @@ typedef enum filc_jmp_buf_kind filc_jmp_buf_kind;
 
 struct filc_jmp_buf {
     /* The jmp_buf union must be the first thing since the compiler relies on it. */
-    union {
-        jmp_buf system_buf;
-        sigjmp_buf system_sigbuf;
-    } u;
+    jmp_buf system_buf;
+    bool did_save_sigmask;
+    sigset_t sigmask;
     filc_jmp_buf_kind kind;
     filc_frame* saved_top_frame; /* This is only here for assertions since longjmp does a search to
                                     find the frame, and the frame knows about the jmp_buf. */
@@ -2093,8 +2092,8 @@ static inline const char* filc_jmp_buf_kind_get_longjmp_string(filc_jmp_buf_kind
 }
 
 /* This creates all of the filc_jmp_buf except for the system_buf, which must be populated by the
-   caller. */
-filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind);
+   caller. The `value` argument is ignored unless kind is sigsetjmp. */
+filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind, int value);
 void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* stack);
 
 PAS_API void filc_system_mutex_lock(filc_thread* my_thread, pas_system_mutex* lock);

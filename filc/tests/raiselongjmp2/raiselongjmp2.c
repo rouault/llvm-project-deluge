@@ -3,11 +3,11 @@
 #include <stdfil.h>
 #include <setjmp.h>
 
-static jmp_buf jb;
+static sigjmp_buf jb;
 
 static void handler(int signo)
 {
-    longjmp(jb, 1410);
+    siglongjmp(jb, 1410);
 }
 
 int main()
@@ -16,7 +16,7 @@ int main()
     volatile unsigned i;
     for (i = 1000; i--;) {
         volatile int x = 42;
-        int result = setjmp(jb);
+        int result = sigsetjmp(jb, 1);
         if (result) {
             ZASSERT(result == 1410);
             ZASSERT(x == 666);

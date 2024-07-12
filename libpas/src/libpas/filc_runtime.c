@@ -4325,7 +4325,9 @@ void filc_resume_unwind(filc_thread* my_thread, filc_origin *origin)
         "cannot resume unwinding, parent frame doesn't support catching.");
 }
 
-filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind)
+static bool setjmp_saves_sigmask = false;
+
+filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind, int value)
 {
     PAS_ASSERT(kind == filc_jmp_buf_setjmp ||
                kind == filc_jmp_buf__setjmp ||
@@ -4341,7 +4343,8 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
         + frame->origin->function_origin->num_objects * sizeof(filc_object*),
         FILC_WORD_TYPE_JMP_BUF)->lower;
 
-    result->kind = kind;
+    result->kind = kind; /* We save the kind because it lets us do a safety check, but that check isn't
+                            needed for memory safety, so we could drop it. */
     result->saved_top_frame = frame;
     /* NOTE: We could possibly do more stuff to track the state of the top native frame, but we don't,
        because frames that create native frames don't setjmp. Basically, native code doesn't setjmp. */
@@ -4356,6 +4359,12 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
     }
 
     PAS_ASSERT(result->num_objects == result->saved_top_frame->origin->function_origin->num_objects);
+
+    if ((kind == filc_jmp_buf_sigsetjmp && value) ||
+        (kind == filc_jmp_buf_setjmp && setjmp_saves_sigmask)) {
+        PAS_ASSERT(!pthread_sigmask(0, NULL, &result->sigmask));
+        result->did_save_sigmask = true;
+    }
 
     return result;
 }
@@ -4428,20 +4437,10 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
     for (index = jmp_buf->num_objects; index--;)
         my_thread->top_frame->objects[index] = jmp_buf->objects[index];
 
-    switch (kind) {
-    case filc_jmp_buf_setjmp:
-        longjmp(jmp_buf->u.system_buf, value);
-        PAS_ASSERT(!"Should not be reached");
-        break;
-    case filc_jmp_buf__setjmp:
-        _longjmp(jmp_buf->u.system_buf, value);
-        PAS_ASSERT(!"Should not be reached");
-        break;
-    case filc_jmp_buf_sigsetjmp:
-        siglongjmp(jmp_buf->u.system_sigbuf, value);
-        PAS_ASSERT(!"Should not be reached");
-        break;
-    }
+    if (jmp_buf->did_save_sigmask)
+        PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &jmp_buf->sigmask, NULL));
+    
+    _longjmp(jmp_buf->system_buf, value);
     PAS_ASSERT(!"Should not be reached");
 }
 
@@ -4458,6 +4457,12 @@ void filc_native_z_longjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int val
 void filc_native_zsiglongjmp(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value)
 {
     longjmp_impl(my_thread, jmp_buf_ptr, value, filc_jmp_buf_sigsetjmp);
+}
+
+void filc_native_zmake_setjmp_save_sigmask(filc_thread* my_thread, bool save_sigmask)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    setjmp_saves_sigmask = save_sigmask;
 }
 
 static bool (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
