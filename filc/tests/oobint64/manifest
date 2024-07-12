@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc panic"
+  - "cannot access 8 bytes when upper - ptr = 4"

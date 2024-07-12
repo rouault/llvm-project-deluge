@@ -67,7 +67,7 @@ static cl::opt<bool> logAllocations(
   "filc-log-allocations", cl::desc("Make FilC emit code to log every allocation"),
   cl::Hidden, cl::init(false));
 
-static constexpr size_t MinAlign = 16;
+static constexpr size_t GCMinAlign = 16;
 static constexpr size_t WordSize = 16;
 
 // This has to match the FilC runtime.
@@ -416,9 +416,21 @@ class Pizlonator {
   FunctionCallee Allocate;
   FunctionCallee AllocateWithAlignment;
   FunctionCallee CheckReadInt;
-  FunctionCallee CheckReadPtr;
+  FunctionCallee CheckReadAlignedInt;
+  FunctionCallee CheckReadInt8;
+  FunctionCallee CheckReadInt16;
+  FunctionCallee CheckReadInt32;
+  FunctionCallee CheckReadInt64;
+  FunctionCallee CheckReadInt128;
+  FunctionCallee CheckReadPtrOutline;
   FunctionCallee CheckWriteInt;
-  FunctionCallee CheckWritePtr;
+  FunctionCallee CheckWriteAlignedInt;
+  FunctionCallee CheckWriteInt8;
+  FunctionCallee CheckWriteInt16;
+  FunctionCallee CheckWriteInt32;
+  FunctionCallee CheckWriteInt64;
+  FunctionCallee CheckWriteInt128;
+  FunctionCallee CheckWritePtrOutline;
   FunctionCallee CheckFunctionCall;
   FunctionCallee Memset;
   FunctionCallee Memmove;
@@ -677,29 +689,106 @@ class Pizlonator {
     return LowT;
   }
 
-  void checkReadInt(Value *P, unsigned Size, Instruction *InsertBefore) {
+  void checkReadInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore) {
+    if (Size == 1) {
+      CallInst::Create(
+        CheckReadInt8, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 2 && Alignment >= 2) {
+      CallInst::Create(
+        CheckReadInt16, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 4 && Alignment >= 4) {
+      CallInst::Create(
+        CheckReadInt32, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 8 && Alignment >= 8) {
+      CallInst::Create(
+        CheckReadInt64, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 16 && Alignment >= 16) {
+      CallInst::Create(
+        CheckReadInt128, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Alignment == 1) {
+      CallInst::Create(
+        CheckReadInt,
+        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+        "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
     CallInst::Create(
-      CheckReadInt,
-      { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+      CheckReadAlignedInt,
+      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment),
+        getOrigin(InsertBefore->getDebugLoc()) },
       "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void checkWriteInt(Value *P, unsigned Size, Instruction *InsertBefore) {
+  void checkWriteInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore) {
+    if (Size == 1) {
+      CallInst::Create(
+        CheckWriteInt8, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 2 && Alignment >= 2) {
+      CallInst::Create(
+        CheckWriteInt16, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 4 && Alignment >= 4) {
+      CallInst::Create(
+        CheckWriteInt32, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 8 && Alignment >= 8) {
+      CallInst::Create(
+        CheckWriteInt64, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Size == 16 && Alignment >= 16) {
+      CallInst::Create(
+        CheckWriteInt128, { P, getOrigin(InsertBefore->getDebugLoc()) },  "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
+    if (Alignment == 1) {
+      CallInst::Create(
+        CheckWriteInt,
+        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+        "", InsertBefore)
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+    }
     CallInst::Create(
-      CheckWriteInt,
-      { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
+      CheckWriteAlignedInt,
+      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment),
+        getOrigin(InsertBefore->getDebugLoc()) },
       "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void checkInt(Value* P, unsigned Size, AccessKind AK, Instruction *InsertBefore) {
+  void checkInt(Value* P, size_t Size, size_t Alignment, AccessKind AK, Instruction *InsertBefore) {
     switch (AK) {
     case AccessKind::Read:
-      checkReadInt(P, Size, InsertBefore);
+      checkReadInt(P, Size, Alignment, InsertBefore);
       return;
     case AccessKind::Write:
-      checkWriteInt(P, Size, InsertBefore);
+      checkWriteInt(P, Size, Alignment, InsertBefore);
       return;
     }
     llvm_unreachable("Bad access kind");
@@ -707,17 +796,17 @@ class Pizlonator {
 
   void checkReadPtr(Value *P, Instruction *InsertBefore) {
     if (verbose)
-      errs() << "Inserting call to " << *CheckReadPtr.getFunctionType() << "\n";
+      errs() << "Inserting call to " << *CheckReadPtrOutline.getFunctionType() << "\n";
     CallInst::Create(
-      CheckReadPtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      CheckReadPtrOutline, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
   void checkWritePtr(Value *P, Instruction *InsertBefore) {
     if (verbose)
-      errs() << "Inserting call to " << *CheckWritePtr.getFunctionType() << "\n";
+      errs() << "Inserting call to " << *CheckWritePtrOutline.getFunctionType() << "\n";
     CallInst::Create(
-      CheckWritePtr, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
+      CheckWritePtrOutline, { P, getOrigin(InsertBefore->getDebugLoc()) }, "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
@@ -951,9 +1040,11 @@ class Pizlonator {
     return false;
   }
 
-  void checkRecurse(Type *LowT, Value* HighP, Value *P, AccessKind AK, Instruction *InsertBefore) {
+  void checkRecurse(Type *LowT, Value* HighP, Value *P, size_t Alignment, AccessKind AK,
+                    Instruction *InsertBefore) {
     if (!hasPtrsForCheck(LowT)) {
-      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT), AK, InsertBefore);
+      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT),
+               MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), AK, InsertBefore);
       return;
     }
     
@@ -982,7 +1073,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
-        checkRecurse(InnerT, HighP, InnerP, AK, InsertBefore);
+        checkRecurse(InnerT, HighP, InnerP, Alignment, AK, InsertBefore);
       }
       return;
     }
@@ -992,7 +1083,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
-        checkRecurse(AT->getElementType(), HighP, InnerP, AK, InsertBefore);
+        checkRecurse(AT->getElementType(), HighP, InnerP, Alignment, AK, InsertBefore);
       }
       return;
     }
@@ -1002,7 +1093,7 @@ class Pizlonator {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
-        checkRecurse(VT->getElementType(), HighP, InnerP, AK, InsertBefore);
+        checkRecurse(VT->getElementType(), HighP, InnerP, Alignment, AK, InsertBefore);
       }
       return;
     }
@@ -1017,9 +1108,10 @@ class Pizlonator {
 
   // Insert whatever checks are needed to perform the access and then return the lowered pointer to
   // access.
-  Value* prepareForAccess(Type *LowT, Value *HighP, AccessKind AK, Instruction *InsertBefore) {
+  Value* prepareForAccess(Type *LowT, Value *HighP, size_t Alignment, AccessKind AK,
+                          Instruction *InsertBefore) {
     Value* LowP = ptrPtr(HighP, InsertBefore);
-    checkRecurse(LowT, HighP, LowP, AK, InsertBefore);
+    checkRecurse(LowT, HighP, LowP, Alignment, AK, InsertBefore);
     return LowP;
   }
 
@@ -1105,7 +1197,7 @@ class Pizlonator {
                           Instruction* InsertBefore) {
     // In the future, checks will exit or pollcheck, so we need to ensure that we do all of them before
     // we do the actual load.
-    checkRecurse(LowT, HighP, P, AccessKind::Read, InsertBefore);
+    checkRecurse(LowT, HighP, P, A.value(), AccessKind::Read, InsertBefore);
     return loadValueRecurseAfterCheck(LowT, P, isVolatile, A, AO, SS, MemoryKind::Heap, InsertBefore);
   }
 
@@ -1193,13 +1285,13 @@ class Pizlonator {
   void storeValueRecurse(Type* LowT, Value* HighP, Value* V, Value* P,
                          bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
                          Instruction* InsertBefore) {
-    checkRecurse(LowT, HighP, P, AccessKind::Write, InsertBefore);
+    checkRecurse(LowT, HighP, P, A.value(), AccessKind::Write, InsertBefore);
     storeValueRecurseAfterCheck(LowT, V, P, isVolatile, A, AO, SS, MemoryKind::Heap, InsertBefore);
   }
 
   Value* allocateObject(Value* Size, size_t Alignment, Instruction* InsertBefore) {
     Instruction* Result;
-    if (Alignment <= MinAlign) {
+    if (Alignment <= GCMinAlign) {
       Result = CallInst::Create(
         Allocate, { MyThread, Size }, "filc_allocate", InsertBefore);
     } else {
@@ -2344,7 +2436,8 @@ class Pizlonator {
     }
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      Value* LowP = prepareForAccess(InstLowTypes[AI], AI->getPointerOperand(), AccessKind::Write, AI);
+      Value* LowP = prepareForAccess(
+        InstLowTypes[AI], AI->getPointerOperand(), AI->getAlign().value(), AccessKind::Write, AI);
       if (InstLowTypes[AI] == LowWidePtrTy) {
         storeBarrierForValue(AI->getNewValOperand(), AI);
         Value* ExpectedWord = ptrWord(AI->getCompareOperand(), AI);
@@ -2375,8 +2468,9 @@ class Pizlonator {
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      Value* LowP =
-        prepareForAccess(AI->getValOperand()->getType(), AI->getPointerOperand(), AccessKind::Write, AI);
+      Value* LowP = prepareForAccess(
+        AI->getValOperand()->getType(), AI->getPointerOperand(), AI->getAlign().value(),
+        AccessKind::Write, AI);
       if (InstLowTypes[AI] == LowWidePtrTy) {
         storeBarrierForValue(AI->getValOperand(), AI);
         Instruction* NewAI = new AtomicRMWInst(
@@ -3216,9 +3310,21 @@ public:
     Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateWithAlignment = M.getOrInsertFunction("filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     CheckReadInt = M.getOrInsertFunction("filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckReadPtr = M.getOrInsertFunction("filc_check_read_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadAlignedInt = M.getOrInsertFunction("filc_check_read_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    CheckReadInt8 = M.getOrInsertFunction("filc_check_read_int8", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt16 = M.getOrInsertFunction("filc_check_read_int16", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt32 = M.getOrInsertFunction("filc_check_read_int32", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt64 = M.getOrInsertFunction("filc_check_read_int64", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt128 = M.getOrInsertFunction("filc_check_read_int128", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadPtrOutline = M.getOrInsertFunction("filc_check_read_ptr_outline", VoidTy, LowWidePtrTy, LowRawPtrTy);
     CheckWriteInt = M.getOrInsertFunction("filc_check_write_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckWritePtr = M.getOrInsertFunction("filc_check_write_ptr", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteAlignedInt = M.getOrInsertFunction("filc_check_write_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    CheckWriteInt8 = M.getOrInsertFunction("filc_check_write_int8", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt16 = M.getOrInsertFunction("filc_check_write_int16", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt32 = M.getOrInsertFunction("filc_check_write_int32", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt64 = M.getOrInsertFunction("filc_check_write_int64", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt128 = M.getOrInsertFunction("filc_check_write_int128", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWritePtrOutline = M.getOrInsertFunction("filc_check_write_ptr_outline", VoidTy, LowWidePtrTy, LowRawPtrTy);
     CheckFunctionCall = M.getOrInsertFunction("filc_check_function_call", VoidTy, LowWidePtrTy, LowRawPtrTy);
     Memset = M.getOrInsertFunction("filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
     Memmove = M.getOrInsertFunction("filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);

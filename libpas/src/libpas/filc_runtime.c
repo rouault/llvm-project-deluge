@@ -1326,6 +1326,7 @@ static void signal_pizlonator(int signum)
             if (sigismember(&oldset, sig))
                 pas_log(" %d", sig);
         }
+        pas_log("\n");
     }
     PAS_ASSERT(thread);
     
@@ -2776,13 +2777,25 @@ static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
     }
 }
 
-void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
-                           const filc_origin* origin)
+void filc_check_access_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
+                                   filc_access_kind access_kind, const filc_origin* origin)
 {
     if (!bytes)
         return;
     filc_check_access_common(ptr, bytes, access_kind, origin);
+    FILC_CHECK(
+        pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), alignment),
+        origin,
+        "alignment requirement of %zu bytes not met during int access; in this case ptr %% %zu = %zu "
+        "(ptr = %s).",
+        alignment, alignment, (size_t)filc_ptr_ptr(ptr) % alignment, filc_ptr_to_new_string(ptr));
     check_int(ptr, bytes, origin);
+}
+
+void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
+                           const filc_origin* origin)
+{
+    filc_check_access_aligned_int(ptr, bytes, 1, access_kind, origin);
 }
 
 void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const filc_origin* origin)
@@ -2832,19 +2845,41 @@ void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
     filc_check_access_int(ptr, bytes, filc_read_access, origin);
 }
 
+void filc_check_read_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
+                                 const filc_origin* origin)
+{
+    filc_check_access_aligned_int(ptr, bytes, alignment, filc_read_access, origin);
+}
+
 void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
 {
     filc_check_access_int(ptr, bytes, filc_write_access, origin);
 }
 
-void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
+void filc_check_write_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
+                                  const filc_origin* origin)
+{
+    filc_check_access_aligned_int(ptr, bytes, alignment, filc_write_access, origin);
+}
+
+void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_read_access, origin);
 }
 
-void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
+void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_write_access, origin);
+}
+
+void filc_check_read_ptr_outline(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_ptr(ptr, origin);
+}
+
+void filc_check_write_ptr_outline(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_ptr(ptr, origin);
 }
 
 void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
@@ -2860,6 +2895,66 @@ void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
 void filc_check_function_call(filc_ptr ptr)
 {
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
+}
+
+void filc_check_read_native_int_slow(filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
+{
+    filc_check_read_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
+}
+
+void filc_check_write_native_int_slow(filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
+{
+    filc_check_write_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
+}
+
+void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_native_int(ptr, 1, origin);
+}
+
+void filc_check_read_int16(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_native_int(ptr, 2, origin);
+}
+
+void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_native_int(ptr, 4, origin);
+}
+
+void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_native_int(ptr, 8, origin);
+}
+
+void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_native_int(ptr, 16, origin);
+}
+
+void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_native_int(ptr, 1, origin);
+}
+
+void filc_check_write_int16(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_native_int(ptr, 2, origin);
+}
+
+void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_native_int(ptr, 4, origin);
+}
+
+void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_native_int(ptr, 8, origin);
+}
+
+void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_native_int(ptr, 16, origin);
 }
 
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr)

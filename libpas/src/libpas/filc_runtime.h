@@ -1450,7 +1450,7 @@ static inline size_t filc_object_num_words(filc_object* object)
     return filc_object_size(object) / FILC_WORD_SIZE;
 }
 
-static inline size_t filc_object_word_type_index_for_ptr(filc_object* object, void* ptr)
+static PAS_ALWAYS_INLINE size_t filc_object_word_type_index_for_ptr(filc_object* object, void* ptr)
 {
     PAS_TESTING_ASSERT(object);
     PAS_TESTING_ASSERT(ptr >= object->lower);
@@ -1750,6 +1750,8 @@ void filc_check_access_common(filc_ptr, size_t bytes, filc_access_kind kind,
    checks we did previously have to at least go through check_accessible again. */
 void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind kind,
                            const filc_origin* origin);
+void filc_check_access_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment, filc_access_kind kind,
+                                   const filc_origin* origin);
 void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);
 
 /* CPT stands for Check Pin Tracked.
@@ -1808,15 +1810,99 @@ void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, uintptr_t bytes,
                          filc_access_kind kind);
 
 void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
+void filc_check_read_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
+                                 const filc_origin* origin);
 void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
-void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
+                                  const filc_origin* origin);
+void filc_check_read_ptr_outline(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_ptr_outline(filc_ptr ptr, const filc_origin* origin);
 
 /* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_read_access). */
 void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
 
 /* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access). */
 void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
+
+static PAS_ALWAYS_INLINE bool filc_is_native_access_ok(filc_ptr ptr,
+                                                       size_t size_and_alignment,
+                                                       filc_word_type expected_word_type,
+                                                       filc_access_kind kind)
+{
+    PAS_ASSERT(expected_word_type == FILC_WORD_TYPE_INT || expected_word_type == FILC_WORD_TYPE_PTR);
+    PAS_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    
+    filc_object* object = filc_ptr_object(ptr);
+    char* raw_ptr = (char*)filc_ptr_ptr(ptr);
+    if (!object)
+        return false;
+    if (!pas_is_aligned((uintptr_t)raw_ptr, size_and_alignment))
+        return false;
+    if (kind == filc_write_access && (object->flags & FILC_OBJECT_FLAG_READONLY))
+        return false;
+    if (raw_ptr >= (char*)object->upper)
+        return false;
+    char* lower = (char*)object->lower;
+    if (raw_ptr < lower)
+        return false;
+    filc_word_type* word_type_ptr = object->word_types + (raw_ptr - lower) / FILC_WORD_SIZE;
+    filc_word_type actual_word_type = *word_type_ptr;
+    if (actual_word_type == expected_word_type)
+        return true;
+    if (actual_word_type != FILC_WORD_TYPE_UNSET)
+        return false;
+    return pas_compare_and_swap_uint8_weak(word_type_ptr, FILC_WORD_TYPE_UNSET, expected_word_type);
+}
+
+PAS_API PAS_NEVER_INLINE void filc_check_read_native_int_slow(filc_ptr ptr,
+                                                              size_t size_and_alignment,
+                                                              const filc_origin* origin);
+
+static PAS_ALWAYS_INLINE void filc_check_read_native_int(filc_ptr ptr, size_t size_and_alignment,
+                                                         const filc_origin* origin)
+{
+    if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_read_access))
+        filc_check_read_native_int_slow(ptr, size_and_alignment, origin);
+}
+
+void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int16(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin);
+
+PAS_API PAS_NEVER_INLINE void filc_check_write_native_int_slow(filc_ptr ptr,
+                                                               size_t size_and_alignment,
+                                                               const filc_origin* origin);
+
+static PAS_ALWAYS_INLINE void filc_check_write_native_int(filc_ptr ptr, size_t size_and_alignment,
+                                                          const filc_origin* origin)
+{
+    if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_write_access))
+        filc_check_write_native_int_slow(ptr, size_and_alignment, origin);
+}
+
+void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int16(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin);
+
+PAS_API PAS_NEVER_INLINE void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin);
+
+static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
+{
+    if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_read_access))
+        filc_check_read_ptr_slow(ptr, origin);
+}
+
+PAS_API PAS_NEVER_INLINE void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin);
+
+static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
+{
+    if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_write_access))
+        filc_check_write_ptr_slow(ptr, origin);
+}
 
 #define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
         struct_type check_temp; \
