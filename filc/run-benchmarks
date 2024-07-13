@@ -1,0 +1,312 @@
+#!/usr/bin/env ruby
+#
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+
+require 'pathname'
+require 'getoptlong'
+require 'shellwords'
+
+BENCHMARK_NAME = "PizBench9000"
+
+$repeats = 5
+
+GetoptLong.new(
+    [ '--repeat', '-r', GetoptLong::REQUIRED_ARGUMENT ],
+).each {
+    | opt, arg |
+    case opt
+    when '--repeat'
+        $repeats = arg.to_i
+    else
+        raise
+    end
+}
+
+def mysys(cmd)
+    $stderr.puts ">> #{cmd}"
+    raise "Bad exit status: #{$?}" unless system(cmd)
+end
+
+class Stats
+    attr_reader :data
+
+    def initialize
+        @data = []
+    end
+
+    def add(value)
+        @data << value.to_f
+    end
+
+    def mean
+        result = 0.0
+        data.each {
+            | value |
+            result += value
+        }
+        result / data.length
+    end
+
+    def stdDev
+        return Float::NAN if data.length <= 1
+        accumulator = 0.0
+        mean = self.mean
+        data.each {
+            | value |
+            accumulator += (value - mean) ** 2
+        }
+        Math.sqrt(accumulator / (data.length - 1.0))
+    end
+
+    def to_s
+        "#{mean} += #{stdDev}"
+    end
+end
+
+def geoMean(statsArray)
+    n = statsArray[0].data.length
+    statsArray.each {
+        | stats |
+        raise unless stats.data.length == n
+    }
+    result = Stats.new
+    n.times {
+        | index |
+        accumulator = 1.0
+        statsArray.each {
+            | stats |
+            accumulator *= stats.data[index]
+        }
+        result.add(accumulator ** (1.0 / statsArray.length.to_f))
+    }
+    result
+end
+
+class Benchmark
+    attr_reader :cmd, :args, :validate, :results
+
+    def initialize(cmd, args, validate)
+        @cmd = Pathname.new(cmd)
+        @args = args
+        @validate = validate
+        @results = {}
+        raise if @cmd.absolute?
+    end
+
+    def resultsForPizfix(pizfix)
+        @results[pizfix] = Stats.new unless @results[pizfix]
+        @results[pizfix]
+    end
+
+    def to_s
+        "#{Shellwords.shellescape(cmd)} #{args}"
+    end
+end
+
+class Geomean
+    attr_reader :results
+    
+    def initialize
+        @results = {}
+        $pizfixes.each {
+            | pizfix |
+            stats = []
+            $benchmarks.each {
+                | benchmark |
+                stats << benchmark.resultsForPizfix(pizfix)
+            }
+            @results[pizfix] = geoMean(stats)
+        }
+    end
+
+    def resultsForPizfix(pizfix)
+        raise unless @results[pizfix]
+        @results[pizfix]
+    end
+
+    def to_s
+        "<geomean>"
+    end
+end
+
+class Pizfix
+    attr_reader :path
+
+    def initialize(path)
+        @path = Pathname.new(path).realpath
+        raise "pizfix #{path} does not exist" unless @path.directory?
+    end
+
+    def to_s
+        path.to_s
+    end
+end
+
+class Plan
+    attr_reader :benchmark, :pizfix
+    
+    def initialize(benchmark, pizfix)
+        @benchmark = benchmark
+        @pizfix = pizfix
+    end
+
+    def run
+        benchmarkOutput = Pathname.new("benchmarkOutput")
+        benchmarkOutput.mkpath
+        benchmarkOutput.rmtree
+        benchmarkOutput.mkpath
+
+        before = Time.now
+        mysys(Shellwords.shellescape(pizfix.path + benchmark.cmd) + " " + benchmark.args)
+        after = Time.now
+        $stderr.puts "-- That took #{after - before} sec."
+        benchmark.resultsForPizfix(pizfix).add(after - before)
+        benchmark.validate.each {
+            | cmd |
+            mysys(cmd)
+        }
+    end
+end
+
+$benchmarks = []
+
+$benchmarks << Benchmark.new(
+    "bin/openssl",
+    "aes-256-cbc -a -pbkdf2 -d -in benchmarkData/libcrypto.3.dylib.enc -out benchmarkOutput/libcrypto.3.dylib -k foobar",
+    [
+        "diff -q benchmarkOutput/libcrypto.3.dylib benchmarkData/libcrypto.3.dylib"
+    ])
+
+$benchmarks << Benchmark.new(
+    "bin/xz",
+    "< benchmarkData/libpizlo.dylib > benchmarkOutput/libpizlo.dylib.xz",
+    [
+        "diff -q benchmarkOutput/libpizlo.dylib.xz benchmarkData/libpizlo.dylib.xz"
+    ])
+
+$benchmarks << Benchmark.new(
+    "bin/xz",
+    "-d < benchmarkData/libcrypto.3.dylib.xz > benchmarkOutput/libcrypto.3.dylib",
+    [
+        "diff -q benchmarkOutput/libcrypto.3.dylib benchmarkData/libcrypto.3.dylib"
+    ])
+
+$benchmarks << Benchmark.new(
+    "bin/cjpeg",
+    "< benchmarkData/Pizigani_1367_Chart_10MB.pnm > benchmarkOutput/Pizigani_1367_Chart_10MB.jpg",
+    [
+        "diff -n benchmarkOutput/Pizigani_1367_Chart_10MB.jpg benchmarkData/Pizigani_1367_Chart_10MB-2.jpg"
+    ])
+
+$benchmarks << Benchmark.new(
+    "bin/djpeg",
+    "< benchmarkData/Pizigani_1367_Chart_10MB.jpg > benchmarkOutput/Pizigani_1367_Chart_10MB.pnm",
+    [
+        "diff -n benchmarkOutput/Pizigani_1367_Chart_10MB.pnm benchmarkData/Pizigani_1367_Chart_10MB.pnm"
+    ])
+
+$benchmarks << Benchmark.new(
+    "bin/python3",
+    "benchmarkData/richards.py",
+    [])
+
+$benchmarks << Benchmark.new(
+    "bin/python3",
+    "benchmarkData/nbody.py 5000",
+    [])
+
+$benchmarks << Benchmark.new(
+    "bin/bzip2",
+    "< benchmarkData/libpizlo.dylib > benchmarkOutput/libpizlo.dylib.bz2",
+    [
+        "diff -n benchmarkOutput/libpizlo.dylib.bz2 benchmarkData/libpizlo.dylib.bz2"
+    ])
+
+$pizfixes = []
+ARGV.each {
+    | argv |
+    $pizfixes << Pizfix.new(argv)
+}
+
+$plans = []
+$benchmarks.each {
+    | benchmark |
+    $pizfixes.each {
+        | pizfix |
+        $plans << Plan.new(benchmark, pizfix)
+    }
+}
+
+$plans = $plans * $repeats
+
+$plans.shuffle!
+
+$stderr.puts "Running #{BENCHMARK_NAME}!"
+
+$plans.each {
+    | plan |
+    plan.run
+}
+
+$results = []
+$benchmarks.each {
+    | benchmark |
+    $results << benchmark
+}
+$results << Geomean.new
+
+$stderr.puts
+
+puts "---------- The #{BENCHMARK_NAME} Results ----------"
+
+$results.each {
+    | results |
+    puts "#{results}:"
+    $pizfixes.each_with_index {
+        | pizfix, index |
+        puts "    #{pizfix}: #{results.resultsForPizfix(pizfix)}"
+        otherIndex = 0
+        mean = results.resultsForPizfix(pizfix).mean
+        while otherIndex < index
+            otherPizfix = $pizfixes[otherIndex]
+            otherMean = results.resultsForPizfix(otherPizfix).mean
+            if $pizfixes.length > 2
+                asStr = " as #{otherPizfix}"
+                thanStr = " than #{otherPizfix}"
+            else
+                asStr = ""
+                thanStr = ""
+            end
+            if mean == otherMean
+                puts "        exactly the same#{asStr}"
+            elsif mean < otherMean
+                puts "        #{otherMean / mean}x faster#{thanStr}"
+            else
+                puts "        #{mean / otherMean}x slower#{thanStr}"
+            end
+            otherIndex += 1
+        end
+    }
+}
+
