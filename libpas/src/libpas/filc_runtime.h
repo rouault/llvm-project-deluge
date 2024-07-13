@@ -1870,6 +1870,12 @@ void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin);
 void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin);
 void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin);
 
+void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin);
+
 PAS_API PAS_NEVER_INLINE void filc_check_write_native_int_slow(filc_ptr ptr,
                                                                size_t size_and_alignment,
                                                                const filc_origin* origin);
@@ -1887,6 +1893,12 @@ void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin);
 
+void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin);
+void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin);
+
 PAS_API PAS_NEVER_INLINE void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
@@ -1895,6 +1907,8 @@ static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origi
         filc_check_read_ptr_slow(ptr, origin);
 }
 
+void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin);
+
 PAS_API PAS_NEVER_INLINE void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
@@ -1902,6 +1916,8 @@ static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_orig
     if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_write_access))
         filc_check_write_ptr_slow(ptr, origin);
 }
+
+void filc_check_write_ptr_fail(filc_ptr ptr, const filc_origin* origin);
 
 #define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
         struct_type check_temp; \

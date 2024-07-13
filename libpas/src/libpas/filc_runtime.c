@@ -2866,6 +2866,18 @@ void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin)
     filc_check_access_ptr(ptr, filc_read_access, origin);
 }
 
+void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_ptr(ptr, origin);
+    PAS_ASSERT(!"Should not get here");
+}
+
+void filc_check_write_ptr_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_ptr(ptr, origin);
+    PAS_ASSERT(!"Should not get here");
+}
+
 void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_write_access, origin);
@@ -2937,6 +2949,36 @@ void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin)
     filc_check_read_native_int(ptr, 16, origin);
 }
 
+void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_int8(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_int16(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_int32(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_int64(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_read_int128(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
 void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_native_int(ptr, 1, origin);
@@ -2960,6 +3002,36 @@ void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin)
 void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_native_int(ptr, 16, origin);
+}
+
+void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_int8(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_int16(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_int32(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_int64(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
+}
+
+void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin)
+{
+    filc_check_write_int128(ptr, origin);
+    PAS_ASSERT(!"Shoud not get here");
 }
 
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr)
