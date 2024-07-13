@@ -28,12 +28,39 @@
 set -e
 set -x
 
-(cd build && ninja clang)
+case $OS in
+    macosx)
+        MUSL_DYLIB_OPT=-dynamiclib
+        MUSL_DYLIB_EXT=dylib
+        MUSL_PREFIX=pizlonated_
+        ;;
+    freebsd)
+        MUSL_DYLIB_OPT="-shared -Wl,-soname,libc.so.666"
+        MUSL_DYLIB_EXT=so.666
+        MUSL_PREFIX=
+        ;;
+    openbsd|linux)
+        MUSL_DYLIB_OPT=-shared
+        MUSL_DYLIB_EXT=so
+        MUSL_PREFIX=pizlonated_
+        ;;
+    *)
+        echo "Should not get here"
+        exit 1
+        ;;
+esac
 
-(cd libpas && ./build.sh)
+(cd musl && \
+     CC="$CCPREFIX$PWD/../build/bin/clang" ./configure --target=$ARCH \
+         --prefix=$PWD/../pizfix --dylib-opt="$MUSL_DYLIB_OPT" \
+         --dylib-ext=$MUSL_DYLIB_EXT --libc-prefix=$MUSL_PREFIX && \
+     $MAKE clean && \
+     $MAKE -j $NCPU && \
+     $MAKE install)
 
-./build_musl.sh
-./build_cxx.sh
-
-filc/run-tests
+if test $OS = freebsd
+then
+    rm -f pizfix/lib/libc.so
+    (cd pizfix/lib && ln -s libc.so.666 libc.so)
+fi
 

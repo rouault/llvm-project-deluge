@@ -28,12 +28,7 @@
 set -e
 set -x
 
-(cd build && ninja clang)
+(cd build && ninja runtimes-clean && ninja runtimes)
+./install-cxx-$OS.sh
 
-(cd libpas && ./build.sh)
-
-./build_musl.sh
-./build_cxx.sh
-
-filc/run-tests
 
