@@ -23,15 +23,18 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-./build_clang.sh
+(cd build && ninja clang)
 
-(cd libpas && ./build.sh)
-
-./build_musl.sh
-./build_cxx.sh
-
-filc/run-tests
-
+# This is needed because otherwise at least on Linux, clang's rpath is something like
+# '$ORIGIN/../lib:', which means that the current directory is included. Then the zlib
+# build fails as soon as clang running in the zlib directory finds the pizlonated
+# zlib.
+if test $OS = linux
+then
+    patchelf --set-rpath '$ORIGIN/../lib' build/bin/clang-17
+fi
