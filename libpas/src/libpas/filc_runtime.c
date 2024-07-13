@@ -333,12 +333,29 @@ void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stac
 
 void filc_thread_destruct(filc_thread* thread)
 {
+    static const bool verbose = false;
+
+    if (verbose)
+        pas_log("destructing thread %p\n", thread);
+    
     PAS_ASSERT(thread->has_stopped || thread->error_starting || thread->forked);
 
+#if PAS_OS(LINUX)
+    /* On Linux, pthread_condition_destroy waits if there's anyone waiting on the condition
+       variable, which is totally not what we want.
+       
+       Also, the Linux mutex/condition destroy functions don't actually release any resources.
+       
+       So we can skip them. */
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
     /* Shockingly, the BSDs use a pthread_mutex/pthread_cond implementation that actually requires
        destruction. What the fugc. */
     pas_system_mutex_destruct(&thread->lock);
     pas_system_condition_destruct(&thread->cond);
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
+
+    if (verbose)
+        pas_log("destructed thread %p\n", thread);
 }
 
 void filc_thread_relinquish_tid(filc_thread* thread)
@@ -5066,6 +5083,11 @@ static int to_user_sa_flags(int sa_flags)
         result |= 0x40000000;
     if (filc_check_and_clear(&sa_flags, SA_RESETHAND))
         result |= 0x80000000;
+#if PAS_OS(LINUX)
+    filc_check_and_clear(&sa_flags, 0x04000000); /* Clear the SA_RESTORER bit. */
+#endif /* PAS_OS(LINUX) */
+    if (sa_flags)
+        pas_log("Unexpected sa_flags: %u\n", (unsigned)sa_flags);
     PAS_ASSERT(!sa_flags);
     return result;
 }
