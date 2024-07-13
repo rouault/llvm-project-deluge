@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -26,6 +26,4 @@
 set -e
 set -x
 
-./build_all_fast.sh
-./build_all_slow.sh
-./build_benchmarks.sh
+(cd filc/benchmarks && ./build_benchmarks.sh)

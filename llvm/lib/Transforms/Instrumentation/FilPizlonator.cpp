@@ -68,10 +68,11 @@ static cl::opt<bool> logAllocations(
   "filc-log-allocations", cl::desc("Make FilC emit code to log every allocation"),
   cl::Hidden, cl::init(false));
 
+// This has to match the FilC runtime.
+
 static constexpr size_t GCMinAlign = 16;
 static constexpr size_t WordSize = 16;
 
-// This has to match the FilC runtime.
 typedef uint8_t WordType;
 
 static constexpr WordType WordTypeUnset = 0;
@@ -86,6 +87,10 @@ static constexpr uint16_t ObjectFlagReadonly = 16;
 static constexpr unsigned NumUnwindRegisters = 2;
 
 static constexpr size_t SpecialObjectSize = 32;
+
+static constexpr uint8_t ThreadStateCheckRequested = 2;
+static constexpr uint8_t ThreadStateStopRequested = 4;
+static constexpr uint8_t ThreadStateDeferredSignal = 8;
 
 enum class AccessKind {
   Read,
@@ -410,7 +415,7 @@ class Pizlonator {
   BitCastInst* Dummy;
 
   // Low-level functions used by codegen.
-  FunctionCallee PollcheckOutline;
+  FunctionCallee PollcheckSlow;
   FunctionCallee StoreBarrier;
   FunctionCallee GetNextBytesForVAArg;
   FunctionCallee AllocateFunction;
@@ -3309,7 +3314,7 @@ public:
     FutureArgBuffer = makeDummy(LowRawPtrTy);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
 
-    PollcheckOutline = M.getOrInsertFunction("filc_pollcheck_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    PollcheckSlow = M.getOrInsertFunction("filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
     StoreBarrier = M.getOrInsertFunction("filc_store_barrier_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
     AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
@@ -3588,9 +3593,30 @@ public:
           }
 
           if (LoopFooters.count(BB)) {
+            DebugLoc DL = BB->getTerminator()->getDebugLoc();
+            GetElementPtrInst* StatePtr = GetElementPtrInst::Create(
+              ThreadTy, MyThread,
+              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+              "filc_thread_state_ptr", BB->getTerminator());
+            StatePtr->setDebugLoc(DL);
+            LoadInst* StateLoad = new LoadInst(
+              Int8Ty, StatePtr, "filc_thread_state_load", BB->getTerminator());
+            StateLoad->setDebugLoc(DL);
+            BinaryOperator* Masked = BinaryOperator::Create(
+              Instruction::And, StateLoad,
+              ConstantInt::get(
+                Int8Ty,
+                ThreadStateCheckRequested | ThreadStateStopRequested | ThreadStateDeferredSignal),
+              "filc_thread_state_masked", BB->getTerminator());
+            Masked->setDebugLoc(DL);
+            ICmpInst* PollcheckNotNeeded = new ICmpInst(
+              BB->getTerminator(), ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
+              "filc_pollcheck_not_needed");
+            Masked->setDebugLoc(DL);
+            Instruction* NewTerm =
+              SplitBlockAndInsertIfElse(PollcheckNotNeeded, BB->getTerminator(), false);
             CallInst::Create(
-              PollcheckOutline, { MyThread, getOrigin(BB->getTerminator()->getDebugLoc()) }, "",
-              BB->getTerminator());
+              PollcheckSlow, { MyThread, getOrigin(DL) }, "", NewTerm)->setDebugLoc(DL);
           }
         }
 

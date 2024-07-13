@@ -243,6 +243,12 @@ $benchmarks << Benchmark.new(
         "diff -n benchmarkOutput/libpizlo.dylib.bz2 benchmarkData/libpizlo.dylib.bz2"
     ])
 
+$benchmarks << Benchmark.new(
+    "benchmarks/richards", "", [])
+
+$benchmarks << Benchmark.new(
+    "benchmarks/stepanov_container", "", [])
+
 $pizfixes = []
 ARGV.each {
     | argv |

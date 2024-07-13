@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -23,9 +23,18 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. ../../libpas/common.sh
+
 set -e
 set -x
 
-./build_all_fast.sh
-./build_all_slow.sh
-./build_benchmarks.sh
+mkdir -p ../../pizfix/benchmarks
+
+${CCPREFIX}../../build/bin/clang++ \
+    -o ../../pizfix/benchmarks/stepanov_container \
+    stepanov_container.cpp -O3 -g
+
+${CCPREFIX}../../build/bin/clang \
+    -o ../../pizfix/benchmarks/richards \
+    richards.c -O3 -g -Dbench100
+
