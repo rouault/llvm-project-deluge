@@ -76,3 +76,12 @@ case $OS in
         exit 1
         ;;
 esac
+
+case $OS in
+    linux)
+        NCPU=`nproc`
+        ;;
+    *)
+        NCPU=`sysctl -n hw.ncpu`
+        ;;
+esac

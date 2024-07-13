@@ -33,5 +33,5 @@ cd deluded-openssh-portable
 ($MAKE distclean || echo whatever)
 autoreconf
 CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix
-$MAKE -j `sysctl -n hw.ncpu`
+$MAKE -j $NCPU
 $MAKE install

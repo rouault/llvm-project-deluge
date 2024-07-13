@@ -33,5 +33,5 @@ cd zlib-1.3
 ($MAKE distclean || echo whatever)
 CC="$CCPREFIX$PWD/../build/bin/clang" CFLAGS="-O3 -g" ./configure \
          --prefix=$PWD/../pizfix
-$MAKE -j `sysctl -n hw.ncpu`
+$MAKE -j $NCPU
 $MAKE install

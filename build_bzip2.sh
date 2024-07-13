@@ -31,6 +31,6 @@ set -x
 cd pizlonated-bzip2
 
 $MAKE CC="$CCPREFIX$PWD/../build/bin/clang" clean
-$MAKE CC="$CCPREFIX$PWD/../build/bin/clang" -j `sysctl -n hw.ncpu`
+$MAKE CC="$CCPREFIX$PWD/../build/bin/clang" -j $NCPU
 $MAKE CC="$CCPREFIX$PWD/../build/bin/clang" PREFIX=$PWD/../pizfix install
 

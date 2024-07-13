@@ -35,5 +35,5 @@ autoreconf
 CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
     --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
     --enable-pcregrep-libz
-$MAKE -j `sysctl -n hw.ncpu`
+$MAKE -j $NCPU
 $MAKE install

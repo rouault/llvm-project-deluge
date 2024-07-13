@@ -59,7 +59,7 @@ esac
          --prefix=$PWD/../pizfix --dylib-opt="$MUSL_DYLIB_OPT" \
          --dylib-ext=$MUSL_DYLIB_EXT --libc-prefix=$MUSL_PREFIX && \
      $MAKE clean && \
-     $MAKE -j `sysctl -n hw.ncpu` && \
+     $MAKE -j $NCPU && \
      $MAKE install)
 
 if test $OS = freebsd

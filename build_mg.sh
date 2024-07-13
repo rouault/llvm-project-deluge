@@ -33,6 +33,6 @@ cd pizlonated-mg
 ($MAKE distclean || echo whatever)
 ./autogen.sh
 CC="$CCPREFIX$PWD/../build/bin/clang -O -g" ./configure --prefix=$PWD/../pizfix
-$MAKE -j `sysctl -n hw.ncpu`
+$MAKE -j $NCPU
 $MAKE install
 

@@ -33,5 +33,5 @@ cd curl-8.5.0
 ($MAKE distclean || echo whatever)
 CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --with-openssl \
     --prefix=$PWD/../pizfix
-$MAKE -j `sysctl -n hw.ncpu`
+$MAKE -j $NCPU
 $MAKE install
