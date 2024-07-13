@@ -437,7 +437,7 @@ class Pizlonator {
   FunctionCallee CheckWriteInt64;
   FunctionCallee CheckWriteInt128;
   FunctionCallee CheckWritePtrOutline;
-  FunctionCallee CheckFunctionCall;
+  FunctionCallee CheckFunctionCallFail;
   FunctionCallee Memset;
   FunctionCallee Memmove;
   FunctionCallee GlobalInitializationContextCreate;
@@ -931,19 +931,27 @@ class Pizlonator {
   }
 
   Value* objectUpperPtr(Value* Object, Instruction* InsertBefore) {
-    Instruction* LowerPtr = GetElementPtrInst::Create(
+    Instruction* UpperPtr = GetElementPtrInst::Create(
       ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
       "filc_object_upper_ptr", InsertBefore);
-    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return LowerPtr;
+    UpperPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return UpperPtr;
   }
 
   Value* objectFlagsPtr(Value* Object, Instruction* InsertBefore) {
-    Instruction* LowerPtr = GetElementPtrInst::Create(
+    Instruction* FlagsPtr = GetElementPtrInst::Create(
       ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
       "filc_object_flags_ptr", InsertBefore);
-    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return LowerPtr;
+    FlagsPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return FlagsPtr;
+  }
+
+  Value* objectWordTypesPtr(Value* Object, Instruction* InsertBefore) {
+    Instruction* WordTypesPtr = GetElementPtrInst::Create(
+      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
+      "filc_object_flags_ptr", InsertBefore);
+    WordTypesPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return WordTypesPtr;
   }
 
   Value* objectLower(Value* Object, Instruction* InsertBefore) {
@@ -951,6 +959,13 @@ class Pizlonator {
       LowRawPtrTy, objectLowerPtr(Object, InsertBefore), "filc_object_lower_load", InsertBefore);
     Lower->setDebugLoc(InsertBefore->getDebugLoc());
     return Lower;
+  }
+
+  Value* objectFlags(Value* Object, Instruction* InsertBefore) {
+    Instruction* Flags = new LoadInst(
+      Int16Ty, objectFlagsPtr(Object, InsertBefore), "filc_object_flags_load", InsertBefore);
+    Flags->setDebugLoc(InsertBefore->getDebugLoc());
+    return Flags;
   }
 
   Value* ptrWithObject(Value* Object, Instruction* InsertBefore) {
@@ -2572,10 +2587,6 @@ class Pizlonator {
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand()))
         assert(!shouldPassThrough(F));
 
-      CallInst::Create(
-        CheckFunctionCall, { CI->getCalledOperand(), getOrigin(CI->getDebugLoc()) }, "", CI)
-        ->setDebugLoc(CI->getDebugLoc());
-
       FunctionType *FT = CI->getFunctionType();
       Value* Args;
       if (CI->arg_size()) {
@@ -2647,7 +2658,38 @@ class Pizlonator {
       OriginPtr->setDebugLoc(CI->getDebugLoc());
       (new StoreInst(getOrigin(CI->getDebugLoc(), CanCatch, LPI), OriginPtr, CI))
         ->setDebugLoc(CI->getDebugLoc());
-      
+
+      Value* CalledObject = ptrObject(CI->getCalledOperand(), CI);
+      ICmpInst* NullObject = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, CalledObject, LowRawNull, "filc_null_called_object");
+      NullObject->setDebugLoc(CI->getDebugLoc());
+      Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(NullObject, CI, true);
+      BasicBlock* NewBlock = NewBlockTerm->getParent();
+      CallInst::Create(
+        CheckFunctionCallFail, { CI->getCalledOperand() }, "", NewBlockTerm)
+        ->setDebugLoc(CI->getDebugLoc());
+      ICmpInst* AtLower = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, ptrPtr(CI->getCalledOperand(), CI), objectLower(CalledObject, CI),
+        "filc_call_at_lower");
+      AtLower->setDebugLoc(CI->getDebugLoc());
+      SplitBlockAndInsertIfElse(AtLower, CI, false, nullptr, nullptr, nullptr, NewBlock);
+      BinaryOperator* Masked = BinaryOperator::Create(
+        Instruction::And, objectFlags(CalledObject, CI), ConstantInt::get(Int16Ty, ObjectFlagSpecial),
+        "filc_call_mask_special", CI);
+      Masked->setDebugLoc(CI->getDebugLoc());
+      ICmpInst* NotSpecial = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0), "filc_call_not_special");
+      NotSpecial->setDebugLoc(CI->getDebugLoc());
+      SplitBlockAndInsertIfThen(NotSpecial, CI, false, nullptr, nullptr, nullptr, NewBlock);
+      LoadInst* WordType = new LoadInst(
+        Int8Ty, objectWordTypesPtr(CalledObject, CI), "filc_call_word_type", CI);
+      WordType->setDebugLoc(CI->getDebugLoc());
+      ICmpInst* IsFunction = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeFunction),
+        "filc_call_is_fuction");
+      IsFunction->setDebugLoc(CI->getDebugLoc());
+      SplitBlockAndInsertIfElse(IsFunction, CI, false, nullptr, nullptr, nullptr, NewBlock);
+
       assert(!CI->hasOperandBundles());
       CallInst* TheCall = CallInst::Create(
         PizlonatedFuncTy, ptrPtr(CI->getCalledOperand(), CI), { MyThread, Args, Rets }, "filc_call",
@@ -3336,7 +3378,7 @@ public:
     CheckWriteInt64 = M.getOrInsertFunction("filc_check_write_int64", VoidTy, LowWidePtrTy, LowRawPtrTy);
     CheckWriteInt128 = M.getOrInsertFunction("filc_check_write_int128", VoidTy, LowWidePtrTy, LowRawPtrTy);
     CheckWritePtrOutline = M.getOrInsertFunction("filc_check_write_ptr_outline", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckFunctionCall = M.getOrInsertFunction("filc_check_function_call", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckFunctionCallFail = M.getOrInsertFunction("filc_check_function_call_fail", VoidTy, LowWidePtrTy);
     Memset = M.getOrInsertFunction("filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
     Memmove = M.getOrInsertFunction("filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
     GlobalInitializationContextCreate = M.getOrInsertFunction("filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);

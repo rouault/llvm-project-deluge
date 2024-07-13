@@ -2896,6 +2896,12 @@ void filc_check_function_call(filc_ptr ptr)
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
 }
 
+void filc_check_function_call_fail(filc_ptr ptr)
+{
+    filc_check_function_call(ptr);
+    PAS_ASSERT(!"Should not be reached");
+}
+
 void filc_check_read_native_int_slow(filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
 {
     filc_check_read_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);

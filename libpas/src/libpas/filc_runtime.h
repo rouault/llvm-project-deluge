@@ -1915,6 +1915,7 @@ static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_orig
     } while (false)
 
 void filc_check_function_call(filc_ptr ptr);
+void filc_check_function_call_fail(filc_ptr ptr);
 
 void filc_check_access_special(
     filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
