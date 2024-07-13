@@ -417,7 +417,7 @@ class Pizlonator {
 
   // Low-level functions used by codegen.
   FunctionCallee PollcheckSlow;
-  FunctionCallee StoreBarrier;
+  FunctionCallee StoreBarrierSlow;
   FunctionCallee GetNextBytesForVAArg;
   FunctionCallee AllocateFunction;
   FunctionCallee Allocate;
@@ -461,6 +461,7 @@ class Pizlonator {
   Constant* VoidCCType;
   Constant* IntCCType;
   Constant* PtrCCType;
+  Constant* IsMarking;
 
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
@@ -1077,8 +1078,19 @@ class Pizlonator {
 
   void storeBarrierForObject(Value* Object, Instruction* InsertBefore) {
     assert(MyThread);
-    CallInst::Create(StoreBarrier, { MyThread, Object }, "", InsertBefore)
-      ->setDebugLoc(InsertBefore->getDebugLoc());
+    DebugLoc DL = InsertBefore->getDebugLoc();
+    ICmpInst* NullObject = new ICmpInst(
+      InsertBefore, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_barrier_null_object");
+    NullObject->setDebugLoc(DL);
+    Instruction* NotNullTerm = SplitBlockAndInsertIfElse(NullObject, InsertBefore, false);
+    LoadInst* IsMarkingByte = new LoadInst(Int8Ty, IsMarking, "filc_is_marking_byte", NotNullTerm);
+    IsMarkingByte->setDebugLoc(DL);
+    ICmpInst* IsNotMarking = new ICmpInst(
+      NotNullTerm, ICmpInst::ICMP_EQ, IsMarkingByte, ConstantInt::get(Int8Ty, 0),
+      "filc_is_not_marking");
+    IsNotMarking->setDebugLoc(DL);
+    Instruction* IsMarkingTerm = SplitBlockAndInsertIfElse(IsNotMarking, NotNullTerm, false);
+    CallInst::Create(StoreBarrierSlow, { MyThread, Object }, "", IsMarkingTerm)->setDebugLoc(DL);
   }
   
   void storeBarrierForValue(Value* V, Instruction* InsertBefore) {
@@ -3439,7 +3451,7 @@ public:
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
 
     PollcheckSlow = M.getOrInsertFunction("filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    StoreBarrier = M.getOrInsertFunction("filc_store_barrier_outline", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    StoreBarrierSlow = M.getOrInsertFunction("filc_store_barrier_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
     AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
@@ -3484,6 +3496,7 @@ public:
     VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);
     IntCCType = M.getOrInsertGlobal("filc_int_cc_type", CCTypeTy);
     PtrCCType = M.getOrInsertGlobal("filc_ptr_cc_type", CCTypeTy);
+    IsMarking = M.getOrInsertGlobal("filc_is_marking", Int8Ty);
 
     auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
       GlobalHighTypes[NewG] = GlobalHighTypes[G];
