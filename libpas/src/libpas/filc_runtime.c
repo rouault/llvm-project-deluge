@@ -59,7 +59,6 @@
 #include <sys/utsname.h>
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <sys/sysctl.h>
 #include <sys/mman.h>
 #include <dlfcn.h>
 #include <poll.h>
@@ -4889,12 +4888,21 @@ static int handle_fstat_result(filc_ptr user_stat_ptr, struct stat *st,
     musl_stat->st_size = st->st_size;
     musl_stat->st_blksize = st->st_blksize;
     musl_stat->st_blocks = st->st_blocks;
+#if PAS_OS(LINUX)
+    musl_stat->st_atim[0] = st->st_atim.tv_sec;
+    musl_stat->st_atim[1] = st->st_atim.tv_nsec;
+    musl_stat->st_mtim[0] = st->st_mtim.tv_sec;
+    musl_stat->st_mtim[1] = st->st_mtim.tv_nsec;
+    musl_stat->st_ctim[0] = st->st_ctim.tv_sec;
+    musl_stat->st_ctim[1] = st->st_ctim.tv_nsec;
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
     musl_stat->st_atim[0] = st->st_atimespec.tv_sec;
     musl_stat->st_atim[1] = st->st_atimespec.tv_nsec;
     musl_stat->st_mtim[0] = st->st_mtimespec.tv_sec;
     musl_stat->st_mtim[1] = st->st_mtimespec.tv_nsec;
     musl_stat->st_ctim[0] = st->st_ctimespec.tv_sec;
     musl_stat->st_ctim[1] = st->st_ctimespec.tv_nsec;
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
     return 0;
 }
 
@@ -5390,22 +5398,24 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
 
 int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr, filc_ptr gid_ptr)
 {
-    filc_exit(my_thread);
     uid_t uid;
     gid_t gid;
-    int result = getpeereid(fd, &uid, &gid);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(result == -1 || !result);
-    if (!result) {
-        filc_check_write_int(uid_ptr, sizeof(unsigned), NULL);
-        filc_check_write_int(gid_ptr, sizeof(unsigned), NULL);
-        *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
-        *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
-        return 0;
-    }
-    filc_set_errno(my_errno);
-    return -1;
+#if PAS_OS(LINUX)
+    struct ucred cred;
+    socklen_t len = sizeof(cred);
+    if (FILC_SYSCALL(my_thread, getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) < 0)
+        return -1;
+    uid = cred.uid;
+    gid = cred.gid;
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
+    if (FILC_SYSCALL(my_thread, getpeereid(fd, &uid, &gid)) < 0)
+        return -1;
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
+    filc_check_write_int(uid_ptr, sizeof(unsigned), NULL);
+    filc_check_write_int(gid_ptr, sizeof(unsigned), NULL);
+    *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
+    *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
+    return 0;
 }
 
 int filc_native_zsys_kill(filc_thread* my_thread, int pid, int user_sig)
@@ -6655,7 +6665,7 @@ static void* start_thread(void* arg)
     size_t index;
     for (index = FILC_MAX_USER_SIGNUM + 1; index--;)
         PAS_ASSERT(!thread->num_deferred_signals[index]);
-    thread->thread = NULL;
+    thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
     thread->has_stopped = true;
     pas_system_condition_broadcast(&thread->cond);
     pas_system_mutex_unlock(&thread->lock);

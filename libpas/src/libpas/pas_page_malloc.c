@@ -414,7 +414,7 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, pas_mmap_capab
         PAS_ASSERT(!result);
 
 #ifdef MADV_DONTDUMP
-        result = madvise(base, size, MADV_DONTDUMP);
+        result = madvise(ptr, size, MADV_DONTDUMP);
         PAS_ASSERT(!result);
 #endif
     }

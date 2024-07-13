@@ -57,9 +57,14 @@
 #include <syslog.h>
 #include <sys/wait.h>
 #include <grp.h>
-#include <sys/sysctl.h>
 #include <poll.h>
 #include <spawn.h>
+
+#if PAS_OS(LINUX)
+#include <pty.h>
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
+#include <sys/sysctl.h>
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
 
 #if PAS_OS(DARWIN) || PAS_OS(OPENBSD)
 #include <util.h>
@@ -447,8 +452,10 @@ static unsigned to_musl_coflag(unsigned oflag)
         result |= 01;
     if (filc_check_and_clear(&oflag, ONLCR))
         result |= 04;
+#if !PAS_OS(LINUX)
     /* Maybe I should teach musl about OXTABS or pass it through? meh? */
     PAS_ASSERT(!(oflag & ~OXTABS));
+#endif /* !PAS_OS(LINUX) */
     return result;
 }
 
@@ -3308,7 +3315,7 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     if (verbose) {
         pas_log("Actually doing recvmsg\n");
         pas_log("msg.msg_iov = %p\n", msg.msg_iov);
-        pas_log("msg.msg_iovlen = %d\n", msg.msg_iovlen);
+        pas_log("msg.msg_iovlen = %zu\n", (size_t)msg.msg_iovlen);
         int index;
         for (index = 0; index < (int)msg.msg_iovlen; ++index)
             pas_log("msg.msg_iov[%d].iov_len = %zu\n", index, msg.msg_iov[index].iov_len);
@@ -3568,6 +3575,17 @@ long filc_native_zsys_sysconf_override(filc_thread* my_thread, int musl_name)
 
 int filc_native_zsys_numcores(filc_thread* my_thread)
 {
+#if PAS_OS(LINUX)
+    filc_exit(my_thread);
+    int result = sysconf(_SC_NPROCESSORS_ONLN);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0) {
+        filc_set_errno(my_errno);
+        return -1;
+    }
+    return result;
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
     filc_exit(my_thread);
     unsigned result;
     size_t length = sizeof(result);
@@ -3588,6 +3606,7 @@ int filc_native_zsys_numcores(filc_thread* my_thread)
     }
     PAS_ASSERT((int)result >= 0);
     return (int)result;
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
 }
 
 int filc_native_zsys_getentropy(filc_thread* my_thread, filc_ptr buf_ptr, size_t len)

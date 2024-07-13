@@ -349,6 +349,8 @@ unsigned Linux::GetDefaultDwarfVersion() const {
 }
 
 ToolChain::CXXStdlibType Linux::GetDefaultCXXStdlibType() const {
+  if ((true))
+    return ToolChain::CST_Libcxx;
   if (getTriple().isAndroid())
     return ToolChain::CST_Libcxx;
   return ToolChain::CST_Libstdcxx;
@@ -612,6 +614,34 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                       ArgStringList &CC1Args) const {
   const Driver &D = getDriver();
   std::string SysRoot = computeSysRoot();
+
+  {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+  {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "musl-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+  
+  if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
+      && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+
+  if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
+      && !DriverArgs.hasArg(options::OPT_nostdlibinc)) {
+    SmallString<128> P(D.InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+
+  if ((true))
+    return;
 
   if (DriverArgs.hasArg(clang::driver::options::OPT_nostdinc))
     return;

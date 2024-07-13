@@ -43,6 +43,11 @@ case `uname -s` in
                 ;;
         esac
         ;;
+    Linux)
+        MAKE=make
+        CCPREFIX=""
+        OS=linux
+        ;;
     *)
         echo "Unsupported OS"
         exit 1
@@ -65,7 +70,7 @@ case `uname -m` in
 esac
 
 case $OS in
-    *bsd)
+    *bsd|linux)
         MAKESUFFIX=bsd
         ;;
     macosx)

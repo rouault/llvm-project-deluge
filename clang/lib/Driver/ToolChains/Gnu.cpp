@@ -475,8 +475,8 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-o");
   CmdArgs.push_back(Output.getFilename());
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
+  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
+                             options::OPT_r)) {
     if (!isAndroid && !IsIAMCU) {
       const char *crt1 = nullptr;
       if (!Args.hasArg(options::OPT_shared)) {
@@ -531,6 +531,15 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
+
+  {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+  
   Args.AddAllArgs(CmdArgs, options::OPT_u);
 
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
@@ -554,10 +563,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // The profile runtime also needs access to system libraries.
   getToolChain().addProfileRTLibs(Args, CmdArgs);
 
+  if ((true))
+    Args.ClaimAllArgs(options::OPT_pthread);
+
   if (D.CCCIsCXX() &&
-      !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                   options::OPT_r)) {
-    if (ToolChain.ShouldLinkCXXStdlib(Args)) {
+      ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                              options::OPT_r))) {
+    if ((false) && ToolChain.ShouldLinkCXXStdlib(Args)) {
       bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
                                  !Args.hasArg(options::OPT_static);
       if (OnlyLibstdcxxStatic)
@@ -582,8 +594,32 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-lm");
   }
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
-    if (!Args.hasArg(options::OPT_nodefaultlibs)) {
+  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
+    if ((true)) {
+      AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
+      CmdArgs.push_back("-lpthread");
+      CmdArgs.push_back("-lc");
+      CmdArgs.push_back("-lpizlo");
+      if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                       options::OPT_r)) {
+        CmdArgs.push_back("-lpizlonated_c");
+        if (!Args.hasArg(options::OPT_shared)) {
+          SmallString<128> P(ToolChain.getDriver().InstalledDir);
+          llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+          llvm::sys::path::append(P, "filc_crt.o");
+          CmdArgs.push_back(Args.MakeArgString(P));
+        }
+      } else {
+        if (!Args.hasArg(options::OPT_shared)) {
+          SmallString<128> P(ToolChain.getDriver().InstalledDir);
+          llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+          llvm::sys::path::append(P, "filc_mincrt.o");
+          CmdArgs.push_back(Args.MakeArgString(P));
+        }
+      }
+      if (ToolChain.ShouldLinkCXXStdlib(Args))
+        ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+    } else if (!Args.hasArg(options::OPT_nodefaultlibs)) {
       if (IsStatic || IsStaticPIE)
         CmdArgs.push_back("--start-group");
 
@@ -3093,6 +3129,24 @@ void
 Generic_GCC::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                                    llvm::opt::ArgStringList &CC1Args) const {
   const Driver &D = getDriver();
+
+  if ((true)) {
+    {
+      llvm::SmallString<128> P =
+        llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
+      llvm::sys::path::append(P, "..", "include", getTripleString());
+      llvm::sys::path::append(P, "c++", "v1");
+      addSystemInclude(DriverArgs, CC1Args, P);
+    }
+    {
+      llvm::SmallString<128> P =
+        llvm::StringRef(getDriver().getInstalledDir()); // <install>/bin
+      llvm::sys::path::append(P, "..", "include", "c++", "v1");
+      addSystemInclude(DriverArgs, CC1Args, P);
+    }
+    return;
+  }
+  
   std::string SysRoot = computeSysRoot();
   std::string Target = getTripleString();
 

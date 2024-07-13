@@ -58,6 +58,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <inttypes.h>
+#include <signal.h>
 
 #ifdef __cplusplus
 #define PAS_BEGIN_EXTERN_C extern "C" { struct pas_require_semicolon
@@ -1626,12 +1627,13 @@ typedef DWORD pas_thread_return_type;
 static inline int pas_getpid(void) { return _getpid(); }
 #else /* _WIN32 -> so !_WIN32 */
 typedef pthread_t pas_system_thread_id;
-#define PAS_NULL_SYSTEM_THREAD_ID NULL
 static inline pas_system_thread_id pas_get_current_system_thread_id(void) { return pthread_self(); }
 #if PAS_OS(DARWIN) || PAS_OS(FREEBSD) || PAS_OS(OPENBSD)
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%p"
+#define PAS_NULL_SYSTEM_THREAD_ID NULL
 #else
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%" PRIxPTR
+#define PAS_NULL_SYSTEM_THREAD_ID 0
 #endif
 
 typedef pthread_mutex_t pas_system_mutex;

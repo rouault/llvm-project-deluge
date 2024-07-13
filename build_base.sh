@@ -43,7 +43,7 @@ case $OS in
         MUSL_DYLIB_EXT=so.666
         MUSL_PREFIX=
         ;;
-    openbsd)
+    openbsd|linux)
         MUSL_DYLIB_OPT=-shared
         MUSL_DYLIB_EXT=so
         MUSL_PREFIX=pizlonated_
