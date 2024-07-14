@@ -534,6 +534,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   {
     SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "lib64");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+  {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-rpath");
