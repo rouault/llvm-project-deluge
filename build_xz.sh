@@ -33,7 +33,8 @@ cd pizlonated-xz
 ($MAKE distclean || echo whatever)
 rm -f configure
 (./autogen.sh || echo whatever)
-CC="$CCPREFIX$PWD/../build/bin/clang -O -g" ./configure --prefix=$PWD/../pizfix
+CC="$CCPREFIX$PWD/../build/bin/clang -O -g" ./configure \
+    --disable-assembler --prefix=$PWD/../pizfix
 $MAKE -j $NCPU
 $MAKE install
 
