@@ -31,8 +31,8 @@ set -x
 cd openssl-3.2.0
 
 ($MAKE distclean || echo whatever)
-CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./Configure zlib no-asm no-devcryptoeng \
-    --prefix=$PWD/../pizfix
+CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./Configure \
+    zlib no-asm no-devcryptoeng no-afalgeng --prefix=$PWD/../pizfix
 $MAKE -j $NCPU
 $MAKE install_sw
 $MAKE install_ssldirs

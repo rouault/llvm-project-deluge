@@ -556,6 +556,25 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
   bool NeedsXRayDeps = addXRayRuntime(ToolChain, Args, CmdArgs);
   addLinkerCompressDebugSectionsOption(ToolChain, Args, CmdArgs);
+  
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                   options::OPT_r)) {
+    CmdArgs.push_back("-lpizlonated_c");
+    if (!Args.hasArg(options::OPT_shared)) {
+      SmallString<128> P(ToolChain.getDriver().InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+      llvm::sys::path::append(P, "filc_crt.o");
+      CmdArgs.push_back(Args.MakeArgString(P));
+    }
+  } else {
+    if (!Args.hasArg(options::OPT_shared)) {
+      SmallString<128> P(ToolChain.getDriver().InstalledDir);
+      llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
+      llvm::sys::path::append(P, "filc_mincrt.o");
+      CmdArgs.push_back(Args.MakeArgString(P));
+    }
+  }
+
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
   addHIPRuntimeLibArgs(ToolChain, Args, CmdArgs);
@@ -600,23 +619,6 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-lpthread");
       CmdArgs.push_back("-lc");
       CmdArgs.push_back("-lpizlo");
-      if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                       options::OPT_r)) {
-        CmdArgs.push_back("-lpizlonated_c");
-        if (!Args.hasArg(options::OPT_shared)) {
-          SmallString<128> P(ToolChain.getDriver().InstalledDir);
-          llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-          llvm::sys::path::append(P, "filc_crt.o");
-          CmdArgs.push_back(Args.MakeArgString(P));
-        }
-      } else {
-        if (!Args.hasArg(options::OPT_shared)) {
-          SmallString<128> P(ToolChain.getDriver().InstalledDir);
-          llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
-          llvm::sys::path::append(P, "filc_mincrt.o");
-          CmdArgs.push_back(Args.MakeArgString(P));
-        }
-      }
       if (ToolChain.ShouldLinkCXXStdlib(Args))
         ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
     } else if (!Args.hasArg(options::OPT_nodefaultlibs)) {
