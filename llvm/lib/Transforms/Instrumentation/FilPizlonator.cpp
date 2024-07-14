@@ -419,7 +419,6 @@ class Pizlonator {
   FunctionCallee PollcheckSlow;
   FunctionCallee StoreBarrierSlow;
   FunctionCallee GetNextBytesForVAArg;
-  FunctionCallee AllocateFunction;
   FunctionCallee Allocate;
   FunctionCallee AllocateWithAlignment;
   FunctionCallee CheckReadInt;
@@ -960,7 +959,7 @@ class Pizlonator {
     Shifted->setDebugLoc(InsertBefore->getDebugLoc());
     Instruction* IntResult = new TruncInst(Shifted, IntPtrTy, "filc_ptr_object_trunc_as_int", InsertBefore);
     IntResult->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_ptr", InsertBefore);
+    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_object", InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
   }
@@ -2439,6 +2438,67 @@ class Pizlonator {
           return true;
         }
 
+        if ((F->getName() == "zgetlower" || F->getName() == "zgetupper") &&
+            F->getFunctionType()->getNumParams() == 1 &&
+            F->getFunctionType()->getParamType(0) == LowRawPtrTy &&
+            F->getReturnType() == LowRawPtrTy) {
+          lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
+          Value* Object = ptrObject(CI->getArgOperand(0), CI);
+          ICmpInst* NullObject = new ICmpInst(
+            CI, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_is_null_object");
+          NullObject->setDebugLoc(CI->getDebugLoc());
+          Instruction* NotNullTerm = SplitBlockAndInsertIfElse(NullObject, CI, false);
+          Value* LowerUpper;
+          if (F->getName() == "zgetlower")
+            LowerUpper = objectLower(Object, NotNullTerm);
+          else {
+            assert(F->getName() == "zgetupper");
+            LowerUpper = objectUpper(Object, NotNullTerm);
+          }
+          PHINode* Phi = PHINode::Create(LowRawPtrTy, 2, "filc_lower_upper_phi", CI);
+          Phi->addIncoming(LowRawNull, NullObject->getParent());
+          Phi->addIncoming(LowerUpper, NotNullTerm->getParent());
+          CI->replaceAllUsesWith(ptrWithPtr(CI->getArgOperand(0), Phi, CI));
+          CI->eraseFromParent();
+          return true;
+        }
+
+        if (F->getName() == "zthread_self_id" &&
+            F->getFunctionType()->getNumParams() == 0 &&
+            F->getReturnType() == Int32Ty) {
+          Instruction* TidPtr = GetElementPtrInst::Create(
+            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+            "filc_tid_ptr", CI);
+          TidPtr->setDebugLoc(CI->getDebugLoc());
+          Instruction* Tid = new LoadInst(Int32Ty, TidPtr, "filc_tid", CI);
+          Tid->setDebugLoc(CI->getDebugLoc());
+          CI->replaceAllUsesWith(Tid);
+          CI->eraseFromParent();
+          return true;
+        }
+
+        if (F->getName() == "zthread_self" &&
+            F->getFunctionType()->getNumParams() == 0 &&
+            F->getReturnType() == LowRawPtrTy) {
+          CI->replaceAllUsesWith(ptrForSpecialPayload(MyThread, CI));
+          CI->eraseFromParent();
+          return true;
+        }
+
+        if (F->getName() == "zthread_self_cookie" &&
+            F->getFunctionType()->getNumParams() == 0 &&
+            F->getReturnType() == LowRawPtrTy) {
+          Instruction* CookiePtr = GetElementPtrInst::Create(
+            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 4) },
+            "filc_cookie_ptr", CI);
+          CookiePtr->setDebugLoc(CI->getDebugLoc());
+          Instruction* Cookie = new LoadInst(LowWidePtrTy, CookiePtr, "filc_cookie", CI);
+          Cookie->setDebugLoc(CI->getDebugLoc());
+          CI->replaceAllUsesWith(Cookie);
+          CI->eraseFromParent();
+          return true;
+        }
+
         if (shouldPassThrough(F)) {
           for (Use& Arg : CI->args())
             lowerConstantOperand(Arg, CI, LowRawNull);
@@ -2458,7 +2518,7 @@ class Pizlonator {
       for (unsigned Idx = ST->getNumElements(); Idx--;) {
         Instruction* UnwindRegisterPtr = GetElementPtrInst::Create(
           ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2),
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3),
             ConstantInt::get(Int32Ty, Idx) },
           "filc_unwind_register_ptr", I);
         UnwindRegisterPtr->setDebugLoc(I->getDebugLoc());
@@ -3379,7 +3439,8 @@ public:
     CCPtrTy = StructType::create({LowRawPtrTy, LowRawPtrTy}, "filc_cc_ptr");
     FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "filc_frame");
     ThreadTy = StructType::create(
-      {Int8Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters)}, "filc_thread_ish");
+      {Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters), LowWidePtrTy},
+      "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
       {IntPtrTy, Int32Ty, LowRawPtrTy}, "filc_constant_relocation");
     ConstexprNodeTy = StructType::create(
@@ -3453,7 +3514,6 @@ public:
     PollcheckSlow = M.getOrInsertFunction("filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
     StoreBarrierSlow = M.getOrInsertFunction("filc_store_barrier_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
     GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    AllocateFunction = M.getOrInsertFunction("filc_allocate_function", LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
     Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
     AllocateWithAlignment = M.getOrInsertFunction("filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
     CheckReadInt = M.getOrInsertFunction("filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
@@ -3783,7 +3843,7 @@ public:
         Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
         Value* ThreadTopFramePtr = GetElementPtrInst::Create(
           ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
           "filc_thread_top_frame_ptr", InsertionPoint);
         new StoreInst(
           new LoadInst(LowRawPtrTy, ThreadTopFramePtr, "filc_thread_top_frame", InsertionPoint),
@@ -3811,7 +3871,7 @@ public:
               "filc_frame_parent", Return),
             GetElementPtrInst::Create(
               ThreadTy, MyThread,
-              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
               "filc_thread_top_frame_ptr", Return),
             Return);
         };

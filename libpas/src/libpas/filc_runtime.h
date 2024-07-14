@@ -434,12 +434,15 @@ struct filc_signal_handler {
 struct filc_thread {
     /* Begin fields that the compiler has to know about. */
     uint8_t state;
+    unsigned tid; /* musl relies on each thread having a 32-bit id, so we oblige. */
     filc_frame* top_frame;
 
     /* These are not tracked by GC, since they must be consumed by the landingpad right after
        calling filc_landing_pad. */
     filc_ptr unwind_registers[FILC_NUM_UNWIND_REGISTERS];
     
+    filc_ptr cookie_ptr;
+
     /* End fields that the compiler has to know about. */
     
     filc_native_frame* top_native_frame;
@@ -485,16 +488,12 @@ struct filc_thread {
     bool (*thread_main)(PIZLONATED_SIGNATURE);
     filc_ptr arg_ptr;
     filc_ptr result_ptr;
-    filc_ptr cookie_ptr;
 
     filc_ptr unwind_context_ptr;
     filc_ptr exception_object_ptr;
     filc_frame* found_frame_for_unwind;
 
     sigset_t initial_blocked_sigs;
-
-    /* musl relies on each thread having a 32-bit id, so we oblige. */
-    unsigned tid;
 
     /* We allow deferring signals aside from running entered. This is rare but useful. If this count is
        nonzero, then the signal_pizlonator will not set DEFERRED_SIGNAL flag in the state, but will set
