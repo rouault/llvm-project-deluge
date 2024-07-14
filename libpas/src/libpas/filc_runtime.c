@@ -3590,8 +3590,9 @@ bool filc_global_initialization_context_add(
     if (verbose)
         pas_log("dealing with pizlonated_gptr = %p\n", pizlonated_gptr);
 
-    filc_ptr gptr_value = filc_ptr_load_with_manual_tracking(pizlonated_gptr);
+    filc_ptr gptr_value = filc_ptr_load_atomic_unfenced_with_manual_tracking(pizlonated_gptr);
     if (filc_ptr_ptr(gptr_value)) {
+        PAS_ASSERT(filc_ptr_object(gptr_value));
         PAS_ASSERT(filc_ptr_lower(gptr_value) == filc_ptr_ptr(gptr_value));
         PAS_ASSERT(filc_ptr_object(gptr_value) == object);
         /* This case happens if there is a race like this:
@@ -3606,6 +3607,8 @@ bool filc_global_initialization_context_add(
             pas_log("was already initialized\n");
         return false;
     }
+
+    PAS_ASSERT(!filc_ptr_object(gptr_value));
 
     bmalloc_initialize_allocation_config(&allocation_config);
 
@@ -3657,7 +3660,8 @@ void filc_global_initialization_context_destroy(filc_global_initialization_conte
         filc_object* object = (filc_object*)entry.value;
         PAS_TESTING_ASSERT(filc_ptr_is_totally_null(*pizlonated_gptr));
         filc_testing_validate_object(object, NULL);
-        filc_ptr_store_without_barrier(pizlonated_gptr, filc_ptr_create_with_manual_tracking(object));
+        filc_ptr_store_atomic_unfenced_without_barrier(
+            pizlonated_gptr, filc_ptr_create_with_manual_tracking(object));
     }
 
     bmalloc_initialize_allocation_config(&allocation_config);
@@ -4007,27 +4011,27 @@ filc_ptr filc_native_zxchg_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr ne
 void filc_native_zatomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
     filc_check_write_ptr(ptr, NULL);
-    filc_ptr_store_fenced(my_thread, filc_ptr_ptr(ptr), new_value);
+    filc_ptr_store_atomic(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 void filc_native_zunfenced_atomic_store_ptr(filc_thread* my_thread, filc_ptr ptr, filc_ptr new_value)
 {
     filc_check_write_ptr(ptr, NULL);
-    filc_ptr_store(my_thread, filc_ptr_ptr(ptr), new_value);
+    filc_ptr_store_atomic_unfenced(my_thread, filc_ptr_ptr(ptr), new_value);
 }
 
 filc_ptr filc_native_zatomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
     filc_check_read_ptr(ptr, NULL);
-    return filc_ptr_load_fenced_with_manual_tracking(filc_ptr_ptr(ptr));
+    return filc_ptr_load_atomic_with_manual_tracking(filc_ptr_ptr(ptr));
 }
 
 filc_ptr filc_native_zunfenced_atomic_load_ptr(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
     filc_check_read_ptr(ptr, NULL);
-    return filc_ptr_load_with_manual_tracking(filc_ptr_ptr(ptr));
+    return filc_ptr_load_atomic_unfenced_with_manual_tracking(filc_ptr_ptr(ptr));
 }
 
 bool filc_native_zis_runtime_testing_enabled(filc_thread* my_thread)

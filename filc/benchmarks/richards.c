@@ -19,6 +19,7 @@
 */
 
 #include <stdfil.h>
+#include <stdlib.h>
 
 #ifdef bench100
 #define                Count           (10000*100)
@@ -207,7 +208,10 @@ struct task *findtcb(int id)
 
     if (1<=id && id<=(long)tasktab[0])
     t = tasktab[id];
-    if (t==0) zprintf("\nBad task id %d\n", id);
+    if (t==0) {
+        zprintf("\nBad task id %d\n", id);
+        exit(1);
+    }
     return(t);
 }
 
@@ -392,7 +396,10 @@ int main()
     zprintf("These results are ");
     if (qpktcount == Qpktcountval && holdcount == Holdcountval)
         zprintf("correct");
-    else zprintf("incorrect");
+    else {
+        zprintf("incorrect");
+        return 1;
+    }
 
     zprintf("\nend of run\n");
     return 0;

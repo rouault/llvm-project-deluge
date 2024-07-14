@@ -13,11 +13,11 @@ struct foo;
 typedef struct foo foo;
 
 struct foo {
-    foo* volatile next;
+    foo* next;
     unsigned value[1];
 };
 
-static foo* volatile head;
+static foo* head;
 
 static void* thread_main(void* arg)
 {

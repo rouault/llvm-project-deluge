@@ -17,7 +17,7 @@ struct foo {
 int main(int argc, char** argv)
 {
     vector<thread> threads;
-    std::atomic<foo*> head;
+    foo* head;
 
     for (unsigned i = nthreads; i--;) {
         threads.push_back(thread([&] () {
@@ -28,7 +28,7 @@ int main(int argc, char** argv)
                     foo* h = head;
                     f->next = head;
                     foo* tmp = h;
-                    if (head.compare_exchange_weak(tmp, f))
+                    if (reinterpret_cast<std::atomic<foo*>*>(&head)->compare_exchange_weak(tmp, f))
                         break;
                 }
             }

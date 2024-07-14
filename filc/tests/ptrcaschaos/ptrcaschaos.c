@@ -23,7 +23,7 @@ static void* thread_main(void* arg)
         foo* f = zgc_alloc(sizeof(foo));
         f->value = i;
         for (;;) {
-            foo* h = head; 
+            foo* h = zunfenced_atomic_load_ptr((void**)&head);
             f->next = h;
             if (zweak_cas_ptr((void**)&head, h, f))
                 break;

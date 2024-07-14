@@ -162,7 +162,10 @@ namespace {
     }
 
     Address getAtomicAddressAsAtomicIntPointer() const {
-      return castToAtomicIntPointer(getAtomicAddress());
+      Address Result = getAtomicAddress();
+      if (Result.getElementType()->isPointerTy())
+        return Result;
+      return castToAtomicIntPointer(Result);
     }
 
     /// Is the atomic size larger than the underlying value type?
@@ -1524,6 +1527,13 @@ RValue AtomicInfo::ConvertIntToValueOrAtomic(llvm::Value *IntVal,
                                              AggValueSlot ResultSlot,
                                              SourceLocation Loc,
                                              bool AsValue) const {
+  if (IntVal->getType()->isPointerTy()) {
+    auto *ValTy = AsValue
+                      ? CGF.ConvertTypeForMem(ValueTy)
+                      : getAtomicAddress().getElementType();
+    assert(ValTy->isPointerTy());
+    return RValue::get(IntVal);
+  }
   // Try not to in some easy cases.
   assert(IntVal->getType()->isIntegerTy() && "Expected integer value");
   if (getEvaluationKind() == TEK_Scalar &&
@@ -1715,7 +1725,7 @@ llvm::Value *AtomicInfo::convertRValueToInt(RValue RVal) const {
   // through memory.
   if (RVal.isScalar() && (!hasPadding() || !LVal.isSimple())) {
     llvm::Value *Value = RVal.getScalarVal();
-    if (isa<llvm::IntegerType>(Value->getType()))
+    if (isa<llvm::IntegerType>(Value->getType()) || Value->getType()->isPointerTy())
       return CGF.EmitToMemory(Value, ValueTy);
     else {
       llvm::IntegerType *InputIntTy = llvm::IntegerType::get(
@@ -2081,9 +2091,14 @@ void CodeGenFunction::EmitAtomicStore(RValue rvalue, LValue dest,
     llvm::Value *intValue = atomics.convertRValueToInt(rvalue);
 
     // Do the atomic store.
-    Address addr = atomics.castToAtomicIntPointer(atomics.getAtomicAddress());
-    intValue = Builder.CreateIntCast(
+    Address addr = Address::invalid();
+    if (intValue->getType()->isPointerTy())
+      addr = atomics.getAtomicAddress();
+    else {
+      addr = atomics.castToAtomicIntPointer(atomics.getAtomicAddress());
+      intValue = Builder.CreateIntCast(
         intValue, addr.getElementType(), /*isSigned=*/false);
+    }
     llvm::StoreInst *store = Builder.CreateStore(intValue, addr);
 
     if (AO == llvm::AtomicOrdering::Acquire)

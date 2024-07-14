@@ -1058,9 +1058,35 @@ class Pizlonator {
     return createPtr(LowRawNull, P, InsertBefore);
   }
 
+  Value* ptrPtrPtr(Value* P, Instruction* InsertBefore) {
+    (void)InsertBefore;
+    return P;
+  }
+
+  Value* ptrObjectPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* ObjectPtr = GetElementPtrInst::Create(
+      LowRawPtrTy, P, { ConstantInt::get(IntPtrTy, 1) }, "filc_object_ptr", InsertBefore);
+    ObjectPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return ObjectPtr;
+  }
+
   Value* loadPtr(
     Value* P, bool isVolatile, Align A, AtomicOrdering AO, MemoryKind MK, Instruction* InsertBefore) {
-    // FIXME: I probably only need Unordered, not Monotonic.
+    if (MK == MemoryKind::CC) {
+      assert(!isVolatile);
+      assert(AO == AtomicOrdering::NotAtomic);
+    }
+    if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
+      Instruction* Object = new LoadInst(
+        LowRawPtrTy, ptrObjectPtr(P, InsertBefore), "filc_load_object", false, Align(8),
+        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
+      Object->setDebugLoc(InsertBefore->getDebugLoc());
+      Instruction* RawPtr = new LoadInst(
+        LowRawPtrTy, ptrPtrPtr(P, InsertBefore), "filc_load_raw_ptr", false, Align(8),
+        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
+      RawPtr->setDebugLoc(InsertBefore->getDebugLoc());
+      return createPtr(Object, RawPtr, InsertBefore);
+    }
     Instruction* Result = new LoadInst(
       Int128Ty, P, "filc_load_ptr", isVolatile,
       std::max(A, Align(WordSize)),
@@ -1101,6 +1127,21 @@ class Pizlonator {
     Instruction* InsertBefore) {
     if (MK == MemoryKind::Heap)
       storeBarrierForValue(V, InsertBefore);
+    if (MK == MemoryKind::CC) {
+      assert(!isVolatile);
+      assert(AO == AtomicOrdering::NotAtomic);
+    }
+    if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
+      (new StoreInst(
+        ptrObject(V, InsertBefore), ptrObjectPtr(P, InsertBefore), false, Align(8),
+        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore))
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      (new StoreInst(
+        ptrPtr(V, InsertBefore), ptrPtrPtr(P, InsertBefore), false, Align(8),
+        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore))
+        ->setDebugLoc(InsertBefore->getDebugLoc());
+      return;
+    }
     (new StoreInst(
       ptrWord(V, InsertBefore), P, isVolatile, std::max(A, Align(WordSize)),
       MK == MemoryKind::Heap ? getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO) : AO,
@@ -3684,23 +3725,32 @@ public:
 
       GlobalVariable* NewObjectG = objectGlobalForGlobal(NewDataG, G);
       
-      BasicBlock* RootBB = BasicBlock::Create(C, "filc_global_getter_root", NewF);
-
       GlobalVariable* NewPtrG = new GlobalVariable(
         M, LowWidePtrTy, false, GlobalValue::PrivateLinkage, LowWideNull,
         "filc_gptr_" + G->getName());
       
+      BasicBlock* RootBB = BasicBlock::Create(C, "filc_global_getter_root", NewF);
+      BasicBlock* OtherCheckBB = BasicBlock::Create(C, "filc_global_getter_other_check", NewF);
       BasicBlock* FastBB = BasicBlock::Create(C, "filc_global_getter_fast", NewF);
       BasicBlock* SlowBB = BasicBlock::Create(C, "filc_global_getter_slow", NewF);
       BasicBlock* RecurseBB = BasicBlock::Create(C, "filc_global_getter_recurse", NewF);
       BasicBlock* BuildBB = BasicBlock::Create(C, "filc_global_getter_build", NewF);
 
-      Instruction* Branch = BranchInst::Create(SlowBB, FastBB, UndefValue::get(Int1Ty), RootBB);
+      // We can load the NewPtrG in two 64-bit chunks and then check if either the object or the
+      // raw ptr as NULL. If either are NULL, then it's either not initialized yet, or we experienced
+      // ptr tearing. This allows us to avoid an expensive 128-bit atomic.
+      
+      Instruction* Branch = BranchInst::Create(SlowBB, OtherCheckBB, UndefValue::get(Int1Ty), RootBB);
       Value* LoadPtr = loadPtr(NewPtrG, Branch);
       Branch->getOperandUse(0) = new ICmpInst(
-        Branch, ICmpInst::ICMP_EQ, ptrWord(LoadPtr, Branch), ConstantInt::get(Int128Ty, 0),
-        "filc_check_global");
+        Branch, ICmpInst::ICMP_EQ, ptrPtr(LoadPtr, Branch), LowRawNull, "filc_check_global");
 
+      Instruction* OtherBranch = BranchInst::Create(
+        SlowBB, FastBB, UndefValue::get(Int1Ty), OtherCheckBB);
+      OtherBranch->getOperandUse(0) = new ICmpInst(
+        OtherBranch, ICmpInst::ICMP_EQ, ptrObject(LoadPtr, OtherBranch), LowRawNull,
+        "filc_check_global");
+      
       ReturnInst::Create(C, LoadPtr, FastBB);
 
       Branch = BranchInst::Create(BuildBB, RecurseBB, UndefValue::get(Int1Ty), SlowBB);

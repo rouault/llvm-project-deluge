@@ -4,17 +4,17 @@
 #include <string.h>
 
 #define NTHREADS 10
-#define REPEAT 300000
+#define REPEAT 30000
 
 struct foo;
 typedef struct foo foo;
 
 struct foo {
-    foo* _Atomic next;
+    foo* next;
     unsigned value;
 };
 
-static foo* _Atomic head;
+static foo* head;
 
 static void* thread_main(void* arg)
 {
@@ -22,26 +22,19 @@ static void* thread_main(void* arg)
     for (i = REPEAT; i--;) {
         foo* f = zgc_alloc(sizeof(foo));
         f->value = i;
-        foo* h = head;
-        f->next = h;
-        head = f;
+        for (;;) {
+            foo* h = head; 
+            f->next = h;
+
+            /* They really couldn't have come up with a worse API, could they? */
+            foo* tmp = h;
+            if (__c11_atomic_compare_exchange_weak((void*_Atomic*)&head, &tmp, f,
+                                                   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+                break;
+        }
     }
     return NULL;
 }
-
-static void dump_array(const char* name, unsigned* array)
-{
-    printf("%s = ", name);
-    unsigned i;
-    for (i = 0; i < zlength(array); ++i) {
-        if (i)
-            printf(", ");
-        printf("%u", array[i]);
-    }
-    printf("\n");
-}
-
-#define DUMP_ARRAY(array) dump_array(#array, array)
 
 int main()
 {
@@ -61,9 +54,7 @@ int main()
         histogram[f->value]++;
 
     for (i = REPEAT; i--;)
-        ZASSERT(histogram[i] <= NTHREADS);
-
-    //DUMP_ARRAY(histogram);
+        ZASSERT(histogram[i] == NTHREADS);
     
     return 0;
 }

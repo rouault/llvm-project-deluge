@@ -61,19 +61,16 @@ static inline void fugc_mark(filc_object_array* mark_stack, filc_object* object)
 static inline void fugc_mark_or_free(filc_object_array* mark_stack, filc_ptr* ptr)
 {
     for (;;) {
-        filc_ptr value = filc_ptr_load_with_manual_tracking(ptr);
-        filc_object* object = filc_ptr_object(value);
+        filc_object* object = filc_ptr_load_object(ptr);
         if (!object)
             return;
         if (!(object->flags & FILC_OBJECT_FLAG_FREE)) {
             fugc_mark(mark_stack, object);
             return;
         }
-        if (filc_ptr_object(value) == filc_free_singleton)
+        if (object == filc_free_singleton)
             return;
-        filc_ptr new_value = filc_ptr_with_ptr(
-            filc_ptr_create_with_manual_tracking(filc_free_singleton), filc_ptr_ptr(value));
-        if (filc_ptr_unfenced_unbarriered_weak_cas(ptr, value, new_value))
+        if (filc_ptr_unfenced_unbarriered_weak_cas_object(ptr, object, filc_free_singleton))
             return;
     }
 }

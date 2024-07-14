@@ -4,17 +4,17 @@
 #include <string.h>
 
 #define NTHREADS 10
-#define REPEAT 300000
+#define REPEAT 30000
 
 struct foo;
 typedef struct foo foo;
 
 struct foo {
-    foo* _Atomic next;
+    foo* next;
     unsigned value;
 };
 
-static foo* _Atomic head;
+static foo* head;
 
 static void* thread_main(void* arg)
 {

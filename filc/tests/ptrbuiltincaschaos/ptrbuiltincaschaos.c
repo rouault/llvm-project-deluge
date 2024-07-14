@@ -14,7 +14,7 @@ struct foo {
     unsigned value;
 };
 
-static foo* head;
+static foo* _Atomic head;
 
 static void* thread_main(void* arg)
 {
@@ -28,7 +28,7 @@ static void* thread_main(void* arg)
 
             /* They really couldn't have come up with a worse API, could they? */
             foo* tmp = h;
-            if (__c11_atomic_compare_exchange_weak((void*_Atomic*)&head, &tmp, f,
+            if (__c11_atomic_compare_exchange_weak(&head, &tmp, f,
                                                    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
                 break;
         }

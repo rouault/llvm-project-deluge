@@ -1297,7 +1297,48 @@ static inline bool filc_ptr_is_totally_null(filc_ptr ptr)
     return filc_ptr_is_totally_equal(ptr, filc_ptr_forge_null());
 }
 
+static inline void* filc_ptr_load_ptr(filc_ptr* ptr)
+{
+    return __c11_atomic_load((void*_Atomic*)(void**)ptr, __ATOMIC_RELAXED);
+}
+
+static inline filc_object* filc_ptr_load_object(filc_ptr* ptr)
+{
+    return __c11_atomic_load((filc_object*_Atomic*)(filc_object**)ptr + 1, __ATOMIC_RELAXED);
+}
+
+static inline void filc_ptr_store_ptr(filc_ptr* ptr, void* raw_ptr)
+{
+    __c11_atomic_store((void*_Atomic*)(void**)ptr, raw_ptr, __ATOMIC_RELAXED);
+}
+
+static inline void filc_ptr_store_object(filc_ptr* ptr, filc_object* object)
+{
+    __c11_atomic_store((filc_object*_Atomic*)(filc_object**)ptr + 1, object, __ATOMIC_RELAXED);
+}
+
+static inline bool filc_ptr_unfenced_unbarriered_weak_cas_object(
+    filc_ptr* ptr, filc_object* expected, filc_object* new_object)
+{
+    return __c11_atomic_compare_exchange_weak(
+        (filc_object*_Atomic*)(filc_object**)ptr + 1, &expected, new_object,
+        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
 static inline filc_ptr filc_ptr_load_with_manual_tracking(filc_ptr* ptr)
+{
+    return filc_ptr_create_with_ptr_and_manual_tracking(filc_ptr_load_object(ptr),
+                                                        filc_ptr_load_ptr(ptr));
+}
+
+static inline filc_ptr filc_ptr_load_atomic_with_manual_tracking(filc_ptr* ptr)
+{
+    filc_ptr result;
+    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_SEQ_CST);
+    return result;
+}
+
+static inline filc_ptr filc_ptr_load_atomic_unfenced_with_manual_tracking(filc_ptr* ptr)
 {
     filc_ptr result;
     result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_RELAXED);
@@ -1330,13 +1371,37 @@ PAS_API void filc_store_barrier_outline(filc_thread* my_thread, filc_object* tar
 
 static inline void filc_ptr_store_without_barrier(filc_ptr* ptr, filc_ptr value)
 {
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, value.word, __ATOMIC_RELAXED);
+    filc_ptr_store_object(ptr, filc_ptr_object(value));
+    filc_ptr_store_ptr(ptr, filc_ptr_ptr(value));
 }
 
 static inline void filc_ptr_store(filc_thread* my_thread, filc_ptr* ptr, filc_ptr value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(value));
     filc_ptr_store_without_barrier(ptr, value);
+}
+
+static inline void filc_ptr_store_atomic_unfenced_without_barrier(filc_ptr* ptr, filc_ptr value)
+{
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, value.word, __ATOMIC_RELAXED);
+}
+
+static inline void filc_ptr_store_atomic_without_barrier(filc_ptr* ptr, filc_ptr new_value)
+{
+    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST);
+}
+
+static inline void filc_ptr_store_atomic_unfenced(filc_thread* my_thread,
+                                                  filc_ptr* ptr, filc_ptr value)
+{
+    filc_store_barrier(my_thread, filc_ptr_object(value));
+    filc_ptr_store_atomic_unfenced_without_barrier(ptr, value);
+}
+
+static inline void filc_ptr_store_atomic(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
+{
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    filc_ptr_store_atomic_without_barrier(ptr, new_value);
 }
 
 static inline bool filc_ptr_unfenced_unbarriered_weak_cas(
@@ -1397,19 +1462,6 @@ static inline filc_ptr filc_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc
     return filc_ptr_from_word(
         __c11_atomic_exchange(
             (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST));
-}
-
-static inline void filc_ptr_store_fenced(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
-{
-    filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST);
-}
-
-static inline filc_ptr filc_ptr_load_fenced_with_manual_tracking(filc_ptr* ptr)
-{
-    filc_ptr result;
-    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_SEQ_CST);
-    return result;
 }
 
 PAS_API void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream);

@@ -21,11 +21,11 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-MAINCFLAGS = -g -O3 -W -Werror $(LIBCMODEFLAGS)
-PASCFLAGS = -g -O3 -W -Werror -MD $(LIBCMODEFLAGS)
+MAINCFLAGS = -g -O3 -W -Werror -fno-strict-aliasing $(LIBCMODEFLAGS)
+PASCFLAGS = -g -O3 -W -Werror -fno-strict-aliasing -MD $(LIBCMODEFLAGS)
 PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare \
 	-Wno-missing-field-initializers -Wno-vla-cxx-extension -Wno-unknown-warning-option \
-	-MD $(LIBCMODEFLAGS)
+	-fno-strict-aliasing -MD $(LIBCMODEFLAGS)
 FILCFLAGS = -O3 -g -W -Werror -MD $(LIBCMODEFLAGS)
 
 PASSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
