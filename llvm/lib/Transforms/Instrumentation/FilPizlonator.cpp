@@ -1076,6 +1076,7 @@ class Pizlonator {
       assert(!isVolatile);
       assert(AO == AtomicOrdering::NotAtomic);
     }
+    // FIXME: There's a ~1% speed-up on ARM64 from disabling this and just using atomic loads.
     if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
       Instruction* Object = new LoadInst(
         LowRawPtrTy, ptrObjectPtr(P, InsertBefore), "filc_load_object", false, Align(8),
@@ -1131,6 +1132,7 @@ class Pizlonator {
       assert(!isVolatile);
       assert(AO == AtomicOrdering::NotAtomic);
     }
+    // FIXME: There's a ~1% speed-up on ARM64 from disabling this and just using atomic stores.
     if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
       (new StoreInst(
         ptrObject(V, InsertBefore), ptrObjectPtr(P, InsertBefore), false, Align(8),
@@ -2762,6 +2764,35 @@ class Pizlonator {
 
     if (CallBase* CI = dyn_cast<CallBase>(I)) {
       assert(isa<CallInst>(CI) || isa<InvokeInst>(CI));
+
+      // FIXME: It would be cool to emit a direct call to the function, if:
+      // - We know who the callee is.
+      // - The original called signature according to the call instruction matches the original
+      //   function type of the callee.
+      // - The callee is a definition in this module, so we can call the hidden function.
+      //
+      // The trouble with this is that to make this totally effective:
+      // - We'd want to eliminate the constant lowering of the callee, so we don't end up with a call
+      //   to the pizlonated_getter.
+      // - We'd want to call a version of the hidden function that "just" takes the arguments, without
+      //   any CC shenanigans.
+      //
+      // To achieve the latter requirement, I'd probably want to emit all functions as a collection of
+      // three functions:
+      // - Hidden function that is the actual implementation. It takes its arguments and a frame
+      //   pointer. It expects the caller to set up its frame and do all argument/return checking.
+      // - Hidden function that uses the Fil-C CC and sets up the frame, then calls the
+      //   implementation.
+      // - Hidden function that uses a direct CC and sets up the frame, then calls the implementation.
+      //
+      // We can rely on the implementation to get inlined into the other functions whenever either of
+      // these things is true:
+      // 1. The implementation is small.
+      // 2. Only the Fil-C CC, or only the direct CC, version are used.
+      //
+      // But this risks suboptimal codegen if the implementation isn't inlined. Yuck! The trick is that
+      // we want the Fil-C CC shenanigans to happen with the frame already set up, so we can't simply
+      // have the Fil-C CC version wrap the direct version.
       
       if (CI->isInlineAsm()) {
         assert(isa<CallInst>(CI));

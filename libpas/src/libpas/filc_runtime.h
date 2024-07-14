@@ -1327,6 +1327,7 @@ static inline bool filc_ptr_unfenced_unbarriered_weak_cas_object(
 
 static inline filc_ptr filc_ptr_load_with_manual_tracking(filc_ptr* ptr)
 {
+    /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic load. */
     return filc_ptr_create_with_ptr_and_manual_tracking(filc_ptr_load_object(ptr),
                                                         filc_ptr_load_ptr(ptr));
 }
@@ -1371,6 +1372,7 @@ PAS_API void filc_store_barrier_outline(filc_thread* my_thread, filc_object* tar
 
 static inline void filc_ptr_store_without_barrier(filc_ptr* ptr, filc_ptr value)
 {
+    /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic store. */
     filc_ptr_store_object(ptr, filc_ptr_object(value));
     filc_ptr_store_ptr(ptr, filc_ptr_ptr(value));
 }
