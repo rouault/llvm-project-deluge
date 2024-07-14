@@ -62,6 +62,7 @@
 
 #if PAS_OS(LINUX)
 #include <pty.h>
+#include <sys/sendfile.h>
 #else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
 #include <sys/sysctl.h>
 #endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
@@ -4153,6 +4154,26 @@ int filc_native_zsys_poll(
     }
     bmalloc_deallocate(pollfds);
     return result;
+}
+
+int filc_native_zsys_sendfile(filc_thread* my_thread, int out_fd, int in_fd, filc_ptr offset_ptr,
+                              size_t count)
+{
+#if PAS_OS(LINUX)
+    if (filc_ptr_ptr(offset_ptr)) {
+        PAS_ASSERT(sizeof(long) == sizeof(off_t));
+        filc_cpt_write_int(my_thread, offset_ptr, sizeof(off_t));
+    }
+    return FILC_SYSCALL(my_thread, sendfile(out_fd, in_fd, (off_t*)filc_ptr_ptr(offset_ptr), count));
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(out_fd);
+    PAS_UNUSED_PARAM(in_fd);
+    PAS_UNUSED_PARAM(offset_ptr);
+    PAS_UNUSED_PARAM(count);
+    filc_internal_panic("sendfile not implemented on this OS.");
+    return -1;
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
 }
 
 #endif /* PAS_ENABLE_FILC && FILC_NUSL */

@@ -344,6 +344,7 @@ forMusl {
            "filc_ptr"
     addSig "int", "zsys_posix_spawnp", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr",
            "filc_ptr"
+    addSig "int", "zsys_sendfile", "int", "int", "filc_ptr", "size_t"
 }
 forFilBSD {
     addSig "int", "zsys_unmount", "filc_ptr", "int"

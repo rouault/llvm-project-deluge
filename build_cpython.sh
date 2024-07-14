@@ -33,7 +33,7 @@ cd pizlonated-cpython
 ($MAKE distclean || echo whatever)
 CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure \
     --with-pydebug --without-mimalloc --without-pymalloc --without-freelists \
-    --disable-test-modules --prefix=$PWD/../pizfix
+    --disable-test-modules --with-pkg-config=no --prefix=$PWD/../pizfix
 $MAKE -j $NCPU
 $MAKE install
 
