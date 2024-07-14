@@ -4171,7 +4171,7 @@ int filc_native_zsys_sendfile(filc_thread* my_thread, int out_fd, int in_fd, fil
     PAS_UNUSED_PARAM(in_fd);
     PAS_UNUSED_PARAM(offset_ptr);
     PAS_UNUSED_PARAM(count);
-    filc_internal_panic("sendfile not implemented on this OS.");
+    filc_internal_panic(NULL, "sendfile not implemented on this OS.");
     return -1;
 #endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
 }
