@@ -500,6 +500,11 @@ static unsigned to_musl_ccflag(unsigned cflag)
         result |= 02000;
     if (filc_check_and_clear(&cflag, CLOCAL))
         result |= 04000;
+#if PAS_OS(LINUX)
+    cflag &= ~CBAUD;
+#endif /* PAS_OS(LINUX) */
+    if (cflag)
+        pas_log("Unhandled cflag: 0x%x\n", cflag);
     PAS_ASSERT(!cflag);
     return result;
 }

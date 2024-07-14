@@ -4830,9 +4830,22 @@ int filc_to_user_open_flags(int flags)
     if (filc_check_and_clear(&flags, O_ASYNC))
         result |= 020000;
 
+#if PAS_OS(LINUX)
+    /* Linux will internally return O_LARGEFILE, but it's supposed to be ignored on x86_64. So, just
+       clear it out. */
+    flags &= ~0100000;
+
+    if (flags)
+        pas_log("Unexpected open flags: 0x%x\n", flags);
+    PAS_ASSERT(!flags);
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
     /* Fun fact: on MacOS, I get an additional 0x10000 flag, and I don't know what it is.
-       Ima just ignore it and hope for the best LOL! */
+       Ima just ignore it and hope for the best LOL!
+    
+       FIXME: I ended up using this code on FreeBSD too, which is probably wrong, but I'd have to do
+       some tests before removing it.*/
     PAS_ASSERT(!(flags & ~0x10000));
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
     
     return result;
 }
