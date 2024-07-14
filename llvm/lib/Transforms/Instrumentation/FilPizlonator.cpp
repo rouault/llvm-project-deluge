@@ -2402,12 +2402,14 @@ class Pizlonator {
       }
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+        FunctionType* FT = CI->getFunctionType();
+        
         if (isSetjmp(F)) {
           if (verbose)
             errs() << "Lowering some kind of setjmp\n";
           for (Use& Arg : CI->args())
             lowerConstantOperand(Arg, CI, LowRawNull);
-          assert(CI->getFunctionType() == F->getFunctionType());
+          assert(FT == F->getFunctionType());
           assert(CI->hasFnAttr(Attribute::ReturnsTwice));
           assert(Setjmps.count(CI));
           Value* ValueArg;
@@ -2439,9 +2441,10 @@ class Pizlonator {
         }
 
         if ((F->getName() == "zgetlower" || F->getName() == "zgetupper") &&
-            F->getFunctionType()->getNumParams() == 1 &&
-            F->getFunctionType()->getParamType(0) == LowRawPtrTy &&
-            F->getReturnType() == LowRawPtrTy) {
+            FT->getNumParams() == 1 &&
+            !FT->isVarArg() &&
+            FT->getParamType(0) == LowRawPtrTy &&
+            FT->getReturnType() == LowRawPtrTy) {
           lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
           Value* Object = ptrObject(CI->getArgOperand(0), CI);
           ICmpInst* NullObject = new ICmpInst(
@@ -2464,8 +2467,9 @@ class Pizlonator {
         }
 
         if (F->getName() == "zthread_self_id" &&
-            F->getFunctionType()->getNumParams() == 0 &&
-            F->getReturnType() == Int32Ty) {
+            FT->getNumParams() == 0 &&
+            !FT->isVarArg() &&
+            FT->getReturnType() == Int32Ty) {
           Instruction* TidPtr = GetElementPtrInst::Create(
             ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
             "filc_tid_ptr", CI);
@@ -2478,16 +2482,18 @@ class Pizlonator {
         }
 
         if (F->getName() == "zthread_self" &&
-            F->getFunctionType()->getNumParams() == 0 &&
-            F->getReturnType() == LowRawPtrTy) {
+            FT->getNumParams() == 0 &&
+            !FT->isVarArg() &&
+            FT->getReturnType() == LowRawPtrTy) {
           CI->replaceAllUsesWith(ptrForSpecialPayload(MyThread, CI));
           CI->eraseFromParent();
           return true;
         }
 
         if (F->getName() == "zthread_self_cookie" &&
-            F->getFunctionType()->getNumParams() == 0 &&
-            F->getReturnType() == LowRawPtrTy) {
+            FT->getNumParams() == 0 &&
+            !FT->isVarArg() &&
+            FT->getReturnType() == LowRawPtrTy) {
           Instruction* CookiePtr = GetElementPtrInst::Create(
             ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 4) },
             "filc_cookie_ptr", CI);
