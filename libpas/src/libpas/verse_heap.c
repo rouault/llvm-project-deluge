@@ -331,8 +331,8 @@ static pas_allocation_result try_allocate_large_in_transaction(
             transaction, pas_physical_memory_is_locked_by_virtual_range_common_lock,
             heap->segregated_heap.runtime_config->mmap_capability)) {
         pas_fast_large_free_heap_deallocate(
-            &heap->large_heap.u.free_heap, chunk_result.begin, chunk_result.begin + chunked_size, result.zero_mode,
-            &config);
+            &heap->large_heap.u.free_heap, chunk_result.begin, chunk_result.begin + chunked_size,
+            chunk_result.zero_mode, &config);
         return pas_allocation_result_create_failure();
     }
 
