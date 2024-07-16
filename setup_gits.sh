@@ -28,6 +28,8 @@
 set -e
 set -x
 
+GITBASE=`git remote -v | awk '{print $2}' | head -1 | sed 's/\([^\/]*\)$//'`
+
 if test $OS = macosx
 then
     if test ! -d llvm-project-clean
@@ -45,10 +47,12 @@ handle_git_with_branch()
     branch=$3
     if test -d $local_path
     then
-        (cd $local_path && git pull --rebase $remote_path $branch)
+        (cd $local_path && git pull --rebase)
     else
-        git clone $remote_path $local_path
-        (cd $local_path && git checkout $branch)
+        git clone $GITBASE$remote_path $local_path
+        (cd $local_path &&
+             git checkout $branch &&
+             git branch --set-upstream-to origin/$branch)
     fi
 }
 
@@ -58,24 +62,24 @@ handle_git()
     local_path=$2
     if test -d $local_path
     then
-        (cd $local_path && git pull --rebase $remote_path)
+        (cd $local_path && git pull --rebase)
     else
-        git clone $remote_path $local_path
+        git clone $GITBASE$remote_path $local_path
     fi
 }
 
-handle_git https://github.com/pizlonator/deluded-musl musl
-handle_git_with_branch https://github.com/pizlonator/deluded-musl yolomusl yolomusl
+handle_git deluded-musl musl
+handle_git_with_branch deluded-musl yolomusl yolomusl
 
-handle_git https://github.com/pizlonator/deluded-zlib-1.3.git zlib-1.3
-handle_git https://github.com/pizlonator/deluded-openssl-3.2.0.git openssl-3.2.0
-handle_git https://github.com/pizlonator/deluded-curl-8.5.0.git curl-8.5.0
-handle_git https://github.com/pizlonator/deluded-openssh-portable.git deluded-openssh-portable
-handle_git https://github.com/pizlonator/pizlonated-pcre-8.39.git pcre-8.39
-handle_git https://github.com/pizlonator/pizlonated-jpeg-6b.git pizlonated-jpeg-6b
-handle_git https://github.com/pizlonator/pizlonated-bzip2.git pizlonated-bzip2
-handle_git https://github.com/pizlonator/pizlonated-xz.git pizlonated-xz
-handle_git https://github.com/pizlonator/pizlonated-mg.git pizlonated-mg
-handle_git https://github.com/pizlonator/pizlonated-sqlite.git pizlonated-sqlite
-handle_git https://github.com/pizlonator/pizlonated-cpython.git pizlonated-cpython
+handle_git deluded-zlib-1.3.git zlib-1.3
+handle_git deluded-openssl-3.2.0.git openssl-3.2.0
+handle_git deluded-curl-8.5.0.git curl-8.5.0
+handle_git deluded-openssh-portable.git deluded-openssh-portable
+handle_git pizlonated-pcre-8.39.git pcre-8.39
+handle_git pizlonated-jpeg-6b.git pizlonated-jpeg-6b
+handle_git pizlonated-bzip2.git pizlonated-bzip2
+handle_git pizlonated-xz.git pizlonated-xz
+handle_git pizlonated-mg.git pizlonated-mg
+handle_git pizlonated-sqlite.git pizlonated-sqlite
+handle_git pizlonated-cpython.git pizlonated-cpython
 
