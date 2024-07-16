@@ -455,6 +455,8 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Triple.isRISCV())
     CmdArgs.push_back("-X");
 
+  CmdArgs.push_back("-nostdlib");
+
   if (Args.hasArg(options::OPT_shared))
     CmdArgs.push_back("-shared");
 
@@ -475,6 +477,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-o");
   CmdArgs.push_back(Output.getFilename());
 
+  auto GetYoloLibPath = [&] (const StringRef str) -> std::string {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "yolo");
+    llvm::sys::path::append(P, "lib", str);
+    return std::string(P);
+  };
+
   if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
                              options::OPT_r)) {
     if (!isAndroid && !IsIAMCU) {
@@ -490,9 +499,9 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
           crt1 = "crt1.o";
       }
       if (crt1)
-        CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crt1)));
+        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath(crt1)));
 
-      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
+      CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crti.o")));
     }
 
     if (IsVE) {
@@ -534,6 +543,14 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   {
     SmallString<128> P(ToolChain.getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "yolo");
+    llvm::sys::path::append(P, "lib");
+    CmdArgs.push_back(Args.MakeArgString("-L" + P));
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(P));
+  }
+  {
+    SmallString<128> P(ToolChain.getDriver().InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "lib64");
     CmdArgs.push_back(Args.MakeArgString("-L" + P));
     CmdArgs.push_back("-rpath");
@@ -549,7 +566,9 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   
   Args.AddAllArgs(CmdArgs, options::OPT_u);
 
-  ToolChain.AddFilePathLibArgs(Args, CmdArgs);
+  // This is such a hack!!! But so is everything else I'm doing in this file, so like whatever.
+  if ((false))
+    ToolChain.AddFilePathLibArgs(Args, CmdArgs);
 
   if (D.isUsingLTO()) {
     assert(!Inputs.empty() && "Must have at least one input.");
@@ -566,7 +585,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
                    options::OPT_r)) {
-    CmdArgs.push_back("-lpizlonated_c");
+    CmdArgs.push_back("-lc");
     if (!Args.hasArg(options::OPT_shared)) {
       SmallString<128> P(ToolChain.getDriver().InstalledDir);
       llvm::sys::path::append(P, "..", "..", "pizfix", "lib");
@@ -592,10 +611,10 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if ((true))
     Args.ClaimAllArgs(options::OPT_pthread);
 
-  if (D.CCCIsCXX() &&
-      ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                              options::OPT_r))) {
-    if ((false) && ToolChain.ShouldLinkCXXStdlib(Args)) {
+  if ((false) && D.CCCIsCXX() && 
+      !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                   options::OPT_r)) {
+    if (ToolChain.ShouldLinkCXXStdlib(Args)) {
       bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
                                  !Args.hasArg(options::OPT_static);
       if (OnlyLibstdcxxStatic)
@@ -622,9 +641,8 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
     if ((true)) {
-      AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
-      CmdArgs.push_back("-lpthread");
-      CmdArgs.push_back("-lc");
+      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("libgcc.a")));
+      CmdArgs.push_back("-lyolomusl");
       CmdArgs.push_back("-lpizlo");
       if (ToolChain.ShouldLinkCXXStdlib(Args))
         ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
@@ -717,7 +735,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         CmdArgs.push_back(Args.MakeArgString(P));
       }
       if (!isAndroid)
-        CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
+        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crtn.o")));
     }
   }
 

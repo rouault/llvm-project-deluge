@@ -426,6 +426,13 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   const llvm::Triple::ArchType Arch = getArch();
   const llvm::Triple &Triple = getTriple();
 
+  if ((true)) {
+    SmallString<128> P(getDriver().InstalledDir);
+    llvm::sys::path::append(P, "..", "..", "pizfix", "yolo");
+    llvm::sys::path::append(P, "lib", "ld-musl-x86_64.so.1");
+    return std::string(P);
+  }
+
   const Distro Distro(getDriver().getVFS(), Triple);
 
   if (Triple.isAndroid()) {

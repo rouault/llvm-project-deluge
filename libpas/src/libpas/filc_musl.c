@@ -779,8 +779,13 @@ static void to_musl_termios(struct termios* termios, struct musl_termios* musl_t
     musl_termios->c_cflag = to_musl_ccflag(termios->c_cflag);
     musl_termios->c_lflag = to_musl_clflag(termios->c_lflag);
     to_musl_ccc(termios->c_cc, musl_termios->c_cc);
+#if PAS_OS(LINUX)
+    musl_termios->c_ispeed = to_musl_baud(cfgetispeed(termios));
+    musl_termios->c_ospeed = to_musl_baud(cfgetospeed(termios));
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
     musl_termios->c_ispeed = to_musl_baud(termios->c_ispeed);
     musl_termios->c_ospeed = to_musl_baud(termios->c_ospeed);
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
 }
 
 static bool from_musl_termios(struct musl_termios* musl_termios, struct termios* termios)
@@ -794,10 +799,19 @@ static bool from_musl_termios(struct musl_termios* musl_termios, struct termios*
     if (!from_musl_clflag(musl_termios->c_lflag, &termios->c_lflag))
         return false;
     from_musl_ccc(musl_termios->c_cc, termios->c_cc);
-    if (!from_musl_baud(musl_termios->c_ispeed, &termios->c_ispeed))
+    speed_t ispeed;
+    speed_t ospeed;
+    if (!from_musl_baud(musl_termios->c_ispeed, &ispeed))
         return false;
-    if (!from_musl_baud(musl_termios->c_ospeed, &termios->c_ospeed))
+    if (!from_musl_baud(musl_termios->c_ospeed, &ospeed))
         return false;
+#if PAS_OS(LINUX)
+    PAS_ASSERT(!cfsetispeed(termios, ispeed));
+    PAS_ASSERT(!cfsetospeed(termios, ospeed));
+#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
+    termios->c_ispeed = ispeed;
+    termios->c_ospeed = ospeed;
+#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
     return true;
 }
 
@@ -3058,6 +3072,11 @@ static void from_musl_msghdr_base(filc_thread* my_thread,
     msghdr->msg_flags = 0; /* This field is ignored so just zero-init it. */
 }
 
+/* The yolomusl definitions of the CMSG macros have sign comparison issues, probably because of
+   its principles and simple code that is easy to understand and maintain. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-compare"
+
 static bool from_musl_msghdr_for_send(filc_thread* my_thread,
                                       struct musl_msghdr* musl_msghdr, struct msghdr* msghdr)
 {
@@ -3261,6 +3280,8 @@ static void to_musl_msghdr_for_recv(filc_thread* my_thread,
             musl_msghdr->msg_flags |= 0x0008; /* MSG_CTRUNC */
     }
 }
+
+#pragma clang diagnostic pop
 
 ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr msg_ptr, int musl_flags)
 {

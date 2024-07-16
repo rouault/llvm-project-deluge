@@ -3747,9 +3747,9 @@ static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONAT
 
 void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE))
 {
-    filc_thread* my_thread = filc_get_my_thread();
-    
     if (did_run_deferred_global_ctors) {
+        filc_thread* my_thread = filc_get_my_thread();
+        
         filc_enter(my_thread);
         run_global_ctor(my_thread, global_ctor);
         filc_exit(my_thread);
@@ -6712,12 +6712,12 @@ static void* start_thread(void* arg)
     PAS_ASSERT(!thread->has_stopped);
     PAS_ASSERT(!thread->error_starting);
 
-    pthread_detach(thread->thread);
-
     PAS_ASSERT(!pthread_setspecific(filc_thread_key, thread));
     PAS_ASSERT(!thread->thread);
     pas_fence();
     thread->thread = pthread_self();
+
+    PAS_ASSERT(!pthread_detach(thread->thread));
 
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &thread->initial_blocked_sigs, NULL));
     

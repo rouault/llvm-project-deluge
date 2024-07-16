@@ -28,17 +28,8 @@
 set -e
 set -x
 
-./build_clang.sh
-
-if test $OS = linux
-then
-    ./build_yolomusl.sh
-fi
-
-(cd libpas && ./build.sh)
-
-./build_musl.sh
-./build_cxx.sh
-
-filc/run-tests
-
+cd yolomusl
+./configure --prefix=$PWD/../pizfix/yolo --syslibdir=$PWD/../pizfix/yolo/lib
+$MAKE clean
+$MAKE -j $NCPU
+$MAKE install

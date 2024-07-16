@@ -39,10 +39,15 @@ case $OS in
         MUSL_DYLIB_EXT=so.666
         MUSL_PREFIX=
         ;;
-    openbsd|linux)
+    openbsd)
         MUSL_DYLIB_OPT=-shared
         MUSL_DYLIB_EXT=so
         MUSL_PREFIX=pizlonated_
+        ;;
+    linux)
+        MUSL_DYLIB_OPT=-shared
+        MUSL_DYLIB_EXT=so
+        MUSL_PREFIX=
         ;;
     *)
         echo "Should not get here"
@@ -58,9 +63,23 @@ esac
      $MAKE -j $NCPU && \
      $MAKE install)
 
-if test $OS = freebsd
-then
-    rm -f pizfix/lib/libc.so
-    (cd pizfix/lib && ln -s libc.so.666 libc.so)
-fi
+case $OS in
+    freebsd)
+        rm -f pizfix/lib/libc.so
+        (cd pizfix/lib && ln -s libc.so.666 libc.so)
+        ;;
+    linux)
+        ar rc pizfix/lib/libm.a
+        ar rc pizfix/lib/librt.a
+        ar rc pizfix/lib/libpthread.a
+        ar rc pizfix/lib/libcrypt.a
+        ar rc pizfix/lib/libutil.a
+        ar rc pizfix/lib/libxnet.a
+        ar rc pizfix/lib/libresolv.a
+        ar rc pizfix/lib/libdl.a
+        ;;
+    *)
+        ;;
+esac
+
 

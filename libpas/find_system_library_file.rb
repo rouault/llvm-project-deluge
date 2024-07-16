@@ -1,6 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env ruby
 #
-# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -23,22 +23,34 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-. libpas/common.sh
+require 'fileutils'
+require 'pathname'
 
-set -e
-set -x
+FileUtils.touch "fake_object_file.o"
 
-./build_clang.sh
+filesToFind = []
+ARGV.each {
+    | arg |
+    filesToFind << arg
+}
 
-if test $OS = linux
-then
-    ./build_yolomusl.sh
-fi
-
-(cd libpas && ./build.sh)
-
-./build_musl.sh
-./build_cxx.sh
-
-filc/run-tests
-
+IO.popen("clang -### -o libfake_library_file.so fake_object_file.o 2>&1", "r") {
+    | inp |
+    inp.each_line {
+        | line |
+        next unless line =~ /\"\/usr\/bin\/ld\"/
+        line.scan(/\"-L([a-zA-Z0-9_.\/-]+)\"/).each {
+            | entry |
+            path = Pathname.new(entry[0])
+            filesToFind.filter! {
+                | file |
+                if (path + file).file?
+                    puts (path + file).to_s
+                    false
+                else
+                    true
+                end
+            }
+        }
+    }
+}

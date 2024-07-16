@@ -70,11 +70,17 @@ case `uname -m` in
 esac
 
 case $OS in
-    *bsd|linux)
+    *bsd)
         MAKESUFFIX=bsd
+        CHECKMAKESUFFIX=bsd
+        ;;
+    linux)
+        MAKESUFFIX=linux
+        CHECKMAKESUFFIX=bsd
         ;;
     macosx)
         MAKESUFFIX=macosx
+        CHECKMAKESUFFIX=macosx
         ;;
     *)
         echo "Should not get here"

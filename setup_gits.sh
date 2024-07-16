@@ -38,6 +38,20 @@ then
     fi
 fi
 
+handle_git_with_branch()
+{
+    remote_path=$1
+    local_path=$2
+    branch=$3
+    if test -d $local_path
+    then
+        (cd $local_path && git pull --rebase $remote_path $branch)
+    else
+        git clone $remote_path $local_path
+        (cd $local_path && git checkout $branch)
+    fi
+}
+
 handle_git()
 {
     remote_path=$1
@@ -51,6 +65,7 @@ handle_git()
 }
 
 handle_git https://github.com/pizlonator/deluded-musl musl
+handle_git_with_branch https://github.com/pizlonator/deluded-musl yolomusl yolomusl
 
 handle_git https://github.com/pizlonator/deluded-zlib-1.3.git zlib-1.3
 handle_git https://github.com/pizlonator/deluded-openssl-3.2.0.git openssl-3.2.0
