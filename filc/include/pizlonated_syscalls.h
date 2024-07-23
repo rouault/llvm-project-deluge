@@ -28,12 +28,12 @@
 
 #include <stdfil.h>
 
-/* This file defines pizlonated syscall APIs that are common between all POSIX target variants.
+/* This file defines pizlonated syscall APIs.
 
-   It's possible that libpizlo does something a bit different depending on the target (musl
-   or filbsdrt), but the signature is the same regardless.
+   There's no guarantee that the APIs in this file will be stable over time.
 
-   There's no guarantee that the APIs in this file will be stable over time. */
+   Currently, a lot of this is Linux-specific and the implementations assume that all structs are
+   shaped according to their musl definitions. */
 
 int zsys_ioctl(int fd, unsigned long request, ...);
 long zsys_writev(int fd, const void* iov, int iovcnt);
