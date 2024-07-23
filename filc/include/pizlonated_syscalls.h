@@ -87,6 +87,7 @@ int zsys_fork(void);
 int zsys_waitpid(int pid, int* status, int options);
 int zsys_listen(int sockfd, int backlog);
 int zsys_accept(int sockfd, void* addr, unsigned* addrlen);
+int zsys_accept4(int sockfd, void* addr, unsigned* addrlen, int flg);
 int zsys_socketpair(int domain, int type, int protocol, int* sv);
 int zsys_setsid(void);
 int zsys_execve(const char* pathname, char*const* argv, char*const* envp);

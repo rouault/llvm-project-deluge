@@ -6448,6 +6448,26 @@ int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr addr_pt
     return result;
 }
 
+int filc_native_zsys_accept4(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, filc_ptr addrlen_ptr, int flg)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = accept4(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen, flg);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
 int filc_native_zsys_socketpair(filc_thread* my_thread, int domain, int type, int protocol,
                                 filc_ptr sv_ptr)
 {
