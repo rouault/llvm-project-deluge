@@ -22,27 +22,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
 case `uname -s` in
-    Darwin)
-        OS=macosx
-        MAKE=make
-        CCPREFIX="xcrun "
-        ;;
-    FreeBSD|OpenBSD)
-        MAKE=gmake
-        CCPREFIX=""
-        case `uname -s` in
-            FreeBSD)
-                OS=freebsd
-                ;;
-            OpenBSD)
-                OS=openbsd
-                ;;
-            *)
-                echo "Should not get here"
-                exit 1
-                ;;
-        esac
-        ;;
     Linux)
         MAKE=make
         CCPREFIX=""
@@ -65,25 +44,6 @@ case `uname -m` in
         ;;
     *)
         echo "Unsupported arch"
-        exit 1
-        ;;
-esac
-
-case $OS in
-    *bsd)
-        MAKESUFFIX=bsd
-        CHECKMAKESUFFIX=bsd
-        ;;
-    linux)
-        MAKESUFFIX=linux
-        CHECKMAKESUFFIX=bsd
-        ;;
-    macosx)
-        MAKESUFFIX=macosx
-        CHECKMAKESUFFIX=macosx
-        ;;
-    *)
-        echo "Should not get here"
         exit 1
         ;;
 esac

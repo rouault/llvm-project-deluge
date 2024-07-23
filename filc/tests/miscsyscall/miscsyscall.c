@@ -1,6 +1,8 @@
+#define _GNU_SOURCE
+
 #include <unistd.h>
 #include <stdio.h>
-#include <pizlonated_common_syscalls.h>
+#include <pizlonated_syscalls.h>
 #include <pizlonated_runtime.h>
 #include <unistd.h>
 #include <time.h>
@@ -71,7 +73,7 @@ int main(int argc, char** argv)
 
     ZASSERT(zthread_self());
     ZASSERT(zthread_self() == zthread_self());
-    ZASSERT((void*)pthread_self() == zthread_self());
+    ZASSERT(gettid() == zthread_self_id());
 
     ZASSERT(open("this/is/totally/not/going/to/exist", 666, 42) < 0);
     printf("the error was: %s\n", strerror(errno));
@@ -106,7 +108,6 @@ int main(int argc, char** argv)
     
     struct passwd* passwd2 = getpwuid(getuid());
     ZASSERT(passwd2);
-    ZASSERT(passwd2 != passwd);
     ZASSERT(!strcmp(passwd2->pw_name, name));
     ZASSERT(!strcmp(passwd2->pw_passwd, passwdd));
     ZASSERT(passwd2->pw_uid == getuid());
@@ -117,7 +118,6 @@ int main(int argc, char** argv)
 
     passwd = getpwnam(name);
     ZASSERT(passwd);
-    ZASSERT(passwd != passwd2);
     ZASSERT(!strcmp(passwd->pw_name, name));
     ZASSERT(!strcmp(passwd->pw_passwd, passwdd));
     ZASSERT(passwd->pw_uid == getuid());
@@ -135,13 +135,14 @@ int main(int argc, char** argv)
     act.sa_flags = SA_NODEFER;
     ZASSERT(sigaction(SIGPIPE, &act, &oact) == 0);
     ZASSERT(oact.sa_handler == SIG_IGN);
-    ZASSERT(oact.sa_flags == SA_RESTART);
+    zprintf("oact.sa_flags = %x\n", oact.sa_flags);
+    ZASSERT(oact.sa_flags == SA_RESTART | SA_RESTORER);
     ZASSERT(!sigismember(&oact.sa_mask, SIGPIPE));
     ZASSERT(!sigismember(&oact.sa_mask, SIGTERM));
 
     ZASSERT(sigaction(SIGPIPE, NULL, &oact) == 0);
     ZASSERT(oact.sa_handler == SIG_DFL);
-    ZASSERT(oact.sa_flags == SA_NODEFER);
+    ZASSERT(oact.sa_flags == SA_NODEFER | SA_RESTORER);
     ZASSERT(sigismember(&oact.sa_mask, SIGPIPE));
     ZASSERT(sigismember(&oact.sa_mask, SIGTERM));
 
@@ -162,7 +163,7 @@ int main(int argc, char** argv)
     ZASSERT(strlen(utsname.release));
     ZASSERT(strlen(utsname.version));
     ZASSERT(strlen(utsname.machine));
-    strlen(utsname.__domainname); // Run for effect; the string may be empty!
+    strlen(utsname.domainname); // Run for effect; the string may be empty!
 
     struct itimerval timerval;
     memset(&timerval, 42, sizeof(struct itimerval));

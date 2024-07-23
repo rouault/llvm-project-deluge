@@ -1,4 +1,4 @@
-# Fil-C 0.666.1
+# Fil-C 0.667
 
 This is a spare-time personal project that I'm doing for fun. It's called
 Fil-C.
@@ -16,7 +16,11 @@ compatibility with classic C or C++.
 
 ## Requirements
 
-Fil-C only works on Apple Silicon Macs and FreeBSD 14 on X86_64, for now.
+Fil-C only works on Linux/X86_64.
+
+Previous versions worked on Darwin and FreeBSD, but now I'm focusing just on
+Linux/X86_64 because it allows me to do a more faithful job of implementing
+libc.
 
 ## Getting Started
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -23,18 +23,15 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-mkdir -p build
-mkdir -p ../filbsdrt/stdfil-include
-mkdir -p ../filbsdrt/filbsd-include
-mkdir -p ../filbsdrt/builtins-include
-mkdir -p ../filbsdrt/lib
-mkdir -p ../filbsdrt/lib_test
-gmake -f Makefile-setup-filbsd
-gmake -f Makefile-filbsd -j `sysctl -n hw.ncpu`
+(cd usermusl && \
+     CC="$CCPREFIX$PWD/../build/bin/clang" ./configure \
+         --prefix=$PWD/../pizfix && \
+     $MAKE clean && \
+     $MAKE -j $NCPU && \
+     $MAKE install)
 
-set +x
-
-echo Pizlonator Approves.

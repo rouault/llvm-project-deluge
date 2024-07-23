@@ -29,7 +29,7 @@ set -e
 set -x
 
 $MAKE -f Makefile-setup clean
-$MAKE -f Makefile-$MAKESUFFIX clean
+$MAKE -f Makefile clean
 
 set +x
 

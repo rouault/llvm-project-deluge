@@ -575,7 +575,9 @@ void zstack_scan(filc_bool (*callback)(
                      void* arg),
                  void* arg);
 
-/* This is the only low-level threading API that we will guarantee working. */
+/* This is the only low-level threading API that we will guarantee working.
+ 
+   On Linux, this is guaranteed to be the same as gettid(), just much faster to query. */
 unsigned zthread_self_id(void);
 
 #ifdef __cplusplus

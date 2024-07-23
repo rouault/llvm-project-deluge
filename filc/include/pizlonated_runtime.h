@@ -67,6 +67,7 @@ void* zthread_self_cookie(void);
 void zthread_set_self_cookie(void* cookie);
 void* zthread_create(void* (*callback)(void* arg), void* arg); /* returns NULL on failure, sets
                                                                   errno. */
+void zthread_exit(void* result);
 filc_bool zthread_join(void* thread, void** result); /* Only fails with ESRCH for forked threads.
                                                         Returns true on success, false on failure
                                                         and sets errno. */

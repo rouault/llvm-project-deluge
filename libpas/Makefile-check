@@ -21,31 +21,46 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-include musl.mk
+all: build/libpas.so build/test_pas
 
-PASCC = clang -march=x86-64-v2 -fPIC -pthread -nostdinc -isystem ../pizfix/yolo/include
-PASCXX = no_cplusplus_compiler
-FILCC = ../build/bin/clang
-SHLD = clang -Wl,-dynamic-linker,$(PWD)/../pizfix/yolo/lib/ld-musl-x86_64.so.1 \
-	-nostdlib -shared ../pizfix/yolo/lib/crti.o \
-	`./find_system_library_file.rb crtbeginS.o` -L../pizfix/yolo/lib
-SHLDPOST = `./find_system_library_file.rb libgcc.a` -lyolomusl \
-	`./find_system_library_file.rb crtendS.o` ../pizfix/yolo/lib/crtn.o
+PASCC = clang -march=x86-64-v2 -fPIC -pthread
+PASCXX = clang++ -march=x86-64-v2 -fPIC -pthread
 
-all: \
-	../pizfix/lib/libpizlo.so ../pizfix/lib_test/libpizlo.so \
-	../pizfix/lib/filc_crt.o ../pizfix/lib/filc_mincrt.o
-
-clean: common-clean
-	rm -f ../pizfix/lib/libpizlo.so
-	rm -f ../pizfix/lib_test/libpizlo.so
+PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare \
+	-Wno-missing-field-initializers -Wno-vla-cxx-extension -Wno-unknown-warning-option \
+	-fno-strict-aliasing -MD
 
 include common.mk
 
-../pizfix/lib/libpizlo.so: $(PASPIZLOOBJS) $(FILPIZLOOBJS)
-	$(SHLD) -o ../pizfix/lib/libpizlo.so $(PASPIZLOOBJS) $(FILPIZLOOBJS) $(SHLDPOST)
+TESTPASSRCS = $(wildcard src/test/*.cpp)
+VERIFIERSRCS = $(wildcard src/verifier/*.cpp)
 
-../pizfix/lib_test/libpizlo.so: $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS)
-	$(SHLD) -o ../pizfix/lib_test/libpizlo.so $(PASPIZLOTESTOBJS) $(FILPIZLOOBJS) $(SHLDPOST)
+PASTESTOBJS = $(patsubst %.c,build/pas-test-%.o,$(notdir $(PASSRCS)))
 
+TESTPASOBJS = $(patsubst %.cpp,build/test_pas-%.o,$(notdir $(TESTPASSRCS)))
+VERIFIEROBJS = $(patsubst %.cpp,build/verifier-%.o,$(notdir $(VERIFIERSRCS)))
+
+-include $(wildcard build/*.d)
+
+clean:
+	rm -rf build
+
+check: build/test_pas
+	LD_LIBRARY_PATH=build build/test_pas
+
+build/test_pas: build/libpas.so $(TESTPASOBJS) $(VERIFIEROBJS)
+	clang++ -o build/test_pas $(TESTPASOBJS) $(VERIFIEROBJS) \
+		-Lbuild -lpas -pthread -lutil
+
+build/libpas.so: $(PASTESTOBJS)
+	clang -shared -o build/libpas.so $(PASTESTOBJS)
+
+build/pas-test-%.o: src/libpas/%.c
+	$(PASCC) $(PASCFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1
+
+build/test_pas-%.o: src/test/%.cpp
+	$(PASCXX) $(PASCXXFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1 -Isrc/libpas -Isrc/verifier
+
+build/verifier-%.o: src/verifier/%.cpp
+	$(PASCXX) $(PASCXXFLAGS) -c -o $@ $< -DENABLE_PAS_TESTING=1 -Isrc/libpas
 

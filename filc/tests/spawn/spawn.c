@@ -93,6 +93,13 @@ int main()
     zprintf("Spawn4: ");
     spawnp_and_wait("sh", NULL, NULL, argv, environ);
 
+    char* argv3[] = { "/this/file/had/better/not/exist", NULL };
+    int pid = 666;
+    result = posix_spawn(&pid, "/this/file/had/better/not/exist", NULL, NULL, argv3, environ);
+    ZASSERT(result);
+    ZASSERT(result == ENOENT);
+    ZASSERT(pid == 666);
+
     return 0;
 }
 

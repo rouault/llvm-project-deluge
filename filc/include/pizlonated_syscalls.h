@@ -27,7 +27,6 @@
 #define PIZLONATED_COMMON_SYSCALLS_H
 
 #include <stdfil.h>
-#include <pizlonated_types.h>
 
 /* This file defines pizlonated syscall APIs that are common between all POSIX target variants.
 
@@ -148,13 +147,80 @@ int zsys_munlockall(void);
 int zsys_sigpending(void* set);
 int zsys_truncate(const char* path, long length);
 int zsys_linkat(int fd1, const char* name1, int fd2, const char* name2, int flag);
-int zsys_chmod(const char* pathname, pizlonated_mode_t mode);
-int zsys_lchmod(const char* pathname, pizlonated_mode_t mode);
-int zsys_fchmod(int fd, pizlonated_mode_t mode);
-int zsys_mkfifo(const char* path, pizlonated_mode_t mode);
-int zsys_mkdirat(int dirfd, const char* pathname, pizlonated_mode_t mode);
-int zsys_mkdir(const char* path, pizlonated_mode_t mode);
-int zsys_fchmodat(int fd, const char* path, pizlonated_mode_t mode, int flag);
+int zsys_chmod(const char* pathname, unsigned mode);
+int zsys_lchmod(const char* pathname, unsigned mode);
+int zsys_fchmod(int fd, unsigned mode);
+int zsys_mkfifo(const char* path, unsigned mode);
+int zsys_mkdirat(int dirfd, const char* pathname, unsigned mode);
+int zsys_mkdir(const char* path, unsigned mode);
+int zsys_fchmodat(int fd, const char* path, unsigned mode, int flag);
 int zsys_unlinkat(int dirfd, const char* path, int flags);
+int zsys_acct(const char* file);
+int zsys_setgroups(__SIZE_TYPE__ size, const unsigned* list);
+int zsys_madvise(void* addr, __SIZE_TYPE__ len, int behav);
+int zsys_mincore(void* addr, __SIZE_TYPE__ len, char* vec);
+int zsys_getpriority(int which, int who);
+int zsys_setpriority(int which, int who, int prio);
+int zsys_gettimeofday(void* tp, void* tzp);
+int zsys_settimeofday(const void* tp, const void* tzp);
+int zsys_getrusage(int who, void* rusage);
+int zsys_flock(int fd, int operation);
+int zsys_utimes(const char* path, const void* times);
+int zsys_lutimes(const char* path, const void* times);
+int zsys_adjtime(const void* delta, void* olddelta);
+long zsys_pathconf(const char* path, int name);
+long zsys_fpathconf(int fd, int name);
+int zsys_setrlimit(int resource, const void* rlp);
+int zsys_semget(long key, int nsems, int flag);
+int zsys_semctl(int semid, int semnum, int cmd, ...);
+int zsys_semop(int semid, void* array, __SIZE_TYPE__ nops);
+int zsys_shmget(long key, __SIZE_TYPE__ size, int flag);
+int zsys_shmctl(int shmid, int cmd, void* buf);
+void* zsys_shmat(int shmid, const void* addr, int flag);
+int zsys_shmdt(const void* addr);
+int zsys_msgget(long key, int msgflg);
+int zsys_msgctl(int msgid, int cmd, void* buf);
+long zsys_msgrcv(int msgid, void* msgp, __SIZE_TYPE__ msgsz, long msgtyp, int msgflg);
+int zsys_msgsnd(int msgid, const void* msgp, __SIZE_TYPE__ msgsz, int msgflg);
+int zsys_futimes(int fd, const void* times);
+int zsys_futimesat(int fd, const char* path, const void* times);
+int zsys_clock_settime(int clock_id, const void* tp);
+int zsys_clock_getres(int clock_id, void* tp);
+int zsys_issetugid(void);
+int zsys_getresgid(unsigned* rgid, unsigned* egid, unsigned* sgid);
+int zsys_getresuid(unsigned* ruid, unsigned* euid, unsigned* suid);
+int zsys_setresgid(unsigned rgid, unsigned egid, unsigned sgid);
+int zsys_setresuid(unsigned ruid, unsigned euid, unsigned suid);
+int zsys_sched_setparam(int pid, const void* param);
+int zsys_sched_getparam(int pid, void* param);
+int zsys_sched_setscheduler(int pid, int policy, const void* param);
+int zsys_sched_getscheduler(int pid);
+int zsys_sched_get_priority_max(int policy);
+int zsys_sched_get_priority_min(int policy);
+int zsys_sched_rr_get_interval(int pid, void* interval);
+int zsys_eaccess(const char* path, int mode);
+int zsys_fexecve(int fd, char*const* argv, char*const* envp);
+int zsys_isatty(int fd);
+int zsys_uname(void* buf);
+int zsys_sendfile(int out_fd, int in_fd, long* offset, __SIZE_TYPE__ count);
+void zsys_futex_wake(volatile int* addr, int cnt, int priv);
+void zsys_futex_wait(volatile int* addr, int val, int priv);
+/* These futex calls return the errno as a negative value. They do not set errno. */
+int zsys_futex_timedwait(volatile int* addr, int val, int clock_id, const void* timeout, int priv);
+int zsys_futex_unlock_pi(volatile int* addr, int priv);
+int zsys_futex_lock_pi(volatile int* addr, int priv, const void* timeout);
+void zsys_futex_requeue(volatile int* addr, int priv, int wake_count, int requeue_count,
+                        volatile int* addr2);
+int zsys_getdents(int fd, void* dirent, __SIZE_TYPE__ size);
+long zsys_getrandom(void* buf, __SIZE_TYPE__ buflen, unsigned flags);
+int zsys_epoll_create1(int flags);
+int zsys_epoll_ctl(int epfd, int op, int fd, void* event);
+int zsys_epoll_wait(int epfd, void* events, int maxevents, int timeout);
+int zsys_epoll_pwait(int epfd, void* events, int maxevents, int timeout, const void* sigmask);
+int zsys_sysinfo(void* info);
+int zsys_sched_getaffinity(int tid, __SIZE_TYPE__ size, void* set);
+int zsys_sched_setaffinity(int tid, __SIZE_TYPE__ size, const void* set);
+int zsys_posix_fadvise(int fd, long base, long len, int advice);
+int zsys_ppoll(void* fds, unsigned long nfds, const void* to, const void* mask);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

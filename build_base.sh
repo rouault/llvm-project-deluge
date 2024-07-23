@@ -23,21 +23,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-. libpas/common.sh
-
 set -e
 set -x
 
 ./build_clang.sh
-
-if test $OS = linux
-then
-    ./build_yolomusl.sh
-fi
-
-(cd libpas && ./build.sh)
-
-./build_musl.sh
+./build_yolomusl.sh
+./build_runtime.sh
+./build_usermusl.sh
 ./build_cxx.sh
 
 filc/run-tests

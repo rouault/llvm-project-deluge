@@ -25,29 +25,25 @@
 
 #include <stdlib.h>
 
-extern char** environ;
-
 #ifndef USE_LIBC
 #error "Must define USE_LIBC"
 #endif
 
 #if USE_LIBC
-void pizlonated___init_libc();
-void pizlonated_exit();
+void pizlonated___libc_start_main();
 #endif /* USE_LIBC */
 void pizlonated_main();
 
 void filc_start_program(int argc, char** argv,
-                        void (*pizlonated___init_libc)(),
-                        void (*pizlonated_exit)(),
+                        void (*pizlonated___libc_start_main)(),
                         void (*pizlonated_main)());
 
 int main(int argc, char** argv)
 {
 #if USE_LIBC
-    filc_start_program(argc, argv, pizlonated___init_libc, pizlonated_exit, pizlonated_main);
+    filc_start_program(argc, argv, pizlonated___libc_start_main, pizlonated_main);
 #else /* USE_LIBC -> so !USE_LIBC */
-    filc_start_program(argc, argv, NULL, NULL, pizlonated_main);
+    filc_start_program(argc, argv, NULL, pizlonated_main);
 #endif /* USE_LIBC -> so end of !USE_LIBC */
 
     abort();

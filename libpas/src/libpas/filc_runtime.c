@@ -62,6 +62,15 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 #include <poll.h>
+#include <sys/timex.h>
+#include <sys/file.h>
+#include <sys/sendfile.h>
+#include <futex_calls.h>
+#include <dirent.h>
+#include <sys/random.h>
+#include <sys/epoll.h>
+#include <sys/sysinfo.h>
+#include <sched.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -135,15 +144,8 @@ void filc_check_user_sigset(filc_ptr ptr, filc_access_kind access_kind)
 
 struct user_sigaction {
     filc_ptr sa_handler_ish;
-#if FILC_MUSL
     filc_user_sigset sa_mask;
     int sa_flags;
-#elif FILC_FILBSD
-    int sa_flags;
-    filc_user_sigset sa_mask;
-#else
-#error "Don't know what sigaction looks like"
-#endif
 };
 
 static void check_user_sigaction(filc_ptr ptr, filc_access_kind access_kind)
@@ -155,113 +157,12 @@ static void check_user_sigaction(filc_ptr ptr, filc_access_kind access_kind)
 
 int filc_from_user_signum(int signum)
 {
-    if (!FILC_MUSL)
-        return signum;
-    switch (signum) {
-    case 1: return SIGHUP;
-    case 2: return SIGINT;
-    case 3: return SIGQUIT;
-    case 4: return SIGILL;
-    case 5: return SIGTRAP;
-    case 6: return SIGABRT;
-    case 7: return SIGBUS;
-    case 8: return SIGFPE;
-    case 9: return SIGKILL;
-    case 10: return SIGUSR1;
-    case 11: return SIGSEGV;
-    case 12: return SIGUSR2;
-    case 13: return SIGPIPE;
-    case 14: return SIGALRM;
-    case 15: return SIGTERM;
-    case 17: return SIGCHLD;
-    case 18: return SIGCONT;
-    case 19: return SIGSTOP;
-    case 20: return SIGTSTP;
-    case 21: return SIGTTIN;
-    case 22: return SIGTTOU;
-    case 23: return SIGURG;
-    case 24: return SIGXCPU;
-    case 25: return SIGXFSZ;
-    case 26: return SIGVTALRM;
-    case 27: return SIGPROF;
-    case 28: return SIGWINCH;
-    case 29: return SIGIO;
-    case 31: return SIGSYS;
-    default: return -1;
-    }
+    return signum;
 }
 
 int filc_to_user_signum(int signum)
 {
-    if (!FILC_MUSL)
-        return signum;
-    switch (signum) {
-    case SIGHUP: return 1;
-    case SIGINT: return 2;
-    case SIGQUIT: return 3;
-    case SIGILL: return 4;
-    case SIGTRAP: return 5;
-    case SIGABRT: return 6;
-    case SIGBUS: return 7;
-    case SIGFPE: return 8;
-    case SIGKILL: return 9;
-    case SIGUSR1: return 10;
-    case SIGSEGV: return 11;
-    case SIGUSR2: return 12;
-    case SIGPIPE: return 13;
-    case SIGALRM: return 14;
-    case SIGTERM: return 15;
-    case SIGCHLD: return 17;
-    case SIGCONT: return 18;
-    case SIGSTOP: return 19;
-    case SIGTSTP: return 20;
-    case SIGTTIN: return 21;
-    case SIGTTOU: return 22;
-    case SIGURG: return 23;
-    case SIGXCPU: return 24;
-    case SIGXFSZ: return 25;
-    case SIGVTALRM: return 26;
-    case SIGPROF: return 27;
-    case SIGWINCH: return 28;
-    case SIGIO: return 29;
-    case SIGSYS: return 31;
-    default: PAS_ASSERT(!"Bad signal number"); return -1;
-    }
-}
-
-struct free_tid_node;
-typedef struct free_tid_node free_tid_node;
-struct free_tid_node {
-    unsigned tid;
-    free_tid_node* next;
-};
-
-static free_tid_node* first_free_tid = NULL;
-static unsigned next_fresh_tid = 1;
-
-static unsigned allocate_tid(void)
-{
-    filc_thread_list_lock_assert_held();
-    if (first_free_tid) {
-        free_tid_node* result_node = first_free_tid;
-        first_free_tid = result_node->next;
-        unsigned result = result_node->tid;
-        bmalloc_deallocate(result_node);
-        return result;
-    }
-    unsigned result = next_fresh_tid;
-    PAS_ASSERT(!pas_add_uint32_overflow(next_fresh_tid, 1, &next_fresh_tid));
-    return result;
-}
-
-static void deallocate_tid(unsigned tid)
-{
-    filc_thread_list_lock_assert_held();
-    /* FIXME: this is wrong, since it's called in the open. */
-    free_tid_node* node = bmalloc_allocate(sizeof(free_tid_node));
-    node->tid = tid;
-    node->next = first_free_tid;
-    first_free_tid = node;
+    return signum;
 }
 
 /* NOTE: Unlike most other allocation functions, this does not track the allocated object properly.
@@ -290,8 +191,6 @@ filc_thread* filc_thread_create(void)
     if (filc_first_thread)
         filc_first_thread->prev_thread = thread;
     filc_first_thread = thread;
-    thread->tid = allocate_tid();
-    PAS_ASSERT(thread->tid);
     filc_thread_list_lock_unlock();
     
     return thread;
@@ -358,16 +257,6 @@ void filc_thread_destruct(filc_thread* thread)
         pas_log("destructed thread %p\n", thread);
 }
 
-void filc_thread_relinquish_tid(filc_thread* thread)
-{
-    /* Have to be entered because deallocate_tid uses bmalloc. */
-    PAS_ASSERT(filc_thread_is_entered(filc_get_my_thread()));
-    filc_thread_list_lock_lock();
-    deallocate_tid(thread->tid);
-    thread->tid = 0;
-    filc_thread_list_lock_unlock();
-}
-
 void filc_thread_dispose(filc_thread* thread)
 {
     filc_thread_list_lock_lock();
@@ -431,6 +320,8 @@ void filc_initialize(void)
     thread->has_started = true;
     thread->has_stopped = false;
     thread->thread = pthread_self();
+    thread->tid = gettid();
+    thread->has_set_tid = true;
     thread->tlc_node = verse_heap_get_thread_local_cache_node();
     thread->tlc_node_version = pas_thread_local_cache_node_version(thread->tlc_node);
     PAS_ASSERT(!pthread_key_create(&filc_thread_key, NULL));
@@ -1311,8 +1202,6 @@ void filc_mark_global_roots(filc_object_array* mark_stack)
     for (index = num_threads; index--;)
         fugc_mark(mark_stack, filc_object_for_special_payload(threads[index]));
     bmalloc_deallocate(threads);
-
-    filc_mark_user_global_roots(mark_stack);
 }
 
 static void signal_pizlonator(int signum)
@@ -4766,92 +4655,12 @@ unsigned filc_native_zsys_getegid(filc_thread* my_thread)
 
 int filc_from_user_open_flags(int user_flags)
 {
-    if (!FILC_MUSL)
-        return user_flags;
-    
-    int result = 0;
-
-    if (filc_check_and_clear(&user_flags, 01))
-        result |= O_WRONLY;
-    if (filc_check_and_clear(&user_flags, 02))
-        result |= O_RDWR;
-    if (filc_check_and_clear(&user_flags, 0100))
-        result |= O_CREAT;
-    if (filc_check_and_clear(&user_flags, 0200))
-        result |= O_EXCL;
-    if (filc_check_and_clear(&user_flags, 0400))
-        result |= O_NOCTTY;
-    if (filc_check_and_clear(&user_flags, 01000))
-        result |= O_TRUNC;
-    if (filc_check_and_clear(&user_flags, 02000))
-        result |= O_APPEND;
-    if (filc_check_and_clear(&user_flags, 04000))
-        result |= O_NONBLOCK;
-    if (filc_check_and_clear(&user_flags, 0200000))
-        result |= O_DIRECTORY;
-    if (filc_check_and_clear(&user_flags, 0400000))
-        result |= O_NOFOLLOW;
-    if (filc_check_and_clear(&user_flags, 02000000))
-        result |= O_CLOEXEC;
-    if (filc_check_and_clear(&user_flags, 020000))
-        result |= O_ASYNC;
-    filc_check_and_clear(&user_flags, 0100000); // O_LARGEFILE
-
-    if (user_flags)
-        return -1;
-    return result;
+    return user_flags;
 }
 
 int filc_to_user_open_flags(int flags)
 {
-    if (!FILC_MUSL)
-        return flags;
-    
-    int result = 0;
-
-    if (filc_check_and_clear(&flags, O_WRONLY))
-        result |= 01;
-    if (filc_check_and_clear(&flags, O_RDWR))
-        result |= 02;
-    if (filc_check_and_clear(&flags, O_CREAT))
-        result |= 0100;
-    if (filc_check_and_clear(&flags, O_EXCL))
-        result |= 0200;
-    if (filc_check_and_clear(&flags, O_NOCTTY))
-        result |= 0400;
-    if (filc_check_and_clear(&flags, O_TRUNC))
-        result |= 01000;
-    if (filc_check_and_clear(&flags, O_APPEND))
-        result |= 02000;
-    if (filc_check_and_clear(&flags, O_NONBLOCK))
-        result |= 04000;
-    if (filc_check_and_clear(&flags, O_DIRECTORY))
-        result |= 0200000;
-    if (filc_check_and_clear(&flags, O_NOFOLLOW))
-        result |= 0400000;
-    if (filc_check_and_clear(&flags, O_CLOEXEC))
-        result |= 02000000;
-    if (filc_check_and_clear(&flags, O_ASYNC))
-        result |= 020000;
-
-#if PAS_OS(LINUX)
-    /* Linux will internally return O_LARGEFILE, but it's supposed to be ignored on x86_64. So, just
-       clear it out. */
-    flags &= ~0100000;
-
-    if (flags)
-        pas_log("Unexpected open flags: 0x%x\n", flags);
-    PAS_ASSERT(!flags);
-#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
-    /* Fun fact: on MacOS, I get an additional 0x10000 flag, and I don't know what it is.
-       Ima just ignore it and hope for the best LOL!
-    
-       FIXME: I ended up using this code on FreeBSD too, which is probably wrong, but I'd have to do
-       some tests before removing it.*/
-    PAS_ASSERT(!(flags & ~0x10000));
-#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
-    
-    return result;
+    return flags;
 }
 
 int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_flags,
@@ -4862,9 +4671,9 @@ int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_fl
         filc_set_errno(EINVAL);
         return -1;
     }
-    pizlonated_mode_t mode = 0;
+    unsigned mode = 0;
     if (flags >= 0 && (flags & O_CREAT))
-        mode = filc_cc_cursor_get_next_int(args, pizlonated_mode_t);
+        mode = filc_cc_cursor_get_next_int(args, unsigned);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
@@ -4885,33 +4694,8 @@ int filc_native_zsys_getpid(filc_thread* my_thread)
 
 static bool from_user_clock_id(int user_clock_id, clockid_t* result)
 {
-    if (!FILC_MUSL) {
-        *result = user_clock_id;
-        return true;
-    }
-    
-    switch (user_clock_id) {
-    case 0:
-        *result = CLOCK_REALTIME;
-        return true;
-    case 1:
-        *result = CLOCK_MONOTONIC;
-        return true;
-    case 2:
-        *result = CLOCK_PROCESS_CPUTIME_ID;
-        return true;
-    case 3:
-        *result = CLOCK_THREAD_CPUTIME_ID;
-        return true;
-#if PAS_OS(DARWIN)
-    case 4:
-        *result = CLOCK_MONOTONIC_RAW;
-        return true;
-#endif /* PAS_OS(DARWIN) */
-    default:
-        *result = 0;
-        return false;
-    }
+    *result = user_clock_id;
+    return true;
 }
 
 int filc_native_zsys_clock_gettime(filc_thread* my_thread, int user_clock_id, filc_ptr timespec_ptr)
@@ -4939,19 +4723,8 @@ int filc_native_zsys_clock_gettime(filc_thread* my_thread, int user_clock_id, fi
 
 static bool from_user_fstatat_flag(int user_flag, int* result)
 {
-    if (!FILC_MUSL) {
-        *result = user_flag;
-        return true;
-    }
-    
-    *result = 0;
-    if (filc_check_and_clear(&user_flag, 0x100))
-        *result |= AT_SYMLINK_NOFOLLOW;
-    if (filc_check_and_clear(&user_flag, 0x200))
-        *result |= AT_EACCESS; /* NOTE: in the case of unlinkat, this would be REMOVEDIR. */
-    if (filc_check_and_clear(&user_flag, 0x400))
-        *result |= AT_SYMLINK_FOLLOW;
-    return !user_flag;
+    *result = user_flag;
+    return true;
 }
 
 /* NOTE: We only use this in the musl mode. */
@@ -4974,56 +4747,17 @@ struct musl_stat {
 static int handle_fstat_result(filc_ptr user_stat_ptr, struct stat *st,
                                int result, int my_errno)
 {
-    if (!FILC_MUSL) {
-        filc_check_write_int(user_stat_ptr, sizeof(struct stat), NULL);
-        if (result < 0) {
-            filc_set_errno(my_errno);
-            return -1;
-        }
-        memcpy(filc_ptr_ptr(user_stat_ptr), st, sizeof(struct stat));
-        return 0;
-    }
-    
-    filc_check_write_int(user_stat_ptr, sizeof(struct musl_stat), NULL);
+    filc_check_write_int(user_stat_ptr, sizeof(struct stat), NULL);
     if (result < 0) {
         filc_set_errno(my_errno);
         return -1;
     }
-    struct musl_stat* musl_stat = (struct musl_stat*)filc_ptr_ptr(user_stat_ptr);
-    musl_stat->st_dev = st->st_dev;
-    musl_stat->st_ino = st->st_ino;
-    musl_stat->st_mode = st->st_mode;
-    musl_stat->st_nlink = st->st_nlink;
-    musl_stat->st_uid = st->st_uid;
-    musl_stat->st_gid = st->st_gid;
-    musl_stat->st_rdev = st->st_rdev;
-    musl_stat->st_size = st->st_size;
-    musl_stat->st_blksize = st->st_blksize;
-    musl_stat->st_blocks = st->st_blocks;
-#if PAS_OS(LINUX)
-    musl_stat->st_atim[0] = st->st_atim.tv_sec;
-    musl_stat->st_atim[1] = st->st_atim.tv_nsec;
-    musl_stat->st_mtim[0] = st->st_mtim.tv_sec;
-    musl_stat->st_mtim[1] = st->st_mtim.tv_nsec;
-    musl_stat->st_ctim[0] = st->st_ctim.tv_sec;
-    musl_stat->st_ctim[1] = st->st_ctim.tv_nsec;
-#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
-    musl_stat->st_atim[0] = st->st_atimespec.tv_sec;
-    musl_stat->st_atim[1] = st->st_atimespec.tv_nsec;
-    musl_stat->st_mtim[0] = st->st_mtimespec.tv_sec;
-    musl_stat->st_mtim[1] = st->st_mtimespec.tv_nsec;
-    musl_stat->st_ctim[0] = st->st_ctimespec.tv_sec;
-    musl_stat->st_ctim[1] = st->st_ctimespec.tv_nsec;
-#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
+    memcpy(filc_ptr_ptr(user_stat_ptr), st, sizeof(struct stat));
     return 0;
 }
 
 int filc_from_user_atfd(int fd)
 {
-    if (!FILC_MUSL)
-        return fd;
-    if (fd == -100)
-        fd = AT_FDCWD;
     return fd;
 }
 
@@ -5058,58 +4792,32 @@ int filc_native_zsys_fstat(filc_thread* my_thread, int fd, filc_ptr user_stat_pt
 
 static bool from_user_sa_flags(int user_flags, int* flags)
 {
-    if (!FILC_MUSL) {
-        if ((user_flags & SA_SIGINFO))
-            return false;
-        *flags = user_flags;
-        return true;
-    }
-    *flags = 0;
-    /* NOTE: We explicitly exclude SA_SIGINFO because we do not support it yet!! */
-    if (filc_check_and_clear(&user_flags, 1))
-        *flags |= SA_NOCLDSTOP;
-    if (filc_check_and_clear(&user_flags, 2))
-        *flags |= SA_NOCLDWAIT;
-    if (filc_check_and_clear(&user_flags, 0x08000000))
-        *flags |= SA_ONSTACK;
-    if (filc_check_and_clear(&user_flags, 0x10000000))
-        *flags |= SA_RESTART;
-    if (filc_check_and_clear(&user_flags, 0x40000000))
-        *flags |= SA_NODEFER;
-    if (filc_check_and_clear(&user_flags, 0x80000000))
-        *flags |= SA_RESETHAND;
-    return !user_flags;
+    if ((user_flags & SA_SIGINFO))
+        return false;
+    *flags = user_flags;
+    return true;
 }
 
 static int to_user_sa_flags(int sa_flags)
 {
-    if (!FILC_MUSL)
-        return sa_flags;
-    int result = 0;
-    if (filc_check_and_clear(&sa_flags, SA_NOCLDSTOP))
-        result |= 1;
-    if (filc_check_and_clear(&sa_flags, SA_NOCLDWAIT))
-        result |= 2;
-    if (filc_check_and_clear(&sa_flags, SA_SIGINFO))
-        result |= 4;
-    if (filc_check_and_clear(&sa_flags, SA_ONSTACK))
-        result |= 0x08000000;
-    if (filc_check_and_clear(&sa_flags, SA_RESTART))
-        result |= 0x10000000;
-    if (filc_check_and_clear(&sa_flags, SA_NODEFER))
-        result |= 0x40000000;
-    if (filc_check_and_clear(&sa_flags, SA_RESETHAND))
-        result |= 0x80000000;
-#if PAS_OS(LINUX)
-    filc_check_and_clear(&sa_flags, 0x04000000); /* Clear the SA_RESTORER bit. */
-#endif /* PAS_OS(LINUX) */
-    if (sa_flags)
-        pas_log("Unexpected sa_flags: %u\n", (unsigned)sa_flags);
-    PAS_ASSERT(!sa_flags);
-    return result;
+    return sa_flags;
 }
 
-static bool is_unsafe_signal(int signum)
+static bool is_unsafe_signal_for_kill(int signum)
+{
+    /* We don't want userland to be able to raise/kill with signals that are used internally by the
+       yolo libc. */
+    switch (signum) {
+    case SIGTIMER:
+    case SIGCANCEL:
+    case SIGSYNCCALL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool is_unsafe_signal_for_handlers(int signum)
 {
     switch (signum) {
     case SIGILL:
@@ -5117,13 +4825,9 @@ static bool is_unsafe_signal(int signum)
     case SIGBUS:
     case SIGSEGV:
     case SIGFPE:
-#if PAS_OS(FREEBSD)
-    case SIGTHR:
-    case SIGLIBRT:
-#endif /* PAS_OS(FREEBSD) */
         return true;
     default:
-        return false;
+        return is_unsafe_signal_for_kill(signum);
     }
 }
 
@@ -5134,31 +4838,19 @@ static bool is_special_signal_handler(void* handler)
 
 static bool is_user_special_signal_handler(void* handler)
 {
-    if (!FILC_MUSL)
-        return is_special_signal_handler(handler);
-    return handler == NULL || handler == (void*)(uintptr_t)1;
+    return is_special_signal_handler(handler);
 }
 
 static void* from_user_special_signal_handler(void* handler)
 {
     PAS_ASSERT(is_user_special_signal_handler(handler));
-    if (!FILC_MUSL)
-        return handler;
-    return handler == NULL ? SIG_DFL : SIG_IGN;
+    return handler;
 }
 
 static filc_ptr to_user_special_signal_handler(void* handler)
 {
-    if (!FILC_MUSL) {
-        PAS_ASSERT(is_special_signal_handler(handler));
-        return filc_ptr_forge_invalid(handler);
-    }
-    if (handler == SIG_DFL)
-        return filc_ptr_forge_invalid(NULL);
-    if (handler == SIG_IGN)
-        return filc_ptr_forge_invalid((void*)(uintptr_t)1);
-    PAS_ASSERT(!"Bad special handler");
-    return filc_ptr_forge_invalid(NULL);
+    PAS_ASSERT(is_special_signal_handler(handler));
+    return filc_ptr_forge_invalid(handler);
 }
 
 int filc_native_zsys_sigaction(
@@ -5173,7 +4865,7 @@ int filc_native_zsys_sigaction(
         filc_set_errno(EINVAL);
         return -1;
     }
-    if (is_unsafe_signal(signum) && filc_ptr_ptr(act_ptr)) {
+    if (is_unsafe_signal_for_handlers(signum) && filc_ptr_ptr(act_ptr)) {
         filc_set_errno(ENOSYS);
         return -1;
     }
@@ -5220,7 +4912,7 @@ int filc_native_zsys_sigaction(
     }
     if (user_oact) {
         check_user_sigaction(oact_ptr, filc_write_access);
-        if (is_unsafe_signal(signum))
+        if (is_unsafe_signal_for_handlers(signum))
             PAS_ASSERT(oact.sa_handler == SIG_DFL);
         if (is_special_signal_handler(oact.sa_handler))
             filc_ptr_store(my_thread, &user_oact->sa_handler_ish,
@@ -5314,59 +5006,11 @@ void filc_native_zsys_sched_yield(filc_thread* my_thread)
 
 static bool from_user_resource(int user_resource, int* result)
 {
-    if (!FILC_MUSL) {
-        *result = user_resource;
-        return true;
-    }
-    
-    switch (user_resource) {
-    case 0:
-        *result = RLIMIT_CPU;
-        return true;
-    case 1:
-        *result = RLIMIT_FSIZE;
-        return true;
-    case 2:
-        *result = RLIMIT_DATA;
-        return true;
-    case 3:
-        *result = RLIMIT_STACK;
-        return true;
-    case 4:
-        *result = RLIMIT_CORE;
-        return true;
-    case 5:
-        *result = RLIMIT_RSS;
-        return true;
-    case 6:
-        *result = RLIMIT_NPROC;
-        return true;
-    case 7:
-        *result = RLIMIT_NOFILE;
-        return true;
-    case 8:
-        *result = RLIMIT_MEMLOCK;
-        return true;
-#if !PAS_OS(OPENBSD)
-    case 9:
-        *result = RLIMIT_AS;
-        return true;
-#endif /* !PAS_OS(OPENBSD) */
-    default:
-        return false;
-    }
+    *result = user_resource;
+    return true;
 }
 
-#if FILC_MUSL
-static unsigned long long to_user_rlimit_value(rlim_t value)
-{
-    if (value == RLIM_INFINITY)
-        return ~0ULL;
-    return value;
-}
-#else /* FILC_MUSL -> so !FILC_MUSL */
 #define to_user_rlimit_value(value) (value)
-#endif /* FILC_MUSL -> so !FILC_MUSL */
 
 int filc_native_zsys_getrlimit(filc_thread* my_thread, int user_resource, filc_ptr rlim_ptr)
 {
@@ -5535,11 +5179,10 @@ int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr
     return 0;
 }
 
-int filc_native_zsys_kill(filc_thread* my_thread, int pid, int user_sig)
+int filc_native_zsys_kill(filc_thread* my_thread, int pid, int sig)
 {
-    int sig = filc_from_user_signum(user_sig);
-    if (sig < 0) {
-        filc_set_errno(EINVAL);
+    if (is_unsafe_signal_for_kill(sig)) {
+        filc_set_errno(ENOSYS);
         return -1;
     }
     filc_exit(my_thread);
@@ -5551,11 +5194,10 @@ int filc_native_zsys_kill(filc_thread* my_thread, int pid, int user_sig)
     return result;
 }
 
-int filc_native_zsys_raise(filc_thread* my_thread, int user_sig)
+int filc_native_zsys_raise(filc_thread* my_thread, int sig)
 {
-    int sig = filc_from_user_signum(user_sig);
-    if (sig < 0) {
-        filc_set_errno(EINVAL);
+    if (is_unsafe_signal_for_kill(sig)) {
+        filc_set_errno(ENOSYS);
         return -1;
     }
     filc_exit(my_thread);
@@ -5595,23 +5237,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int user_how, filc_ptr 
     static const bool verbose = false;
     
     int how;
-    if (FILC_MUSL) {
-        switch (user_how) {
-        case 0:
-            how = SIG_BLOCK;
-            break;
-        case 1:
-            how = SIG_UNBLOCK;
-            break;
-        case 2:
-            how = SIG_SETMASK;
-            break;
-        default:
-            filc_set_errno(EINVAL);
-            return -1;
-        }
-    } else
-        how = user_how;
+    how = user_how;
     sigset_t* set;
     sigset_t* oldset;
     if (filc_ptr_ptr(user_set_ptr)) {
@@ -5695,6 +5321,10 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             thread->next_thread = NULL;
             if (thread != my_thread) {
                 thread->forked = true;
+                thread->tid = 0;
+                thread->has_set_tid = true; /* Prevent anyone from waiting for this thread to set its
+                                               tid. */
+                thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
 
                 /* We can inspect the thread's TLC without any locks, since the thread is dead and
                    stopped. Also, start_thread (and other parts of the runtime) ensure that we only
@@ -5707,12 +5337,12 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             pas_system_mutex_unlock(&thread->lock);
             thread = next_thread;
         }
+        PAS_ASSERT(my_thread->has_set_tid);
+        my_thread->tid = gettid(); /* The child now has a different tid than before. */
         filc_first_thread = my_thread;
         PAS_ASSERT(filc_first_thread == my_thread);
         PAS_ASSERT(!filc_first_thread->next_thread);
         PAS_ASSERT(!filc_first_thread->prev_thread);
-
-        /* FIXME: Maybe reuse tids??? */
     } else {
         for (thread = filc_first_thread; thread; thread = thread->next_thread)
             pas_system_mutex_unlock(&thread->lock);
@@ -5730,18 +5360,7 @@ int filc_native_zsys_fork(filc_thread* my_thread)
 
 static int to_user_wait_status(int status)
 {
-    if (!FILC_MUSL)
-        return status;
-    if (WIFEXITED(status))
-        return WEXITSTATUS(status) << 8;
-    if (WIFSIGNALED(status))
-        return filc_to_user_signum(WTERMSIG(status)) | (WCOREDUMP(status) ? 0x80 : 0);
-    if (WIFSTOPPED(status))
-        return 0x7f | (filc_to_user_signum(WSTOPSIG(status)) << 8);
-    if (WIFCONTINUED(status))
-        return 0xffff;
-    PAS_ASSERT(!"Should not be reached");
-    return 0;
+    return status;
 }
 
 int filc_native_zsys_waitpid(filc_thread* my_thread, int pid, filc_ptr status_ptr, int options)
@@ -6005,38 +5624,18 @@ int filc_native_zsys_link(filc_thread* my_thread, filc_ptr oldname_ptr, filc_ptr
 
 static bool from_user_prot(int user_prot, int* prot)
 {
-    if (!FILC_MUSL) {
-        if ((user_prot & PROT_EXEC))
-            return false;
-        *prot = user_prot;
-        return true;
-    }
-    
-    *prot = 0;
-    if (filc_check_and_clear(&user_prot, 1))
-        *prot |= PROT_READ;
-    if (filc_check_and_clear(&user_prot, 2))
-        *prot |= PROT_WRITE;
-    return !user_prot;
+    if ((user_prot & PROT_EXEC))
+        return false;
+    *prot = user_prot;
+    return true;
 }
 
 static bool from_user_mmap_flags(int user_flags, int* flags)
 {
-    if (!FILC_MUSL) {
-        if ((user_flags & MAP_FIXED))
-            return false;
-        *flags = user_flags;
-        return true;
-    }
-    
-    *flags = 0;
-    if (filc_check_and_clear(&user_flags, 0x01))
-        *flags |= MAP_SHARED;
-    if (filc_check_and_clear(&user_flags, 0x02))
-        *flags |= MAP_PRIVATE;
-    if (filc_check_and_clear(&user_flags, 0x20))
-        *flags |= MAP_ANON;
-    return !user_flags;
+    if ((user_flags & MAP_FIXED))
+        return false;
+    *flags = user_flags;
+    return true;
 }
 
 static filc_ptr mmap_error_result(void)
@@ -6152,25 +5751,8 @@ filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_
 
 static bool from_user_dlopen_flags(int user_flags, int* flags)
 {
-    if (!FILC_MUSL) {
-        *flags = user_flags;
-        return true;
-    }
-    
-    *flags = 0;
-    if (filc_check_and_clear(&user_flags, 1))
-        *flags |= RTLD_LAZY;
-    if (filc_check_and_clear(&user_flags, 2))
-        *flags |= RTLD_NOW;
-    if (filc_check_and_clear(&user_flags, 4))
-        *flags |= RTLD_NOLOAD;
-    if (filc_check_and_clear(&user_flags, 4096))
-        *flags |= RTLD_NODELETE;
-    if (filc_check_and_clear(&user_flags, 256))
-        *flags |= RTLD_GLOBAL;
-    else
-        *flags |= RTLD_LOCAL;
-    return !user_flags;
+    *flags = user_flags;
+    return true;
 }
 
 filc_ptr filc_native_zsys_dlopen(filc_thread* my_thread, filc_ptr filename_ptr, int user_flags)
@@ -6264,23 +5846,7 @@ int filc_native_zsys_fsync(filc_thread* my_thread, int fd)
 int filc_native_zsys_shutdown(filc_thread* my_thread, int fd, int user_how)
 {
     int how;
-    if (FILC_MUSL) {
-        switch (user_how) {
-        case 0:
-            how = SHUT_RD;
-            break;
-        case 1:
-            how = SHUT_WR;
-            break;
-        case 2:
-            how = SHUT_RDWR;
-            break;
-        default:
-            filc_set_errno(EINVAL);
-            return -1;
-        }
-    } else
-        how = user_how;
+    how = user_how;
     filc_exit(my_thread);
     int result = shutdown(fd, how);
     int my_errno = errno;
@@ -6306,18 +5872,6 @@ int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
 
 static void from_user_utime_timespec(filc_user_timespec* user_tv, struct timespec* tv)
 {
-    if (FILC_MUSL) {
-        if (user_tv->tv_nsec == 0x3fffffff) {
-            tv->tv_sec = 0;
-            tv->tv_nsec = UTIME_NOW;
-            return;
-        }
-        if (user_tv->tv_nsec == 0x3ffffffe) {
-            tv->tv_sec = 0;
-            tv->tv_nsec = UTIME_OMIT;
-            return;
-        }
-    }
     tv->tv_sec = user_tv->tv_sec;
     tv->tv_nsec = user_tv->tv_nsec;
 }
@@ -6539,17 +6093,8 @@ int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t l
 
 static bool from_user_mlockall_flags(int user_flags, int* flags)
 {
-    if (!FILC_MUSL) {
-        *flags = user_flags;
-        return true;
-    }
-
-    *flags = 0;
-    if (filc_check_and_clear(&user_flags, 1))
-        *flags |= MCL_CURRENT;
-    if (filc_check_and_clear(&user_flags, 2))
-        *flags |= MCL_FUTURE;
-    return !user_flags;
+    *flags = user_flags;
+    return true;
 }
 
 int filc_native_zsys_mlockall(filc_thread* my_thread, int user_flags)
@@ -6598,44 +6143,44 @@ int filc_native_zsys_linkat(filc_thread* my_thread, int user_fd1, filc_ptr path1
     return FILC_SYSCALL(my_thread, linkat(fd1, path1, fd2, path2, flags));
 }
 
-int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+int filc_native_zsys_chmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, chmod(pathname, mode));
 }
 
-int filc_native_zsys_lchmod(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+int filc_native_zsys_lchmod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, lchmod(pathname, mode));
 }
 
-int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, pizlonated_mode_t mode)
+int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned mode)
 {
     return FILC_SYSCALL(my_thread, fchmod(fd, mode));
 }
 
-int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, pizlonated_mode_t mode)
+int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned mode)
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, mkfifo(path, mode));
 }
 
 int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr,
-                             pizlonated_mode_t mode)
+                             unsigned mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, mkdirat(filc_from_user_atfd(user_dirfd), pathname, mode));
 }
 
-int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, pizlonated_mode_t mode)
+int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, mkdir(pathname, mode));
 }
 
 int filc_native_zsys_fchmodat(filc_thread* my_thread, int user_fd, filc_ptr path_ptr,
-                              pizlonated_mode_t mode, int user_flag)
+                              unsigned mode, int user_flag)
 {
     int fd = filc_from_user_atfd(user_fd);
     int flag;
@@ -6659,6 +6204,1231 @@ int filc_native_zsys_unlinkat(filc_thread* my_thread, int user_dirfd, filc_ptr p
     return FILC_SYSCALL(my_thread, unlinkat(dirfd, path, flag));
 }
 
+int filc_to_user_errno(int errno_value)
+{
+    return errno_value;
+}
+
+void filc_from_user_sigset(filc_user_sigset* user_sigset,
+                           sigset_t* sigset)
+{
+    PAS_ASSERT(sizeof(filc_user_sigset) == sizeof(sigset_t));
+    memcpy(sigset, user_sigset, sizeof(sigset_t));
+    PAS_ASSERT(!sigdelsetyolo(sigset, SIGTIMER));
+    PAS_ASSERT(!sigdelsetyolo(sigset, SIGCANCEL));
+    PAS_ASSERT(!sigdelsetyolo(sigset, SIGSYNCCALL));
+}
+
+void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
+{
+    PAS_ASSERT(sizeof(sigset_t) == sizeof(filc_user_sigset));
+    memcpy(user_sigset, sigset, sizeof(sigset_t));
+}
+
+typedef struct {
+    int fd;
+    unsigned long request;
+    int result;
+} ioctl_data;
+
+static void ioctl_callback(void* guarded_arg, void* user_arg)
+{
+    ioctl_data* data = (ioctl_data*)user_arg;
+    data->result = ioctl(data->fd, data->request, guarded_arg);
+}
+
+int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_cc_cursor* args)
+{
+    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE))
+        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
+
+    filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
+    if (!filc_ptr_ptr(arg_ptr))
+        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
+
+    ioctl_data data;
+    data.fd = fd;
+    data.request = request;
+    filc_call_syscall_with_guarded_ptr(my_thread, arg_ptr, ioctl_callback, &data);
+    return data.result;
+}
+
+int filc_native_zsys_socket(filc_thread* my_thread, int domain, int type, int protocol)
+{
+    filc_exit(my_thread);
+    int result = socket(domain, type, protocol);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int level, int optname,
+                                filc_ptr optval_ptr, unsigned optlen)
+{
+    filc_check_read_int(optval_ptr, optlen, NULL);
+    filc_pin(filc_ptr_object(optval_ptr));
+    filc_exit(my_thread);
+    int result = setsockopt(sockfd, level, optname, filc_ptr_ptr(optval_ptr), optlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(optval_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_bind(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, unsigned addrlen)
+{
+    filc_check_read_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = bind(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_connect(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, unsigned addrlen)
+{
+    filc_check_read_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = connect(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getsockname(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
+                                 filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = getsockname(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int level, int optname,
+                                filc_ptr optval_ptr, filc_ptr optlen_ptr)
+{
+    filc_check_read_int(optlen_ptr, sizeof(unsigned), NULL);
+    unsigned optlen = *(unsigned*)filc_ptr_ptr(optlen_ptr);
+
+    filc_check_write_int(optval_ptr, optlen, NULL);
+
+    filc_pin(filc_ptr_object(optval_ptr));
+    filc_exit(my_thread);
+    int result = getsockopt(sockfd, level, optname, filc_ptr_ptr(optval_ptr), &optlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(optval_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(optlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(optlen_ptr) = optlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
+                                 filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = getpeername(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
+                                int flags, filc_ptr addr_ptr, unsigned addrlen)
+{
+    filc_check_read_int(buf_ptr, len, NULL);
+    filc_check_read_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(buf_ptr));
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
+                        (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(buf_ptr));
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
+                                  int flags, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, len);
+    unsigned* addrlen = NULL;
+    if (filc_ptr_ptr(addrlen_ptr)) {
+        addrlen = alloca(sizeof(unsigned));
+        filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+        filc_cpt_write_int(my_thread, addr_ptr, *addrlen);
+    } else if (filc_ptr_ptr(addr_ptr)) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    PAS_ASSERT(!!addrlen == !!filc_ptr_ptr(addr_ptr));
+    filc_exit(my_thread);
+    int result = recvfrom(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
+                          (struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else if (addrlen) {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = *addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
+{
+    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
+    filc_check_write_int(addr_ptr, addrlen, NULL);
+    filc_pin(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    int result = accept(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(addr_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    else {
+        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
+    }
+    return result;
+}
+
+int filc_native_zsys_socketpair(filc_thread* my_thread, int domain, int type, int protocol,
+                                filc_ptr sv_ptr)
+{
+    filc_check_write_int(sv_ptr, sizeof(int) * 2, NULL);
+    filc_pin(filc_ptr_object(sv_ptr));
+    filc_exit(my_thread);
+    int result = socketpair(domain, type, protocol, (int*)filc_ptr_ptr(sv_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(sv_ptr));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+struct user_msghdr {
+    filc_ptr msg_name;
+    unsigned msg_namelen;
+    filc_ptr msg_iov;
+    int msg_iovlen;
+    filc_ptr msg_control;
+    unsigned msg_controllen;
+    int msg_flags;
+};
+
+static void check_user_msghdr(filc_ptr ptr, filc_access_kind access_kind)
+{
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_name, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_namelen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_iov, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_iovlen, access_kind);
+    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_control, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_controllen, access_kind);
+    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_flags, access_kind);
+}
+
+static void from_user_msghdr_base(filc_thread* my_thread,
+                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
+                                  filc_access_kind access_kind)
+{
+    pas_zero_memory(msghdr, sizeof(struct msghdr));
+
+    int iovlen = user_msghdr->msg_iovlen;
+    msghdr->msg_iov = filc_prepare_iovec(
+        my_thread, filc_ptr_load(my_thread, &user_msghdr->msg_iov), iovlen, access_kind);
+    msghdr->msg_iovlen = iovlen;
+
+    msghdr->msg_flags = user_msghdr->msg_flags;
+}
+
+static void from_user_msghdr_impl(filc_thread* my_thread,
+                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
+                                  filc_access_kind access_kind)
+{
+    from_user_msghdr_base(my_thread, user_msghdr, msghdr, access_kind);
+
+    unsigned msg_namelen = user_msghdr->msg_namelen;
+    if (msg_namelen) {
+        filc_ptr msg_name = filc_ptr_load(my_thread, &user_msghdr->msg_name);
+        filc_check_access_int(msg_name, msg_namelen, access_kind, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(msg_name));
+        msghdr->msg_name = filc_ptr_ptr(msg_name);
+        msghdr->msg_namelen = msg_namelen;
+    }
+
+    unsigned user_controllen = user_msghdr->msg_controllen;
+    if (user_controllen) {
+        filc_ptr user_control = filc_ptr_load(my_thread, &user_msghdr->msg_control);
+        filc_check_access_int(user_control, user_controllen, access_kind, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(user_control));
+        msghdr->msg_control = filc_ptr_ptr(user_control);
+        msghdr->msg_controllen = user_controllen;
+    }
+}
+
+static void from_user_msghdr_for_send(filc_thread* my_thread,
+                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+{
+    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_read_access);
+}
+
+static void from_user_msghdr_for_recv(filc_thread* my_thread,
+                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+{
+    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_write_access);
+}
+
+static void to_user_msghdr_for_recv(struct msghdr* msghdr, struct user_msghdr* user_msghdr)
+{
+    user_msghdr->msg_namelen = msghdr->msg_namelen;
+    user_msghdr->msg_controllen = msghdr->msg_controllen;
+    user_msghdr->msg_flags = msghdr->msg_flags;
+}
+
+ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr msg_ptr, int flags)
+{
+    static const bool verbose = false;
+    
+    if (verbose)
+        pas_log("In sendmsg\n");
+
+    check_user_msghdr(msg_ptr, filc_read_access);
+    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    struct msghdr msg;
+    from_user_msghdr_for_send(my_thread, user_msg, &msg);
+    if (verbose)
+        pas_log("Got this far\n");
+    filc_exit(my_thread);
+    if (verbose)
+        pas_log("Actually doing sendmsg\n");
+    ssize_t result = sendmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("sendmsg result = %ld\n", (long)result);
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr msg_ptr, int flags)
+{
+    static const bool verbose = false;
+
+    check_user_msghdr(msg_ptr, filc_read_access);
+    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    struct msghdr msg;
+    from_user_msghdr_for_recv(my_thread, user_msg, &msg);
+    filc_exit(my_thread);
+    if (verbose) {
+        pas_log("Actually doing recvmsg\n");
+        pas_log("msg.msg_iov = %p\n", msg.msg_iov);
+        pas_log("msg.msg_iovlen = %d\n", msg.msg_iovlen);
+        int index;
+        for (index = 0; index < (int)msg.msg_iovlen; ++index)
+            pas_log("msg.msg_iov[%d].iov_len = %zu\n", index, msg.msg_iov[index].iov_len);
+    }
+    ssize_t result = recvmsg(sockfd, &msg, flags);
+    int my_errno = errno;
+    if (verbose)
+        pas_log("recvmsg result = %ld\n", (long)result);
+    filc_enter(my_thread);
+    if (result < 0) {
+        if (verbose)
+            pas_log("recvmsg failed: %s\n", strerror(errno));
+        filc_set_errno(my_errno);
+    } else {
+        check_user_msghdr(msg_ptr, filc_write_access);
+        to_user_msghdr_for_recv(&msg, user_msg);
+    }
+    return result;
+
+einval:
+    filc_set_errno(EINVAL);
+    return -1;
+}
+
+int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_cc_cursor* args)
+{
+    static const bool verbose = false;
+    
+    bool have_arg_int = false;
+    bool have_arg_flock = false;
+    bool have_arg_uint64_ptr = false;
+    bool have_arg_f_owner_ex = false;
+    bool have_arg_uids = false;
+    filc_access_kind ptr_access_kind = filc_read_access;
+    switch (cmd) {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+    case F_SETFD:
+    case F_SETFL:
+    case F_SETOWN:
+    case F_ADD_SEALS:
+    case F_SETLEASE:
+    case F_NOTIFY:
+    case F_SETPIPE_SZ:
+    case F_SETSIG:
+        have_arg_int = true;
+        break;
+    case F_GETLK:
+    case F_OFD_GETLK:
+        have_arg_flock = true;
+        ptr_access_kind = filc_write_access;
+        break;
+    case F_SETLK:
+    case F_SETLKW:
+    case F_OFD_SETLK:
+    case F_OFD_SETLKW:
+    case F_CANCELLK:
+        have_arg_flock = true;
+        break;
+    case F_GET_RW_HINT:
+    case F_GET_FILE_RW_HINT:
+        have_arg_uint64_ptr = true;
+        ptr_access_kind = filc_write_access;
+        break;
+    case F_SET_RW_HINT:
+    case F_SET_FILE_RW_HINT:
+        have_arg_uint64_ptr = true;
+        break;
+    case F_SETOWN_EX:
+        have_arg_f_owner_ex = true;
+        break;
+    case F_GETOWN_EX:
+        have_arg_f_owner_ex = true;
+        ptr_access_kind = filc_write_access;
+        break;
+    case F_GETOWNER_UIDS:
+        have_arg_uids = true;
+        ptr_access_kind = filc_write_access;
+        break;
+    case F_GETFD:
+    case F_GETFL:
+    case F_GETOWN:
+    case F_GET_SEALS:
+    case F_GETLEASE:
+    case F_GETPIPE_SZ:
+    case F_GETSIG:
+        break;
+    default:
+        if (verbose)
+            pas_log("no cmd!\n");
+        filc_set_errno(EINVAL);
+        return -1;
+    }
+    int arg_int = 0;
+    void* arg_ptr = NULL;
+    if (have_arg_int)
+        arg_int = filc_cc_cursor_get_next_int(args, int);
+    else if (have_arg_flock) {
+        filc_ptr flock_ptr = filc_cc_cursor_get_next_ptr(args);
+        filc_cpt_access_int(my_thread, flock_ptr, sizeof(struct flock), ptr_access_kind);
+        arg_ptr = filc_ptr_ptr(flock_ptr);
+    } else if (have_arg_uint64_ptr) {
+        filc_ptr uint64_ptr = filc_cc_cursor_get_next_ptr(args);
+        filc_cpt_access_int(my_thread, uint64_ptr, sizeof(uint64_t), ptr_access_kind);
+        arg_ptr = filc_ptr_ptr(uint64_ptr);
+    } else if (have_arg_f_owner_ex) {
+        filc_ptr f_owner_ex_ptr = filc_cc_cursor_get_next_ptr(args);
+        filc_cpt_access_int(my_thread, f_owner_ex_ptr, sizeof(struct f_owner_ex), ptr_access_kind);
+        arg_ptr = filc_ptr_ptr(f_owner_ex_ptr);
+    } else if (have_arg_uids) {
+        filc_ptr uids_ptr = filc_cc_cursor_get_next_ptr(args);
+        filc_cpt_access_int(my_thread, uids_ptr, sizeof(uid_t) * 2, ptr_access_kind);
+        arg_ptr = filc_ptr_ptr(uids_ptr);
+    }
+    if (verbose)
+        pas_log("so far so good.\n");
+    int result;
+    filc_exit(my_thread);
+    if (have_arg_int)
+        result = fcntl(fd, cmd, arg_int);
+    else if (arg_ptr)
+        result = fcntl(fd, cmd, arg_ptr);
+    else
+        result = fcntl(fd, cmd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (verbose)
+        pas_log("result = %d\n", result);
+    if (result == -1) {
+        if (verbose)
+            pas_log("error = %s\n", strerror(my_errno));
+        filc_set_errno(my_errno);
+    }
+    return result;
+}
+
+int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned long nfds, int timeout)
+{
+    filc_check_write_int(pollfds_ptr, filc_mul_size(sizeof(struct pollfd), nfds), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(pollfds_ptr));
+    struct pollfd* pollfds = (struct pollfd*)filc_ptr_ptr(pollfds_ptr);
+    filc_exit(my_thread);
+    int result = poll(pollfds, nfds, timeout);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_acct(filc_thread* my_thread, filc_ptr file_ptr)
+{
+    char* file = filc_check_and_get_tmp_str(my_thread, file_ptr);
+    filc_exit(my_thread);
+    int result = acct(file);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr list_ptr)
+{
+    static const bool verbose = false;
+    
+    size_t total_size;
+    FILC_CHECK(
+        !pas_mul_uintptr_overflow(sizeof(unsigned), size, &total_size),
+        NULL,
+        "size argument too big, causes overflow; size = %zu.",
+        size);
+    filc_check_read_int(list_ptr, total_size, NULL);
+    filc_pin(filc_ptr_object(list_ptr));
+    filc_exit(my_thread);
+    PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
+    if (verbose) {
+        pas_log("size = %zu\n", size);
+        pas_log("NGROUPS_MAX = %zu\n", (size_t)NGROUPS_MAX);
+    }
+    int result = setgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    filc_unpin(filc_ptr_object(list_ptr));
+    if (verbose)
+        pas_log("result = %d, error = %s\n", result, strerror(my_errno));
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int behav)
+{
+    filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
+    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_exit(my_thread);
+    int result = madvise(filc_ptr_ptr(addr_ptr), len, behav);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, filc_ptr vec_ptr)
+{
+    filc_check_write_int(
+        vec_ptr,
+        pas_round_up_to_power_of_2(
+            len, pas_page_malloc_alignment()) >> pas_page_malloc_alignment_shift(),
+        NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(vec_ptr));
+    filc_exit(my_thread);
+    int result = mincore(filc_ptr_ptr(addr), len, (unsigned char*)filc_ptr_ptr(vec_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getpriority(filc_thread* my_thread, int which, int who)
+{
+    filc_exit(my_thread);
+    errno = 0;
+    int result = getpriority(which, who);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (my_errno)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_setpriority(filc_thread* my_thread, int which, int who, int prio)
+{
+    filc_exit(my_thread);
+    int result = setpriority(which, who, prio);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
+{
+    if (filc_ptr_ptr(tp_ptr)) {
+        filc_check_write_int(tp_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    }
+    if (filc_ptr_ptr(tzp_ptr)) {
+        filc_check_write_int(tzp_ptr, sizeof(struct timezone), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    }
+    filc_exit(my_thread);
+    int result = gettimeofday((struct timeval*)filc_ptr_ptr(tp_ptr),
+                              (struct timezone*)filc_ptr_ptr(tzp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_settimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
+{
+    if (filc_ptr_ptr(tp_ptr)) {
+        filc_check_read_int(tp_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    }
+    if (filc_ptr_ptr(tzp_ptr)) {
+        filc_check_read_int(tzp_ptr, sizeof(struct timezone), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
+    }
+    filc_exit(my_thread);
+    int result = settimeofday((const struct timeval*)filc_ptr_ptr(tp_ptr),
+                              (const struct timezone*)filc_ptr_ptr(tzp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_getrusage(filc_thread* my_thread, int who, filc_ptr rusage_ptr)
+{
+    filc_check_write_int(rusage_ptr, sizeof(struct rusage), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(rusage_ptr));
+    filc_exit(my_thread);
+    int result = getrusage(who, (struct rusage*)filc_ptr_ptr(rusage_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_flock(filc_thread* my_thread, int fd, int operation)
+{
+    filc_exit(my_thread);
+    int result = flock(fd, operation);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+static int utimes_impl(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr,
+                       int (*actual_utimes)(const char*, const struct timeval*))
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    filc_exit(my_thread);
+    int result = actual_utimes(path, (const struct timeval*)filc_ptr_ptr(times_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_utimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    return utimes_impl(my_thread, path_ptr, times_ptr, utimes);
+}
+
+int filc_native_zsys_lutimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    return utimes_impl(my_thread, path_ptr, times_ptr, lutimes);
+}
+
+int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_ptr olddelta_ptr)
+{
+    if (filc_ptr_ptr(delta_ptr)) {
+        filc_check_read_int(delta_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(delta_ptr));
+    }
+    if (filc_ptr_ptr(olddelta_ptr)) {
+        filc_check_write_int(olddelta_ptr, sizeof(struct timeval), NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(olddelta_ptr));
+    }
+    filc_exit(my_thread);
+    int result = adjtime((const struct timeval*)filc_ptr_ptr(delta_ptr),
+                         (struct timeval*)filc_ptr_ptr(olddelta_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+long filc_native_zsys_pathconf(filc_thread* my_thread, filc_ptr path_ptr, int name)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, pathconf(path, name));
+}
+
+long filc_native_zsys_fpathconf(filc_thread* my_thread, int fd, int name)
+{
+    return FILC_SYSCALL(my_thread, fpathconf(fd, name));
+}
+
+int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rlp_ptr)
+{
+    filc_check_read_int(rlp_ptr, sizeof(struct rlimit), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(rlp_ptr));
+    filc_exit(my_thread);
+    int result = setrlimit(resource, (struct rlimit*)filc_ptr_ptr(rlp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+/* It's totally a goal to implement SysV IPC, including the shared memory parts. I just don't have to,
+   yet. */
+int filc_native_zsys_semget(filc_thread* my_thread, long key, int nsems, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(nsems);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_semget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd,
+                            filc_cc_cursor* args)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(semnum);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(args);
+    filc_internal_panic(NULL, "zsys_semctl not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_semop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(array_ptr);
+    PAS_UNUSED_PARAM(nops);
+    filc_internal_panic(NULL, "zsys_semop not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_shmget(filc_thread* my_thread, long key, size_t size, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_shmget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_shmctl(filc_thread* my_thread, int shmid, int cmd, filc_ptr buf_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "zsys_shmctl not implemented.");
+    return -1;
+}
+
+filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr_ptr, int flag)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "zsys_shmat not implemented.");
+    return filc_ptr_forge_null();
+}
+
+int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    filc_internal_panic(NULL, "zsys_shmdt not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgget(filc_thread* my_thread, long key, int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgget not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgctl(filc_thread* my_thread, int msgid, int cmd, filc_ptr buf_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "zsys_msgctl not implemented.");
+    return -1;
+}
+
+long filc_native_zsys_msgrcv(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
+                             long msgtyp, int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgtyp);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgrcv not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_msgsnd(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
+                            int msgflg)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "zsys_msgsnd not implemented.");
+    return -1;
+}
+
+int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
+{
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    filc_exit(my_thread);
+    return FILC_SYSCALL(my_thread, futimes(fd, (const struct timeval*)filc_ptr_ptr(times_ptr)));
+}
+
+int filc_native_zsys_futimesat(filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr times_ptr)
+{
+    if (filc_ptr_ptr(times_ptr)) {
+        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
+        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
+    }
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, futimesat(fd, path,
+                                             (const struct timeval*)filc_ptr_ptr(times_ptr)));
+}
+
+int filc_native_zsys_clock_settime(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
+{
+    filc_check_read_int(tp_ptr, sizeof(struct timespec), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_exit(my_thread);
+    int result = clock_settime(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_clock_getres(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
+{
+    filc_check_write_int(tp_ptr, sizeof(struct timespec), NULL);
+    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_exit(my_thread);
+    int result = clock_getres(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
+    int my_errno = errno;
+    filc_enter(my_thread);
+    PAS_ASSERT(!result || result == -1);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_issetugid(filc_thread* my_thread)
+{
+    filc_exit(my_thread);
+    int result = issetugid();
+    filc_enter(my_thread);
+    return result;
+}
+
+int filc_native_zsys_getresgid(filc_thread* my_thread, filc_ptr rgid_ptr, filc_ptr egid_ptr,
+                               filc_ptr sgid_ptr)
+{
+    filc_cpt_write_int(my_thread, rgid_ptr, sizeof(gid_t));
+    filc_cpt_write_int(my_thread, egid_ptr, sizeof(gid_t));
+    filc_cpt_write_int(my_thread, sgid_ptr, sizeof(gid_t));
+    return FILC_SYSCALL(my_thread, getresgid((gid_t*)filc_ptr_ptr(rgid_ptr),
+                                             (gid_t*)filc_ptr_ptr(egid_ptr),
+                                             (gid_t*)filc_ptr_ptr(sgid_ptr)));
+}
+
+int filc_native_zsys_getresuid(filc_thread* my_thread, filc_ptr ruid_ptr, filc_ptr euid_ptr,
+                               filc_ptr suid_ptr)
+{
+    filc_cpt_write_int(my_thread, ruid_ptr, sizeof(uid_t));
+    filc_cpt_write_int(my_thread, euid_ptr, sizeof(uid_t));
+    filc_cpt_write_int(my_thread, suid_ptr, sizeof(uid_t));
+    return FILC_SYSCALL(my_thread, getresuid((uid_t*)filc_ptr_ptr(ruid_ptr),
+                                             (uid_t*)filc_ptr_ptr(euid_ptr),
+                                             (uid_t*)filc_ptr_ptr(suid_ptr)));
+}
+
+int filc_native_zsys_setresgid(filc_thread* my_thread, unsigned rgid, unsigned egid, unsigned sgid)
+{
+    return FILC_SYSCALL(my_thread, setresgid(rgid, egid, sgid));
+}
+
+int filc_native_zsys_setresuid(filc_thread* my_thread, unsigned ruid, unsigned euid, unsigned suid)
+{
+    return FILC_SYSCALL(my_thread, setresuid(ruid, euid, suid));
+}
+
+int filc_native_zsys_sched_setparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
+{
+    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(
+        my_thread, sched_setparam(pid, (const struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_getparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
+{
+    filc_cpt_write_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(my_thread, sched_getparam(pid, (struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int policy,
+                                        filc_ptr param_buf)
+{
+    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    return FILC_SYSCALL(
+        my_thread, sched_setscheduler(pid, policy,
+                                      (const struct sched_param*)filc_ptr_ptr(param_buf)));
+}
+
+int filc_native_zsys_sched_getscheduler(filc_thread* my_thread, int pid)
+{
+    return FILC_SYSCALL(my_thread, sched_getscheduler(pid));
+}
+
+int filc_native_zsys_sched_get_priority_min(filc_thread* my_thread, int policy)
+{
+    return FILC_SYSCALL(my_thread, sched_get_priority_min(policy));
+}
+
+int filc_native_zsys_sched_get_priority_max(filc_thread* my_thread, int policy)
+{
+    return FILC_SYSCALL(my_thread, sched_get_priority_max(policy));
+}
+
+int filc_native_zsys_sched_rr_get_interval(filc_thread* my_thread, int pid, filc_ptr interval_ptr)
+{
+    filc_cpt_write_int(my_thread, interval_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(
+        my_thread, sched_rr_get_interval(pid, (struct timespec*)filc_ptr_ptr(interval_ptr)));
+}
+
+int filc_native_zsys_eaccess(filc_thread* my_thread, filc_ptr path_ptr, int mode)
+{
+    char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
+    return FILC_SYSCALL(my_thread, eaccess(path, mode));
+}
+
+int filc_native_zsys_fexecve(filc_thread* my_thread, int fd, filc_ptr argv_ptr, filc_ptr envp_ptr)
+{
+    char** argv = filc_check_and_get_null_terminated_string_array(my_thread, argv_ptr);
+    char** envp = filc_check_and_get_null_terminated_string_array(my_thread, envp_ptr);
+    return FILC_SYSCALL(my_thread, fexecve(fd, argv, envp));
+}
+
+int filc_native_zsys_isatty(filc_thread* my_thread, int fd)
+{
+    filc_exit(my_thread);
+    errno = 0;
+    int result = isatty(fd);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (!result && my_errno)
+        filc_set_errno(my_errno);
+    return result;
+}
+
+int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, sizeof(struct utsname));
+    return FILC_SYSCALL(my_thread, uname((struct utsname*)filc_ptr_ptr(buf_ptr)));
+}
+
+int filc_native_zsys_sendfile(filc_thread* my_thread, int out_fd, int in_fd, filc_ptr offset_ptr,
+                              size_t count)
+{
+    if (filc_ptr_ptr(offset_ptr)) {
+        PAS_ASSERT(sizeof(long) == sizeof(off_t));
+        filc_cpt_write_int(my_thread, offset_ptr, sizeof(off_t));
+    }
+    return FILC_SYSCALL(my_thread, sendfile(out_fd, in_fd, (off_t*)filc_ptr_ptr(offset_ptr), count));
+}
+
+void filc_native_zsys_futex_wake(filc_thread* my_thread, filc_ptr addr_ptr, int cnt, int priv)
+{
+    filc_exit(my_thread);
+    futex_wake((volatile int*)filc_ptr_ptr(addr_ptr), cnt, priv);
+    filc_enter(my_thread);
+}
+
+void filc_native_zsys_futex_wait(filc_thread* my_thread, filc_ptr addr_ptr, int val, int priv)
+{
+    filc_cpt_read_int(my_thread, addr_ptr, sizeof(int));
+    filc_exit(my_thread);
+    futex_wait((volatile int*)filc_ptr_ptr(addr_ptr), val, priv);
+    filc_enter(my_thread);
+}
+
+int filc_native_zsys_futex_timedwait(filc_thread* my_thread, filc_ptr addr_ptr, int val, int clock_id,
+                                     filc_ptr timeout_ptr, int priv)
+{
+    filc_cpt_read_int(my_thread, addr_ptr, sizeof(int));
+    if (filc_ptr_ptr(timeout_ptr))
+        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+    filc_exit(my_thread);
+    int result = futex_timedwait((volatile int*)filc_ptr_ptr(addr_ptr), val, clock_id,
+                                 (const struct timespec*)filc_ptr_ptr(timeout_ptr), priv);
+    filc_enter(my_thread);
+    return result;
+}
+
+int filc_native_zsys_futex_unlock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv)
+{
+    filc_cpt_write_int(my_thread, addr_ptr, sizeof(int));
+    filc_exit(my_thread);
+    int result = futex_unlock_pi((volatile int*)filc_ptr_ptr(addr_ptr), priv);
+    filc_enter(my_thread);
+    return result;
+}
+
+int filc_native_zsys_futex_lock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv,
+                                   filc_ptr timeout_ptr)
+{
+    filc_cpt_write_int(my_thread, addr_ptr, sizeof(int));
+    if (filc_ptr_ptr(timeout_ptr))
+        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+    filc_exit(my_thread);
+    int result = futex_lock_pi((volatile int*)filc_ptr_ptr(addr_ptr), priv,
+                               (const struct timespec*)filc_ptr_ptr(timeout_ptr));
+    filc_enter(my_thread);
+    return result;
+}
+
+void filc_native_zsys_futex_requeue(filc_thread* my_thread, filc_ptr addr_ptr, int priv,
+                                    int wake_count, int requeue_count, filc_ptr addr2_ptr)
+{
+    filc_exit(my_thread);
+    futex_requeue((volatile int*)filc_ptr_ptr(addr_ptr), priv, wake_count, requeue_count,
+                  (volatile int*)filc_ptr_ptr(addr2_ptr));
+    filc_enter(my_thread);
+}
+
+int filc_native_zsys_getdents(filc_thread* my_thread, int fd, filc_ptr dirent_ptr, size_t size)
+{
+    filc_cpt_write_int(my_thread, dirent_ptr, size);
+    return FILC_SYSCALL(my_thread, getdents(fd, (struct dirent*)filc_ptr_ptr(dirent_ptr), size));
+}
+
+long filc_native_zsys_getrandom(filc_thread* my_thread, filc_ptr buf_ptr, size_t buflen,
+                                unsigned flags)
+{
+    filc_cpt_write_int(my_thread, buf_ptr, buflen);
+    return FILC_SYSCALL(my_thread, getrandom(filc_ptr_ptr(buf_ptr), buflen, flags));
+}
+
+int filc_native_zsys_epoll_create1(filc_thread* my_thread, int flags)
+{
+    return FILC_SYSCALL(my_thread, epoll_create1(flags));
+}
+
+typedef union user_epoll_data {
+	int fd;
+	uint32_t u32;
+	uint64_t u64;
+} user_epoll_data_t;
+
+struct user_epoll_event {
+	uint32_t events;
+	epoll_data_t data;
+} __attribute__ ((__packed__));
+
+static void check_epoll_struct(void)
+{
+    PAS_ASSERT(sizeof(user_epoll_data_t) == sizeof(epoll_data_t));
+    PAS_ASSERT(sizeof(struct user_epoll_event) == sizeof(struct epoll_event));
+    PAS_ASSERT(PAS_OFFSETOF(struct user_epoll_event, data) == PAS_OFFSETOF(struct epoll_event, data));
+}
+
+int filc_native_zsys_epoll_ctl(filc_thread* my_thread, int epfd, int op, int fd, filc_ptr event_ptr)
+{
+    check_epoll_struct();
+    if (filc_ptr_ptr(event_ptr))
+        filc_cpt_read_int(my_thread, event_ptr, sizeof(struct epoll_event));
+    return FILC_SYSCALL(
+        my_thread, epoll_ctl(epfd, op, fd, (struct epoll_event*)filc_ptr_ptr(event_ptr)));
+}
+
+int filc_native_zsys_epoll_wait(filc_thread* my_thread, int epfd, filc_ptr events_ptr, int maxevents,
+                                int timeout)
+{
+    check_epoll_struct();
+    filc_cpt_write_int(my_thread, events_ptr, filc_mul_size(maxevents, sizeof(struct epoll_event)));
+    return FILC_SYSCALL(my_thread, epoll_wait(epfd, (struct epoll_event*)filc_ptr_ptr(events_ptr),
+                                              maxevents, timeout));
+}
+
+int filc_native_zsys_epoll_pwait(filc_thread* my_thread, int epfd, filc_ptr events_ptr, int maxevents,
+                                 int timeout, filc_ptr sigmask_ptr)
+{
+    check_epoll_struct();
+    filc_cpt_write_int(my_thread, events_ptr, filc_mul_size(maxevents, sizeof(struct epoll_event)));
+    sigset_t* sigmask = NULL;
+    if (filc_ptr_ptr(sigmask_ptr)) {
+        filc_check_user_sigset(sigmask_ptr, filc_read_access);
+        sigmask = alloca(sizeof(sigset_t));
+        filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(sigmask_ptr), sigmask);
+    }
+    return FILC_SYSCALL(my_thread, epoll_pwait(epfd, (struct epoll_event*)filc_ptr_ptr(events_ptr),
+                                               maxevents, timeout, sigmask));
+}
+
+int filc_native_zsys_sysinfo(filc_thread* my_thread, filc_ptr info_ptr)
+{
+    filc_cpt_write_int(my_thread, info_ptr, sizeof(struct sysinfo));
+    return FILC_SYSCALL(my_thread, sysinfo((struct sysinfo*)filc_ptr_ptr(info_ptr)));
+}
+
+int filc_native_zsys_sched_setaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
+{
+    filc_cpt_read_int(my_thread, set_ptr, size);
+    return FILC_SYSCALL(
+        my_thread, sched_setaffinity(tid, size, (const cpu_set_t*)filc_ptr_ptr(set_ptr)));
+}
+
+int filc_native_zsys_sched_getaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
+{
+    filc_cpt_write_int(my_thread, set_ptr, size);
+    return FILC_SYSCALL(my_thread, sched_getaffinity(tid, size, (cpu_set_t*)filc_ptr_ptr(set_ptr)));
+}
+
+int filc_native_zsys_posix_fadvise(filc_thread* my_thread, int fd, long base, long len, int advice)
+{
+    return FILC_SYSCALL(my_thread, posix_fadvise(fd, base, len, advice));
+}
+
+int filc_native_zsys_ppoll(filc_thread* my_thread, filc_ptr fds_ptr, unsigned long nfds,
+                           filc_ptr to_ptr, filc_ptr mask_ptr)
+{
+    filc_cpt_write_int(my_thread, fds_ptr, filc_mul_size(sizeof(struct pollfd), nfds));
+    if (filc_ptr_ptr(to_ptr))
+        filc_cpt_read_int(my_thread, to_ptr, sizeof(struct timespec));
+    sigset_t* sigmask = NULL;
+    if (filc_ptr_ptr(mask_ptr)) {
+        filc_check_user_sigset(mask_ptr, filc_read_access);
+        sigmask = alloca(sizeof(sigset_t));
+        filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(mask_ptr), sigmask);
+    }
+    return FILC_SYSCALL(my_thread, ppoll((struct pollfd*)filc_ptr_ptr(fds_ptr), nfds,
+                                         (const struct timespec*)filc_ptr_ptr(to_ptr), sigmask));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;
@@ -6670,15 +7440,23 @@ filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 
 unsigned filc_native_zthread_get_id(filc_thread* my_thread, filc_ptr thread_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
     check_zthread(thread_ptr);
     filc_thread* thread = (filc_thread*)filc_ptr_ptr(thread_ptr);
+    if (thread->has_set_tid)
+        return thread->tid;
+    filc_exit(my_thread);
+    pas_system_mutex_lock(&thread->lock);
+    while (!thread->has_set_tid)
+        pas_system_condition_wait(&thread->cond, &thread->lock);
+    pas_system_mutex_unlock(&thread->lock);
+    filc_enter(my_thread);
     return thread->tid;
 }
 
 unsigned filc_native_zthread_self_id(filc_thread* my_thread)
 {
     PAS_ASSERT(my_thread->tid);
+    PAS_ASSERT(my_thread->has_set_tid);
     return my_thread->tid;
 }
 
@@ -6695,6 +7473,73 @@ void filc_native_zthread_set_self_cookie(filc_thread* my_thread, filc_ptr cookie
     filc_ptr_store(my_thread, &my_thread->cookie_ptr, cookie_ptr);
 }
 
+void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
+{
+    static const bool verbose = false;
+
+    unsigned tid = thread->tid;
+    PAS_ASSERT(tid);
+    PAS_ASSERT(tid == (unsigned)gettid());
+    
+    if (verbose)
+        pas_log("thread %u main function returned\n", tid);
+
+    pas_system_mutex_lock(&thread->lock);
+    PAS_ASSERT(!thread->has_stopped);
+    PAS_ASSERT(thread->thread);
+    PAS_ASSERT(thread->thread == pthread_self());
+    filc_ptr_store(thread, &thread->result_ptr, result);
+    pas_system_mutex_unlock(&thread->lock);
+
+    thread->top_frame = NULL;
+    while (thread->top_native_frame) {
+        if (thread->top_native_frame->locked)
+            filc_unlock_top_native_frame(thread);
+        filc_pop_native_frame(thread, thread->top_native_frame);
+    }
+    thread->allocation_roots.num_objects = 0;
+
+    sigset_t set;
+    pas_reasonably_fill_sigset(&set);
+    if (verbose)
+        pas_log("%s: blocking signals\n", __PRETTY_FUNCTION__);
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &set, NULL));
+
+    fugc_donate(&thread->mark_stack);
+    filc_thread_stop_allocators(thread);
+    thread->tid = 0;
+    thread->is_stopping = true;
+    filc_thread_undo_create(thread);
+    pas_thread_local_cache_destroy(pas_lock_is_not_held);
+    filc_exit(thread);
+
+    pas_system_mutex_lock(&thread->lock);
+    PAS_ASSERT(!thread->has_stopped);
+    PAS_ASSERT(thread->thread);
+    PAS_ASSERT(!(thread->state & FILC_THREAD_STATE_ENTERED));
+    PAS_ASSERT(!(thread->state & FILC_THREAD_STATE_DEFERRED_SIGNAL));
+    size_t index;
+    for (index = FILC_MAX_USER_SIGNUM + 1; index--;)
+        PAS_ASSERT(!thread->num_deferred_signals[index]);
+    thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
+    thread->has_stopped = true;
+    pas_system_condition_broadcast(&thread->cond);
+    pas_system_mutex_unlock(&thread->lock);
+    
+    if (verbose)
+        pas_log("thread %u disposing\n", tid);
+
+    filc_thread_dispose(thread);
+
+    /* At this point, the GC no longer sees this thread except if the user is holding references to it.
+       And since we're exited, the GC could run at any time. So the thread might be alive or it might be
+       dead - we don't know. */
+
+    pthread_exit(NULL);
+
+    PAS_ASSERT(!"Should not get here");
+}
+
 static void* start_thread(void* arg)
 {
     static const bool verbose = false;
@@ -6703,7 +7548,12 @@ static void* start_thread(void* arg)
 
     thread = (filc_thread*)arg;
 
-    unsigned tid = thread->tid;
+    pas_system_mutex_lock(&thread->lock);
+    unsigned tid = gettid();
+    thread->tid = tid;
+    thread->has_set_tid = true;
+    pas_system_condition_broadcast(&thread->cond);
+    pas_system_mutex_unlock(&thread->lock);
 
     if (verbose)
         pas_log("thread %u (%p) starting\n", tid, thread);
@@ -6747,55 +7597,9 @@ static void* start_thread(void* arg)
 
     filc_ptr result = filc_call_user_ptr_ptr(thread, thread->thread_main, arg_ptr);
 
-    if (verbose)
-        pas_log("thread %u main function returned\n", tid);
+    filc_native_zthread_exit(thread, result);
 
-    pas_system_mutex_lock(&thread->lock);
-    PAS_ASSERT(!thread->has_stopped);
-    PAS_ASSERT(thread->thread);
-    PAS_ASSERT(thread->thread == pthread_self());
-    filc_ptr_store(thread, &thread->result_ptr, result);
-    pas_system_mutex_unlock(&thread->lock);
-
-    filc_pop_native_frame(thread, &native_frame);
-    filc_pop_frame(thread, frame);
-
-    sigset_t set;
-    pas_reasonably_fill_sigset(&set);
-    if (verbose)
-        pas_log("%s: blocking signals\n", __PRETTY_FUNCTION__);
-    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &set, NULL));
-
-    fugc_donate(&thread->mark_stack);
-    filc_thread_stop_allocators(thread);
-    filc_thread_relinquish_tid(thread);
-    thread->is_stopping = true;
-    filc_thread_undo_create(thread);
-    pas_thread_local_cache_destroy(pas_lock_is_not_held);
-    filc_exit(thread);
-
-    pas_system_mutex_lock(&thread->lock);
-    PAS_ASSERT(!thread->has_stopped);
-    PAS_ASSERT(thread->thread);
-    PAS_ASSERT(!(thread->state & FILC_THREAD_STATE_ENTERED));
-    PAS_ASSERT(!(thread->state & FILC_THREAD_STATE_DEFERRED_SIGNAL));
-    size_t index;
-    for (index = FILC_MAX_USER_SIGNUM + 1; index--;)
-        PAS_ASSERT(!thread->num_deferred_signals[index]);
-    thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
-    thread->has_stopped = true;
-    pas_system_condition_broadcast(&thread->cond);
-    pas_system_mutex_unlock(&thread->lock);
-    
-    if (verbose)
-        pas_log("thread %u disposing\n", tid);
-
-    filc_thread_dispose(thread);
-
-    /* At this point, the GC no longer sees this thread except if the user is holding references to it.
-       And since we're exited, the GC could run at any time. So the thread might be alive or it might be
-       dead - we don't know. */
-
+    PAS_ASSERT(!"Should not get here");
     return NULL;
 }
 
@@ -6836,8 +7640,9 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
         PAS_ASSERT(!thread->thread);
         thread->error_starting = true;
         filc_thread_undo_create(thread);
+        thread->has_set_tid = true;
+        pas_system_condition_broadcast(&thread->cond);
         pas_system_mutex_unlock(&thread->lock);
-        filc_thread_relinquish_tid(thread);
         filc_thread_dispose(thread);
         filc_set_errno(result);
         return filc_ptr_forge_null();

@@ -47,56 +47,6 @@
 
 PAS_BEGIN_EXTERN_C;
 
-/* The Fil-C runtime can compiler in the following modes:
-
-   - Musl, indicated by -DFILC_MUSL=1. This means that we're using musl as our libc *and* it *also*
-     means that we're running on a libc that is *not* musl and *isn't even a Linux libc*. This implies
-     that we expose something that isn't even a normal syscall API, since there are some system
-     functions in musl (like syslog, getaddrinfo, and others) that musl would normally implement using
-     lower-level functionality but that for portability reasons we implement in filc_runtime using the
-     underlying libc's versions of those system functions. This also implies that we have to translate
-     lots of stuff. We have to translate flags (musl will use some variant of the Linux #defines for
-     flags), ioctl, fcntl, and sockopt numbers, socket addresses, and any struct even if the struct
-     has no pointers.
-
-     It is a goal to make the musl configuration be the only one that ever does this. So, if you see
-     checks like !FILC_MUSL, then this isn't merely a shortcut for FILC_FILBSD but a check to see "are
-     we doing that weird thing where we use something other than the underlying system's libc as the
-     user libc".
-
-     I'll probably have to rename this configuration if we ever support running on musl on Linux to
-     avoid confusion. Running with musl on Linux will be more like !FILC_MUSL than like FILC_MUSL,
-     since it won't require the weird translations.
-
-     This configuration exists so that Fil-C can be easily tested on a variety of platforms, including
-     macOS. There might come a time when this configuration stops being interesting, since the need
-     for translations makes it inherently constrained in what kinds of software it can support.
-
-   - FilBSD, indicated by -DFILC_FILBSD=1. This means that we're on FreeBSD and we have the FreeBSD
-     libc below and above us. Unlike the musl configuration, this can pass a lot of data to syscalls
-     through without translation. Translation is only required for things that have pointers.
-
-   Functions that are truly specific to either musl or filbsd are in separate files. But lots of
-   functions and datatypes are in filc_runtime.h|c just to maximize code sharing. For simplicity, we
-   make it possible to conditionalize a lot of code using normal C conditionals (rather than
-   preprocessor #if's) by ensuring the FILC_MUSL an FILC_FILBSD are always defined but are either 0 or
-   1. */
-
-#ifndef FILC_MUSL
-#define FILC_MUSL 0
-#endif
-
-#ifndef FILC_FILBSD
-#define FILC_FILBSD 0
-#endif
-
-#if !FILC_MUSL && !FILC_FILBSD
-#error "Must enable either musl or FilBSD"
-#endif
-#if FILC_MUSL && FILC_FILBSD
-#error "Cannot enable both musl and FilBSD"
-#endif
-
 /* Internal FilC runtime header, defining how the FilC runtime maintains its state.
  
    Currently, including this header is the only way to perform FFI to FilC code, and the API for
@@ -253,13 +203,7 @@ typedef uint16_t filc_object_flags;
                                                                      cannot be freed. This is only
                                                                      useful for munmap scenarios. */
 
-#if FILC_MUSL
-#define FILC_MAX_USER_SIGNUM              31u
-#elif FILC_FILBSD
-#define FILC_MAX_USER_SIGNUM              128u
-#else /* FILC_FILBSD */
-#error "Don't know how many signals"
-#endif
+#define FILC_MAX_USER_SIGNUM              (_NSIG - 1)
                                           
 #define FILC_THREAD_STATE_ENTERED         ((uint8_t)1)
 #define FILC_THREAD_STATE_CHECK_REQUESTED ((uint8_t)2)
@@ -434,7 +378,9 @@ struct filc_signal_handler {
 struct filc_thread {
     /* Begin fields that the compiler has to know about. */
     uint8_t state;
-    unsigned tid; /* musl relies on each thread having a 32-bit id, so we oblige. */
+    unsigned tid; /* This is the result of gettid(). It's reset to zero when the thread dies. If it
+                     hasn't been assigned yet, then its value will be zero and has_set_tid will be
+                     false. */
     filc_frame* top_frame;
 
     /* These are not tracked by GC, since they must be consumed by the landingpad right after
@@ -480,6 +426,7 @@ struct filc_thread {
     bool forked; /* set to true if this thread died due to forking. We use this to implement super
                     precise semantics in that case; it allows zthread_join to return false/ESRCH if
                     you try to join a thread that died due to fork. */
+    bool has_set_tid; /* set to true when the thread actually sets the tid. */
     pthread_t thread; /* the underlying thread is always detached and this stays non-NULL so long
                          as the thread is running.
                          
@@ -756,57 +703,12 @@ struct filc_jmp_buf {
     filc_object* objects[];
 };
 
-#if FILC_FILBSD
-typedef unsigned short pizlonated_mode_t;
-#else
-typedef unsigned pizlonated_mode_t;
-#endif
-
-#if FILC_MUSL
-struct filc_user_itimerval;
-struct filc_user_rlimit;
-struct filc_user_sigset;
-struct filc_user_timespec;
-struct filc_user_timeval;
-typedef struct filc_user_itimerval filc_user_itimerval;
-typedef struct filc_user_rlimit filc_user_rlimit;
-typedef struct filc_user_sigset filc_user_sigset;
-typedef struct filc_user_timespec filc_user_timespec;
-typedef struct filc_user_timeval filc_user_timeval;
-
-struct filc_user_rlimit {
-    unsigned long long rlim_cur;
-    unsigned long long rlim_max;
-};
-
-struct filc_user_sigset {
-    unsigned long bits[128 / sizeof(long)];
-};
-
-struct filc_user_timespec {
-    uint64_t tv_sec;
-    uint64_t tv_nsec;
-};
-
-struct filc_user_timeval {
-    uint64_t tv_sec;
-    uint64_t tv_usec;
-};
-
-struct filc_user_itimerval {
-    filc_user_timeval it_interval;
-    filc_user_timeval it_value;
-};
-
-#else /* FILC_MUSL -> so !FILC_MUSL */
 typedef struct itimerval filc_user_itimerval;
 typedef struct rlimit filc_user_rlimit;
 typedef sigset_t filc_user_sigset;
 typedef struct timespec filc_user_timespec;
 typedef struct timeval filc_user_timeval;
-#endif /* FILC_MUSL -> so end of !FILC_MUSL */
 
-/* musl and FilBSD agree on this layout. */
 struct filc_user_iovec {
     filc_ptr iov_base;
     size_t iov_len;
@@ -1108,9 +1010,6 @@ void filc_thread_stop_allocators(filc_thread* my_thread);
 void filc_thread_mark_roots(filc_thread* my_thread);
 void filc_thread_sweep_mark_stack(filc_thread* my_thread);
 void filc_thread_donate(filc_thread* my_thread);
-
-/* Called by filc_mark_global_roots() to mark the roots that are specific to the user stack. */
-void filc_mark_user_global_roots(filc_object_array* mark_stack);
 
 void filc_mark_global_roots(filc_object_array* mark_stack);
 
@@ -2283,8 +2182,7 @@ PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value)
 PAS_API size_t filc_get_size_env(const char* name, size_t default_value);
 
 void filc_start_program(int argc, char** argv,
-                        filc_ptr pizlonated___init_libc(filc_global_initialization_context*),
-                        filc_ptr pizlonated_exit(filc_global_initialization_context*),
+                        filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
                         filc_ptr pizlonated_main(filc_global_initialization_context*));
 
 PAS_END_EXTERN_C;

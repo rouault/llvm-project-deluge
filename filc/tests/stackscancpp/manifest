@@ -1,4 +1,4 @@
 return:
   success
 output-includes:
-  - "foo(),filc/tests/stackscancpp/stackscancpp.cpp,36,5;bar(),filc/tests/stackscancpp/stackscancpp.cpp,42,5;main,filc/tests/stackscancpp/stackscancpp.cpp,48,5;start_program,<runtime>,0,0;"
+  - "foo(),filc/tests/stackscancpp/stackscancpp.cpp,37,5;bar(),filc/tests/stackscancpp/stackscancpp.cpp,43,5;main,filc/tests/stackscancpp/stackscancpp.cpp,49,5;__libc_start_main,src/env/__libc_start_main.c,79,7;start_program,<runtime>,0,0;"

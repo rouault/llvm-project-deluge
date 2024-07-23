@@ -3,6 +3,7 @@
 #include <stdfil.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 #define NWTHREADS 2
 #define NRTHREADS 10
@@ -41,6 +42,8 @@ static void* read_thread_main(void* arg)
         for (j = NCOUNTS; j--;)
             ZASSERT(count[0] == count[j]);
         pthread_rwlock_unlock(&lock);
+        usleep(1); /* Musl's rwlock algorithm does not have any biasing for write locks, so it will
+                      lead to writer starvation. So weird. */
     }
     return NULL;
 }

@@ -5,6 +5,8 @@
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <pizlonated_runtime.h>
+#include <stdbool.h>
 
 #define ZASSERT(exp) do { \
     if ((exp)) \
@@ -22,8 +24,7 @@ void* thread_main(void* arg)
 
 int main()
 {
-    pthread_t thread;
-    pthread_create(&thread, NULL, thread_main, NULL);
+    void* thread = zthread_create(thread_main, NULL);
     int fork_result = fork();
     ZASSERT(fork_result >= 0);
     if (fork_result) {
@@ -36,9 +37,11 @@ int main()
         ZASSERT(WIFEXITED(status));
         ZASSERT(!WEXITSTATUS(status));
     } else {
-        int result = pthread_join(thread, NULL);
-        printf("join result = %d, %s\n", result, strerror(result));
-        ZASSERT(result == ESRCH);
+        bool result = zthread_join(thread, NULL);
+        int my_errno = errno;
+        printf("join result = %d, %s\n", result, strerror(my_errno));
+        ZASSERT(!result);
+        ZASSERT(my_errno == ESRCH);
         printf("Pozdrowienia od dzieci\n");
     }
     

@@ -30,30 +30,6 @@ set -x
 
 rm -rf pizfix
 
-# Stash filbsdrt instead of deleting it, in case we want to quickly recover it.
-if test -d filbsdrt
-then
-    rm -rf filbsdrt-saved
-    mv filbsdrt filbsdrt-saved
-fi
-
-mkdir -p build
-
-if test $OS = macosx
-then
-    mkdir -p runtime-build
-    
-    if test ! -f runtime-build/runtime-build-ok1
-    then
-        (cd runtime-build &&
-             cmake -S ../llvm-project-clean/llvm -B . -G Ninja \
-                   -DLLVM_ENABLE_PROJECTS=clang -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                   -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_ENABLE_RUNTIMES=compiler-rt &&
-             ninja &&
-             touch runtime-build-ok1)
-    fi
-fi
-
 ./configure_llvm.sh
 ./build_base.sh
 

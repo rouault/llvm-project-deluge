@@ -29,7 +29,7 @@ set -e
 set -x
 
 mkdir -p build
-$MAKE -f Makefile-$CHECKMAKESUFFIX check-pas -j $NCPU
+$MAKE -f Makefile check-pas -j $NCPU
 
 set +x
 

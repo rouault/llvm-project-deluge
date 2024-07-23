@@ -627,11 +627,6 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     llvm::sys::path::append(P, "..", "..", "pizfix", "stdfil-include");
     addSystemInclude(DriverArgs, CC1Args, P);
   }
-  {
-    SmallString<128> P(D.InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "musl-include");
-    addSystemInclude(DriverArgs, CC1Args, P);
-  }
   
   if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
       && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {

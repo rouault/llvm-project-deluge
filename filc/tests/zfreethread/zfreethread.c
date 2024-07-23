@@ -1,5 +1,6 @@
 #include <pthread.h>
 #include <stdfil.h>
+#include <pizlonated_runtime.h>
 
 void* thread_main(void* arg)
 {
@@ -10,8 +11,8 @@ void* thread_main(void* arg)
 
 int main()
 {
-    pthread_t thread;
-    ZASSERT(!pthread_create(&thread, NULL, thread_main, NULL));
+    void* thread = zthread_create(thread_main, NULL);
+    ZASSERT(thread);
     zprintf("Spoko\n");
     zgc_free(thread);
     zprintf("Nie dobrze\n");

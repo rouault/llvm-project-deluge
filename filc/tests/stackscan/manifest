@@ -1,4 +1,4 @@
 return:
   success
 output-includes:
-  - "foo,filc/tests/stackscan/stackscan.c,19,5,no;bar,filc/tests/stackscan/stackscan.c,24,5,no;main,filc/tests/stackscan/stackscan.c,29,5,no;start_program,<runtime>,0,0,yes;"
+  - "foo,filc/tests/stackscan/stackscan.c,19,5,no;bar,filc/tests/stackscan/stackscan.c,24,5,no;main,filc/tests/stackscan/stackscan.c,29,5,no;__libc_start_main,src/env/__libc_start_main.c,79,7,no;start_program,<runtime>,0,0,yes;"

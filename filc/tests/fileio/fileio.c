@@ -1,4 +1,4 @@
-#include <pizlonated_common_syscalls.h>
+#include <pizlonated_syscalls.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/epoll.h>
 
 int main(int argc, char** argv)
 {
@@ -88,7 +90,12 @@ int main(int argc, char** argv)
 
     int fds[2];
     ZASSERT(!pipe(fds));
+    int data = 666;
+    ZASSERT(!ioctl(fds[0], FIONREAD, &data));
+    ZASSERT(!data);
     ZASSERT(write(fds[1], "hello", strlen("hello") + 1) == strlen("hello") + 1);
+    ZASSERT(!ioctl(fds[0], FIONREAD, &data));
+    ZASSERT(data == strlen("hello") + 1);
 
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -103,6 +110,17 @@ int main(int argc, char** argv)
     pollfds[0].events = POLLIN;
     ZASSERT(poll(pollfds, 1, -1) == 1);
     ZASSERT(pollfds[0].revents == POLLIN);
+
+    int epfd = epoll_create1(0);
+    ZASSERT(epfd > 2);
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = fds[0];
+    ZASSERT(!epoll_ctl(epfd, EPOLL_CTL_ADD, fds[0], &ev));
+    memset(&ev, 0, sizeof(ev));
+    ZASSERT(epoll_wait(epfd, &ev, 1, -1) == 1);
+    ZASSERT(ev.events == EPOLLIN);
+    ZASSERT(ev.data.fd == fds[0]);
     
     ZASSERT(read(fds[0], buf, strlen("hello") + 1) == strlen("hello") + 1);
     ZASSERT(!strcmp(buf, "hello"));

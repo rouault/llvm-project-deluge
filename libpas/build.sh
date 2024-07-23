@@ -42,7 +42,7 @@ mkdir -p ../pizfix/lib_test
 mkdir -p ../pizfix/man
 mkdir -p ../pizfix/man/man1
 $MAKE -f Makefile-setup
-$MAKE -f Makefile-$MAKESUFFIX -j $NCPU
+$MAKE -f Makefile -j $NCPU
 
 set +x
 

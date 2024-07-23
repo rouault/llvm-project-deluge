@@ -30,16 +30,6 @@ set -x
 
 GITBASE=`git remote -v | awk '{print $2}' | head -1 | sed 's/\([^\/]*\)$//'`
 
-if test $OS = macosx
-then
-    if test ! -d llvm-project-clean
-    then
-        (git clone . llvm-project-clean && \
-             cd llvm-project-clean && \
-             git checkout 6009708b4367171ccdbf4b5905cb6a803753fe18)
-    fi
-fi
-
 handle_git_with_branch()
 {
     remote_path=$1
@@ -68,8 +58,8 @@ handle_git()
     fi
 }
 
-handle_git deluded-musl musl
 handle_git_with_branch deluded-musl yolomusl yolomusl
+handle_git_with_branch deluded-musl usermusl usermusl
 
 handle_git deluded-zlib-1.3.git zlib-1.3
 handle_git deluded-openssl-3.2.0.git openssl-3.2.0

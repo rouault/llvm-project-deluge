@@ -61,7 +61,7 @@ and even [found a bug](https://github.com/python/cpython/issues/118534)),
 [memory-safe SQLite](https://github.com/pizlonator/pizlonated-sqlite),
 [memory-safe libcxx and libcxxabi](https://github.com/pizlonator/llvm-project-deluge/tree/deluge), and
 [memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
-me on my Apple Silicon Mac and on my FreeBSD 14 X86_64 box:
+me on my Linux X86_64 box:
 
     pizfix/bin/curl https://www.google.com/
 
@@ -96,7 +96,7 @@ First I'll tell you how to build Fil-C and then I'll tell you how to use it.
 
 ### Building Fil-C
 
-Fil-C currently only works on Apple Silicon Macs and FreeBSD 14 on X86_64. Upon getting Fil-C from
+Fil-C currently only works on Linux/X86_64. Upon getting Fil-C from
 https://github.com/pizlonator/llvm-project-deluge.git, and making sure you're on the `deluge` branch,
 simply do:
 
@@ -116,10 +116,7 @@ And then even connect to it:
 
     pizfix/bin/ssh -p 10022 localhost
 
-You'll probably encounter bugs. For example, password auth is broken, so logging into your ssh server will
-only work if you have authorized_keys set up. That's mostly because of my hacks to get musl (a Linux libc)
-to work on Darwin. For now, Fil-C also uses musl on FreeBSD (but I'll replace it with FreeBSD's own libc
-soon).
+You'll probably encounter bugs.
 
 ### Using Fil-C
 
@@ -129,10 +126,6 @@ Let's start with the basics. Fil-C works like any C compiler. Take this program:
     int main() { printf("Hello!\n"); return 0; }
 
 Say it's named hello.c. We can do:
-
-    xcrun build/bin/clang -o hello hello.c -g -O
-
-Or, on FreeBSD, we can skip the `xcrun` and just do:
 
     build/bin/clang -o hello hello.c -g -O
 
@@ -150,7 +143,7 @@ Let's quickly look at what happens with a broken program:
 
 Here's what happens when we compile and run this:
 
-    [pizlo@behemoth llvm-project-deluge] xcrun build/bin/clang -o bad bad.c -O -g
+    [pizlo@behemoth llvm-project-deluge] build/bin/clang -o bad bad.c -O -g
     [pizlo@behemoth llvm-project-deluge] ./bad
     filc safety error: cannot access pointer with ptr >= upper (ptr = 0x10a4104c8,0x10a4104a0,0x10a4104b0,_).
         bad.c:4:41: main

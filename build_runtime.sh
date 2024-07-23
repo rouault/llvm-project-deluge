@@ -26,11 +26,5 @@
 set -e
 set -x
 
-mv filbsdrt-saved filbsdrt
-
-if test -d pizfix
-then
-    rm -rf pizfix-saved
-    mv pizfix pizfix-saved
-fi
-
+cd libpas
+./build.sh
