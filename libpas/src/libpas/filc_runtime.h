@@ -134,9 +134,8 @@ typedef uint16_t filc_object_flags;
    unset -> free
    int -> free
    ptr -> free
-   dirstream -> free
    
-   Note that some states (dirstream, function, and thread) have no transition from unset. These are
+   Note that some states (function, thread, others) have no transition from unset. These are
    allocated with filc_allocate_special, which sets the type straight away. These special types all
    have upper = lower + 16 even though the payload is not 16 bytes!
 
@@ -161,26 +160,23 @@ typedef uint16_t filc_object_flags;
 #define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread
                                                                      type. The lower points at the
                                                                      payload. */
-#define FILC_WORD_TYPE_DIRSTREAM          ((filc_word_type)6)     /* Indicates the special dirstream
-                                                                     type. The lower points at the
-                                                                     payload. */
-#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)7)     /* Indicates the special
+#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)6)     /* Indicates the special
                                                                      signal_handler. The lower points
                                                                      at the payload. */ 
-#define FILC_WORD_TYPE_PTR_TABLE          ((filc_word_type)8)     /* Indicates the special ptr_table.
+#define FILC_WORD_TYPE_PTR_TABLE          ((filc_word_type)7)     /* Indicates the special ptr_table.
                                                                      The lower points at the
                                                                      payload. */
-#define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)9)     /* Indicates the special
+#define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)8)     /* Indicates the special
                                                                      ptr_table_array. The lower points
                                                                      at the payload. */
-#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)10)    /* Indicates the special dlopen
+#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)9)     /* Indicates the special dlopen
                                                                      handle type. The lower points at
                                                                      the hanle but the GC-allocated
                                                                      payload is empty. */
-#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)11)    /* Indicates the special jmp_buf
+#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)10)    /* Indicates the special jmp_buf
                                                                      type. The lower points at the
                                                                      payload. */
-#define FILC_WORD_TYPE_EXACT_PTR_TABLE    ((filc_word_type)12)    /* Indicates the special
+#define FILC_WORD_TYPE_EXACT_PTR_TABLE    ((filc_word_type)11)    /* Indicates the special
                                                                      exact_ptr_table. The lower points
                                                                      at the payload. */
 
@@ -193,8 +189,8 @@ typedef uint16_t filc_object_flags;
                                                                      be set. If this is set, then
                                                                      there must be one word, and that
                                                                      word must be one of free/
-                                                                     function/thread/dirstream/
-                                                                     signal_handler. */
+                                                                     function/thread/signal_handler/
+                                                                     etc. */
 #define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)4)  /* Pointer to a global, so cannot be
                                                                      freed. */
 #define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)8)  /* Pointer to mmap. */
@@ -1055,7 +1051,6 @@ static inline filc_object* filc_object_for_special_payload(void* payload)
     PAS_TESTING_ASSERT(result->lower == payload);
     PAS_TESTING_ASSERT(result->upper == (char*)payload + FILC_WORD_SIZE);
     PAS_TESTING_ASSERT(result->word_types[0] == FILC_WORD_TYPE_THREAD ||
-                       result->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
                        result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                        result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
@@ -1585,7 +1580,6 @@ static inline bool filc_word_type_is_special(filc_word_type word_type)
     case FILC_WORD_TYPE_FUNCTION:
     case FILC_WORD_TYPE_THREAD:
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
-    case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
     case FILC_WORD_TYPE_DL_HANDLE:
@@ -1606,7 +1600,6 @@ static inline bool filc_special_word_type_has_destructor(filc_word_type word_typ
         return true;
     case FILC_WORD_TYPE_FUNCTION:
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
-    case FILC_WORD_TYPE_DIRSTREAM:
     case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
     case FILC_WORD_TYPE_DL_HANDLE:
     case FILC_WORD_TYPE_JMP_BUF:
@@ -1620,9 +1613,9 @@ static inline bool filc_special_word_type_has_destructor(filc_word_type word_typ
 PAS_API filc_ptr filc_get_next_bytes_for_va_arg(
     filc_thread* my_thread, filc_ptr ptr_ptr, size_t size, size_t alignment, const filc_origin* origin);
 
-/* Allocates a "special" object; this is used for functions, threads, and dirstreams. For these types,
-   the object's lower/upper pretends to have just one word but the payload size could be anything. The
-   one word is set to word_type. */
+/* Allocates a "special" object; this is used for functions, threads, and and other specials. For
+   these types, the object's lower/upper pretends to have just one word but the payload size could be
+   anything. The one word is set to word_type. */
 filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_word_type word_type);
 
 /* Same as filc_allocate_special, but usable before we have ever created threads and before we have
@@ -1656,9 +1649,9 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
 /* "Frees" the object. This transitions the state of all words to the free state. */
 void filc_free(filc_thread* my_thread, filc_object* object);
 
-/* Frees the object without checking that it's an object that can be freed. Used for freeing special
-   objects that we know we can free, like dirstreams. Only call this after checking that it's
-   something that is OK to free. This still does the is-not-already-free check. */
+/* Frees the object without checking that it's an object that can be freed. Used internally by
+   filc_free() and by munmap(). Only call this after checking that it's something that is OK to free.
+   This still does the is-not-already-free check. */
 void filc_free_yolo(filc_thread* my_thread, filc_object* object);
 
 filc_ptr_table* filc_ptr_table_create(filc_thread* my_thread);

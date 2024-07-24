@@ -1525,9 +1525,6 @@ void filc_word_type_dump(filc_word_type type, pas_stream* stream)
     case FILC_WORD_TYPE_THREAD:
         pas_stream_printf(stream, "thread");
         return;
-    case FILC_WORD_TYPE_DIRSTREAM:
-        pas_stream_printf(stream, "dirstream");
-        return;
     case FILC_WORD_TYPE_SIGNAL_HANDLER:
         pas_stream_printf(stream, "signal_handler");
         return;
@@ -2020,8 +2017,7 @@ void filc_free_yolo(filc_thread* my_thread, filc_object* object)
         PAS_TESTING_ASSERT(
             old_type == FILC_WORD_TYPE_UNSET ||
             old_type == FILC_WORD_TYPE_INT ||
-            old_type == FILC_WORD_TYPE_PTR ||
-            old_type == FILC_WORD_TYPE_DIRSTREAM);
+            old_type == FILC_WORD_TYPE_PTR);
         /* If this was a ptr, and now it's not, then this would be like overwriting a pointer, from
            the GC's standpoint. It's a pointer deletion. But we don't have a deletion barrier! So
            it's fine! */
@@ -2591,7 +2587,6 @@ void filc_validate_object(filc_object* object, const filc_origin* origin)
         FILC_ASSERT(object->word_types[0] == FILC_WORD_TYPE_FREE ||
                     object->word_types[0] == FILC_WORD_TYPE_FUNCTION ||
                     object->word_types[0] == FILC_WORD_TYPE_THREAD ||
-                    object->word_types[0] == FILC_WORD_TYPE_DIRSTREAM ||
                     object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
                     object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||

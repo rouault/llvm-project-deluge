@@ -80,7 +80,11 @@ class Stats
     end
 
     def to_s
-        "#{mean} += #{stdDev}"
+        if data.length <= 1
+            mean.to_s
+        else
+            "#{mean} += #{stdDev}"
+        end
     end
 end
 
