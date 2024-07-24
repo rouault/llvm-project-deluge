@@ -76,10 +76,10 @@ which exposes all of the API that musl needs (low-level
 which themselves perform comprehensive safety checking).
 
 On the other hand, Fil-C is quite slow. It's ~10x slower than legacy C right now (ranging from 3x
-slower in the best case, xz decompress, to 20x in the worst case, CPython). I have not done any
-optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
-much code to it as I personally can in my spare time. It's important for Fil-C to be fast eventually,
-but it'll be easiest to make it fast once there is a large corpus of code that can run on it.
+slower in the best case, xz decompress, to 20x in the worst case, CPython). So far I have only
+implemented a handful of optimizations since I have mostly focused on correctness and ergonomics and
+converting as much code to it as I personally can in my spare time. It's important for Fil-C to be
+fast eventually.
 
 Note that the very first prototype of Fil-C used isoheaps instead of GC. The isoheap version is obsolete,
 since it's slower and requires more changes to C code. If you want to read about it,
