@@ -75,7 +75,8 @@ which exposes all of the API that musl needs (low-level
 [syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#2901),
 which themselves perform comprehensive safety checking).
 
-On the other hand, Fil-C is quite slow. It's ~50x slower than legacy C right now. I have not done any
+On the other hand, Fil-C is quite slow. It's ~10x slower than legacy C right now (ranging from 3x
+slower in the best case, xz decompress, to 20x in the worst case, CPython). I have not done any
 optimizations to it at all. I am focusing entirely on correctness and ergonomics and converting as
 much code to it as I personally can in my spare time. It's important for Fil-C to be fast eventually,
 but it'll be easiest to make it fast once there is a large corpus of code that can run on it.
@@ -85,10 +86,8 @@ since it's slower and requires more changes to C code. If you want to read about
 [see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).
 
 This document goes into the details of Fil-C and is organized as follows. First, I show you how to
-use Fil-C. Then, I describe the Fil-C development plan, which explains my views on growing the set
-of things Fil-C can run and how to make it run fast. The section about making it run fast also delves
-into a lot of technical details about how Fil-C works. Then I conclude with a description of the
-FUGC and MonoCap algorithms.
+use Fil-C. Then, I describe the remaining work to make Fil-C even faster. Then I conclude with a
+description of the FUGC and MonoCap algorithms.
 
 ## Using Fil-C
 
@@ -170,164 +169,32 @@ Fil-C requires almost no changes to C or C++ code. Inline assembly is currently 
 script jank has to change. Other than that, I only had to make a couple one-line changes in OpenSSL
 and OpenSSH to get them to work.
 
-## The Fil-C Development Plan
+## Making Fil-C Fast
 
-Lots of projects have attempted to make C memory-safe. I've worked on some of them. Usually, the
-development plan starts with the truism that C has to be fast. This leads to antipatterns creeping
-in from the start.
+The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 10x slower
+than legacy C on average, though in some cases it's only 3x slower.
 
-Premature optimization really is the root of all evil! In the case of new language bringup, or the
-bringup of a radically new way of compiling an existing language, premature optimizations are
-particularly evil because:
+Why is it so slow?
 
-- If your language doesn't run anything yet, then you cannot meaningfully test any of your
-  optimizations. Therefore, fast memory-safe C prototypes are likely to only be fast on whatever
-  tiny corpus of tests that prototype was built to run. Worse, it's likely that they can only run
-  whatever corpus they were optimized for and nothing else! In practice, it leads to
-  abandonware like [CCured](https://people.eecs.berkeley.edu/~necula/Papers/ccured_toplas.pdf)
-  and [SoftBound](https://llvm.org/pubs/2009-06-PLDI-SoftBound.html) or solutions that are not
-  practical to deploy widely because they require new hardware like
-  [CHERI](https://www.cl.cam.ac.uk/research/security/ctsrd/cheri/). In other words, we already have
-  multiple fast memory-safe Cs, but they require compilers you can't run or hardware you can't buy.
+- The current calling convention and dynamic linking implementation is different from C, but relies
+  on the C linker and C calling convention under the hood, resulting in doubling of both call and
+  linking overheads.
 
-- Working on a language implementation that is optimized is harder than working on one that is
-  designed for simplicity. When bringing up a new language and growing its corpus, it's important
-  to have the flexibility to make lots of changes, including to the language itself and fundamental
-  things about how it's compiled or interpreted. Therefore, prematurely optimizing a language
-  implementation makes it harder to grow the language's corpus. The moment you encounter something
-  you didn't expect in some new program, you'll have to not just deal with conceptual complexity of
-  the idiom you encountered, but the implementation complexity of all your optimizations.
+- Inlining - and many other compiler optimizations - currently happen *after* Fil-C injects its
+  instrumentation, including call/link instrumentation. This effectively makes inlining ineffective.
 
-It's always possible to optimize later. "My software runs correctly but too slowly" is not as
-bad of a problem as "my software is fast but wrong" or "my software is fast but riddled with
-security bugs".
+- The runtime still has a lot of "reference implementation" style code that hasn't been optimized at
+  all. Allocation and memmove are two examples of functions that could be made faster, but simply
+  haven't been, yet.
 
-Therefore, my development plan for Fil-C is all about deliberately avoiding any performance work
-until I have a large corpus of C code that works in Fil-C. Once that corpus exists, it will make
-sense to start optimizing. But until that corpus exists, I want to have the flexibility of
-rewriting major pieces of the Fil-C compiler and runtime to support whatever kind of weird C
-idioms I encounter as I grow the corpus.
+- The `llvm::FilPizlonatorPass` inserts checks blindly, without doing any analysis to remove
+  redundancies. Also, it instruments code without making any smart use of LLVM metadata like TBAA,
+  which thwarts subsequent LLVM passes ability to remove redundant checks.
 
-The rest of this section describes the next two phases of the development plan: growing the corpus
-and then making it super fast.
+- Likely other issues that I don't know about.
 
-### Growing the Corpus
-
-Fil-C can already run a bunch of stuff, but not enough to be able to do meaningful optimizations, yet.
-My goal is to grow the corpus until I have a small UNIX-like userland that comprises only pizlonated
-programs.
-
-Corpus growth should proceed as follows:
-
-- First get to at least 10 large, real-world C libaries or programs compiling with Fil-C.
-  I don't consider musl to be part of the corpus,
-  since I'm making lots of internal changes to it (and I'm willing to even completely rewrite it
-  if it makes adding more programs easier). I'm close to this goal already, depending on whether
-  you believe that the things I've gotten to work actually work well enough for meaningful performance
-  benchmarking.
-
-- Then add C++ support and add at least 10 large, real-world C++ libraries or programs.
-
-Once we have such a corpus, then it'll make sense to start thinking about some optimizations.
-
-Even after the corpus grows to 10 C programs and 10 C++ programs, we will still want to keep
-growing the corpus. But hopefully, it'll get easier to grow the corpus as the corpus grows. For
-example, it's still the case that adding new code trips cases where some musl syscall isn't
-implemented in libpizlo. Eventually musl+libpizlo will know all the syscalls.
-
-### Making Fil-C Fast
-
-The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 50x slower
-than legacy C according to my tests (good old [Richards](https://www.cl.cam.ac.uk/~mr10/Bench.html),
-zlib's minigzip, and OpenSSL's `enc` command are roughly in that ballpark).
-
-Why is it so slow? Answering this question also gives us a fun way to talk about Fil-C's technical
-details. So, this section will simultaneously explain how Fil-C works today and how it would work
-if I cared about performance. And I won't care about performance until I've got a corpus!
-
-First of all, performance is a deliberate non-goal of the current implementation. It's super hard
-to make a C compiler widen all pointers to 16 bytes, align them to 16 bytes, handle accurate
-concurrent GC, and then transform
-all of the code in a way that allows zero unsafety through. It's hard to even reason about whether
-the chosen transformation strategy obeys the compiler's own laws let alone whether it's sound. To
-make it easy for me to feel confident that I was doing the right thing when writing the runtime
-and `llvm::FilPizlonatorPass`, I consistently went for implementation tactics that are dead simple
-to get right, reason about, and test. For example:
-
-- Every local variable is currently heap-allocated without even the dumbest escape analysis. This
-  is shockingly easy to fix and is likely to change the performance by an order of magnitude, if I
-  cared!
-
-- The Fil-C ABI currently has the caller allocate a buffer in the heap to store the
-  arguments. The callee deallocates the argument buffer. This makes dealing with `va_list` (and
-  all of the ways it could be misused) super easy. But, it wouldn't be hard to change the ABI to
-  have the caller stack-allocate the buffer and then have the caller heap-allocate a clone if
-  it finds itself needing to `va_start`.
-
-- The code for doing checks on pointer access has almost no fast path optimizations and sometimes
-  does hard math like modulo. Other parts of the runtime are similarly written to just get it right.
-
-- `llvm::FilPizlonatorPass` is jammed into the very beginning of clang's optimization pipeline.
-  It then emits hella function calls and does nothing to tell the rest of the optimizer about what
-  they are. Those who grok LLVM can probably see the problem. I'm pizlonating loads and stores
-  before any mem2reg, sroa, inlining, gvn, or indeed any of the optimizations that eliminate the
-  "language technicality" loads and stores that structured assembly programmers like Yours Truly
-  don't even think of as loads and stores. It's easy to forget that assigning to a local variable
-  that you never point any pointers at is a store from the language's standpoint; it's just that
-  the compiler can super reliably work out that you didn't really mean for the dang thing to be in
-  memory. But I'm pizlonating the program before LLVM gets to do its magic. Once the program is
-  pizlonated, there is no hope for LLVM to do anything about those loads and stores, since by now
-  they will have been surrounded by hella function calls. What fun it will be to fix this silly
-  mistake!
-
-The plan to make Fil-C fast is to do the following things.
-
-1. Stack-allocate the argument buffer instead of heap-allocating it. This likely accounts for a
-   good chunk of the current slowness.
-
-2. Grindy optimizations to `llvm::FilPizlonatorPass` and the runtime. There are many cases where
-   the pass emits multiple calls to the runtime when it could have emitted one or none. I did it
-   that way for ease and speed of bring-up. Fixing this just means typing more compiler code and
-   being more mindful of how LLVM API is used. Profiling of the runtime's functions is likely to
-   reveal that some of them could just be written better. It'll be easy to do this kind of work
-   once there's a good corpus! It's going to involve typing more C code, but ought not be
-   conceptually difficult.
-
-3. Create a `llvm::FilCTargetMachine` with opaque 16-byte/16-byte-aligned pointers so that we can
-   run LLVM optimizations before `llvm::FilPizlonatorPass`. Even if it's not possible to run the
-   entire pipeline before pizlonation, even just running mem2reg would be a huge perf boost, since
-   this would remove most of the local variable allocations. This is where the biggest win is
-   likely to happen! Most
-   likely all of the really good optimizations that eliminate the majority of loads and stores
-   will work fine on such a target machine. In this world, `llvm::FilPizlonatorPass` would take
-   in a `llvm::Module` that is in Fil-C LLVM IR, and emits a new `llvm::Module` that is in the
-   actual target machine's LLVM IR (so now pointers are thin as usual, but the code has already
-   been instrumented). Ideally, I'd do this so that LTO sees the Fil-C LLVM IR before pizlonation,
-   so my pass can run over a maximal view of the program.
-
-4. Teach the rest of LLVM about those Fil-C runtime functions that can be optimized after the
-   `llvm::FilPizlonatorPass` runs.
-
-5. Abstract interpretation! Fil-C makes it super practical to deploy points-to analysis, shape
-   analysis, and integer range analysis at scale for C code optimization, since Fil-C is already
-   sound even without that analysis. Normally, making a sound static analysis for C means making
-   a static analysis that proves that the program isn't just scribbling memory at random. This
-   means that to even get to the point where the analysis gives useful optimization hints, you
-   first have to make the analysis powerful enough to prove that your C program is memory safe!
-   And that's super hard! But there is no such requirement when analyzing Fil-C. Quite the
-   opposite: in Fil-C, every pointer access "proves" something about the pointed-at object
-   (including establishing some bounds on its bounds, type, points-to set, etc) because Fil-C
-   will definitely execute a check. So, the job of the static analysis is to be just good enough
-   that it can prove that some of those checks aren't necessary. Even better, the analysis will
-   be able to tell exactly which part of a check needs to execute. Maybe it proves that we know
-   that we're above lower bound but not below upper bound; in that case we just need to emit the
-   upper bounds check. Additionally, a sufficiently powerful abstract interpreter could
-   automatically thin some pointers. If it proves that a pointer only gets values that are of some
-   trivial type and bounds, or if it proves that a pointer is only ever used in a way that requires
-   trivial type and bounds, then we could possibly shrink that pointer's representation to just 64
-   bits.
-
-I believe that all of these things put together might bring Fil-C to 1.5x of legacy C perf.
+The plan to make Fil-C fast is to fix these issues. I believe that fixing these issues can get Fil-C
+to be only 2x slower than legacy C, or maybe even only 1.5x slower if I get lucky.
 
 ## MonoCap
 
