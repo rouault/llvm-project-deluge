@@ -29,7 +29,7 @@ int main(int argc, char** argv)
     float complex x;
     float complex y;
     *(float complex*)opaque(&x) = 5 + 7 * I;
-    *(float complex*)opaque(&y) = -9 + 2 * I;
+    *(float complex*)opaque(&y) = -1 + -1 * I;
 
     PRINT(x);
     PRINT(y);
