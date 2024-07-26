@@ -134,21 +134,23 @@ Note that without -g, the Fil-C runtime errors will not be as helpful, and if yo
 Let's quickly look at what happens with a broken program:
 
     #include <stdio.h>
+    #include <stdlib.h>
     int main() {
-        int x;
-        printf("memory after x = %d\n", (&x)[10]);
+        int* ptr = malloc(sizeof(int));
+        printf("oob memory = %d\n", ptr[10]);
         return 0;
     }
 
 Here's what happens when we compile and run this:
 
-    [pizlo@behemoth llvm-project-deluge] build/bin/clang -o bad bad.c -O -g
-    [pizlo@behemoth llvm-project-deluge] ./bad
-    filc safety error: cannot access pointer with ptr >= upper (ptr = 0x10a4104c8,0x10a4104a0,0x10a4104b0,_).
-        bad.c:4:41: main
-        <crt>: main
-    [62394] filc panic: thwarted a futile attempt to violate memory safety.
-    zsh: trace trap  ./bad
+    $ build/bin/clang -o bad bad.c -O -g
+    $ ./bad
+    filc safety error: cannot access pointer with ptr >= upper (ptr = 0x7fcf1700c348,0x7fcf1700c320,0x7fcf1700c330,_).
+        bad.c:5:33: main
+        src/env/__libc_start_main.c:79:7: __libc_start_main
+        <runtime>: start_program
+    [32553] filc panic: thwarted a futile attempt to violate memory safety.
+    Trace/breakpoint trap
 
 Fil-C thwarted this program's attempt to do something bad. Hooray!
 
