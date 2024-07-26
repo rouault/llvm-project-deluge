@@ -1,6 +1,6 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
 output-excludes:
   - "noooo"

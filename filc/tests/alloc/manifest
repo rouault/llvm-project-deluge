@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - YAY
-  - filc panic
+  - filc safety error
 output-excludes:
   - "NO"
 

@@ -1,5 +1,5 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
   - "cannot access 4 bytes when upper - ptr = 2"

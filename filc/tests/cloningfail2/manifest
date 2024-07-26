@@ -4,6 +4,6 @@ output-excludes:
   - Kurza melodia
 output-includes:
   - Spoko
-  - filc panic
+  - filc safety error
   - cannot access pointer with ptr < lower
 

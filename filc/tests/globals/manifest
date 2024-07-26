@@ -4,5 +4,5 @@ output-includes:
   - Good
   - Thingy = 4200
 output-excludes:
-  - filc panic
+  - filc safety error
   - Bad

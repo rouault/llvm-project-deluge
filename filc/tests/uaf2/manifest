@@ -1,7 +1,7 @@
 return:
   failure
 output-includes:
-  - filc panic
+  - filc safety error
   - ",free,"
 output-excludes:
   - hello

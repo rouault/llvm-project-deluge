@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - "got here"
-  - "filc panic"
+  - "filc safety error"
   - "cannot access pointer as function, object isn't even special"
 output-excludes:
   - "wtf"

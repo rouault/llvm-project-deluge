@@ -3,6 +3,6 @@ return:
 output-includes:
   - "(good) ref = value = 250000"
   - "Got this far."
-  - "filc panic"
+  - "filc safety error"
 output-excludes:
   - "(bad) ref = value = 250000"

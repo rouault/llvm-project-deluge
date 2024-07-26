@@ -1,7 +1,7 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
   - "readonly"
   - "cannot write to read-only object"
   - "Got this far"

@@ -1,7 +1,7 @@
 return:
   failure
 output-includes:
-  - filc panic
+  - filc safety error
   - span contains non-ints
 output-excludes:
   FAIL

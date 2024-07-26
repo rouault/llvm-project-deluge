@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - "Got this far!"
-  - "filc panic"
+  - "filc safety error"
 output-excludes:
   - "x ="
   - "y ="

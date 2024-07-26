@@ -1,7 +1,7 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
   - "alignment requirement of 4 bytes not met during int access"
 output-excludes:
   - "x ="

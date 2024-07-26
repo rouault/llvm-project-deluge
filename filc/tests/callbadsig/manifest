@@ -4,7 +4,7 @@ output-includes:
  - thingy
  - stuff
  - yay
- - filc panic
+ - filc safety error
 output-excludes:
  - nonono
  - hello

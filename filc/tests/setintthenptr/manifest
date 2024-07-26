@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - "tak"
-  - "filc panic"
+  - "filc safety error"
 output-excludes:
   - "nie"

@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "hello"
-  - "filc panic"
+  - "filc safety error"

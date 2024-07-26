@@ -3,5 +3,5 @@ return:
 output-excludes:
   Nie dobrze
 output-includes:
-  - filc panic
+  - filc safety error
   - cannot free special object

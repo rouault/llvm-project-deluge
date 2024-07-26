@@ -1,5 +1,5 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
   - "cannot access memory as ptr without 16-byte alignment"

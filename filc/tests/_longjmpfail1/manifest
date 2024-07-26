@@ -1,5 +1,5 @@
 return:
   failure
 output-includes:
-  - "filc panic"
+  - "filc safety error"
   - "cannot mix _longjmp with setjmp"

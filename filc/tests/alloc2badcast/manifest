@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "YES"
-  - filc panic
+  - filc safety error

@@ -3,5 +3,5 @@ return:
 output-includes:
   - "YAY"
 output-excludes:
-  - filc panic
+  - filc safety error
   - "NAY"

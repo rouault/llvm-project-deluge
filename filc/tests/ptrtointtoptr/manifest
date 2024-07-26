@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "cannot access pointer with null object"
-  - "filc panic"
+  - "filc safety error"
