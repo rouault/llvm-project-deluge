@@ -175,7 +175,7 @@ addSig "void", "zmake_setjmp_save_sigmask", "bool"
 addSig "void", "zregister_sys_errno_handler", "filc_ptr"
 addSig "void", "zregister_sys_dlerror_handler", "filc_ptr"
 
-addSig "int", "zsys_ioctl", "int", "unsigned long", "..."
+addSig "int", "zsys_ioctl", "int", "int", "..."
 addSig "ssize_t", "zsys_writev", "int", "filc_ptr", "int"
 addSig "ssize_t", "zsys_read", "int", "filc_ptr", "size_t"
 addSig "ssize_t", "zsys_readv", "int", "filc_ptr", "int"

@@ -6318,7 +6318,7 @@ void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
 
 typedef struct {
     int fd;
-    unsigned long request;
+    int request;
     int result;
 } ioctl_data;
 
@@ -6328,10 +6328,15 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
     data->result = ioctl(data->fd, data->request, guarded_arg);
 }
 
-int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_cc_cursor* args)
+int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, int request, filc_cc_cursor* args)
 {
-    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE))
+    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE)) {
+        if (filc_cc_cursor_has_next(args, sizeof(int))) {
+            return FILC_SYSCALL(
+                my_thread, ioctl(fd, request, filc_cc_cursor_get_next_int(args, int)));
+        }
         return FILC_SYSCALL(my_thread, ioctl(fd, request));
+    }
 
     filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
     if (!filc_ptr_ptr(arg_ptr))

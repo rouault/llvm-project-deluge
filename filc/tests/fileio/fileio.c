@@ -97,6 +97,9 @@ int main(int argc, char** argv)
     ZASSERT(!ioctl(fds[0], FIONREAD, &data));
     ZASSERT(data == strlen("hello") + 1);
 
+    ZASSERT(ioctl(666, FIONREAD, &data) == -1);
+    ZASSERT(errno == EBADF);
+
     fd_set readfds;
     FD_ZERO(&readfds);
     FD_SET(fds[0], &readfds);

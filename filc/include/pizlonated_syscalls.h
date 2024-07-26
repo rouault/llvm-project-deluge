@@ -35,7 +35,7 @@
    Currently, a lot of this is Linux-specific and the implementations assume that all structs are
    shaped according to their musl definitions. */
 
-int zsys_ioctl(int fd, unsigned long request, ...);
+int zsys_ioctl(int fd, int request, ...);
 long zsys_writev(int fd, const void* iov, int iovcnt);
 long zsys_read(int fd, void* buf, __SIZE_TYPE__ size);
 long zsys_readv(int fd, const void* iov, int iovcnt);
