@@ -26,7 +26,7 @@
 def checkType(type)
     case type
     when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
-         "ssize_t", 'unsigned short', 'unsigned long long', 'long long'
+         "ssize_t", 'unsigned short', 'unsigned long long', 'long long', 'pas_uint128'
     else
         raise "Bad type #{type}"
     end
@@ -154,6 +154,9 @@ addSig "void", "zatomic_store_ptr", "filc_ptr", "filc_ptr"
 addSig "void", "zunfenced_atomic_store_ptr", "filc_ptr", "filc_ptr"
 addSig "filc_ptr", "zatomic_load_ptr", "filc_ptr"
 addSig "filc_ptr", "zunfenced_atomic_load_ptr", "filc_ptr"
+addSig "pas_uint128", "zcall_int", "filc_ptr", "filc_ptr"
+addSig "filc_ptr", "zcall_ptr", "filc_ptr", "filc_ptr"
+addSig "void", "zcall_void", "filc_ptr", "filc_ptr"
 addSig "int", "zpark_if", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "double"
 addSig "void", "zunpark_one", "filc_ptr", "filc_ptr", "filc_ptr"
 addSig "unsigned", "zunpark", "filc_ptr", "unsigned"

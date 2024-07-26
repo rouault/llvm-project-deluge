@@ -1571,6 +1571,9 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     filc_store_barrier(my_thread, target);
 }
 
+/* Weirdly enough, this is currently called in cases where we expect this to check at minimum that
+   the object is non-NULL even if `bytes` is 0. We could fix that, but might be more trouble than
+   it's worth. */
 void filc_check_access_common(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
                               const filc_origin* origin)
 {
@@ -1922,32 +1925,30 @@ static filc_object* finish_reallocate(
         filc_enter_with_allocation_root(my_thread, result);
         filc_thread_track_object(my_thread, result);
     }
-    pas_uint128* dst = (pas_uint128*)((char*)result + offset_to_payload);
-    pas_uint128* src = (pas_uint128*)old_object->lower;
+    filc_ptr* dst = (filc_ptr*)((char*)result + offset_to_payload);
+    filc_ptr* src = (filc_ptr*)old_object->lower;
     for (index = common_num_words; index--;) {
         for (;;) {
             filc_word_type word_type = old_object->word_types[index];
             /* Don't have to check for freeing here since old_object has to be a malloc object and
                those get freed by GC, so even if a free happened, we still have access to the memory. */
-            pas_uint128 word = __c11_atomic_load((_Atomic pas_uint128*)(src + index), __ATOMIC_RELAXED);
-            if (word_type == FILC_WORD_TYPE_UNSET) {
-                if (word) {
-                    /* We have surely raced between someone initializing the word to be not unset, and if
-                       we try again we'll see it no longer unset. */
-                    pas_fence();
-                    continue;
-                }
+            filc_ptr ptr_word = filc_ptr_load_with_manual_tracking_yolo(src + index);
+            if (word_type == FILC_WORD_TYPE_UNSET && !filc_ptr_is_totally_null(ptr_word)) {
+                /* We have surely raced between someone initializing the word to be not unset, and if
+                   we try again we'll see it no longer unset. */
+                pas_fence();
+                continue;
             }
             /* Surely need the barrier since the destination object is black and the source object is
                whatever. */
             if (word_type == FILC_WORD_TYPE_PTR)
-                filc_store_barrier_for_word(my_thread, word);
+                filc_store_barrier(my_thread, filc_ptr_object(ptr_word));
             /* It's definitely fine to set the word_type without CAS because we still own the object.
                I think that it's fine to set the word_type without any fences because we've done a
                barrier anyway, so pointed-to object is tracked in this GC cycle. And for a new GC cycle
                to start, we'd need to cross a pollcheck, and which point everything gets fenced. */
             result->word_types[index] = word_type;
-            __c11_atomic_store((_Atomic pas_uint128*)(dst + index), word, __ATOMIC_RELAXED);
+            filc_ptr_store_without_barrier(dst + index, ptr_word);
             break;
         }
         if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
@@ -3005,14 +3006,14 @@ void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
 {
     static const bool verbose = false;
     size_t words;
-    pas_uint128* ptr;
+    filc_ptr* ptr;
     if (verbose)
         pas_log("bytes = %zu\n", bytes);
-    ptr = (pas_uint128*)raw_ptr;
+    ptr = (filc_ptr*)raw_ptr;
     PAS_ASSERT(pas_is_aligned(bytes, FILC_WORD_SIZE));
     words = bytes / FILC_WORD_SIZE;
     while (words--)
-        __c11_atomic_store((_Atomic pas_uint128*)ptr++, 0, __ATOMIC_RELAXED);
+        filc_ptr_store_without_barrier(ptr++, filc_ptr_forge_null());
 }
 
 void filc_low_level_ptr_safe_bzero_with_exit(
@@ -3184,8 +3185,8 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     else
         check_int(src, count, NULL);
     
-    pas_uint128* cur_dst = (pas_uint128*)aligned_dst_start;
-    pas_uint128* cur_src = (pas_uint128*)(src_start + (aligned_dst_start - dst_start));
+    filc_ptr* cur_dst = (filc_ptr*)aligned_dst_start;
+    filc_ptr* cur_src = (filc_ptr*)(src_start + (aligned_dst_start - dst_start));
     size_t cur_dst_word_index = ((char*)cur_dst - (char*)dst_object->lower) / FILC_WORD_SIZE;
     size_t cur_src_word_index = ((char*)cur_src - (char*)src_object->lower) / FILC_WORD_SIZE;
     size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
@@ -3200,19 +3201,19 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     while (countdown--) {
         for (;;) {
             filc_word_type src_word_type;
-            pas_uint128 src_word;
+            filc_ptr src_word;
             if (src_can_has_ptrs) {
                 src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
-                src_word = __c11_atomic_load((_Atomic pas_uint128*)cur_src, __ATOMIC_RELAXED);
+                src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
             } else {
                 src_word_type = FILC_WORD_TYPE_INT;
                 src_word = *cur_src;
             }
-            if (!src_word) {
+            if (filc_ptr_is_totally_null(src_word)) {
                 /* copying an unset zero word is always legal to any destination type, no
                    problem. it's even OK to copy a zero into free memory. and there's zero value
                    in changing the destination type from unset to anything. */
-                __c11_atomic_store((_Atomic pas_uint128*)cur_dst, 0, __ATOMIC_RELAXED);
+                filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
                 break;
             }
             if (src_word_type == FILC_WORD_TYPE_UNSET) {
@@ -3244,8 +3245,8 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
                     filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             }
             if (src_word_type == FILC_WORD_TYPE_PTR)
-                filc_store_barrier_for_word(my_thread, src_word);
-            __c11_atomic_store((_Atomic pas_uint128*)cur_dst, src_word, __ATOMIC_RELAXED);
+                filc_store_barrier(my_thread, filc_ptr_object(src_word));
+            filc_ptr_store_without_barrier(cur_dst, src_word);
             break;
         }
         if (is_up) {
@@ -3298,7 +3299,7 @@ void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t cou
     filc_pop_frame(my_thread, frame);
 }
 
-filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr, size_t offset)
+filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr)
 {
     if (!filc_cc_ptr_size(cc_ptr))
         return filc_ptr_forge_null();
@@ -3319,7 +3320,102 @@ filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr, s
     }
     pas_store_store_fence();
     
-    return filc_ptr_with_offset(filc_ptr_create_with_manual_tracking(result_object), offset);
+    return filc_ptr_create_with_manual_tracking(result_object);
+}
+
+static void zcall_impl(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr,
+                       filc_cc_ptr rets)
+{
+    filc_cc_ptr args;
+
+    size_t available = filc_ptr_available(args_ptr);
+    if (available) {
+        filc_cc_type* args_type;
+        size_t available_words = pas_round_up_to_power_of_2(
+            available, FILC_WORD_SIZE) / FILC_WORD_SIZE;
+        filc_check_access_common(args_ptr, available, filc_read_access, NULL);
+        args.base = filc_bmalloc_allocate_tmp(my_thread, available);
+        args_type = filc_bmalloc_allocate_tmp(
+            my_thread,
+            PAS_OFFSETOF(filc_cc_type, word_types) + sizeof(filc_word_type) * available_words);
+        args_type->num_words = available_words;
+        args.type = args_type;
+        if (pas_is_aligned(available, FILC_WORD_SIZE)) { 
+            PAS_ASSERT(pas_is_aligned((uintptr_t)filc_ptr_ptr(args_ptr), FILC_WORD_SIZE));
+            size_t available_words = available / FILC_WORD_SIZE;
+            filc_ptr* src_ptr = (filc_ptr*)filc_ptr_ptr(args_ptr);
+            filc_ptr* dst_ptr = (filc_ptr*)args.base;
+            filc_word_type* src_type_ptr =
+                filc_ptr_object(args_ptr)->word_types +
+                filc_object_word_type_index_for_ptr(filc_ptr_object(args_ptr),
+                                                    filc_ptr_ptr(args_ptr));
+            filc_word_type* dst_type_ptr = args_type->word_types;
+            size_t count;
+            for (count = available_words; count--;) {
+                for (;;) {
+                    filc_word_type word_type = *src_type_ptr;
+                    filc_ptr word = filc_ptr_load_with_manual_tracking_yolo(src_ptr);
+                    if (word_type == FILC_WORD_TYPE_UNSET && !filc_ptr_is_totally_null(word)) {
+                        pas_fence();
+                        continue;
+                    }
+                    if (word_type == FILC_WORD_TYPE_PTR)
+                        filc_thread_track_object(my_thread, filc_ptr_object(word));
+                    *dst_type_ptr = word_type;
+                    *dst_ptr = word;
+                    break;
+                }
+                src_ptr++;
+                dst_ptr++;
+                src_type_ptr++;
+                dst_type_ptr++;
+            }
+        } else {
+            check_int(args_ptr, available, NULL);
+            size_t index;
+            for (index = available_words; index--;)
+                args_type->word_types[index] = FILC_WORD_TYPE_INT;
+            memcpy(args.base, filc_ptr_ptr(args_ptr), available);
+        }
+    } else {
+        args.base = NULL;
+        args.type = &filc_empty_cc_type;
+    }
+
+    filc_check_function_call(callee_ptr);
+
+    filc_lock_top_native_frame(my_thread);
+    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callee_ptr))(my_thread, args, rets));
+    filc_unlock_top_native_frame(my_thread);
+}
+
+pas_uint128 filc_native_zcall_int(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
+{
+    filc_cc_ptr rets;
+    pas_uint128 rets_obj = 0;
+    rets.type = &filc_int_cc_type;
+    rets.base = &rets_obj;
+    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
+    return rets_obj;
+}
+
+filc_ptr filc_native_zcall_ptr(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
+{
+    filc_cc_ptr rets;
+    filc_ptr rets_obj = filc_ptr_forge_null();
+    rets.type = &filc_ptr_cc_type;
+    rets.base = &rets_obj;
+    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
+    return rets_obj;
+}
+
+void filc_native_zcall_void(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
+{
+    filc_cc_ptr rets;
+    pas_uint128 rets_obj = 0;
+    rets.type = &filc_void_cc_type;
+    rets.base = &rets_obj;
+    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
 }
 
 void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)
@@ -6235,7 +6331,7 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, unsigned long request, filc_cc_cursor* args)
 {
     if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE))
-        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
+        return FILC_SYSCALL(my_thread, ioctl(fd, request));
 
     filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
     if (!filc_ptr_ptr(arg_ptr))

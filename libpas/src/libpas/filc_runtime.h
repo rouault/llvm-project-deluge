@@ -1112,14 +1112,26 @@ static inline filc_ptr filc_ptr_from_word(pas_uint128 word)
     return result;
 }
 
-static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking(filc_object* object, void* ptr)
+static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking_yolo(filc_object* object,
+                                                                         void* ptr)
 {
     filc_ptr result;
     result.word = ((pas_uint128)(uintptr_t)object << 64) | (pas_uint128)(uintptr_t)ptr;
     PAS_TESTING_ASSERT(filc_ptr_object(result) == object);
     PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
+    return result;
+}
+
+static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking(filc_object* object, void* ptr)
+{
+    filc_ptr result = filc_ptr_create_with_ptr_and_manual_tracking_yolo(object, ptr);
     filc_testing_validate_ptr(result);
     return result;
+}
+
+static inline filc_ptr filc_ptr_create_with_manual_tracking_yolo(filc_object* object)
+{
+    return filc_ptr_create_with_ptr_and_manual_tracking_yolo(object, object->lower);
 }
 
 static inline filc_ptr filc_ptr_create_with_manual_tracking(filc_object* object)
@@ -1217,6 +1229,15 @@ static inline bool filc_ptr_unfenced_unbarriered_weak_cas_object(
     return __c11_atomic_compare_exchange_weak(
         (filc_object*_Atomic*)(filc_object**)ptr + 1, &expected, new_object,
         __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+/* This is useful when using ptr loads for the purpose of loading something that *might* be a ptr
+   but we don't know for sure, since it skips both tracking and testing mode ptr validation. */
+static inline filc_ptr filc_ptr_load_with_manual_tracking_yolo(filc_ptr* ptr)
+{
+    /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic load. */
+    return filc_ptr_create_with_ptr_and_manual_tracking_yolo(filc_ptr_load_object(ptr),
+                                                             filc_ptr_load_ptr(ptr));
 }
 
 static inline filc_ptr filc_ptr_load_with_manual_tracking(filc_ptr* ptr)
@@ -1922,7 +1943,7 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* origin);
 
-filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr, size_t offset);
+filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr);
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
    get to the upper bound. Returns a copy of that string allocated in the utility heap, and checks

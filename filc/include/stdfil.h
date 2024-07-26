@@ -410,6 +410,28 @@ void zunfenced_atomic_store_ptr(void** ptr, void* new_value);
 void* zatomic_load_ptr(void** ptr);
 void* zunfenced_atomic_load_ptr(void** ptr);
 
+/* Returns a readonly snapshot of the passed-in arguments object. The arguments are laid out as if you
+   had written a struct with the arguments as fields. */
+void* zargs(void);
+
+/* Calls the `callee` with the arguments being a snapshot of the passed-in `args` object. The `args`
+   object does not have to be readonly, but can be.
+   
+   zcall_int() expects the `callee` to return some integer typed value up to 16 bytes. Returns that
+   value as an unsigned __int128.
+   
+   zcall_ptr() expects the `callee` to return some pointer.
+   
+   zcall_void() allows the `callee` to return any value so long as it's not larger than 16 bytes.
+   
+   Beware that C/C++ functions declared to return structs really return void, and they have some
+   special parameter that is a pointer to the buffer where the return value is stored.
+
+   FIXME: This currently does not support unwinding and exceptions. */
+unsigned __int128 zcall_int(void* callee, void* args);
+void* zcall_ptr(void* callee, void* args);
+void zcall_void(void* callee, void* args);
+
 enum zpark_result {
     zpark_condition_failed,
     zpark_timed_out,

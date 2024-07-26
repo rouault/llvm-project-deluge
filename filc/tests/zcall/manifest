@@ -1,0 +1,6 @@
+return:
+  success
+output-includes:
+  - "calling foo1:foo"
+  - "calling foo2:foo"
+  - "calling foo3:foo"

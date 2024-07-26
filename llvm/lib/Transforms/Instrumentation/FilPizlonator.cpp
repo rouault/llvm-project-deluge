@@ -507,9 +507,10 @@ class Pizlonator {
   size_t ReturnBufferSize;
   size_t ReturnBufferAlignment;
 
-  bool UsesVastart;
+  bool UsesVastartOrZargs;
   size_t SnapshottedArgsFrameIndex;
-  Value* SnapshottedArgsPtr;
+  Value* SnapshottedArgsPtrForVastart;
+  Value* SnapshottedArgsPtrForZargs;
   std::vector<Value*> Args;
 
   Value* MyThread;
@@ -995,6 +996,13 @@ class Pizlonator {
 
   Value* ptrWithPtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertBefore) {
     return createPtr(ptrObject(LowWidePtr, InsertBefore), NewLowRawPtr, InsertBefore);
+  }
+
+  Value* ptrWithOffset(Value* LowWidePtr, Value* Offset, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      Int8Ty, ptrPtr(LowWidePtr, InsertBefore), { Offset }, "filc_ptr_with_offset", InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return ptrWithPtr(LowWidePtr, GEP, InsertBefore);
   }
 
   Value* objectLowerPtr(Value* Object, Instruction* InsertBefore) {
@@ -1496,7 +1504,7 @@ class Pizlonator {
     FrameIndexMap.clear();
     FrameSize = NumSpecialFrameObjects;
     Setjmps.clear();
-    UsesVastart = false;
+    UsesVastartOrZargs = false;
 
     assert(!Blocks.empty());
 
@@ -1636,18 +1644,26 @@ class Pizlonator {
 
     for (BasicBlock* BB : Blocks) {
       for (Instruction& I : *BB) {
-        if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(&I)) {
-          if (II->getIntrinsicID() == Intrinsic::vastart) {
-            UsesVastart = true;
-            SnapshottedArgsFrameIndex = FrameSize++;
+        if (CallBase* CI = dyn_cast<CallBase>(&I)) {
+          if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+            if (F->getName() == "zargs") {
+              UsesVastartOrZargs = true;
+              break;
+            }
           }
         }
-        if (UsesVastart)
-          break;
+        if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(&I)) {
+          if (II->getIntrinsicID() == Intrinsic::vastart) {
+            UsesVastartOrZargs = true;
+            break;
+          }
+        }
       }
-      if (UsesVastart)
+      if (UsesVastartOrZargs)
         break;
     }
+    if (UsesVastartOrZargs)
+      SnapshottedArgsFrameIndex = FrameSize++;
 
     for (BasicBlock* BB : Blocks) {
       for (Instruction& I : *BB) {
@@ -2362,10 +2378,10 @@ class Pizlonator {
         return true;
 
       case Intrinsic::vastart:
-        assert(UsesVastart);
+        assert(UsesVastartOrZargs);
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         checkWritePtr(II->getArgOperand(0), II);
-        storePtr(SnapshottedArgsPtr, ptrPtr(II->getArgOperand(0), II), II);
+        storePtr(SnapshottedArgsPtrForVastart, ptrPtr(II->getArgOperand(0), II), II);
         II->eraseFromParent();
         return true;
         
@@ -2479,6 +2495,15 @@ class Pizlonator {
           NewCI->setDebugLoc(CI->getDebugLoc());
           if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
             BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
+          CI->eraseFromParent();
+          return true;
+        }
+
+        if (F->getName() == "zargs" &&
+            !FT->getNumParams() &&
+            FT->getReturnType() == LowRawPtrTy) {
+          assert(UsesVastartOrZargs);
+          CI->replaceAllUsesWith(SnapshottedArgsPtrForZargs);
           CI->eraseFromParent();
           return true;
         }
@@ -3624,7 +3649,7 @@ public:
     LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
     ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
     JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty);
-    PromoteArgsToHeap = M.getOrInsertFunction("filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy, IntPtrTy);
+    PromoteArgsToHeap = M.getOrInsertFunction("filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy);
     CCArgsCheckFailure = M.getOrInsertFunction("filc_cc_args_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
     CCRetsCheckFailure = M.getOrInsertFunction("filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
     _Setjmp = M.getOrInsertFunction("_setjmp", Int32Ty, LowRawPtrTy);
@@ -3986,13 +4011,15 @@ public:
           Args.push_back(V);
           LastOffset = ArgOffset + DL.getTypeAllocSize(LowT);
         }
-        if (UsesVastart) {
+        if (UsesVastartOrZargs) {
           // Do this after we have recorded all the args for GC, so it's safe to have a pollcheck.
-          SnapshottedArgsPtr = CallInst::Create(
-            PromoteArgsToHeap, { MyThread, ArgCCPtr, ConstantInt::get(IntPtrTy, LastOffset) }, "",
-            InsertionPoint);
+          Value* SnapshottedArgsPtr = CallInst::Create(
+            PromoteArgsToHeap, { MyThread, ArgCCPtr }, "", InsertionPoint);
           recordObjectAtIndex(
             ptrObject(SnapshottedArgsPtr, InsertionPoint), SnapshottedArgsFrameIndex, InsertionPoint);
+          SnapshottedArgsPtrForVastart = ptrWithOffset(
+            SnapshottedArgsPtr, ConstantInt::get(IntPtrTy, LastOffset), InsertionPoint);
+          SnapshottedArgsPtrForZargs = SnapshottedArgsPtr;
         }
 
         FirstRealBlock = InsertionPoint->getParent();
