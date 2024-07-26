@@ -29,7 +29,7 @@ set -x
 cd ncurses-6.5-20240720
 make distclean || echo whatever
 CC="$PWD/../build/bin/clang -O -g" CXX="$PWD/../build/bin/clang++ -O -g" ./configure \
-    --prefix="$PWD/../pizfix"
+    --prefix="$PWD/../pizfix" --disable-lib-suffixes --with-shared
 make -j $NCPU
 make install
 

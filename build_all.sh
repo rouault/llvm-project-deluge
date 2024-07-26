@@ -28,4 +28,3 @@ set -x
 
 ./build_all_fast.sh
 ./build_all_slow.sh
-./build_benchmarks.sh

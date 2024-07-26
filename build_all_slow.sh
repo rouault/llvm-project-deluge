@@ -26,4 +26,16 @@
 set -e
 set -x
 
+./build_zlib.sh
+./build_bzip2.sh
+./build_xz.sh
+./build_openssl.sh
+./build_curl.sh
+./build_openssh.sh
+./build_pcre.sh
+./build_jpeg-6b.sh
+./build_ncurses.sh
+./build_mg.sh
+./build_sqlite.sh
 ./build_cpython.sh
+./build_benchmarks.sh

@@ -72,4 +72,5 @@ handle_git pizlonated-xz.git pizlonated-xz
 handle_git pizlonated-mg.git pizlonated-mg
 handle_git pizlonated-sqlite.git pizlonated-sqlite
 handle_git pizlonated-cpython.git pizlonated-cpython
+handle_git pizlonated-ncurses.git ncurses-6.5-20240720
 

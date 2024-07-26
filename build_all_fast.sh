@@ -23,8 +23,6 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-. libpas/common.sh
-
 set -e
 set -x
 
@@ -33,13 +31,3 @@ rm -rf pizfix
 ./configure_llvm.sh
 ./build_base.sh
 
-./build_zlib.sh
-./build_bzip2.sh
-./build_xz.sh
-./build_openssl.sh
-./build_curl.sh
-./build_openssh.sh
-./build_pcre.sh
-./build_jpeg-6b.sh
-./build_mg.sh
-./build_sqlite.sh
