@@ -4818,23 +4818,6 @@ static bool from_user_fstatat_flag(int user_flag, int* result)
     return true;
 }
 
-/* NOTE: We only use this in the musl mode. */
-struct musl_stat {
-    uint64_t st_dev;
-    uint64_t st_ino;
-    unsigned st_mode;
-    uint64_t st_nlink;
-    unsigned st_uid;
-    unsigned st_gid;
-    uint64_t st_rdev;
-    int64_t st_size;
-    long st_blksize;
-    int64_t st_blocks;
-    uint64_t st_atim[2];
-    uint64_t st_mtim[2];
-    uint64_t st_ctim[2];
-};
-
 static int handle_fstat_result(filc_ptr user_stat_ptr, struct stat *st,
                                int result, int my_errno)
 {
