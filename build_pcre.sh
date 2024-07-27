@@ -32,8 +32,9 @@ cd pcre-8.39
 
 ($MAKE distclean || echo whatever)
 autoreconf
-CC="$CCPREFIX$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
-    --disable-cpp --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
+CC="$CCPREFIX$PWD/../build/bin/clang -g -O" CXX="$CCPREFIX$PWD/../build/bin/clang++ -g -O" \
+    ./configure --prefix=$PWD/../pizfix \
+    --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
     --enable-pcregrep-libz
 $MAKE -j $NCPU
 $MAKE install

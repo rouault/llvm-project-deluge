@@ -484,8 +484,8 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     return std::string(P);
   };
 
-  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                             options::OPT_r)) {
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
+                   options::OPT_r)) {
     if (!isAndroid && !IsIAMCU) {
       const char *crt1 = nullptr;
       if (!Args.hasArg(options::OPT_shared)) {
@@ -639,7 +639,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-lm");
   }
 
-  if ((true) || !Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
+  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
     if ((true)) {
       CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("libgcc.a")));
       CmdArgs.push_back("-lyolomusl");

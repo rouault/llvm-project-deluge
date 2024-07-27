@@ -29,4 +29,6 @@ set -x
 rm -rf musl zlib-1.3 openssl-3.2.0 curl-8.5.0 deluded-openssh-portable pcre-8.39
 rm -rf pizlonated-jpeg-6b pizlonated-bzip2 pizlonated-xz pizlonated-mg
 rm -rf pizlonated-sqlite pizlonated-cpython yolomusl usermusl ncurses-6.5-20240720
+rm -rf pizlonated-pcre2
+
 
