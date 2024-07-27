@@ -3672,6 +3672,7 @@ public:
         errs() << "Handling global: " << G->getName() << "\n";
       Function* NewF = Function::Create(GlobalGetterTy, G->getLinkage(), G->getAddressSpace(),
                                         "pizlonated_" + G->getName(), &M);
+      NewF->setVisibility(G->getVisibility());
       GlobalToGetter[G] = NewF;
       Getters.insert(NewF);
       FixupTypes(G, NewF);
