@@ -74,3 +74,4 @@ handle_git pizlonated-sqlite.git pizlonated-sqlite
 handle_git pizlonated-cpython.git pizlonated-cpython
 handle_git pizlonated-ncurses.git ncurses-6.5-20240720
 handle_git pizlonated-pcre2.git pizlonated-pcre2
+#handle_git pizlonated-zsh.git pizlonated-zsh

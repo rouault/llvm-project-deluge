@@ -7528,6 +7528,17 @@ int filc_native_zsys_ppoll(filc_thread* my_thread, filc_ptr fds_ptr, unsigned lo
                                          (const struct timespec*)filc_ptr_ptr(to_ptr), sigmask));
 }
 
+int filc_native_zsys_wait4(filc_thread* my_thread, int pid, filc_ptr status_ptr, int options,
+                           filc_ptr ru_ptr)
+{
+    if (filc_ptr_ptr(status_ptr))
+        filc_cpt_write_int(my_thread, status_ptr, sizeof(int));
+    if (filc_ptr_ptr(ru_ptr))
+        filc_cpt_write_int(my_thread, ru_ptr, sizeof(struct rusage));
+    return FILC_SYSCALL(my_thread, wait4(pid, (int*)filc_ptr_ptr(status_ptr), options,
+                                         (struct rusage*)filc_ptr_ptr(ru_ptr)));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

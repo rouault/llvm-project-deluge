@@ -223,5 +223,6 @@ int zsys_sched_getaffinity(int tid, __SIZE_TYPE__ size, void* set);
 int zsys_sched_setaffinity(int tid, __SIZE_TYPE__ size, const void* set);
 int zsys_posix_fadvise(int fd, long base, long len, int advice);
 int zsys_ppoll(void* fds, unsigned long nfds, const void* to, const void* mask);
+int zsys_wait4(int pid, int* status, int options, void* ru);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */
