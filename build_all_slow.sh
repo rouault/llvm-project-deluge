@@ -39,5 +39,5 @@ set -x
 ./build_mg.sh
 ./build_sqlite.sh
 ./build_cpython.sh
-#./build_zsh.sh
+./build_zsh.sh
 ./build_benchmarks.sh
