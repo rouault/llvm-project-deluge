@@ -1,5 +1,5 @@
 return:
   failure
 output-includes:
-  - "cannot access pointer with null object"
+  - "cannot read pointer with null object"
   - "filc safety error"

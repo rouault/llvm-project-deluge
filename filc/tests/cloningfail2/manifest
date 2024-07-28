@@ -5,5 +5,5 @@ output-excludes:
 output-includes:
   - Spoko
   - filc safety error
-  - cannot access pointer with ptr < lower
+  - cannot read pointer with ptr < lower
 

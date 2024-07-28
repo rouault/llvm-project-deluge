@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - filc safety error
-  - "cannot access pointer with ptr >= upper"
+  - "cannot write pointer with ptr >= upper"
 output-excludes:
   - "huge = 0"
   - "*huge = 42"

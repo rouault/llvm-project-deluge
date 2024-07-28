@@ -556,6 +556,8 @@ void zscavenge_synchronously(void);
 void zscavenger_suspend(void);
 void zscavenger_resume(void);
 
+void zdump_stack(void);
+
 struct zstack_frame_description;
 typedef struct zstack_frame_description zstack_frame_description;
 

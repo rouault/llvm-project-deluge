@@ -32,6 +32,7 @@ cd pizlonated-zsh
 
 make distclean || echo whatever
 Util/preconfig
-CC="$PWD/../build/bin/clang -O -g" ./configure --prefix="$PWD/../pizfix"
+CC="$PWD/../build/bin/clang -O -g -Wno-implicit-function-declaration -Wno-implicit-int" \
+    ./configure --prefix="$PWD/../pizfix"
 make
 make install.bin install.modules install.fns

@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "cannot access 16 bytes when upper - ptr = 8"
+  - "cannot read 16 bytes when upper - ptr = 8"
 output-excludes:
   - "value ="

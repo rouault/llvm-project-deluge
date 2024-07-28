@@ -1204,6 +1204,18 @@ void filc_mark_global_roots(filc_object_array* mark_stack)
     bmalloc_deallocate(threads);
 }
 
+static void dump_signals_mask(void)
+{
+    pas_log("Signals mask:");
+    sigset_t oldset;
+    pthread_sigmask(0, NULL, &oldset);
+    for (int sig = 1; sig < 32; ++sig) {
+        if (sigismember(&oldset, sig))
+            pas_log(" %d", sig);
+    }
+    pas_log("\n");
+}
+
 static void signal_pizlonator(int signum)
 {
     static const bool verbose = false;
@@ -1224,14 +1236,7 @@ static void signal_pizlonator(int signum)
         pas_log("Received a user signal on non-user thread!\n");
         pas_log("Native signum: %d\n", signum);
         pas_log("User signum: %d\n", user_signum);
-        pas_log("Signals mask:");
-        sigset_t oldset;
-        pthread_sigmask(0, NULL, &oldset);
-        for (int sig = 1; sig < 32; ++sig) {
-            if (sigismember(&oldset, sig))
-                pas_log(" %d", sig);
-        }
-        pas_log("\n");
+        dump_signals_mask();
     }
     PAS_ASSERT(thread);
     
@@ -1585,26 +1590,27 @@ void filc_check_access_common(filc_ptr ptr, size_t bytes, filc_access_kind acces
     FILC_CHECK(
         filc_ptr_object(ptr),
         origin,
-        "cannot access pointer with null object (ptr = %s).",
-        filc_ptr_to_new_string(ptr));
+        "cannot %s pointer with null object (ptr = %s).",
+        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
     
     FILC_CHECK(
         filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
         origin,
-        "cannot access pointer with ptr < lower (ptr = %s).", 
-        filc_ptr_to_new_string(ptr));
+        "cannot %s pointer with ptr < lower (ptr = %s).", 
+        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
 
     FILC_CHECK(
         filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
         origin,
-        "cannot access pointer with ptr >= upper (ptr = %s).",
-        filc_ptr_to_new_string(ptr));
+        "cannot %s pointer with ptr >= upper (ptr = %s).",
+        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
 
     FILC_CHECK(
         bytes <= (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
         origin,
-        "cannot access %zu bytes when upper - ptr = %zu (ptr = %s).",
-        bytes, (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
+        "cannot %s %zu bytes when upper - ptr = %zu (ptr = %s).",
+        filc_access_kind_get_string(access_kind), bytes,
+        (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
         filc_ptr_to_new_string(ptr));
 
     if (access_kind == filc_write_access) {
@@ -2710,8 +2716,9 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const fil
     FILC_CHECK(
         pas_is_aligned(offset, FILC_WORD_SIZE),
         origin,
-        "cannot access memory as ptr without 16-byte alignment; in this case ptr %% 16 = %zu (ptr = %s).",
-        (size_t)(offset % FILC_WORD_SIZE), filc_ptr_to_new_string(ptr));
+        "cannot %s memory as ptr without 16-byte alignment; in this case ptr %% 16 = %zu (ptr = %s).",
+        filc_access_kind_get_string(access_kind), (size_t)(offset % FILC_WORD_SIZE),
+        filc_ptr_to_new_string(ptr));
     word_type_index = offset / FILC_WORD_SIZE;
     
     for (;;) {
@@ -2728,8 +2735,8 @@ void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const fil
         FILC_CHECK(
             word_type == FILC_WORD_TYPE_PTR,
             origin,
-            "cannot access %zu bytes as ptr, word is non-ptr (ptr = %s).",
-            FILC_WORD_SIZE, filc_ptr_to_new_string(ptr));
+            "cannot %s %zu bytes as ptr, word is non-ptr (ptr = %s).",
+            filc_access_kind_get_string(access_kind), FILC_WORD_SIZE, filc_ptr_to_new_string(ptr));
         break;
     }
 }
@@ -4059,6 +4066,11 @@ void filc_native_zscavenger_resume(filc_thread* my_thread)
     filc_enter(my_thread);
 }
 
+void filc_native_zdump_stack(filc_thread* my_thread)
+{
+    filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+}
+
 struct stack_frame_description {
     filc_ptr function_name;
     filc_ptr filename;
@@ -4583,8 +4595,8 @@ void filc_set_errno(int errno_value)
 {
     int user_errno = filc_to_user_errno(errno_value);
     if (dump_errnos) {
-        pas_log("Setting errno! System errno = %d, user errno = %d, system error = %s\n",
-                errno_value, user_errno, strerror(errno_value));
+        pas_log("[%d] Setting errno! System errno = %d, user errno = %d, system error = %s\n",
+                getpid(), errno_value, user_errno, strerror(errno_value));
         filc_thread_dump_stack(filc_get_my_thread(), &pas_log_stream.base);
     }
     filc_set_user_errno(user_errno);
@@ -4931,6 +4943,9 @@ int filc_native_zsys_sigaction(
     filc_thread* my_thread, int user_signum, filc_ptr act_ptr, filc_ptr oact_ptr)
 {
     static const bool verbose = false;
+
+    if (verbose)
+        pas_log("[%d] sigaction on signum = %d\n", getpid(), user_signum);
     
     int signum = filc_from_user_signum(user_signum);
     if (signum < 0) {
@@ -4970,9 +4985,13 @@ int filc_native_zsys_sigaction(
             act.sa_handler = signal_pizlonator;
         }
         if (!from_user_sa_flags(user_act->sa_flags, &act.sa_flags)) {
+            if (verbose)
+                pas_log("Bad sa_flags\n");
             filc_set_errno(EINVAL);
             return -1;
         }
+        if (verbose)
+            pas_log("restart = %s\n", (act.sa_flags & SA_RESTART) ? "yes" : "no");
     }
     if (user_oact)
         pas_zero_memory(&oact, sizeof(struct sigaction));
@@ -4981,6 +5000,8 @@ int filc_native_zsys_sigaction(
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0) {
+        if (verbose)
+            pas_log("Got an actual errno from sigaction.\n");
         filc_set_errno(my_errno);
         return -1;
     }
@@ -5172,10 +5193,23 @@ int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr user_
 
 int filc_native_zsys_pause(filc_thread* my_thread)
 {
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("[%d] pausing!\n", getpid());
+        dump_signals_mask();
+        filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+
+        struct sigaction sa;
+        PAS_ASSERT(!sigaction(SIGCHLD, NULL, &sa));
+        pas_log("SIGCHLD restart = %s\n", (sa.sa_flags & SA_RESTART) ? "yes" : "no");
+        pas_log("SIGCHLD flags = 0x%x\n", sa.sa_flags);
+    }
     filc_exit(my_thread);
     int result = pause();
     int my_errno = errno;
     filc_enter(my_thread);
+    if (verbose)
+        pas_log("[%d] pause returned.\n", getpid());
     PAS_ASSERT(result == -1);
     filc_set_errno(my_errno);
     return -1;
@@ -7537,6 +7571,14 @@ int filc_native_zsys_wait4(filc_thread* my_thread, int pid, filc_ptr status_ptr,
         filc_cpt_write_int(my_thread, ru_ptr, sizeof(struct rusage));
     return FILC_SYSCALL(my_thread, wait4(pid, (int*)filc_ptr_ptr(status_ptr), options,
                                          (struct rusage*)filc_ptr_ptr(ru_ptr)));
+}
+
+int filc_native_zsys_sigsuspend(filc_thread* my_thread, filc_ptr mask_ptr)
+{
+    sigset_t mask;
+    filc_check_user_sigset(mask_ptr, filc_read_access);
+    filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(mask_ptr), &mask);
+    return FILC_SYSCALL(my_thread, sigsuspend(&mask));
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

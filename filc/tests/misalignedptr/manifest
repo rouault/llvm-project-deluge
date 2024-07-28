@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "cannot access memory as ptr without 16-byte alignment"
+  - "cannot write memory as ptr without 16-byte alignment"

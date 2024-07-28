@@ -1708,6 +1708,18 @@ void filc_unpin(filc_object* object);
 /* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
 void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
 
+static inline const char* filc_access_kind_get_string(filc_access_kind access_kind)
+{
+    switch (access_kind) {
+    case filc_read_access:
+        return "read";
+    case filc_write_access:
+        return "write";
+    }
+    PAS_ASSERT(!"Should not be reached");
+    return NULL;
+}
+
 void filc_check_access_common(filc_ptr, size_t bytes, filc_access_kind kind,
                               const filc_origin* origin);
 

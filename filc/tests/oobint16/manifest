@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "cannot access 2 bytes when upper - ptr = 1"
+  - "cannot write 2 bytes when upper - ptr = 1"
