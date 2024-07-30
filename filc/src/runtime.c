@@ -90,7 +90,10 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
             int dst_ptrphase = zptrphase(dst + index);
             if (dst_ptrphase < 0) {
                 if (zisint(src + index)) {
-                    dst[index] = src[index];
+                    char value = src[index];
+                    if (!value && zisunset(dst + index))
+                        continue;
+                    dst[index] = value;
                     continue;
                 }
                 dst[index] = 0;
@@ -105,7 +108,10 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
             int dst_ptrphase = zptrphase(dst + index);
             if (dst_ptrphase < 0) {
                 if (zisint(src + index)) {
-                    dst[index] = src[index];
+                    char value = src[index];
+                    if (!value && zisunset(dst + index))
+                        continue;
+                    dst[index] = value;
                     continue;
                 }
                 dst[index] = 0;

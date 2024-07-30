@@ -1,6 +1,7 @@
 #include <stdfil.h>
 #include <stdlib.h>
 #include <string.h>
+#include "utils.h"
 
 struct foo {
     char* s;
@@ -86,6 +87,15 @@ int main()
     const char* str = "tam to tak tego tam";
     zmemmove_nullify(buf, str, strlen(str) + 1);
     ZASSERT(!strcmp(buf, str));
+
+    char buf2[16];
+    unsigned i;
+    for (i = 16; i--;)
+        buf2[i] = 0;
+    char* ptr;
+    zmemmove_nullify(&ptr, buf2, 16);
+    *(char**)opaque(&ptr) = "hello";
+    ZASSERT(!strcmp(ptr, "hello"));
 
     return 0;
 }

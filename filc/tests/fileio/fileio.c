@@ -12,6 +12,13 @@
 #include <sys/ioctl.h>
 #include <sys/epoll.h>
 
+struct foo {
+    char* a;
+    int b;
+    int c;
+    int d;
+};
+
 int main(int argc, char** argv)
 {
     int fd = zsys_open("filc/tests/fileio/test.txt", 0);
@@ -191,6 +198,26 @@ int main(int argc, char** argv)
     str = "his is a tesA co to tot, this is a test.";
     ZASSERT(!strcmp(buf, str));
     close(fd);
+
+    struct foo f;
+    f.a = "hello";
+    f.b = 42;
+    f.c = 666;
+    f.d = 1410;
+    FILE* fout = fopen("filc/test-output/fileio/fiotest.txt", "w");
+    ZASSERT(fout);
+    ZASSERT(1 == fwrite_znullify(&f, sizeof(f), 1, fout));
+    ZASSERT(!fclose(fout));
+
+    struct foo f2;
+    fin = fopen("filc/test-output/fileio/fiotest.txt", "r");
+    ZASSERT(fin);
+    ZASSERT(1 == fread_znullify(&f2, sizeof(f2), 1, fin));
+    ZASSERT(!fclose(fin));
+    ZASSERT(!f2.a);
+    ZASSERT(f2.b == 42);
+    ZASSERT(f2.c == 666);
+    ZASSERT(f2.d == 1410);
 
     return 0;
 }
