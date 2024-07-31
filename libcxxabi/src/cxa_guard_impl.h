@@ -61,6 +61,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <stdfil.h>
+#include <pizlonated_syscalls.h>
 
 #ifndef _LIBCXXABI_HAS_NO_THREADS
 #  if defined(__ELF__) && defined(_LIBCXXABI_LINK_PTHREAD_LIB)
@@ -414,12 +415,12 @@ private:
 
 #if defined(SYS_futex)
 void PlatformFutexWait(int* addr, int expect) {
-  zcompare_and_park(addr, expect, 1. / 0.);
+  zsys_futex_wait((volatile int*)addr, expect, 1);
   __tsan_acquire(addr);
 }
 void PlatformFutexWake(int* addr) {
   __tsan_release(addr);
-  zunpark(addr, UINT_MAX);
+  zsys_futex_wake((volatile int*)addr, INT_MAX, 1);
 }
 #else
 constexpr void (*PlatformFutexWait)(int*, int) = nullptr;
