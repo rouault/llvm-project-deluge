@@ -35,6 +35,9 @@
 #include "pas_ptr_hash_map.h"
 #include "pas_range.h"
 #include "pas_segmented_vector.h"
+#include "verse_heap.h"
+#include "verse_heap_config.h"
+#include "ue_include/verse_local_allocator_ue.h"
 #include <inttypes.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -91,6 +94,7 @@ struct filc_thread;
 struct filc_uintptr_ptr_hash_map_entry;
 struct filc_user_iovec;
 struct pas_basic_heap_runtime_config;
+struct pas_local_allocator;
 struct pas_stream;
 struct pas_thread_local_cache_node;
 struct verse_heap_object_set;
@@ -120,6 +124,7 @@ typedef struct filc_thread filc_thread;
 typedef struct filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry;
 typedef struct filc_user_iovec filc_user_iovec;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
+typedef struct pas_local_allocator pas_local_allocator;
 typedef struct pas_stream pas_stream;
 typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
 typedef struct verse_heap_object_set verse_heap_object_set;
@@ -212,6 +217,20 @@ typedef uint16_t filc_object_flags;
 #define FILC_PTR_TABLE_SHIFT              ((uintptr_t)4)
 
 #define FILC_NUM_UNWIND_REGISTERS         2u
+
+/* These sizes are part of the ABI that the compiler will eventually use, so they are hardcoded
+   even though we could have just computed them off what the compiler tells us. This forces us to
+   realize if something changes in a way that the compiler needs to know about.
+
+   Note that both the allocator offset and allocator size give breathing room for fields to be
+   added. */
+#define FILC_THREAD_ALLOCATOR_OFFSET      1536u
+#define FILC_THREAD_ALLOCATOR_SIZE        208u
+#define FILC_THREAD_MAX_INLINE_SIZE_CLASS 416u
+#define FILC_THREAD_NUM_ALLOCATORS \
+    ((FILC_THREAD_MAX_INLINE_SIZE_CLASS >> VERSE_HEAP_MIN_ALIGN_SHIFT) + 1u)
+#define FILC_THREAD_SIZE_WITH_ALLOCATORS \
+    (FILC_THREAD_ALLOCATOR_OFFSET + FILC_THREAD_NUM_ALLOCATORS * FILC_THREAD_ALLOCATOR_SIZE)
 
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
@@ -810,6 +829,26 @@ PAS_API void filc_thread_undo_create(filc_thread* thread);
 
 /* This removes the thread from the thread list and reuses its tid. */
 PAS_API void filc_thread_dispose(filc_thread* thread);
+
+static inline pas_local_allocator* filc_thread_allocator(filc_thread* thread, size_t allocator_index)
+{
+    PAS_TESTING_ASSERT(allocator_index < FILC_THREAD_NUM_ALLOCATORS);
+    return (pas_local_allocator*)(
+        (char*)thread + FILC_THREAD_ALLOCATOR_OFFSET + allocator_index * FILC_THREAD_ALLOCATOR_SIZE);
+}
+
+/* Super fast allocation function usable only when for the default heap and only if you don't need
+   special alignment. */
+static inline void* filc_thread_allocate(filc_thread* thread, size_t size)
+{
+    size = pas_round_up_to_power_of_2(size, VERSE_HEAP_MIN_ALIGN);
+    size_t allocator_index = size >> VERSE_HEAP_MIN_ALIGN_SHIFT;
+    PAS_TESTING_ASSERT((allocator_index < FILC_THREAD_NUM_ALLOCATORS)
+                       == (size <= FILC_THREAD_MAX_INLINE_SIZE_CLASS));
+    if (allocator_index < FILC_THREAD_NUM_ALLOCATORS)
+        return verse_local_allocator_allocate(filc_thread_allocator(thread, allocator_index));
+    return verse_heap_allocate(filc_default_heap, size);
+}
 
 PAS_API filc_thread* filc_get_my_thread(void);
 

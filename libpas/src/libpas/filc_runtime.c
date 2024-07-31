@@ -172,7 +172,13 @@ int filc_to_user_signum(int signum)
 filc_thread* filc_thread_create(void)
 {
     static const bool verbose = false;
-    filc_object* thread_object = filc_allocate_special_early(sizeof(filc_thread), FILC_WORD_TYPE_THREAD);
+    if (sizeof(filc_thread) > FILC_THREAD_ALLOCATOR_OFFSET) {
+        pas_log("Expected allocator offset to be %u, but base thread size is %zu.\n",
+                FILC_THREAD_ALLOCATOR_OFFSET, sizeof(filc_thread));
+    }
+    PAS_ASSERT(sizeof(filc_thread) <= FILC_THREAD_ALLOCATOR_OFFSET);
+    filc_object* thread_object = filc_allocate_special_early(
+        FILC_THREAD_SIZE_WITH_ALLOCATORS, FILC_WORD_TYPE_THREAD);
     filc_thread* thread = thread_object->lower;
     if (verbose)
         pas_log("created thread: %p\n", thread);
@@ -182,6 +188,50 @@ filc_thread* filc_thread_create(void)
     pas_system_condition_construct(&thread->cond);
     filc_object_array_construct(&thread->allocation_roots);
     filc_object_array_construct(&thread->mark_stack);
+
+    unsigned allocator_index = 0;
+    unsigned last_size = UINT_MAX;
+#define SIZE_CLASS(size) do { \
+        PAS_ASSERT(allocator_index < FILC_THREAD_NUM_ALLOCATORS); \
+        PAS_ASSERT((allocator_index << VERSE_HEAP_MIN_ALIGN_SHIFT) <= (size)); \
+        PAS_ASSERT(size); \
+        PAS_ASSERT(pas_is_aligned((size), VERSE_HEAP_MIN_ALIGN)); \
+        verse_local_allocator_construct( \
+            filc_thread_allocator(thread, allocator_index), filc_default_heap, (size), \
+            FILC_THREAD_ALLOCATOR_SIZE); \
+        last_size = (size); \
+        allocator_index++; \
+    } while (false)
+    SIZE_CLASS(16);
+    SIZE_CLASS(16);
+    SIZE_CLASS(32);
+    SIZE_CLASS(48);
+    SIZE_CLASS(64);
+    SIZE_CLASS(80);
+    SIZE_CLASS(96);
+    SIZE_CLASS(128);
+    SIZE_CLASS(128);
+    SIZE_CLASS(160);
+    SIZE_CLASS(160);
+    SIZE_CLASS(192);
+    SIZE_CLASS(192);
+    SIZE_CLASS(224);
+    SIZE_CLASS(224);
+    SIZE_CLASS(256);
+    SIZE_CLASS(256);
+    SIZE_CLASS(304);
+    SIZE_CLASS(304);
+    SIZE_CLASS(304);
+    SIZE_CLASS(352);
+    SIZE_CLASS(352);
+    SIZE_CLASS(352);
+    SIZE_CLASS(416);
+    SIZE_CLASS(416);
+    SIZE_CLASS(416);
+    SIZE_CLASS(416);
+#undef SIZE_CLASS
+    PAS_ASSERT(allocator_index == FILC_THREAD_NUM_ALLOCATORS);
+    PAS_ASSERT(last_size == FILC_THREAD_MAX_INLINE_SIZE_CLASS);
 
     /* The rest of the fields are initialized to zero already. */
 
@@ -301,8 +351,8 @@ void filc_initialize(void)
 
     pas_system_condition_construct(&filc_stop_the_world_cond);
 
-    filc_default_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
-    filc_destructor_heap = verse_heap_create(FILC_WORD_SIZE, 0, 0);
+    filc_default_heap = verse_heap_create(1, 0, 0);
+    filc_destructor_heap = verse_heap_create(1, 0, 0);
     filc_destructor_set = verse_heap_object_set_create();
     verse_heap_add_to_set(filc_destructor_heap, filc_destructor_set);
     verse_heap_did_become_ready_for_allocation();
@@ -1111,6 +1161,10 @@ void filc_thread_stop_allocators(filc_thread* my_thread)
     uint64_t version = my_thread->tlc_node_version;
     if (node && version)
         verse_heap_thread_local_cache_node_stop_local_allocators(node, version);
+
+    unsigned index;
+    for (index = FILC_THREAD_NUM_ALLOCATORS; index--;)
+        verse_local_allocator_stop(filc_thread_allocator(my_thread, index));
 }
 
 void filc_thread_mark_roots(filc_thread* my_thread)
@@ -1788,7 +1842,7 @@ filc_object* filc_allocate_with_existing_data(
     size_t num_words;
     size_t base_object_size;
     prepare_allocate_object(&size, &num_words, &base_object_size);
-    filc_object* result = (filc_object*)verse_heap_allocate(filc_default_heap, base_object_size);
+    filc_object* result = (filc_object*)filc_thread_allocate(my_thread, base_object_size);
     if (size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         initialize_object_with_existing_data(
             result, data, size, num_words, object_flags, initial_word_type);
@@ -1809,7 +1863,7 @@ filc_object* filc_allocate_special_with_existing_payload(
     PAS_ASSERT(word_type == FILC_WORD_TYPE_FUNCTION ||
                word_type == FILC_WORD_TYPE_DL_HANDLE);
 
-    filc_object* result = (filc_object*)verse_heap_allocate(filc_default_heap, FILC_SPECIAL_OBJECT_SIZE);
+    filc_object* result = (filc_object*)filc_thread_allocate(my_thread, FILC_SPECIAL_OBJECT_SIZE);
     result->lower = payload;
     result->upper = (char*)payload + FILC_WORD_SIZE;
     result->flags = FILC_OBJECT_FLAG_SPECIAL;
@@ -1871,7 +1925,7 @@ static filc_object* allocate_impl(
     size_t total_size;
     prepare_allocate(&size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_allocate(
-        my_thread, verse_heap_allocate(filc_default_heap, total_size),
+        my_thread, filc_thread_allocate(my_thread, total_size),
         size, num_words, offset_to_payload, object_flags, initial_word_type);
 }
 
@@ -1977,7 +2031,7 @@ filc_object* filc_reallocate(filc_thread* my_thread, filc_object* object, size_t
     size_t total_size;
     prepare_allocate(&new_size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
     return finish_reallocate(
-        my_thread, verse_heap_allocate(filc_default_heap, total_size),
+        my_thread, filc_thread_allocate(my_thread, total_size),
         object, new_size, num_words, offset_to_payload);
 }
 

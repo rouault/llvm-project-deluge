@@ -53,6 +53,10 @@ void verse_local_allocator_construct(pas_local_allocator* allocator, pas_heap* h
     }
 
     PAS_ASSERT(directory);
+    if (pas_segregated_size_directory_local_allocator_size(directory) > allocator_size) {
+        pas_log("Trying to use allocator of size %zu, but need %zu.\n",
+                allocator_size, pas_segregated_size_directory_local_allocator_size(directory));
+    }
     PAS_ASSERT(pas_segregated_size_directory_local_allocator_size(directory) <= allocator_size);
 
     pas_local_allocator_construct(allocator, directory, pas_local_allocator_not_in_thread_local_cache);
