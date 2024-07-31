@@ -324,9 +324,16 @@ $testDirectory.each_entry {
         outp.puts "set -e"
         outp.puts "#{Shellwords.shellescape(compileScript)}"
         if expectedReturn != "compileFailure"
-            outp.puts "#{Shellwords.shellescape(subRunScript)}"
-            outp.puts "#{Shellwords.shellescape(subRunSTWScript)}"
-            outp.puts "#{Shellwords.shellescape(subRunReleaseScript)}"
+            subRuns = manifest["subRuns"]
+            if not subRuns or subRuns["default"]
+                outp.puts "#{Shellwords.shellescape(subRunScript)}"
+            end
+            if not subRuns or subRuns["stw"]
+                outp.puts "#{Shellwords.shellescape(subRunSTWScript)}"
+            end
+            if not subRuns or subRuns["release"]
+                outp.puts "#{Shellwords.shellescape(subRunReleaseScript)}"
+            end
         end
     }
     compileScript.chmod(0755)
