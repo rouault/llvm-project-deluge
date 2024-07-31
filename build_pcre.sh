@@ -37,4 +37,5 @@ CC="$CCPREFIX$PWD/../build/bin/clang -g -O" CXX="$CCPREFIX$PWD/../build/bin/clan
     --enable-pcre16 --enable-pcre32 --enable-unicode-properties \
     --enable-pcregrep-libz
 $MAKE -j $NCPU
+$MAKE check
 $MAKE install
