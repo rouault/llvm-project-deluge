@@ -34,7 +34,6 @@
 #include "bmalloc_heap.h"
 #include "bmalloc_heap_config.h"
 #include "filc_native.h"
-#include "filc_parking_lot.h"
 #include "fugc.h"
 #include "pas_hashtable.h"
 #include "pas_scavenger.h"
@@ -905,42 +904,6 @@ void filc_exit(filc_thread* my_thread)
     }
 }
 
-void filc_increase_special_signal_deferral_depth(filc_thread* my_thread)
-{
-    PAS_ASSERT(my_thread == filc_get_my_thread());
-    PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    my_thread->special_signal_deferral_depth++;
-    for (;;) {
-        uint8_t old_state = my_thread->state;
-        PAS_ASSERT(old_state & FILC_THREAD_STATE_ENTERED);
-        if (!(old_state & FILC_THREAD_STATE_DEFERRED_SIGNAL))
-            break;
-        uint8_t new_state = old_state & ~FILC_THREAD_STATE_DEFERRED_SIGNAL;
-        if (pas_compare_and_swap_uint8_weak(&my_thread->state, old_state, new_state)) {
-            my_thread->have_deferred_signal_special = true;
-            break;
-        }
-    }
-}
-
-void filc_decrease_special_signal_deferral_depth(filc_thread* my_thread)
-{
-    PAS_ASSERT(my_thread == filc_get_my_thread());
-    PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    PAS_ASSERT(my_thread->special_signal_deferral_depth);
-    my_thread->special_signal_deferral_depth--;
-    if (!my_thread->special_signal_deferral_depth && my_thread->have_deferred_signal_special) {
-        for (;;) {
-            uint8_t old_state = my_thread->state;
-            PAS_ASSERT(old_state & FILC_THREAD_STATE_ENTERED);
-            PAS_ASSERT(!(old_state & FILC_THREAD_STATE_DEFERRED_SIGNAL));
-            uint8_t new_state = old_state | FILC_THREAD_STATE_DEFERRED_SIGNAL;
-            if (pas_compare_and_swap_uint8_weak(&my_thread->state, old_state, new_state))
-                break;
-        }
-    }
-}
-
 void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
 {
     filc_enter(my_thread);
@@ -1294,17 +1257,13 @@ static void signal_pizlonator(int signum)
     }
     PAS_ASSERT(thread);
     
-    if ((thread->state & FILC_THREAD_STATE_ENTERED) || thread->special_signal_deferral_depth) {
+    if ((thread->state & FILC_THREAD_STATE_ENTERED)) {
         /* For all we know the user asked for a mask that allows us to recurse, hence the lock-freedom. */
         for (;;) {
             uint64_t old_value = thread->num_deferred_signals[user_signum];
             if (pas_compare_and_swap_uint64_weak(
                     thread->num_deferred_signals + user_signum, old_value, old_value + 1))
                 break;
-        }
-        if (thread->special_signal_deferral_depth) {
-            thread->have_deferred_signal_special = true;
-            return;
         }
         for (;;) {
             uint8_t old_state = thread->state;
@@ -4530,11 +4489,6 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
     filc_jmp_buf* jmp_buf = (filc_jmp_buf*)filc_ptr_ptr(jmp_buf_ptr);
 
     FILC_CHECK(
-        !my_thread->special_signal_deferral_depth,
-        NULL,
-        "cannot longjmp from a special signal deferral scope.");
-    
-    FILC_CHECK(
         jmp_buf->kind == kind,
         NULL,
         "cannot mix %s with %s.",
@@ -5460,9 +5414,6 @@ int filc_native_zsys_fork(filc_thread* my_thread)
     /* NOTE: We don't have to lock the soft handshake lock, since now that the world is stopped and the
        FUGC is suspended, nobody could be using it. */
     if (verbose)
-        pas_log("locking the parking lot\n");
-    void* parking_lot_cookie = filc_parking_lot_lock();
-    if (verbose)
         pas_log("locking thread list\n");
     filc_thread_list_lock_lock();
     pas_lock_disallowed = true;
@@ -5510,7 +5461,6 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             pas_system_mutex_unlock(&thread->lock);
     }
     filc_thread_list_lock_unlock();
-    filc_parking_lot_unlock(parking_lot_cookie);
     filc_resume_the_world();
     fugc_resume();
     pas_scavenger_resume();
@@ -7882,92 +7832,6 @@ bool filc_native_zthread_join(filc_thread* my_thread, filc_ptr thread_ptr, filc_
             filc_ptr_load_with_manual_tracking(&thread->result_ptr));
     }
     return true;
-}
-
-typedef struct {
-    filc_thread* my_thread;
-    bool (*condition)(PIZLONATED_SIGNATURE);
-    bool (*before_sleep)(PIZLONATED_SIGNATURE);
-    filc_ptr arg_ptr;
-} zpark_if_data;
-
-static bool zpark_if_validate_callback(void* arg)
-{
-    zpark_if_data* data = (zpark_if_data*)arg;
-    return filc_call_user_bool_ptr(data->my_thread, data->condition, data->arg_ptr);
-}
-
-static void zpark_if_before_sleep_callback(void* arg)
-{
-    zpark_if_data* data = (zpark_if_data*)arg;
-    filc_call_user_void_ptr(data->my_thread, data->before_sleep, data->arg_ptr);
-}
-
-int filc_native_zpark_if(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr condition_ptr,
-                         filc_ptr before_sleep_ptr, filc_ptr arg_ptr,
-                         double absolute_timeout_in_milliseconds)
-{
-    FILC_CHECK(
-        filc_ptr_ptr(address_ptr),
-        NULL,
-        "cannot zpark on a null address.");
-    filc_check_function_call(condition_ptr);
-    filc_check_function_call(before_sleep_ptr);
-    zpark_if_data data;
-    data.my_thread = my_thread;
-    data.condition = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(condition_ptr);
-    data.before_sleep = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(before_sleep_ptr);
-    data.arg_ptr = arg_ptr;
-    return filc_park_conditionally(my_thread,
-                                   filc_ptr_ptr(address_ptr),
-                                   zpark_if_validate_callback,
-                                   zpark_if_before_sleep_callback,
-                                   &data,
-                                   absolute_timeout_in_milliseconds);
-}
-
-typedef struct {
-    filc_thread* my_thread;
-    bool (*callback)(PIZLONATED_SIGNATURE);
-    filc_ptr arg_ptr;
-} zunpark_one_data;
-
-typedef struct {
-    bool did_unpark_thread;
-    bool may_have_more_threads;
-    filc_ptr arg_ptr;
-} zunpark_one_callback_args;
-
-static void zunpark_one_callback(filc_unpark_result result, void* arg)
-{
-    zunpark_one_data* data = (zunpark_one_data*)arg;
-    filc_call_user_void_bool_bool_ptr(
-        data->my_thread, data->callback, result.did_unpark_thread, result.may_have_more_threads,
-        data->arg_ptr);
-}
-
-void filc_native_zunpark_one(filc_thread* my_thread, filc_ptr address_ptr, filc_ptr callback_ptr,
-                             filc_ptr arg_ptr)
-{
-    FILC_CHECK(
-        filc_ptr_ptr(address_ptr),
-        NULL,
-        "cannot zunpark on a null address.");
-    filc_check_function_call(callback_ptr);
-    zunpark_one_data data;
-    data.my_thread = my_thread;
-    data.callback = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
-    data.arg_ptr = arg_ptr;
-    filc_unpark_one(my_thread, filc_ptr_ptr(address_ptr), zunpark_one_callback, &data);
-}
-
-unsigned filc_native_zunpark(filc_thread* my_thread, filc_ptr address_ptr, unsigned count)
-{
-    FILC_CHECK(
-        filc_ptr_ptr(address_ptr),
-        NULL,
-        "cannot zunpark on a null address.");
-    return filc_unpark(my_thread, filc_ptr_ptr(address_ptr), count);
 }
 
 void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread)

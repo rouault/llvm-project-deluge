@@ -1,7 +1,0 @@
-return:
-  failure
-output-includes:
-  - "filc safety error"
-  - "return type mismatch"
-output-excludes:
-  - "wtf"

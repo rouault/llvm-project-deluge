@@ -143,32 +143,6 @@ _Bool zintense_cas_ptr(void** ptr, void** expected_ptr, void* new_value)
     return result == expected;
 }
 
-typedef struct {
-    const int* address;
-    int expected_value;
-} compare_and_park_data;
-
-static _Bool compare_and_park_condition(void* arg)
-{
-    compare_and_park_data* data = (compare_and_park_data*)arg;
-    return *data->address == data->expected_value;
-}
-
-static void empty_before_sleep(void* arg)
-{
-    (void)arg;
-}
-
-zpark_result zcompare_and_park(
-    const int* address, int expected_value, double absolute_timeout_in_milliseconds)
-{
-    compare_and_park_data data;
-    data.address = (const int*)((const char*)address - ((unsigned long)address % sizeof(int)));
-    data.expected_value = expected_value;
-    return zpark_if(address, compare_and_park_condition, empty_before_sleep, &data,
-                    absolute_timeout_in_milliseconds);
-}
-
 void* zthread_self_cookie(void)
 {
     return zthread_get_cookie(zthread_self());

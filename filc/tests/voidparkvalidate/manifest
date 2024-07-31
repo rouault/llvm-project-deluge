@@ -1,4 +1,0 @@
-return:
-  success
-output-excludes:
-  - "wtf"
