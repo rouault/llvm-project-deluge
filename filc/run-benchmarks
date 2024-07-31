@@ -27,7 +27,7 @@ require 'pathname'
 require 'getoptlong'
 require 'shellwords'
 
-BENCHMARK_NAME = "PizBench9001"
+BENCHMARK_NAME = "PizBench9002"
 
 $repeats = 5
 
@@ -260,6 +260,11 @@ $benchmarks << Benchmark.new(
 
 $benchmarks << Benchmark.new(
     "benchmarks/deltablue", "", [])
+
+$benchmarks << Benchmark.new(
+    "bin/lua",
+    "benchmarkData/richards.lua",
+    [])
 
 $pizfixes = []
 ARGV.each {
