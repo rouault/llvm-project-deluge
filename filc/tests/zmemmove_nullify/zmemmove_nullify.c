@@ -97,6 +97,13 @@ int main()
     *(char**)opaque(&ptr) = "hello";
     ZASSERT(!strcmp(ptr, "hello"));
 
+    char* src_ptr = "hello";
+    char* dst_ptr;
+    zmemmove_nullify(&dst_ptr, &src_ptr, sizeof(src_ptr));
+    ZASSERT(!dst_ptr);
+    dst_ptr = "world";
+    ZASSERT(!strcmp(*(char**)opaque(&dst_ptr), "world"));
+
     return 0;
 }
 

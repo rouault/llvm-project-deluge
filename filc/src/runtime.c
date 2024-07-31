@@ -78,6 +78,20 @@ void* zretagptr(void* newptr, void* oldptr, unsigned long mask)
     return zorptr(newptr, (unsigned long)oldptr & ~mask);
 }
 
+static void copy_byte_to_nonptr(char* dst, char* src, __SIZE_TYPE__ index)
+{
+    if (zisint(src + index)) {
+        char value = src[index];
+        if (!value && zisunset(dst + index))
+            return;
+        dst[index] = value;
+        return;
+    }
+    if (zisunset(dst + index))
+        return;
+    dst[index] = 0;
+}
+
 void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
 {
     char* dst = (char*)dst_ptr;
@@ -89,14 +103,7 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
         for (index = 0; index < count; ++index) {
             int dst_ptrphase = zptrphase(dst + index);
             if (dst_ptrphase < 0) {
-                if (zisint(src + index)) {
-                    char value = src[index];
-                    if (!value && zisunset(dst + index))
-                        continue;
-                    dst[index] = value;
-                    continue;
-                }
-                dst[index] = 0;
+                copy_byte_to_nonptr(dst, src, index);
                 continue;
             }
             ZASSERT(!dst_ptrphase);
@@ -107,14 +114,7 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
         for (index = count; index--;) {
             int dst_ptrphase = zptrphase(dst + index);
             if (dst_ptrphase < 0) {
-                if (zisint(src + index)) {
-                    char value = src[index];
-                    if (!value && zisunset(dst + index))
-                        continue;
-                    dst[index] = value;
-                    continue;
-                }
-                dst[index] = 0;
+                copy_byte_to_nonptr(dst, src, index);
                 continue;
             }
             ZASSERT(dst_ptrphase == sizeof(void*) - 1);
