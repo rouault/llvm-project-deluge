@@ -258,6 +258,9 @@ $benchmarks << Benchmark.new(
     "benchmarkData/input-text.txt",
     [])
 
+$benchmarks << Benchmark.new(
+    "benchmarks/deltablue", "", [])
+
 $pizfixes = []
 ARGV.each {
     | argv |

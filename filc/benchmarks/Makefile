@@ -24,12 +24,14 @@
 all: \
 	../../pizfix/benchmarks/stepanov_container \
 	../../pizfix/benchmarks/richards \
-	../../pizfix/benchmarks/pcre_benchmark
+	../../pizfix/benchmarks/pcre_benchmark \
+	../../pizfix/benchmarks/deltablue
 
 clean:
 	rm -f ../../pizfix/benchmarks/stepanov_container
 	rm -f ../../pizfix/benchmarks/richards
 	rm -f ../../pizfix/benchmarks/pcre_benchmark
+	rm -f ../../pizfix/benchmarks/deltablue
 
 ../../pizfix/benchmarks/stepanov_container: stepanov_container.cpp
 	../../build/bin/clang++ \
@@ -45,3 +47,9 @@ clean:
 	../../build/bin/clang \
 		-o ../../pizfix/benchmarks/pcre_benchmark \
 		pcre_benchmark.c -O3 -g -lpcre2-8
+
+../../pizfix/benchmarks/deltablue: deltablue.c
+	../../build/bin/clang \
+	    -o ../../pizfix/benchmarks/deltablue \
+	    deltablue.c -O3 -g
+
