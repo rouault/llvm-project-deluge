@@ -30,11 +30,5 @@ set -x
 
 mkdir -p ../../pizfix/benchmarks
 
-${CCPREFIX}../../build/bin/clang++ \
-    -o ../../pizfix/benchmarks/stepanov_container \
-    stepanov_container.cpp -O3 -g
-
-${CCPREFIX}../../build/bin/clang \
-    -o ../../pizfix/benchmarks/richards \
-    richards.c -O3 -g -Dbench100
-
+make clean
+make -j $NCPU

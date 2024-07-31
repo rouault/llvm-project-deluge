@@ -27,7 +27,7 @@ require 'pathname'
 require 'getoptlong'
 require 'shellwords'
 
-BENCHMARK_NAME = "PizBench9000"
+BENCHMARK_NAME = "PizBench9001"
 
 $repeats = 5
 
@@ -252,6 +252,11 @@ $benchmarks << Benchmark.new(
 
 $benchmarks << Benchmark.new(
     "benchmarks/stepanov_container", "", [])
+
+$benchmarks << Benchmark.new(
+    "benchmarks/pcre_benchmark",
+    "benchmarkData/input-text.txt",
+    [])
 
 $pizfixes = []
 ARGV.each {
