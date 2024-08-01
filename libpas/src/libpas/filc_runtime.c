@@ -1765,19 +1765,31 @@ filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_wor
     return filc_allocate_special_early(size, word_type);
 }
 
-static void prepare_allocate_object(size_t* size, size_t* num_words, size_t* base_object_size)
+static PAS_NEVER_INLINE PAS_NO_RETURN void size_too_big(size_t size)
 {
-    size_t original_size = *size;
-    *size = pas_round_up_to_power_of_2(*size, FILC_WORD_SIZE);
-    PAS_ASSERT(*size >= original_size);
-    *num_words = filc_object_num_words_for_size(*size);
-    PAS_ASSERT(!pas_add_uintptr_overflow(
-                   PAS_OFFSETOF(filc_object, word_types), *num_words, base_object_size));
+    filc_safety_panic(NULL, "attempt to allocate object that is too big (size = %zu).", size);
 }
 
-static void initialize_object_with_existing_data(filc_object* result, void* data, size_t size,
-                                                 size_t num_words, filc_object_flags object_flags,
-                                                 filc_word_type initial_word_type)
+static PAS_ALWAYS_INLINE void prepare_allocate_object(
+    size_t* size, size_t* num_words, size_t* base_object_size)
+{
+    if (PAS_UNLIKELY(*size > FILC_MAX_ALLOCATION_SIZE))
+        size_too_big(*size);
+    size_t original_size = *size;
+    *size = pas_round_up_to_power_of_2(*size, FILC_WORD_SIZE);
+    PAS_TESTING_ASSERT(*size >= original_size);
+    *num_words = filc_object_num_words_for_size(*size);
+    if (PAS_ENABLE_TESTING) {
+        PAS_ASSERT(!pas_add_uintptr_overflow(
+                       PAS_OFFSETOF(filc_object, word_types), *num_words, base_object_size));
+    } else
+        *base_object_size = PAS_OFFSETOF(filc_object, word_types) + *num_words;
+}
+
+static PAS_ALWAYS_INLINE void initialize_object_with_existing_data(
+    filc_object* result, void* data, size_t size,
+    size_t num_words, filc_object_flags object_flags,
+    filc_word_type initial_word_type)
 {
     result->lower = data;
     result->upper = (char*)data + size;
@@ -1831,23 +1843,42 @@ filc_object* filc_allocate_special_with_existing_payload(
     return result;
 }
 
-static void prepare_allocate(size_t* size, size_t alignment,
-                             size_t* num_words, size_t* offset_to_payload, size_t* total_size)
+static PAS_ALWAYS_INLINE void prepare_allocate(
+    size_t* size, size_t alignment,
+    size_t* num_words, size_t* offset_to_payload, size_t* total_size)
 {
     size_t base_object_size;
     prepare_allocate_object(size, num_words, &base_object_size);
     *offset_to_payload = pas_round_up_to_power_of_2(base_object_size, alignment);
-    PAS_ASSERT(*offset_to_payload >= base_object_size);
-    PAS_ASSERT(!pas_add_uintptr_overflow(*offset_to_payload, *size, total_size));
+    PAS_TESTING_ASSERT(*offset_to_payload >= base_object_size);
+    if (PAS_ENABLE_TESTING)
+        PAS_ASSERT(!pas_add_uintptr_overflow(*offset_to_payload, *size, total_size));
+    else
+        *total_size = *offset_to_payload + *size;
 }
 
-static void initialize_object(filc_object* result, size_t size, size_t num_words,
-                              size_t offset_to_payload, filc_object_flags object_flags,
-                              filc_word_type initial_word_type)
+static PAS_ALWAYS_INLINE void initialize_object_bounds(
+    filc_object* result, size_t size, size_t offset_to_payload)
 {
     result->lower = (char*)result + offset_to_payload;
     result->upper = (char*)result + offset_to_payload + size;
+}
+
+static PAS_ALWAYS_INLINE void initialize_object_header(
+    filc_object* result, size_t size, size_t offset_to_payload, filc_object_flags object_flags)
+{
+    initialize_object_bounds(result, size, offset_to_payload);
     result->flags = object_flags;
+}
+
+static PAS_NEVER_INLINE filc_object* finish_allocate_large(
+    filc_thread* my_thread, void* allocation, size_t size, size_t num_words,
+    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
+{
+    filc_object* result = (filc_object*)allocation;
+    filc_exit_with_allocation_root(my_thread, result);
+    
+    initialize_object_header(result, size, offset_to_payload, object_flags);
 
     size_t index;
     for (index = num_words; index--;)
@@ -1856,24 +1887,61 @@ static void initialize_object(filc_object* result, size_t size, size_t num_words
     pas_zero_memory((char*)result + offset_to_payload, size);
     
     pas_store_store_fence();
-}
-
-static filc_object* finish_allocate(
-    filc_thread* my_thread, void* allocation, size_t size, size_t num_words, size_t offset_to_payload,
-    filc_object_flags object_flags, filc_word_type initial_word_type)
-{
-    filc_object* result = (filc_object*)allocation;
-    if (size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        initialize_object(result, size, num_words, offset_to_payload, object_flags, initial_word_type);
-    else {
-        filc_exit_with_allocation_root(my_thread, result);
-        initialize_object(result, size, num_words, offset_to_payload, object_flags, initial_word_type);
-        filc_enter_with_allocation_root(my_thread, result);
-    }
+    
+    filc_enter_with_allocation_root(my_thread, result);
     return result;
 }
 
-static filc_object* allocate_impl(
+static PAS_ALWAYS_INLINE filc_object* finish_allocate_small(
+    void* allocation, size_t size, size_t num_words,
+    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
+{
+    filc_object* result = (filc_object*)allocation;
+
+    PAS_TESTING_ASSERT(size == num_words * FILC_WORD_SIZE);
+
+    if (!object_flags) {
+        initialize_object_bounds(result, size, offset_to_payload);
+        pas_uint128* dst_ptr = (pas_uint128*)&result->flags;
+        PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)dst_ptr, FILC_WORD_SIZE));
+        pas_uint128* end_ptr = (pas_uint128*)((char*)result + offset_to_payload + size);
+        PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)end_ptr, FILC_WORD_SIZE));
+        PAS_TESTING_ASSERT(dst_ptr < end_ptr);
+        do {
+            *dst_ptr++ = 0;
+            pas_compiler_fence();
+        } while (dst_ptr < end_ptr);
+    } else {
+        initialize_object_header(result, size, offset_to_payload, object_flags);
+        
+        pas_uint128* dst_ptr = (pas_uint128*)((char*)result + offset_to_payload);
+        
+        size_t index;
+        for (index = num_words; index--;) {
+            result->word_types[index] = initial_word_type;
+            dst_ptr[index] = 0;
+            pas_compiler_fence();
+        }
+    }
+    
+    pas_store_store_fence();
+    return result;
+}
+
+static PAS_ALWAYS_INLINE filc_object* finish_allocate(
+    filc_thread* my_thread, void* allocation, size_t size, size_t num_words,
+    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
+{
+    if (PAS_UNLIKELY(size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)) {
+        return finish_allocate_large(
+            my_thread, allocation, size, num_words, offset_to_payload, object_flags,
+            initial_word_type);
+    }
+    return finish_allocate_small(
+        allocation, size, num_words, offset_to_payload, object_flags, initial_word_type);
+}
+
+static PAS_ALWAYS_INLINE filc_object* allocate_impl(
     filc_thread* my_thread, size_t size, filc_object_flags object_flags, filc_word_type initial_word_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
@@ -3836,7 +3904,7 @@ void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream)
     }
 }
 
-static void panic_impl(
+PAS_NEVER_INLINE PAS_NO_RETURN static void panic_impl(
     const filc_origin* origin, const char* prefix, const char* kind_string, const char* format,
     va_list args)
 {
@@ -3855,7 +3923,8 @@ static void panic_impl(
     pas_panic("%s\n", kind_string);
 }
 
-void filc_safety_panic(const filc_origin* origin, const char* format, ...)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_safety_panic(
+    const filc_origin* origin, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -3863,14 +3932,16 @@ void filc_safety_panic(const filc_origin* origin, const char* format, ...)
         origin, "filc safety error", "thwarted a futile attempt to violate memory safety.", format, args);
 }
 
-void filc_internal_panic(const filc_origin* origin, const char* format, ...)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_internal_panic(
+    const filc_origin* origin, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
     panic_impl(origin, "filc internal error", "internal Fil-C error (it's probably a bug).", format, args);
 }
 
-void filc_user_panic(const filc_origin* origin, const char* format, ...)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_user_panic(
+    const filc_origin* origin, const char* format, ...)
 {
     va_list args;
     va_start(args, format);

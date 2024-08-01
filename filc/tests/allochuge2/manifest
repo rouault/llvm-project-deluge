@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - filc safety error
-  - out of memory
+  - attempt to allocate object that is too big
 output-excludes:
   - "huge = 0"
   - "*huge = 42"

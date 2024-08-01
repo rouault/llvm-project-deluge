@@ -232,6 +232,8 @@ typedef uint16_t filc_object_flags;
 #define FILC_THREAD_SIZE_WITH_ALLOCATORS \
     (FILC_THREAD_ALLOCATOR_OFFSET + FILC_THREAD_NUM_ALLOCATORS * FILC_THREAD_ALLOCATOR_SIZE)
 
+#define FILC_MAX_ALLOCATION_SIZE          PAS_MAX_ADDRESS
+
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
     filc_cc_ptr args, \
@@ -775,9 +777,12 @@ PAS_API extern const filc_cc_type filc_ptr_cc_type;
    
    - If the origin is NULL, we just use the origin that's at the top of the stack already.
    - If the origin is not NULL, then this sets the top frame's origin to what is passed. */
-void filc_safety_panic(const filc_origin* origin, const char* format, ...); /* memory safety */
-void filc_internal_panic(const filc_origin* origin, const char* format, ...); /* internal error */
-void filc_user_panic(const filc_origin* origin, const char* format, ...); /* user-triggered */
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_safety_panic(
+    const filc_origin* origin, const char* format, ...); /* memory safety */
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_internal_panic(
+    const filc_origin* origin, const char* format, ...); /* internal error */
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_user_panic(
+    const filc_origin* origin, const char* format, ...); /* user-triggered */
 
 #define FILC_CHECK(exp, origin, ...) do { \
         if ((exp)) \
@@ -837,16 +842,33 @@ static inline pas_local_allocator* filc_thread_allocator(filc_thread* thread, si
         (char*)thread + FILC_THREAD_ALLOCATOR_OFFSET + allocator_index * FILC_THREAD_ALLOCATOR_SIZE);
 }
 
-/* Super fast allocation function usable only when for the default heap and only if you don't need
-   special alignment. */
-static inline void* filc_thread_allocate(filc_thread* thread, size_t size)
+static inline size_t filc_compute_allocator_index(size_t size)
 {
     size = pas_round_up_to_power_of_2(size, VERSE_HEAP_MIN_ALIGN);
     size_t allocator_index = size >> VERSE_HEAP_MIN_ALIGN_SHIFT;
     PAS_TESTING_ASSERT((allocator_index < FILC_THREAD_NUM_ALLOCATORS)
                        == (size <= FILC_THREAD_MAX_INLINE_SIZE_CLASS));
-    if (allocator_index < FILC_THREAD_NUM_ALLOCATORS)
-        return verse_local_allocator_allocate(filc_thread_allocator(thread, allocator_index));
+    return allocator_index;
+}
+
+static inline size_t filc_is_fast_allocator_index(size_t allocator_index)
+{
+    return allocator_index < FILC_THREAD_NUM_ALLOCATORS;
+}
+
+static inline void* filc_thread_allocate_with_allocator_index(filc_thread* thread,
+                                                              size_t allocator_index)
+{
+    return verse_local_allocator_allocate(filc_thread_allocator(thread, allocator_index));
+}
+
+/* Super fast allocation function usable only when for the default heap and only if you don't need
+   special alignment. */
+static inline void* filc_thread_allocate(filc_thread* thread, size_t size)
+{
+    size_t allocator_index = filc_compute_allocator_index(size);
+    if (PAS_LIKELY(filc_is_fast_allocator_index(allocator_index)))
+        return filc_thread_allocate_with_allocator_index(thread, allocator_index);
     return verse_heap_allocate(filc_default_heap, size);
 }
 

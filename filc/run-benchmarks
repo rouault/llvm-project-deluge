@@ -30,14 +30,18 @@ require 'shellwords'
 BENCHMARK_NAME = "PizBench9002"
 
 $repeats = 5
+$filter = /./
 
 GetoptLong.new(
     [ '--repeat', '-r', GetoptLong::REQUIRED_ARGUMENT ],
+    [ '--filter', '-f', GetoptLong::REQUIRED_ARGUMENT ],
 ).each {
     | opt, arg |
     case opt
     when '--repeat'
         $repeats = arg.to_i
+    when '--filter'
+        $filter = Regexp.new(arg)
     else
         raise
     end
@@ -265,6 +269,11 @@ $benchmarks << Benchmark.new(
     "bin/lua",
     "benchmarkData/richards.lua",
     [])
+
+$benchmarks.filter! {
+    | benchmark |
+    benchmark.to_s =~ $filter
+}
 
 $pizfixes = []
 ARGV.each {
