@@ -1005,71 +1005,70 @@ void filc_object_array_reset(filc_object_array* array)
     filc_object_array_construct(array);
 }
 
-void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+static PAS_NEVER_INLINE void native_frame_enlarge(filc_native_frame* frame)
 {
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    uintptr_t* new_array;
+    unsigned new_capacity;
 
-    filc_object_array_construct(&frame->array);
-    filc_object_array_construct(&frame->pinned);
-    filc_ptr_array_construct(&frame->to_bmalloc_deallocate);
-    frame->locked = false;
-    
-    PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
-    filc_assert_top_frame_locked(my_thread);
-    frame->parent = my_thread->top_native_frame;
-    my_thread->top_native_frame = frame;
+    PAS_TESTING_ASSERT(frame->size == frame->capacity);
+
+    new_capacity = frame->capacity << 1;
+    PAS_ASSERT(new_capacity > frame->capacity);
+
+    new_array = bmalloc_allocate(sizeof(uintptr_t) * new_capacity);
+    memcpy(new_array, frame->array, sizeof(uintptr_t) * frame->size);
+
+    if (frame->array != frame->inline_array)
+        bmalloc_deallocate(frame->array);
+
+    frame->array = new_array;
+    frame->capacity = new_capacity;
+
+    PAS_TESTING_ASSERT(frame->size < frame->capacity);
 }
 
-void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+static PAS_ALWAYS_INLINE void native_frame_add_impl(filc_native_frame* frame, uintptr_t encoded_ptr)
 {
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(
+        (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR ||
+        (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR ||
+        (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_BMALLOC_PTR);
 
-    filc_object_array_destruct(&frame->array);
+    if (frame->size >= frame->capacity)
+        native_frame_enlarge(frame);
 
-    size_t index;
-    for (index = frame->pinned.num_objects; index--;)
-        filc_unpin(frame->pinned.objects[index]);
-    filc_object_array_destruct(&frame->pinned);
-
-    for (index = frame->to_bmalloc_deallocate.size; index--;)
-        bmalloc_deallocate(frame->to_bmalloc_deallocate.array[index]);
-    filc_ptr_array_destruct(&frame->to_bmalloc_deallocate);
-    
-    PAS_TESTING_ASSERT(!frame->locked);
-    
-    PAS_TESTING_ASSERT(my_thread->top_native_frame == frame);
-    my_thread->top_native_frame = frame->parent;
+    frame->array[frame->size++] = encoded_ptr;
 }
 
 void filc_native_frame_add(filc_native_frame* frame, filc_object* object)
 {
-    PAS_ASSERT(!frame->locked);
+    PAS_TESTING_ASSERT(!frame->locked);
     
     if (!object)
         return;
 
-    filc_object_array_push(&frame->array, object);
+    native_frame_add_impl(frame, (uintptr_t)object | FILC_NATIVE_FRAME_TRACKED_PTR);
 }
 
 void filc_native_frame_pin(filc_native_frame* frame, filc_object* object)
 {
-    PAS_ASSERT(!frame->locked);
+    PAS_TESTING_ASSERT(!frame->locked);
     
     if (!object)
         return;
 
     filc_pin(object);
-    filc_object_array_push(&frame->pinned, object);
+    native_frame_add_impl(frame, (uintptr_t)object | FILC_NATIVE_FRAME_PINNED_PTR);
 }
 
 void filc_native_frame_defer_bmalloc_deallocate(filc_native_frame* frame, void* bmalloc_object)
 {
-    PAS_ASSERT(!frame->locked);
+    PAS_TESTING_ASSERT(!frame->locked);
 
     if (!bmalloc_object)
         return;
 
-    filc_ptr_array_add(&frame->to_bmalloc_deallocate, bmalloc_object);
+    native_frame_add_impl(frame, (uintptr_t)bmalloc_object | FILC_NATIVE_FRAME_BMALLOC_PTR);
 }
 
 void filc_thread_track_object(filc_thread* my_thread, filc_object* object)
@@ -1162,13 +1161,20 @@ void filc_thread_mark_roots(filc_thread* my_thread)
 
     filc_native_frame* native_frame;
     for (native_frame = my_thread->top_native_frame; native_frame; native_frame = native_frame->parent) {
-        for (index = native_frame->array.num_objects; index--;)
-            fugc_mark(&my_thread->mark_stack, native_frame->array.objects[index]);
-
-        /* In almost all cases where we pin, the object is already otherwise tracked. But we're going to
-           be paranoid anyway because that's how we roll. */
-        for (index = native_frame->pinned.num_objects; index--;)
-            fugc_mark(&my_thread->mark_stack, native_frame->pinned.objects[index]);
+        for (index = native_frame->size; index--;) {
+            uintptr_t encoded_ptr = native_frame->array[index];
+            /* In almost all cases where we pin, the object is already otherwise tracked. But we're
+               going to be paranoid anyway because that's how we roll. */
+            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR ||
+                (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR) {
+                fugc_mark(
+                    &my_thread->mark_stack,
+                    (filc_object*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
+            } else {
+                PAS_TESTING_ASSERT(
+                    (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_BMALLOC_PTR);
+            }
+        }
     }
 
     for (index = FILC_NUM_UNWIND_REGISTERS; index--;)

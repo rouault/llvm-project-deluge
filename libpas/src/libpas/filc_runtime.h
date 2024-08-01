@@ -234,6 +234,13 @@ typedef uint16_t filc_object_flags;
 
 #define FILC_MAX_ALLOCATION_SIZE          PAS_MAX_ADDRESS
 
+#define FILC_NATIVE_FRAME_PTR_MASK        ((uintptr_t)3)
+#define FILC_NATIVE_FRAME_TRACKED_PTR     ((uintptr_t)1)
+#define FILC_NATIVE_FRAME_PINNED_PTR      ((uintptr_t)2)
+#define FILC_NATIVE_FRAME_BMALLOC_PTR     ((uintptr_t)3)
+
+#define FILC_NATIVE_FRAME_INLINE_CAPACITY 5u
+
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
     filc_cc_ptr args, \
@@ -379,10 +386,11 @@ struct filc_object_array {
 
 struct filc_native_frame {
     filc_native_frame* parent;
-    filc_object_array array;
-    filc_object_array pinned;
-    filc_ptr_array to_bmalloc_deallocate;
+    uintptr_t* array;
+    unsigned size;
+    unsigned capacity;
     bool locked;
+    uintptr_t inline_array[FILC_NATIVE_FRAME_INLINE_CAPACITY];
 };
 
 struct filc_signal_handler {
@@ -980,23 +988,30 @@ static inline void filc_pop_allocation_root(filc_thread* my_thread, filc_object*
 PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
 PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
 
+/* munmap() can free memory while we're exited. If we use memory while exited, and it might be
+   mmap memory, then we must pin it first. This will cause munmap() to fail.
+
+   For convenience, these functions forgive you for passing a NULL object. */
+PAS_API void filc_pin(filc_object* object);
+PAS_API void filc_unpin(filc_object* object);
+
 /* Locking the native frame prevents us from accidentally adding stuff to the top_native_frame if
    it doesn't belong to us. */
 static inline void filc_native_frame_lock(filc_native_frame* frame)
 {
-    PAS_ASSERT(!frame->locked);
+    PAS_TESTING_ASSERT(!frame->locked);
     frame->locked = true;
 }
 
 static inline void filc_native_frame_unlock(filc_native_frame* frame)
 {
-    PAS_ASSERT(frame->locked);
+    PAS_TESTING_ASSERT(frame->locked);
     frame->locked = false;
 }
 
 static inline void filc_native_frame_assert_locked(filc_native_frame* frame)
 {
-    PAS_ASSERT(frame->locked);
+    PAS_TESTING_ASSERT(frame->locked);
 }
 
 static inline void filc_lock_top_native_frame(filc_thread* thread)
@@ -1017,8 +1032,55 @@ static inline void filc_assert_top_frame_locked(filc_thread* thread)
         filc_native_frame_assert_locked(thread->top_native_frame);
 }
 
-PAS_API void filc_push_native_frame(filc_thread* my_thread, filc_native_frame* frame);
-PAS_API void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame);
+static PAS_ALWAYS_INLINE void filc_push_native_frame(
+    filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    frame->array = frame->inline_array;
+    frame->size = 0;
+    frame->capacity = FILC_NATIVE_FRAME_INLINE_CAPACITY;
+    frame->locked = false;
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame != frame);
+    filc_assert_top_frame_locked(my_thread);
+    frame->parent = my_thread->top_native_frame;
+    my_thread->top_native_frame = frame;
+}
+
+static PAS_ALWAYS_INLINE void filc_pop_native_frame(filc_thread* my_thread, filc_native_frame* frame)
+{
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    if (frame->size) {
+        unsigned index;
+        uintptr_t* array = frame->array;
+        for (index = frame->size; index--;) {
+            uintptr_t encoded_ptr = array[index];
+            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR)
+                continue;
+            
+            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR) {
+                filc_unpin((filc_object*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
+                continue;
+            }
+            
+            PAS_TESTING_ASSERT(
+                (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_BMALLOC_PTR);
+            bmalloc_deallocate((void*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
+        }
+        if (array != frame->inline_array)
+            bmalloc_deallocate(array);
+    } else {
+        PAS_TESTING_ASSERT(frame->capacity == FILC_NATIVE_FRAME_INLINE_CAPACITY);
+        PAS_TESTING_ASSERT(frame->array == frame->inline_array);
+    }
+    
+    PAS_TESTING_ASSERT(!frame->locked);
+    
+    PAS_TESTING_ASSERT(my_thread->top_native_frame == frame);
+    my_thread->top_native_frame = frame->parent;
+}
 
 PAS_API void filc_native_frame_add(filc_native_frame* frame, filc_object* object);
 PAS_API void filc_native_frame_pin(filc_native_frame* frame, filc_object* object);
@@ -1758,13 +1820,6 @@ filc_ptr filc_exact_ptr_table_decode(filc_thread* my_thread, filc_exact_ptr_tabl
                                      uintptr_t encoded_ptr);
 void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table,
                                              filc_object_array* stack);
-
-/* munmap() can free memory while we're exited. If we use memory while exited, and it might be
-   mmap memory, then we must pin it first. This will cause munmap() to fail.
-
-   For convenience, these functions forgive you for passing a NULL object. */
-void filc_pin(filc_object* object);
-void filc_unpin(filc_object* object);
 
 /* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
 void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
