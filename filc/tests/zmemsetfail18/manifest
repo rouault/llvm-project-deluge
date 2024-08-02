@@ -1,0 +1,6 @@
+return:
+  failure
+output-includes:
+  - "filc safety error"
+  - "got this far"
+  - "cannot write 16 bytes as ptr, word is non-ptr"

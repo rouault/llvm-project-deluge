@@ -3148,6 +3148,7 @@ PAS_ALWAYS_INLINE static void memset_impl(filc_thread* my_thread, filc_ptr ptr, 
         char* end = raw_ptr + count;
         char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
         char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
+        PAS_ASSERT((aligned_start > end) == (aligned_end < start));
         if (aligned_start > end || aligned_end < start) {
             check_int(ptr, count, NULL);
             memset(raw_ptr, 0, count);

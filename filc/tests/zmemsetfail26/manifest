@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc safety error"
+  - "annot write 16 bytes as ptr, word is non-ptr"
