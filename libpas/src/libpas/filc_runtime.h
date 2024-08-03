@@ -1103,7 +1103,7 @@ PAS_API void filc_defer_bmalloc_deallocate(filc_thread* my_thread, void* bmalloc
    pops. */
 PAS_API void* filc_bmalloc_allocate_tmp(filc_thread* my_thread, size_t size);
 
-PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin);
+PAS_API PAS_NEVER_INLINE void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin);
 
 /* Check if the GC needs us to do work. Also check if there's a pending signal, and if so, run its
    handler.
@@ -1120,9 +1120,9 @@ PAS_API void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* orig
 static inline bool filc_pollcheck(filc_thread* my_thread, const filc_origin* origin)
 {
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    if ((my_thread->state & (FILC_THREAD_STATE_CHECK_REQUESTED |
-                             FILC_THREAD_STATE_STOP_REQUESTED |
-                             FILC_THREAD_STATE_DEFERRED_SIGNAL))) {
+    if (PAS_UNLIKELY((my_thread->state & (FILC_THREAD_STATE_CHECK_REQUESTED |
+                                          FILC_THREAD_STATE_STOP_REQUESTED |
+                                          FILC_THREAD_STATE_DEFERRED_SIGNAL)))) {
         filc_pollcheck_slow(my_thread, origin);
         return true;
     }

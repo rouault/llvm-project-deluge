@@ -1096,7 +1096,7 @@ void* filc_bmalloc_allocate_tmp(filc_thread* my_thread, size_t size)
     return result;
 }
 
-void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin)
+PAS_NEVER_INLINE void filc_pollcheck_slow(filc_thread* my_thread, const filc_origin* origin)
 {
     PAS_ASSERT(my_thread == filc_get_my_thread());
     PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -1583,7 +1583,7 @@ char* filc_word_type_to_new_string(filc_word_type type)
     return pas_string_stream_take_string(&stream);
 }
 
-void filc_store_barrier_slow(filc_thread* my_thread, filc_object* object)
+PAS_NEVER_INLINE void filc_store_barrier_slow(filc_thread* my_thread, filc_object* object)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
@@ -1594,6 +1594,25 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
 {
     filc_store_barrier(my_thread, target);
 }
+
+/* Does not check if the object is really accessible; requires you to do a word type check. */
+#define CHECK_READ_COMMON_FAST(raw_ptr, lower, upper, count, fail) do { \
+        char* my_raw_ptr = (raw_ptr); \
+        char* my_upper = (upper); \
+        if (my_raw_ptr < (lower) || \
+            my_raw_ptr >= my_upper || \
+            (count) > (size_t)(my_upper - my_raw_ptr)) \
+            fail; \
+    } while (false)
+
+/* Also checks that the object isn't free or special, just because it's cheap to do such a check. */
+#define CHECK_WRITE_COMMON_FAST(raw_ptr, object, lower, upper, count, fail) do { \
+        CHECK_READ_COMMON_FAST((raw_ptr), (lower), (upper), (count), (fail)); \
+        if (((object)->flags & (FILC_OBJECT_FLAG_READONLY | \
+                                FILC_OBJECT_FLAG_FREE | \
+                                FILC_OBJECT_FLAG_SPECIAL))) \
+            fail; \
+    } while (false)
 
 /* Weirdly enough, this is currently called in cases where we expect this to check at minimum that
    the object is non-NULL even if `bytes` is 0. We could fix that, but might be more trouble than
@@ -3142,11 +3161,13 @@ void filc_low_level_ptr_safe_bzero_with_exit(
     filc_unpin(object);
 }
 
-static void memset_fail_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
+static void memset_fail_impl(filc_ptr ptr, unsigned value, size_t count,
                              const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     char* raw_ptr;
+
+    filc_thread* my_thread = filc_get_my_thread();
     
     if (passed_origin)
         my_thread->top_frame->origin = passed_origin;
@@ -3194,11 +3215,10 @@ static void memset_fail_impl(filc_thread* my_thread, filc_ptr ptr, unsigned valu
     PAS_ASSERT(!"Should not get here");
 }
 
-PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(filc_thread* my_thread, filc_ptr ptr,
-                                                       unsigned value, size_t count,
+PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(filc_ptr ptr, unsigned value, size_t count,
                                                        const filc_origin* origin)
 {
-    memset_fail_impl(my_thread, ptr, value, count, origin);
+    memset_fail_impl(ptr, value, count, origin);
     pas_panic("Really should not get here");
 }
 
@@ -3213,21 +3233,16 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
     filc_object* object = filc_ptr_object(ptr);
 
     if (!object)
-        memset_fail(my_thread, ptr, value, count, origin);
+        memset_fail(ptr, value, count, origin);
 
     char* lower = (char*)object->lower;
     char* upper = (char*)object->upper;
-    if (raw_ptr < lower ||
-        raw_ptr >= upper ||
-        count > (size_t)(upper - raw_ptr) ||
-        (object->flags & (FILC_OBJECT_FLAG_READONLY |
-                          FILC_OBJECT_FLAG_FREE |
-                          FILC_OBJECT_FLAG_SPECIAL)))
-        memset_fail(my_thread, ptr, value, count, origin);
+    CHECK_WRITE_COMMON_FAST(raw_ptr, object, lower, upper, count,
+                            memset_fail(ptr, value, count, origin));
 
     if (value) {
         CHECK_INT_FAST(raw_ptr, object, lower, count,
-                       memset_fail(my_thread, ptr, value, count, origin));
+                       memset_fail(ptr, value, count, origin));
         if (size_mode == filc_small_size)
             filc_memset_small(raw_ptr, value, count);
         else
@@ -3240,17 +3255,19 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
     char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
     char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
     PAS_TESTING_ASSERT((aligned_start > end) == (aligned_end < start));
+    /* FIXME: If the type is unset then we don't have to do anything - we can just skip the
+       memset for that word. Not only is that more forgiving, but it's also faster. */
     if (aligned_start > end) {
         PAS_TESTING_ASSERT(
             (char*)pas_round_down_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE)
             == (char*)pas_round_down_to_power_of_2((uintptr_t)end - 1, FILC_WORD_SIZE));
-        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(my_thread, ptr, value, count, origin));
+        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin));
         filc_memset_small(start, 0, count);
         return;
     }
     if (aligned_start > start) {
         PAS_TESTING_ASSERT((size_t)(aligned_start - start) < FILC_WORD_SIZE);
-        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(my_thread, ptr, value, count, origin));
+        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin));
         filc_memset_small(start, 0, aligned_start - start);
     }
     if (size_mode == filc_small_size)
@@ -3261,8 +3278,7 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
     }
     if (end > aligned_end) {
         PAS_TESTING_ASSERT((size_t)(end - aligned_end) < FILC_WORD_SIZE);
-        CHECK_INT_FAST_ONE(aligned_end, object, lower,
-                           memset_fail(my_thread, ptr, value, count, origin));
+        CHECK_INT_FAST_ONE(aligned_end, object, lower, memset_fail(ptr, 0, count, origin));
         filc_memset_small(aligned_end, 0, end - aligned_end);
     }
 }
