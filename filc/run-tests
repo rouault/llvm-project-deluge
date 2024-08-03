@@ -32,10 +32,12 @@ require 'getoptlong'
 
 $runTests = true
 $verbose = false
+$filter = /./
 
 GetoptLong.new(
     [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ],
-    [ '--verbose', '-v', GetoptLong::NO_ARGUMENT ]
+    [ '--verbose', '-v', GetoptLong::NO_ARGUMENT ],
+    [ '--filter', '-f', GetoptLong::REQUIRED_ARGUMENT ]
 ).each {
     | opt, arg |
     case opt
@@ -43,6 +45,8 @@ GetoptLong.new(
         $runTests = false
     when '--verbose'
         $verbose = true
+    when '--filter'
+        $filter = Regexp.new(arg)
     else
         raise
     end
@@ -90,6 +94,7 @@ $testDirectory.each_entry {
     next if entry == Pathname.new(".")
     next if entry == Pathname.new("..")
     testName = entry.basename
+    next unless testName.to_s =~ $filter
     fullPath = $testDirectory + entry
     next unless fullPath.directory?
     unless (fullPath + "manifest").exist?
@@ -359,8 +364,13 @@ File.open("filc/tests/testmakefile", "w") {
     $tests.each_with_index {
         | test, index |
         outp.puts ".t#{index}:"
-        outp.puts "\t@#{Shellwords.shellescape(test)}"
-        outp.puts "\t@echo -n ."
+        if $verbose
+            outp.puts "\t@#{Shellwords.shellescape(test)}"
+            outp.puts "\t@echo #{test}: success"
+        else
+            outp.puts "\t@#{Shellwords.shellescape(test)}"
+            outp.puts "\t@echo -n ."
+        end
     }
 }
 

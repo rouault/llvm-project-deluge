@@ -3371,7 +3371,8 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
     char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
 
-    if (aligned_dst_start > dst_end || aligned_dst_end < dst_start) {
+    PAS_TESTING_ASSERT((aligned_dst_start > dst_end) == (aligned_dst_end < dst_start));
+    if (aligned_dst_start > dst_end) {
         check_int(dst, count, NULL);
         check_int(src, count, NULL);
         memmove(dst_start, src_start, count);
