@@ -211,6 +211,7 @@ typedef uint16_t filc_object_flags;
 #define FILC_THREAD_STATE_STOP_REQUESTED  ((uint8_t)4)
 #define FILC_THREAD_STATE_DEFERRED_SIGNAL ((uint8_t)8)
 
+#define FILC_MAX_BYTES_FOR_SMALL_CASE     ((size_t)1000)
 #define FILC_MAX_BYTES_BETWEEN_POLLCHECKS ((size_t)1000)
 
 #define FILC_PTR_TABLE_OFFSET             ((uintptr_t)66666)
@@ -727,6 +728,13 @@ struct filc_jmp_buf {
     size_t num_objects;
     filc_object* objects[];
 };
+
+enum filc_size_mode {
+    filc_small_size,
+    filc_large_size
+};
+
+typedef enum filc_size_mode filc_size_mode;
 
 typedef struct itimerval filc_user_itimerval;
 typedef struct rlimit filc_user_rlimit;
@@ -2041,6 +2049,16 @@ void filc_cc_rets_check_failure(
    Does not perform any other safety checks. */
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr);
 
+static inline void filc_memset_small(void* ptr, unsigned value, size_t bytes)
+{
+    char* byte_ptr = (char*)ptr;
+    char* end_ptr = byte_ptr + bytes;
+    while (byte_ptr < end_ptr) {
+        *byte_ptr++ = value;
+        pas_compiler_fence();
+    }
+}
+
 void filc_memset_with_exit(filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes);
 void filc_memcpy_with_exit(
     filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
@@ -2057,7 +2075,19 @@ void filc_memmove_with_exit(
    checks needed to ensure memory safety. So, usually, you want those, not these.
 
    The number of bytes must be a multiple of 16. */
-void filc_low_level_ptr_safe_bzero(void* ptr, size_t bytes);
+static inline void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
+{
+    static const bool verbose = false;
+    size_t words;
+    filc_ptr* ptr;
+    if (verbose)
+        pas_log("bytes = %zu\n", bytes);
+    ptr = (filc_ptr*)raw_ptr;
+    PAS_TESTING_ASSERT(pas_is_aligned(bytes, FILC_WORD_SIZE));
+    words = bytes / FILC_WORD_SIZE;
+    while (words--)
+        filc_ptr_store_without_barrier(ptr++, filc_ptr_forge_null());
+}
 
 void filc_low_level_ptr_safe_bzero_with_exit(
     filc_thread* my_thread, filc_object* object, void* ptr, size_t bytes);

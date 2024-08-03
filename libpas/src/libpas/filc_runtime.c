@@ -2725,6 +2725,38 @@ filc_ptr filc_native_zptr_to_new_string(filc_thread* my_thread, filc_ptr ptr)
     return result;
 }
 
+#define CHECK_INT_BODY(word_type_index, object, fail) do { \
+        filc_word_type* word_type_ptr = (object)->word_types + (word_type_index); \
+        filc_word_type word_type = *word_type_ptr; \
+        if (word_type == FILC_WORD_TYPE_INT) \
+            continue; \
+        if (word_type != FILC_WORD_TYPE_UNSET) \
+            fail; \
+        word_type = pas_compare_and_swap_uint8_strong( \
+            word_type_ptr, FILC_WORD_TYPE_UNSET, FILC_WORD_TYPE_INT); \
+        if (word_type != FILC_WORD_TYPE_UNSET && \
+            word_type != FILC_WORD_TYPE_INT) \
+            fail; \
+    } while (false)
+
+#define CHECK_INT_FAST_ONE(raw_ptr, object, lower, fail) do { \
+        size_t offset = (raw_ptr) - (lower); \
+        size_t word_type_index = offset / FILC_WORD_SIZE; \
+        CHECK_INT_BODY(word_type_index, object, fail); \
+    } while (false)
+
+#define CHECK_INT_FAST(raw_ptr, object, lower, count, fail) do { \
+        filc_object* my_object = (object); \
+        size_t offset = (raw_ptr) - (lower); \
+        size_t first_word_type_index = offset / FILC_WORD_SIZE; \
+        size_t last_word_type_index = (offset + count - 1) / FILC_WORD_SIZE; \
+        size_t word_type_index; \
+        for (word_type_index = first_word_type_index; \
+             word_type_index <= last_word_type_index; \
+             word_type_index++) \
+            CHECK_INT_BODY(word_type_index, (my_object), fail); \
+    } while (false)
+
 static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
 {
     uintptr_t offset;
@@ -3052,7 +3084,7 @@ void filc_memset_with_exit(
     filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
-        memset(ptr, value, bytes);
+        filc_memset_small(ptr, value, bytes);
         return;
     }
     filc_pin(object);
@@ -3096,20 +3128,6 @@ void filc_memmove_with_exit(
     filc_unpin(src_object);
 }
 
-void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
-{
-    static const bool verbose = false;
-    size_t words;
-    filc_ptr* ptr;
-    if (verbose)
-        pas_log("bytes = %zu\n", bytes);
-    ptr = (filc_ptr*)raw_ptr;
-    PAS_ASSERT(pas_is_aligned(bytes, FILC_WORD_SIZE));
-    words = bytes / FILC_WORD_SIZE;
-    while (words--)
-        filc_ptr_store_without_barrier(ptr++, filc_ptr_forge_null());
-}
-
 void filc_low_level_ptr_safe_bzero_with_exit(
     filc_thread* my_thread, filc_object* object, void* raw_ptr, size_t bytes)
 {
@@ -3124,77 +3142,156 @@ void filc_low_level_ptr_safe_bzero_with_exit(
     filc_unpin(object);
 }
 
-/* Assumes the dst pointer is tracked by GC. Assumes that count is nonzero. */
-PAS_ALWAYS_INLINE static void memset_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value,
-                                          size_t count)
+static void memset_fail_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
+                             const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     char* raw_ptr;
     
-    raw_ptr = filc_ptr_ptr(ptr);
-    
-    if (verbose)
-        pas_log("count = %zu\n", count);
-    filc_check_access_common(ptr, count, filc_write_access, NULL);
-    
-    if (!value) {
-        /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
-           anything. In particular, we could leave them UNSET and then skip the memset.
-           
-           But, we cnanot leave them UNSET and do the memset since that might race with someone
-           converting the range to PTR and result in a partially-nulled ptr. */
-        
-        char* start = raw_ptr;
-        char* end = raw_ptr + count;
-        char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
-        char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
-        PAS_ASSERT((aligned_start > end) == (aligned_end < start));
-        if (aligned_start > end || aligned_end < start) {
-            check_int(ptr, count, NULL);
-            memset(raw_ptr, 0, count);
-            return;
-        }
-        if (aligned_start > start) {
-            check_int(ptr, aligned_start - start, NULL);
-            memset(start, 0, aligned_start - start);
-        }
-        check_accessible(ptr, NULL);
-        filc_low_level_ptr_safe_bzero_with_exit(
-            my_thread, filc_ptr_object(ptr), aligned_start, aligned_end - aligned_start);
-        if (end > aligned_end) {
-            check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
-            memset(aligned_end, 0, end - aligned_end);
-        }
-        return;
-    }
-    
-    check_int(ptr, count, NULL);
-    filc_memset_with_exit(my_thread, filc_ptr_object(ptr), raw_ptr, value, count);
-}
-
-void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
-                 const filc_origin* passed_origin)
-{
-    if (!count)
-        return;
-    
     if (passed_origin)
         my_thread->top_frame->origin = passed_origin;
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 1);
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 0);
     struct {
         FILC_FRAME_BODY;
-        filc_object* objects[1];
     } actual_frame;
     pas_zero_memory(&actual_frame, sizeof(actual_frame));
     filc_frame* frame = (filc_frame*)&actual_frame;
     frame->origin = &origin;
-    frame->objects[0] = filc_ptr_object(ptr);
     filc_push_frame(my_thread, frame);
 
-    memset_impl(my_thread, ptr, value, count);
+    raw_ptr = filc_ptr_ptr(ptr);
+    
+    if (verbose)
+        pas_log("count = %zu\n", count);
 
-    filc_pop_frame(my_thread, frame);
+    filc_check_access_common(ptr, count, filc_write_access, NULL);
+    if (value) {
+        check_int(ptr, count, NULL);
+        PAS_ASSERT(!"Should not get here");
+    }
+    
+    /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
+       anything. In particular, we could leave them UNSET and then skip the memset.
+       
+       But, we cnanot leave them UNSET and do the memset since that might race with someone
+       converting the range to PTR and result in a partially-nulled ptr. */
+    
+    char* start = raw_ptr;
+    char* end = raw_ptr + count;
+    char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
+    char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
+    PAS_ASSERT((aligned_start > end) == (aligned_end < start));
+    if (aligned_start > end || aligned_end < start) {
+        check_int(ptr, count, NULL);
+        PAS_ASSERT(!"Should not get here");
+    }
+    if (aligned_start > start)
+        check_int(ptr, aligned_start - start, NULL);
+    check_accessible(ptr, NULL);
+    if (end > aligned_end)
+        check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
+    PAS_ASSERT(!"Should not get here");
+}
+
+PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(filc_thread* my_thread, filc_ptr ptr,
+                                                       unsigned value, size_t count,
+                                                       const filc_origin* origin)
+{
+    memset_fail_impl(my_thread, ptr, value, count, origin);
+    pas_panic("Really should not get here");
+}
+
+PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, filc_ptr ptr,
+                                                      unsigned value, size_t count,
+                                                      filc_size_mode size_mode,
+                                                      const filc_origin* origin)
+{
+    PAS_TESTING_ASSERT(count);
+
+    char* raw_ptr = filc_ptr_ptr(ptr);
+    filc_object* object = filc_ptr_object(ptr);
+
+    if (!object)
+        memset_fail(my_thread, ptr, value, count, origin);
+
+    char* lower = (char*)object->lower;
+    char* upper = (char*)object->upper;
+    if (raw_ptr < lower ||
+        raw_ptr >= upper ||
+        count > (size_t)(upper - raw_ptr) ||
+        (object->flags & (FILC_OBJECT_FLAG_READONLY |
+                          FILC_OBJECT_FLAG_FREE |
+                          FILC_OBJECT_FLAG_SPECIAL)))
+        memset_fail(my_thread, ptr, value, count, origin);
+
+    if (value) {
+        CHECK_INT_FAST(raw_ptr, object, lower, count,
+                       memset_fail(my_thread, ptr, value, count, origin));
+        if (size_mode == filc_small_size)
+            filc_memset_small(raw_ptr, value, count);
+        else
+            filc_memset_with_exit(my_thread, object, raw_ptr, value, count);
+        return;
+    }
+
+    char* start = raw_ptr;
+    char* end = raw_ptr + count;
+    char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
+    char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
+    PAS_TESTING_ASSERT((aligned_start > end) == (aligned_end < start));
+    if (aligned_start > end) {
+        PAS_TESTING_ASSERT(
+            (char*)pas_round_down_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE)
+            == (char*)pas_round_down_to_power_of_2((uintptr_t)end - 1, FILC_WORD_SIZE));
+        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(my_thread, ptr, value, count, origin));
+        filc_memset_small(start, 0, count);
+        return;
+    }
+    if (aligned_start > start) {
+        PAS_TESTING_ASSERT((size_t)(aligned_start - start) < FILC_WORD_SIZE);
+        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(my_thread, ptr, value, count, origin));
+        filc_memset_small(start, 0, aligned_start - start);
+    }
+    if (size_mode == filc_small_size)
+        filc_low_level_ptr_safe_bzero(aligned_start, aligned_end - aligned_start);
+    else {
+        filc_low_level_ptr_safe_bzero_with_exit(
+            my_thread, object, aligned_start, aligned_end - aligned_start);
+    }
+    if (end > aligned_end) {
+        PAS_TESTING_ASSERT((size_t)(end - aligned_end) < FILC_WORD_SIZE);
+        CHECK_INT_FAST_ONE(aligned_end, object, lower,
+                           memset_fail(my_thread, ptr, value, count, origin));
+        filc_memset_small(aligned_end, 0, end - aligned_end);
+    }
+}
+
+PAS_NEVER_INLINE static void memset_large(filc_thread* my_thread, filc_ptr ptr, unsigned value,
+                                          size_t count, const filc_origin* origin)
+{
+    memset_impl_specialized(my_thread, ptr, value, count, filc_large_size, origin);
+}
+
+/* Assumes ptr is tracked by GC. */
+PAS_ALWAYS_INLINE static void memset_impl(filc_thread* my_thread, filc_ptr ptr, unsigned value,
+                                          size_t count, const filc_origin* origin)
+{
+    if (!count)
+        return;
+    
+    if (count > FILC_MAX_BYTES_FOR_SMALL_CASE) {
+        memset_large(my_thread, ptr, value, count, origin);
+        return;
+    }
+
+    memset_impl_specialized(my_thread, ptr, value, count, filc_small_size, origin);
+}
+
+void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
+                 const filc_origin* origin)
+{
+    memset_impl(my_thread, ptr, value, count, origin);
 }
 
 enum memmove_smidgen_part {
@@ -3515,9 +3612,7 @@ void filc_native_zcall_void(filc_thread* my_thread, filc_ptr callee_ptr, filc_pt
 
 void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)
 {
-    if (!count)
-        return;
-    memset_impl(my_thread, dst_ptr, value, count);
+    memset_impl(my_thread, dst_ptr, value, count, NULL);
 }
 
 void filc_native_zmemmove(filc_thread* my_thread, filc_ptr dst_ptr, filc_ptr src_ptr, size_t count)
