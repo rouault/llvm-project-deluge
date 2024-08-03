@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "cannot access 1 bytes as int, span contains non-ints"
+  - "cannot access 1 bytes as int or unset, span contains non-ints"

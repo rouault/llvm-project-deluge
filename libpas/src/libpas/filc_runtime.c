@@ -2743,6 +2743,20 @@ filc_ptr filc_native_zptr_to_new_string(filc_thread* my_thread, filc_ptr ptr)
     return result;
 }
 
+/* Returns true if the type was int, false if unset, calls fails otherwise. */
+#define CHECK_INT_OR_UNSET_FAST_ONE(raw_ptr, object, lower, fail) ({ \
+        size_t offset = (raw_ptr) - (lower); \
+        size_t word_type_index = offset / FILC_WORD_SIZE; \
+        filc_word_type* word_type_ptr = (object)->word_types + (word_type_index); \
+        filc_word_type word_type = *word_type_ptr; \
+        bool result = false; \
+        if (word_type == FILC_WORD_TYPE_INT) \
+            result = true; \
+        else if (word_type != FILC_WORD_TYPE_UNSET) \
+            fail; \
+        result; \
+    })
+
 #define CHECK_INT_BODY(word_type_index, object, fail) do { \
         filc_word_type* word_type_ptr = (object)->word_types + (word_type_index); \
         filc_word_type word_type = *word_type_ptr; \
@@ -2774,6 +2788,40 @@ filc_ptr filc_native_zptr_to_new_string(filc_thread* my_thread, filc_ptr ptr)
              word_type_index++) \
             CHECK_INT_BODY(word_type_index, (my_object), fail); \
     } while (false)
+
+static void check_int_or_unset(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
+{
+    uintptr_t offset;
+    uintptr_t first_word_type_index;
+    uintptr_t last_word_type_index;
+    uintptr_t word_type_index;
+
+    offset = filc_ptr_offset(ptr);
+    first_word_type_index = offset / FILC_WORD_SIZE;
+    last_word_type_index = (offset + bytes - 1) / FILC_WORD_SIZE;
+
+    /* FIXME: Eventually, we'll want this to exit.
+     
+       If we do make it exit, then we'll have to make sure that we check that the object is not
+       FREE, since any exit might observe munmap.
+
+       And - that will mean that any checks done before the check_int will have to check FREE again
+       (i.e. check_accessible).
+
+       This suggests that when we do this, we should make it optional and then be very carefuly where
+       we deploy it. */
+
+    for (word_type_index = first_word_type_index;
+         word_type_index <= last_word_type_index;
+         word_type_index++) {
+        filc_word_type word_type = filc_object_get_word_type(filc_ptr_object(ptr), word_type_index);
+        FILC_CHECK(
+            word_type == FILC_WORD_TYPE_INT || word_type == FILC_WORD_TYPE_UNSET,
+            origin,
+            "cannot access %zu bytes as int or unset, span contains non-ints (ptr = %s).",
+            bytes, filc_ptr_to_new_string(ptr));
+    }
+}
 
 static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
 {
@@ -3155,8 +3203,8 @@ void filc_low_level_ptr_safe_bzero_with_exit(
     filc_unpin(object);
 }
 
-static void memset_fail_impl(filc_ptr ptr, unsigned value, size_t count,
-                             const filc_origin* passed_origin)
+PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(
+    filc_ptr ptr, unsigned value, size_t count, const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     char* raw_ptr;
@@ -3183,7 +3231,7 @@ static void memset_fail_impl(filc_ptr ptr, unsigned value, size_t count,
     filc_check_access_common(ptr, count, filc_write_access, NULL);
     if (value) {
         check_int(ptr, count, NULL);
-        PAS_ASSERT(!"Should not get here");
+        PAS_UNREACHABLE();
     }
     
     /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
@@ -3198,22 +3246,15 @@ static void memset_fail_impl(filc_ptr ptr, unsigned value, size_t count,
     char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
     PAS_ASSERT((aligned_start > end) == (aligned_end < start));
     if (aligned_start > end || aligned_end < start) {
-        check_int(ptr, count, NULL);
-        PAS_ASSERT(!"Should not get here");
+        check_int_or_unset(ptr, count, NULL);
+        PAS_UNREACHABLE();
     }
     if (aligned_start > start)
-        check_int(ptr, aligned_start - start, NULL);
+        check_int_or_unset(ptr, aligned_start - start, NULL);
     check_accessible(ptr, NULL);
     if (end > aligned_end)
-        check_int(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
-    PAS_ASSERT(!"Should not get here");
-}
-
-PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(filc_ptr ptr, unsigned value, size_t count,
-                                                       const filc_origin* origin)
-{
-    memset_fail_impl(ptr, value, count, origin);
-    pas_panic("Really should not get here");
+        check_int_or_unset(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
+    PAS_UNREACHABLE();
 }
 
 PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, filc_ptr ptr,
@@ -3255,14 +3296,14 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
         PAS_TESTING_ASSERT(
             (char*)pas_round_down_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE)
             == (char*)pas_round_down_to_power_of_2((uintptr_t)end - 1, FILC_WORD_SIZE));
-        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin));
-        filc_memset_small(start, 0, count);
+        if (CHECK_INT_OR_UNSET_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin)))
+            filc_memset_small(start, 0, count);
         return;
     }
     if (aligned_start > start) {
         PAS_TESTING_ASSERT((size_t)(aligned_start - start) < FILC_WORD_SIZE);
-        CHECK_INT_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin));
-        filc_memset_small(start, 0, aligned_start - start);
+        if (CHECK_INT_OR_UNSET_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin)))
+            filc_memset_small(start, 0, aligned_start - start);
     }
     if (size_mode == filc_small_size)
         filc_low_level_ptr_safe_bzero(aligned_start, aligned_end - aligned_start);
@@ -3272,8 +3313,9 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
     }
     if (end > aligned_end) {
         PAS_TESTING_ASSERT((size_t)(end - aligned_end) < FILC_WORD_SIZE);
-        CHECK_INT_FAST_ONE(aligned_end, object, lower, memset_fail(ptr, 0, count, origin));
-        filc_memset_small(aligned_end, 0, end - aligned_end);
+        if (CHECK_INT_OR_UNSET_FAST_ONE(
+                aligned_end, object, lower, memset_fail(ptr, 0, count, origin)))
+            filc_memset_small(aligned_end, 0, end - aligned_end);
     }
 }
 

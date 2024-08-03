@@ -20,6 +20,26 @@ struct bar {
     int d[4];
 };
 
+static void test1(void)
+{
+    char* src = "hello";
+    char* dst;
+
+    zmemmove(&dst, &src, 16);
+
+    ZASSERT(!strcmp(dst, "hello"));
+}
+
+static void test2(void)
+{
+    __int128 src = 666;
+    __int128 dst;
+
+    zmemmove(&dst, &src, 16);
+
+    ZASSERT(dst == 666);
+}
+
 int main()
 {
     struct foo a;
@@ -130,6 +150,9 @@ int main()
         ZASSERT(x.d[index] == index + 100);
     for (index = 4; index-->2;)
         ZASSERT(x.d[index] == (index + 42) * 666);
+
+    test1();
+    test2();
 
     return 0;
 }

@@ -1,0 +1,5 @@
+return:
+  failure
+output-includes:
+  - "filc safety error"
+  - "cannot access 16 bytes as int, span contains non-ints"
