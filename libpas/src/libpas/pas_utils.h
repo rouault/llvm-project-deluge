@@ -345,6 +345,9 @@ static PAS_ALWAYS_INLINE void pas_zero_memory(void* memory, size_t size)
 /* NOTE: panic format string must have \n at the end. */
 PAS_API PAS_NO_RETURN void pas_panic(const char* format, ...) PAS_FORMAT_PRINTF(1, 2);
 
+#define PAS_UNREACHABLE() \
+    pas_panic("%s:%d: %s: should not be reached.\n", __FILE__, __LINE__, __PRETTY_FUNCTION__)
+
 PAS_API PAS_NEVER_INLINE PAS_NO_RETURN void pas_panic_on_out_of_memory_error(void);
 
 PAS_API PAS_NO_RETURN PAS_NEVER_INLINE void pas_deallocation_did_fail(const char* reason,

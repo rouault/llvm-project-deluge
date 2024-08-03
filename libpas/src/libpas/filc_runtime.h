@@ -1952,18 +1952,20 @@ static PAS_ALWAYS_INLINE bool filc_is_native_access_ok(filc_ptr ptr,
         return true;
     if (actual_word_type != FILC_WORD_TYPE_UNSET)
         return false;
-    return pas_compare_and_swap_uint8_weak(word_type_ptr, FILC_WORD_TYPE_UNSET, expected_word_type);
+    filc_word_type previous_word_type =
+        pas_compare_and_swap_uint8_strong(word_type_ptr, FILC_WORD_TYPE_UNSET, expected_word_type);
+    return previous_word_type == FILC_WORD_TYPE_UNSET
+        || previous_word_type == expected_word_type;
 }
 
-PAS_API PAS_NEVER_INLINE void filc_check_read_native_int_slow(filc_ptr ptr,
-                                                              size_t size_and_alignment,
-                                                              const filc_origin* origin);
+PAS_API PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_native_int_fail(
+    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_read_native_int(filc_ptr ptr, size_t size_and_alignment,
                                                          const filc_origin* origin)
 {
     if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_read_access))
-        filc_check_read_native_int_slow(ptr, size_and_alignment, origin);
+        filc_check_read_native_int_fail(ptr, size_and_alignment, origin);
 }
 
 void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin);
@@ -1972,21 +1974,20 @@ void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin);
 void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin);
 void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin);
 
-void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin);
 
-PAS_API PAS_NEVER_INLINE void filc_check_write_native_int_slow(filc_ptr ptr,
-                                                               size_t size_and_alignment,
-                                                               const filc_origin* origin);
+PAS_API PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_native_int_fail(
+    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_write_native_int(filc_ptr ptr, size_t size_and_alignment,
                                                           const filc_origin* origin)
 {
     if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_write_access))
-        filc_check_write_native_int_slow(ptr, size_and_alignment, origin);
+        filc_check_write_native_int_fail(ptr, size_and_alignment, origin);
 }
 
 void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin);
@@ -1995,31 +1996,29 @@ void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin);
 void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin);
 
-void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin);
+PAS_NO_RETURN void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin);
 
-PAS_API PAS_NEVER_INLINE void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin);
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_ptr_fail(
+    filc_ptr ptr, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
 {
     if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_read_access))
-        filc_check_read_ptr_slow(ptr, origin);
+        filc_check_read_ptr_fail(ptr, origin);
 }
 
-void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin);
-
-PAS_API PAS_NEVER_INLINE void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin);
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_ptr_fail(
+    filc_ptr ptr, const filc_origin* origin);
 
 static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
 {
     if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_write_access))
-        filc_check_write_ptr_slow(ptr, origin);
+        filc_check_write_ptr_fail(ptr, origin);
 }
-
-void filc_check_write_ptr_fail(filc_ptr ptr, const filc_origin* origin);
 
 #define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
         struct_type check_temp; \
@@ -2033,14 +2032,14 @@ void filc_check_write_ptr_fail(filc_ptr ptr, const filc_origin* origin);
     } while (false)
 
 void filc_check_function_call(filc_ptr ptr);
-void filc_check_function_call_fail(filc_ptr ptr);
+PAS_NO_RETURN void filc_check_function_call_fail(filc_ptr ptr);
 
 void filc_check_access_special(
     filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
 
-void filc_cc_args_check_failure(
+PAS_NO_RETURN void filc_cc_args_check_failure(
     filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin);
-void filc_cc_rets_check_failure(
+PAS_NO_RETURN void filc_cc_rets_check_failure(
     filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin);
 
 /* Checks that the pointer is in fact an mmap, isn't free, and then pins and tracks

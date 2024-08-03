@@ -2007,8 +2007,8 @@ filc_object* filc_allocate_int(filc_thread* my_thread, size_t size)
 }
 
 static filc_object* finish_reallocate(
-    filc_thread* my_thread, void* allocation, filc_object* old_object, size_t new_size, size_t num_words,
-    size_t offset_to_payload)
+    filc_thread* my_thread, void* allocation, filc_object* old_object, size_t new_size,
+    size_t num_words, size_t offset_to_payload)
 {
     static const bool verbose = false;
 
@@ -2040,31 +2040,30 @@ static filc_object* finish_reallocate(
     filc_ptr* dst = (filc_ptr*)((char*)result + offset_to_payload);
     filc_ptr* src = (filc_ptr*)old_object->lower;
     for (index = common_num_words; index--;) {
-        for (;;) {
-            filc_word_type word_type = old_object->word_types[index];
-            /* Don't have to check for freeing here since old_object has to be a malloc object and
-               those get freed by GC, so even if a free happened, we still have access to the memory. */
-            filc_ptr ptr_word = filc_ptr_load_with_manual_tracking_yolo(src + index);
-            if (word_type == FILC_WORD_TYPE_UNSET && !filc_ptr_is_totally_null(ptr_word)) {
-                /* We have surely raced between someone initializing the word to be not unset, and if
-                   we try again we'll see it no longer unset. */
-                pas_fence();
-                continue;
-            }
-            /* Surely need the barrier since the destination object is black and the source object is
-               whatever. */
-            if (word_type == FILC_WORD_TYPE_PTR)
-                filc_store_barrier(my_thread, filc_ptr_object(ptr_word));
-            /* It's definitely fine to set the word_type without CAS because we still own the object.
-               I think that it's fine to set the word_type without any fences because we've done a
-               barrier anyway, so pointed-to object is tracked in this GC cycle. And for a new GC cycle
-               to start, we'd need to cross a pollcheck, and which point everything gets fenced. */
-            result->word_types[index] = word_type;
-            filc_ptr_store_without_barrier(dst + index, ptr_word);
-            break;
-        }
         if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
             filc_pollcheck(my_thread, NULL);
+        filc_word_type word_type = old_object->word_types[index];
+        /* Don't have to check for freeing here since old_object has to be a malloc object and
+           those get freed by GC, so even if a free happened, we still have access to the memory. */
+        filc_ptr ptr_word = filc_ptr_load_with_manual_tracking_yolo(src + index);
+        if (word_type == FILC_WORD_TYPE_UNSET || filc_ptr_is_totally_null(ptr_word)) {
+            /* It's possible that the word type is unset, but the ptr word is not zero, which can
+               happen if there's a race leading to us seeing the old word type. But that means that
+               it's valid for us to "copy" the zero that used to be there.
+            
+               Anyway, we copy the zero by not doing anything - not even initializing the type. */
+            continue;
+        }
+        /* Surely need the barrier since the destination object is black and the source object is
+           whatever. */
+        if (word_type == FILC_WORD_TYPE_PTR)
+            filc_store_barrier(my_thread, filc_ptr_object(ptr_word));
+        /* It's definitely fine to set the word_type without CAS because we still own the object.
+           I think that it's fine to set the word_type without any fences because we've done a
+           barrier anyway, so pointed-to object is tracked in this GC cycle. And for a new GC cycle
+           to start, we'd need to cross a pollcheck, and which point everything gets fenced. */
+        result->word_types[index] = word_type;
+        filc_ptr_store_without_barrier(dst + index, ptr_word);
     }
 
     pas_store_store_fence();
@@ -2908,26 +2907,17 @@ void filc_check_write_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
     filc_check_access_aligned_int(ptr, bytes, alignment, filc_write_access, origin);
 }
 
-void filc_check_read_ptr_slow(filc_ptr ptr, const filc_origin* origin)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_read_access, origin);
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_ptr(ptr, origin);
-    PAS_ASSERT(!"Should not get here");
-}
-
-void filc_check_write_ptr_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_ptr(ptr, origin);
-    PAS_ASSERT(!"Should not get here");
-}
-
-void filc_check_write_ptr_slow(filc_ptr ptr, const filc_origin* origin)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_ptr_fail(
+    filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_access_ptr(ptr, filc_write_access, origin);
+    PAS_UNREACHABLE();
 }
 
 void filc_check_read_ptr_outline(filc_ptr ptr, const filc_origin* origin)
@@ -2955,20 +2945,24 @@ void filc_check_function_call(filc_ptr ptr)
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
 }
 
-void filc_check_function_call_fail(filc_ptr ptr)
+PAS_NO_RETURN void filc_check_function_call_fail(filc_ptr ptr)
 {
     filc_check_function_call(ptr);
-    PAS_ASSERT(!"Should not be reached");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_native_int_slow(filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_native_int_fail(
+    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
 {
     filc_check_read_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
+    PAS_UNREACHABLE();
 }
 
-void filc_check_write_native_int_slow(filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_native_int_fail(
+    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
 {
     filc_check_write_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
+    PAS_UNREACHABLE();
 }
 
 void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin)
@@ -2996,34 +2990,34 @@ void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin)
     filc_check_read_native_int(ptr, 16, origin);
 }
 
-void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_read_int8(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_read_int16(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_read_int32(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_read_int64(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_read_int128(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
 void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin)
@@ -3051,34 +3045,34 @@ void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin)
     filc_check_write_native_int(ptr, 16, origin);
 }
 
-void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_int8(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_int16(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_int32(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_int64(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
-void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin)
+PAS_NO_RETURN void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin)
 {
     filc_check_write_int128(ptr, origin);
-    PAS_ASSERT(!"Shoud not get here");
+    PAS_UNREACHABLE();
 }
 
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr)
@@ -3408,29 +3402,25 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     }
     
     while (countdown--) {
-        for (;;) {
-            filc_word_type src_word_type;
-            filc_ptr src_word;
-            if (src_can_has_ptrs) {
-                src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
-                src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
-            } else {
-                src_word_type = FILC_WORD_TYPE_INT;
-                src_word = *cur_src;
-            }
-            if (filc_ptr_is_totally_null(src_word)) {
-                /* copying an unset zero word is always legal to any destination type, no
-                   problem. it's even OK to copy a zero into free memory. and there's zero value
-                   in changing the destination type from unset to anything. */
-                filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
-                break;
-            }
-            if (src_word_type == FILC_WORD_TYPE_UNSET) {
-                /* We have surely raced between someone initializing the word to be not unset, and if
-                   we try again we'll see it no longer unset. */
-                pas_fence();
-                continue;
-            }
+        filc_word_type src_word_type;
+        filc_ptr src_word;
+        if (src_can_has_ptrs) {
+            src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
+            src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
+        } else {
+            src_word_type = FILC_WORD_TYPE_INT;
+            src_word = *cur_src;
+        }
+        if (filc_ptr_is_totally_null(src_word) || src_word_type == FILC_WORD_TYPE_UNSET) {
+            /* copying an unset zero word is always legal to any destination type, no
+               problem. it's even OK to copy a zero into free memory. and there's zero value
+               in changing the destination type from unset to anything.
+               
+               And if we saw a non-zero src_word but an unset word type, then that means that
+               the word had just been zero and we're racing. In that case pretend we had read
+               the zero. */
+            filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
+        } else {
             FILC_CHECK(
                 src_word_type == FILC_WORD_TYPE_INT ||
                 src_word_type == FILC_WORD_TYPE_PTR,
@@ -3440,11 +3430,17 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
                 filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
             if (dst_word_type == FILC_WORD_TYPE_UNSET) {
-                if (!pas_compare_and_swap_uint8_weak(
-                        dst_object->word_types + cur_dst_word_index,
-                        FILC_WORD_TYPE_UNSET,
-                        src_word_type))
-                    continue;
+                filc_word_type old_word_type = pas_compare_and_swap_uint8_strong(
+                    dst_object->word_types + cur_dst_word_index,
+                    FILC_WORD_TYPE_UNSET,
+                    src_word_type);
+                FILC_CHECK(
+                    old_word_type == FILC_WORD_TYPE_UNSET ||
+                    old_word_type == src_word_type,
+                    NULL,
+                    "type mismatch while copying (dst = %s, src = %s).",
+                    filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
+                    filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             } else {
                 FILC_CHECK(
                     src_word_type == dst_word_type,
@@ -3456,7 +3452,6 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
             if (src_word_type == FILC_WORD_TYPE_PTR)
                 filc_store_barrier(my_thread, filc_ptr_object(src_word));
             filc_ptr_store_without_barrier(cur_dst, src_word);
-            break;
         }
         if (is_up) {
             cur_dst++;
