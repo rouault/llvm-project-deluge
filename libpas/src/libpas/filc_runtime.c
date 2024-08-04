@@ -940,7 +940,7 @@ void filc_ptr_array_add(filc_ptr_array* array, void* ptr)
     array->array[array->size++] = ptr;
 }
 
-static void enlarge_array(filc_object_array* array, size_t anticipated_size)
+PAS_NEVER_INLINE static void enlarge_array(filc_object_array* array, size_t anticipated_size)
 {
     PAS_ASSERT(anticipated_size > array->objects_capacity);
     
@@ -961,14 +961,14 @@ static void enlarge_array(filc_object_array* array, size_t anticipated_size)
 
 static void enlarge_array_if_necessary(filc_object_array* array, size_t anticipated_size)
 {
-    if (anticipated_size > array->objects_capacity)
+    if (PAS_UNLIKELY(anticipated_size > array->objects_capacity))
         enlarge_array(array, anticipated_size);
 }
 
 void filc_object_array_push(filc_object_array* array, filc_object* object)
 {
     enlarge_array_if_necessary(array, array->num_objects + 1);
-    PAS_ASSERT(array->num_objects < array->objects_capacity);
+    PAS_TESTING_ASSERT(array->num_objects < array->objects_capacity);
     array->objects[array->num_objects++] = object;
 }
 
@@ -1595,8 +1595,9 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     filc_store_barrier(my_thread, target);
 }
 
-/* Does not check if the object is really accessible; requires you to do a word type check. */
-#define CHECK_READ_COMMON_FAST(raw_ptr, lower, upper, count, fail) do { \
+/* Just checks bounds, but assumes that you do a type check or at least an accessibility (not free
+   or special) check. */
+#define CHECK_BOUNDS_FAST(raw_ptr, lower, upper, count, fail) do { \
         char* my_raw_ptr = (raw_ptr); \
         char* my_upper = (upper); \
         if (my_raw_ptr < (lower) || \
@@ -1605,9 +1606,14 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
             fail; \
     } while (false)
 
+#define CHECK_ACCESSIBLE_FAST(object, fail) do { \
+        if (((object)->flags & (FILC_OBJECT_FLAG_FREE | \
+                                FILC_OBJECT_FLAG_SPECIAL))) \
+            fail; \
+    } while (false)
+
 /* Also checks that the object isn't free or special, just because it's cheap to do such a check. */
-#define CHECK_WRITE_COMMON_FAST(raw_ptr, object, lower, upper, count, fail) do { \
-        CHECK_READ_COMMON_FAST((raw_ptr), (lower), (upper), (count), (fail)); \
+#define CHECK_WRITE_FAST(object, fail) do { \
         if (((object)->flags & (FILC_OBJECT_FLAG_READONLY | \
                                 FILC_OBJECT_FLAG_FREE | \
                                 FILC_OBJECT_FLAG_SPECIAL))) \
@@ -3272,8 +3278,8 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
 
     char* lower = (char*)object->lower;
     char* upper = (char*)object->upper;
-    CHECK_WRITE_COMMON_FAST(raw_ptr, object, lower, upper, count,
-                            memset_fail(ptr, value, count, origin));
+    CHECK_BOUNDS_FAST(raw_ptr, lower, upper, count, memset_fail(ptr, value, count, origin));
+    CHECK_WRITE_FAST(object, memset_fail(ptr, value, count, origin));
 
     if (value) {
         CHECK_INT_FAST(raw_ptr, object, lower, count,
@@ -3346,54 +3352,33 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
     memset_impl(my_thread, ptr, value, count, origin);
 }
 
-enum memmove_smidgen_part {
-    memmove_lower_smidgen,
-    memmove_upper_smidgen
-};
-
-typedef enum memmove_smidgen_part memmove_smidgen_part;
-
-static void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr src,
-                            char* dst_start, char* aligned_dst_start,
-                            char* dst_end, char* aligned_dst_end,
-                            char* src_start)
-{
-    switch (part) {
-    case memmove_lower_smidgen:
-        if (aligned_dst_start > dst_start) {
-            check_int(dst, aligned_dst_start - dst_start, NULL);
-            check_int(src, aligned_dst_start - dst_start, NULL);
-            memmove(dst_start, src_start, aligned_dst_start - dst_start);
-        }
-        return;
-
-    case memmove_upper_smidgen:
-        if (dst_end > aligned_dst_end) {
-            check_int(filc_ptr_with_ptr(dst, aligned_dst_end), dst_end - aligned_dst_end, NULL);
-            check_int(filc_ptr_with_offset(src, aligned_dst_end - dst_start),
-                      dst_end - aligned_dst_end, NULL);
-            memmove(aligned_dst_end, src_start + (aligned_dst_end - dst_start),
-                    dst_end - aligned_dst_end);
-        }
-        return;
-    }
-    PAS_ASSERT(!"Bad part");
-}
-
-/* Assumes that the dst/src are tracked by GC. Assumes that count is nonzero. */
-PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_ptr src,
-                                           size_t count)
+PAS_NO_RETURN PAS_NEVER_INLINE void memmove_fail(filc_ptr dst, filc_ptr src, size_t count,
+                                                 const filc_origin* passed_origin)
 {
     static const bool verbose = false;
 
+    filc_thread* my_thread = filc_get_my_thread();
+
     if (verbose) {
-        pas_log("Doing memmove to %s from %s with count %zu\n",
+        pas_log("Doing memmove fail to %s from %s with count %zu\n",
                 filc_ptr_to_new_string(dst),
                 filc_ptr_to_new_string(src),
                 count);
         filc_thread_dump_stack(my_thread, &pas_log_stream.base);
     }
     
+    if (passed_origin)
+        my_thread->top_frame->origin = passed_origin;
+    
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 0);
+    struct {
+        FILC_FRAME_BODY;
+    } actual_frame;
+    pas_zero_memory(&actual_frame, sizeof(actual_frame));
+    filc_frame* frame = (filc_frame*)&actual_frame;
+    frame->origin = &origin;
+    filc_push_frame(my_thread, frame);
+
     filc_check_access_common(dst, count, filc_write_access, NULL);
     filc_check_access_common(src, count, filc_read_access, NULL);
 
@@ -3411,14 +3396,13 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     if (aligned_dst_start > dst_end) {
         check_int(dst, count, NULL);
         check_int(src, count, NULL);
-        memmove(dst_start, src_start, count);
-        return;
+        PAS_UNREACHABLE();
     }
 
-    bool is_up = dst_start < src_start;
-
-    memmove_smidgen(is_up ? memmove_lower_smidgen : memmove_upper_smidgen,
-                    dst, src, dst_start, aligned_dst_start, dst_end, aligned_dst_end, src_start);
+    if (aligned_dst_start > dst_start) {
+        check_int(dst, aligned_dst_start - dst_start, NULL);
+        check_int(src, aligned_dst_start - dst_start, NULL);
+    }
 
     bool src_can_has_ptrs =
         pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
@@ -3436,13 +3420,6 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
     size_t cur_src_word_index = ((char*)cur_src - (char*)src_object->lower) / FILC_WORD_SIZE;
     size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
 
-    if (!is_up) {
-        cur_dst += countdown - 1;
-        cur_src += countdown - 1;
-        cur_dst_word_index += countdown - 1;
-        cur_src_word_index += countdown - 1;
-    }
-    
     while (countdown--) {
         filc_word_type src_word_type;
         filc_ptr src_word;
@@ -3453,16 +3430,7 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
             src_word_type = FILC_WORD_TYPE_INT;
             src_word = *cur_src;
         }
-        if (filc_ptr_is_totally_null(src_word) || src_word_type == FILC_WORD_TYPE_UNSET) {
-            /* copying an unset zero word is always legal to any destination type, no
-               problem. it's even OK to copy a zero into free memory. and there's zero value
-               in changing the destination type from unset to anything.
-               
-               And if we saw a non-zero src_word but an unset word type, then that means that
-               the word had just been zero and we're racing. In that case pretend we had read
-               the zero. */
-            filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
-        } else {
+        if (!filc_ptr_is_totally_null(src_word) && src_word_type != FILC_WORD_TYPE_UNSET) {
             FILC_CHECK(
                 src_word_type == FILC_WORD_TYPE_INT ||
                 src_word_type == FILC_WORD_TYPE_PTR,
@@ -3491,10 +3459,124 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
                     filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
                     filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
             }
-            if (src_word_type == FILC_WORD_TYPE_PTR)
-                filc_store_barrier(my_thread, filc_ptr_object(src_word));
-            filc_ptr_store_without_barrier(cur_dst, src_word);
         }
+        cur_dst++;
+        cur_src++;
+        cur_dst_word_index++;
+        cur_src_word_index++;
+    }
+
+    if (dst_end > aligned_dst_end) {
+        check_int(filc_ptr_with_ptr(dst, aligned_dst_end), dst_end - aligned_dst_end, NULL);
+        check_int(filc_ptr_with_offset(src, aligned_dst_end - dst_start), dst_end - aligned_dst_end,
+                  NULL);
+    }
+
+    PAS_UNREACHABLE();
+}
+
+enum memmove_smidgen_part {
+    memmove_lower_smidgen,
+    memmove_upper_smidgen
+};
+
+typedef enum memmove_smidgen_part memmove_smidgen_part;
+
+static PAS_ALWAYS_INLINE void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr src,
+                                              char* dst_lower, char* src_lower,
+                                              char* dst_start, char* aligned_dst_start,
+                                              char* dst_end, char* aligned_dst_end,
+                                              char* src_start, bool is_up, size_t count,
+                                              const filc_origin* origin)
+{
+    switch (part) {
+    case memmove_lower_smidgen:
+        if (aligned_dst_start > dst_start) {
+            PAS_TESTING_ASSERT((size_t)(aligned_dst_start - dst_start) < FILC_WORD_SIZE);
+            CHECK_INT_FAST_ONE(dst_start, filc_ptr_object(dst), dst_lower,
+                               memmove_fail(dst, src, count, origin));
+            CHECK_INT_FAST_ONE(src_start, filc_ptr_object(src), src_lower,
+                               memmove_fail(dst, src, count, origin));
+            filc_memcpy_small_up_or_down(dst_start, src_start, aligned_dst_start - dst_start, is_up);
+        }
+        return;
+
+    case memmove_upper_smidgen:
+        if (dst_end > aligned_dst_end) {
+            PAS_TESTING_ASSERT((size_t)(dst_end - aligned_dst_end) < FILC_WORD_SIZE);
+            CHECK_INT_FAST_ONE(aligned_dst_end, filc_ptr_object(dst), dst_lower,
+                               memmove_fail(dst, src, count, origin));
+            CHECK_INT_FAST_ONE(src_start + (aligned_dst_end - dst_start), filc_ptr_object(src),
+                               src_lower, memmove_fail(dst, src, count, origin));
+            filc_memcpy_small_up_or_down(aligned_dst_end, src_start + (aligned_dst_end - dst_start),
+                                         dst_end - aligned_dst_end, is_up);
+        }
+        return;
+    }
+    PAS_ASSERT(!"Bad part");
+}
+
+PAS_ALWAYS_INLINE static void memmove_impl_body(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_ptr* cur_dst,
+    filc_ptr* cur_src, size_t cur_dst_word_index, size_t cur_src_word_index,
+    bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin)
+{
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
+    
+    filc_word_type src_word_type;
+    filc_ptr src_word;
+    if (src_can_has_ptrs) {
+        src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
+        src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
+    } else {
+        src_word_type = FILC_WORD_TYPE_INT;
+        src_word = *cur_src;
+    }
+    if (filc_ptr_is_totally_null(src_word) || src_word_type == FILC_WORD_TYPE_UNSET) {
+        /* copying an unset zero word is always legal to any destination type, no
+           problem. it's even OK to copy a zero into free memory. and there's zero value
+           in changing the destination type from unset to anything.
+           
+           And if we saw a non-zero src_word but an unset word type, then that means that
+           the word had just been zero and we're racing. In that case pretend we had read
+           the zero. */
+        filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
+        return;
+    }
+
+    if (do_barrier) {
+        if (src_word_type == FILC_WORD_TYPE_PTR)
+            fugc_mark(&my_thread->mark_stack, filc_ptr_object(src_word));
+        else if (src_word_type != FILC_WORD_TYPE_INT)
+            memmove_fail(dst, src, count, origin);
+    } else {
+        if (src_word_type != FILC_WORD_TYPE_PTR && src_word_type != FILC_WORD_TYPE_INT)
+            memmove_fail(dst, src, count, origin);
+    }
+    
+    filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
+    if (dst_word_type == FILC_WORD_TYPE_UNSET) {
+        filc_word_type old_word_type = pas_compare_and_swap_uint8_strong(
+            dst_object->word_types + cur_dst_word_index,
+            FILC_WORD_TYPE_UNSET,
+            src_word_type);
+        if (old_word_type != FILC_WORD_TYPE_UNSET && old_word_type != src_word_type)
+            memmove_fail(dst, src, count, origin);
+    } else if (src_word_type != dst_word_type)
+        memmove_fail(dst, src, count, origin);
+    
+    filc_ptr_store_without_barrier(cur_dst, src_word);
+}
+
+PAS_ALWAYS_INLINE static void memmove_impl_loop(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_ptr* cur_dst,
+    filc_ptr* cur_src, size_t cur_dst_word_index, size_t cur_src_word_index,
+    size_t countdown, bool is_up, bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin)
+{
+    while (countdown--) {
+        memmove_impl_body(my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
+                          cur_src_word_index, do_barrier, src_can_has_ptrs, origin);
         if (is_up) {
             cur_dst++;
             cur_src++;
@@ -3506,43 +3588,244 @@ PAS_ALWAYS_INLINE static void memmove_impl(filc_thread* my_thread, filc_ptr dst,
             cur_dst_word_index--;
             cur_src_word_index--;
         }
-        if (filc_pollcheck(my_thread, NULL)) {
-            check_accessible(dst, NULL);
-            check_accessible(src, NULL);
+    }
+}
+
+PAS_ALWAYS_INLINE static void memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_size_mode size_mode,
+    bool is_up, bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin, char* dst_lower,
+    char* src_lower)
+{
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
+
+    char* dst_start = filc_ptr_ptr(dst);
+    char* src_start = filc_ptr_ptr(src);
+
+    char* dst_end = dst_start + count;
+    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
+    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
+
+    if (src_can_has_ptrs)
+        CHECK_ACCESSIBLE_FAST(src_object, memmove_fail(dst, src, count, origin));
+    else {
+        CHECK_INT_FAST(src_start, src_object, src_lower, count,
+                       memmove_fail(dst, src, count, origin));
+    }
+    
+    filc_ptr* cur_dst = (filc_ptr*)aligned_dst_start;
+    filc_ptr* cur_src = (filc_ptr*)(src_start + (aligned_dst_start - dst_start));
+    size_t cur_dst_word_index = ((char*)cur_dst - dst_lower) / FILC_WORD_SIZE;
+    size_t cur_src_word_index = ((char*)cur_src - src_lower) / FILC_WORD_SIZE;
+    size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
+
+    if (!is_up) {
+        cur_dst += countdown - 1;
+        cur_src += countdown - 1;
+        cur_dst_word_index += countdown - 1;
+        cur_src_word_index += countdown - 1;
+    }
+
+    switch (size_mode) {
+    case filc_small_size:
+        memmove_impl_loop(my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
+                          cur_src_word_index, countdown, is_up, do_barrier, src_can_has_ptrs, origin);
+        return;
+    case filc_large_size:
+        PAS_TESTING_ASSERT(!do_barrier);
+        while (countdown) {
+            size_t inner_countdown = pas_min_uintptr(
+                countdown, FILC_MAX_BYTES_BETWEEN_POLLCHECKS / FILC_WORD_SIZE);
+            if (PAS_LIKELY(!filc_is_marking)) {
+                bool do_barrier = false;
+                memmove_impl_loop(
+                    my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
+                    cur_src_word_index, inner_countdown, is_up, do_barrier, src_can_has_ptrs, origin);
+            } else {
+                bool do_barrier = true;
+                memmove_impl_loop(
+                    my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
+                    cur_src_word_index, inner_countdown, is_up, do_barrier, src_can_has_ptrs, origin);
+            }
+            
+            if (is_up) {
+                cur_dst += inner_countdown;
+                cur_src += inner_countdown;
+                cur_dst_word_index += inner_countdown;
+                cur_src_word_index += inner_countdown;
+            } else {
+                cur_dst -= inner_countdown;
+                cur_src -= inner_countdown;
+                cur_dst_word_index -= inner_countdown;
+                cur_src_word_index -= inner_countdown;
+            }
+            countdown -= inner_countdown;
+            if (filc_pollcheck(my_thread, NULL)) {
+                CHECK_ACCESSIBLE_FAST(dst_object, memmove_fail(dst, src, count, origin));
+                CHECK_ACCESSIBLE_FAST(src_object, memmove_fail(dst, src, count, origin));
+            }
         }
+        return;
+    }
+
+    PAS_ASSERT(!"Should not be reached");
+}
+
+PAS_ALWAYS_INLINE static void memmove_impl_size_direction_and_barrier_specialized(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_size_mode size_mode,
+    bool is_up, bool do_barrier, const filc_origin* origin, char* dst_lower, char* src_lower)
+{
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
+
+    char* dst_start = filc_ptr_ptr(dst);
+    char* src_start = filc_ptr_ptr(src);
+
+    char* dst_end = dst_start + count;
+    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
+    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
+
+    memmove_smidgen(is_up ? memmove_lower_smidgen : memmove_upper_smidgen,
+                    dst, src, dst_lower, src_lower, dst_start, aligned_dst_start, dst_end,
+                    aligned_dst_end, src_start, is_up, count, origin);
+
+    bool src_can_has_ptrs =
+        pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
+        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE);
+
+    if (pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
+        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE)) {
+        bool src_can_has_ptrs = true;
+        memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
+            my_thread, dst, src, count, size_mode, is_up, do_barrier, src_can_has_ptrs, origin,
+            dst_lower, src_lower);
+    } else {
+        bool src_can_has_ptrs = false;
+        memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
+            my_thread, dst, src, count, size_mode, is_up, do_barrier, src_can_has_ptrs, origin,
+            dst_lower, src_lower);
     }
     
     memmove_smidgen(is_up ? memmove_upper_smidgen : memmove_lower_smidgen,
-                    dst, src, dst_start, aligned_dst_start, dst_end, aligned_dst_end, src_start);
+                    dst, src, dst_lower, src_lower, dst_start, aligned_dst_start, dst_end,
+                    aligned_dst_end, src_start, is_up, count, origin);
+}
+
+PAS_NEVER_INLINE void memmove_impl_small_size_up_barrier(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
+{
+    bool is_up = true;
+    bool do_barrier = true;
+    memmove_impl_size_direction_and_barrier_specialized(
+        my_thread, dst, src, count, filc_small_size, is_up, do_barrier, origin,
+        filc_ptr_object(dst)->lower, filc_ptr_object(src)->lower);
+}
+
+PAS_NEVER_INLINE void memmove_impl_small_size_down_barrier(
+    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
+{
+    bool is_up = false;
+    bool do_barrier = true;
+    memmove_impl_size_direction_and_barrier_specialized(
+        my_thread, dst, src, count, filc_small_size, is_up, do_barrier, origin,
+        filc_ptr_object(dst)->lower, filc_ptr_object(src)->lower);
+}
+
+/* Assumes that the dst/src are tracked by GC. Assumes that count is nonzero. */
+PAS_ALWAYS_INLINE static void memmove_impl_size_specialized(filc_thread* my_thread, filc_ptr dst,
+                                                            filc_ptr src, size_t count,
+                                                            filc_size_mode size_mode,
+                                                            const filc_origin* origin)
+{
+    static const bool verbose = false;
+
+    if (verbose) {
+        pas_log("Doing memmove to %s from %s with count %zu\n",
+                filc_ptr_to_new_string(dst),
+                filc_ptr_to_new_string(src),
+                count);
+        filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    }
+
+    PAS_TESTING_ASSERT(count);
+
+    filc_object* dst_object = filc_ptr_object(dst);
+    filc_object* src_object = filc_ptr_object(src);
+
+    if (!dst_object || !src_object)
+        memmove_fail(dst, src, count, origin);
+
+    char* dst_start = filc_ptr_ptr(dst);
+    char* src_start = filc_ptr_ptr(src);
+
+    char* dst_lower = (char*)dst_object->lower;
+    char* dst_upper = (char*)dst_object->upper;
+    char* src_lower = (char*)src_object->lower;
+    char* src_upper = (char*)src_object->upper;
+
+    CHECK_BOUNDS_FAST(dst_start, dst_lower, dst_upper, count, memmove_fail(dst, src, count, origin));
+    CHECK_BOUNDS_FAST(src_start, src_lower, src_upper, count, memmove_fail(dst, src, count, origin));
+    CHECK_WRITE_FAST(dst_object, memmove_fail(dst, src, count, origin));
+
+    char* dst_end = dst_start + count;
+    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
+    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
+
+    PAS_TESTING_ASSERT((aligned_dst_start > dst_end) == (aligned_dst_end < dst_start));
+    if (aligned_dst_start > dst_end) {
+        PAS_TESTING_ASSERT(count < FILC_WORD_SIZE);
+        PAS_TESTING_ASSERT(pas_round_down_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
+                           pas_round_down_to_power_of_2((uintptr_t)dst_end - 1, FILC_WORD_SIZE));
+        CHECK_INT_FAST_ONE(dst_start, dst_object, dst_lower, memmove_fail(dst, src, count, origin));
+        CHECK_INT_FAST_ONE(src_start, src_object, src_lower, memmove_fail(dst, src, count, origin));
+        filc_memmove_small(dst_start, src_start, count);
+        return;
+    }
+
+    if (dst_start < src_start) {
+        bool is_up = true;
+        if (size_mode == filc_large_size || PAS_LIKELY(!filc_is_marking)) {
+            /* NOTE: do_barrier is ignored if we're in large_size. */
+            bool do_barrier = false;
+            memmove_impl_size_direction_and_barrier_specialized(
+                my_thread, dst, src, count, size_mode, is_up, do_barrier, origin, dst_lower,
+                src_lower);
+        } else
+            memmove_impl_small_size_up_barrier(my_thread, dst, src, count, origin);
+    } else {
+        bool is_up = false;
+        if (size_mode == filc_large_size || PAS_LIKELY(!filc_is_marking)) {
+            /* NOTE: do_barrier is ignored if we're in large_size. */
+            bool do_barrier = false;
+            memmove_impl_size_direction_and_barrier_specialized(
+                my_thread, dst, src, count, size_mode, is_up, do_barrier, origin, dst_lower,
+                src_lower);
+        } else
+            memmove_impl_small_size_down_barrier(my_thread, dst, src, count, origin);
+    }
+}
+
+PAS_NEVER_INLINE void memmove_large(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                                    const filc_origin* origin)
+{
+    memmove_impl_size_specialized(my_thread, dst, src, count, filc_large_size, origin);
+}
+
+PAS_ALWAYS_INLINE void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
+                                    const filc_origin* origin)
+{
+    if (!count)
+        return;
+    if (PAS_LIKELY(count < FILC_MAX_BYTES_BETWEEN_POLLCHECKS))
+        memmove_impl_size_specialized(my_thread, dst, src, count, filc_small_size, origin);
+    else
+        memmove_large(my_thread, dst, src, count, origin);
 }
 
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* passed_origin)
 {
-    if (!count)
-        return;
-    
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
-    
-    filc_object* dst_object = filc_ptr_object(dst);
-    filc_object* src_object = filc_ptr_object(src);
-
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 2);
-    struct {
-        FILC_FRAME_BODY;
-        filc_object* objects[2];
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
-    frame->objects[0] = dst_object;
-    frame->objects[1] = src_object;
-    filc_push_frame(my_thread, frame);
-    
-    memmove_impl(my_thread, dst, src, count);
-
-    filc_pop_frame(my_thread, frame);
+    memmove_impl(my_thread, dst, src, count, passed_origin);
 }
 
 filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr)
@@ -3671,9 +3954,7 @@ void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned valu
 
 void filc_native_zmemmove(filc_thread* my_thread, filc_ptr dst_ptr, filc_ptr src_ptr, size_t count)
 {
-    if (!count)
-        return;
-    memmove_impl(my_thread, dst_ptr, src_ptr, count);
+    memmove_impl(my_thread, dst_ptr, src_ptr, count, NULL);
 }
 
 int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)

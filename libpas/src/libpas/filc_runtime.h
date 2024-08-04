@@ -212,7 +212,7 @@ typedef uint16_t filc_object_flags;
 #define FILC_THREAD_STATE_DEFERRED_SIGNAL ((uint8_t)8)
 
 #define FILC_MAX_BYTES_FOR_SMALL_CASE     ((size_t)1000)
-#define FILC_MAX_BYTES_BETWEEN_POLLCHECKS ((size_t)1000)
+#define FILC_MAX_BYTES_BETWEEN_POLLCHECKS ((size_t)10000)
 
 #define FILC_PTR_TABLE_OFFSET             ((uintptr_t)66666)
 #define FILC_PTR_TABLE_SHIFT              ((uintptr_t)4)
@@ -2048,7 +2048,7 @@ PAS_NO_RETURN void filc_cc_rets_check_failure(
    Does not perform any other safety checks. */
 void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr);
 
-static inline void filc_memset_small(void* ptr, unsigned value, size_t bytes)
+static PAS_ALWAYS_INLINE void filc_memset_small(void* ptr, unsigned value, size_t bytes)
 {
     char* byte_ptr = (char*)ptr;
     char* end_ptr = byte_ptr + bytes;
@@ -2056,6 +2056,42 @@ static inline void filc_memset_small(void* ptr, unsigned value, size_t bytes)
         *byte_ptr++ = value;
         pas_compiler_fence();
     }
+}
+
+static PAS_ALWAYS_INLINE void filc_memcpy_small_up(void* dst, void* src, size_t bytes)
+{
+    char* cur_dst = (char*)dst;
+    char* end_dst = dst + bytes;
+    char* cur_src = (char*)src;
+    while (cur_dst < end_dst) {
+        *cur_dst++ = *cur_src++;
+        pas_compiler_fence();
+    }
+}
+
+static PAS_ALWAYS_INLINE void filc_memcpy_small_down(void* dst, void* src, size_t bytes)
+{
+    char* cur_dst = (char*)dst + bytes;
+    char* end_dst = (char*)dst;
+    char* cur_src = (char*)src + bytes;
+    while (cur_dst > end_dst) {
+        *--cur_dst = *--cur_src;
+        pas_compiler_fence();
+    }
+}
+
+static PAS_ALWAYS_INLINE void filc_memcpy_small_up_or_down(void* dst, void* src, size_t bytes,
+                                                           bool is_up)
+{
+    if (is_up)
+        filc_memcpy_small_up(dst, src, bytes);
+    else
+        filc_memcpy_small_down(dst, src, bytes);
+}
+
+static PAS_ALWAYS_INLINE void filc_memmove_small(void* dst, void* src, size_t bytes)
+{
+    filc_memcpy_small_up_or_down(dst, src, bytes, dst < src);
 }
 
 void filc_memset_with_exit(filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes);
