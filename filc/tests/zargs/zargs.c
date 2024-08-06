@@ -1,39 +1,40 @@
 #include <stdfil.h>
 #include <string.h>
+#include <inttypes.h>
 
 struct foo_args {
-    int x;
-    int y;
+    int64_t x;
+    int64_t y;
 };
 static void foo(int x, int y)
 {
     struct foo_args* args = zargs();
-    ZASSERT(args->x == x);
-    ZASSERT(args->y == y);
+    ZASSERT((int)args->x == x);
+    ZASSERT((int)args->y == y);
     ZASSERT(x == y * 666);
 }
 
 struct bar_args {
-    int x;
-    int y;
-    int z;
-    int w;
-    int a;
-    int b;
-    int c;
-    int d;
+    int64_t x;
+    int64_t y;
+    int64_t z;
+    int64_t w;
+    int64_t a;
+    int64_t b;
+    int64_t c;
+    int64_t d;
 };
 static void bar(int x, int y, int z, int w, int a, int b, int c, int d)
 {
     struct bar_args* args = zargs();
-    ZASSERT(args->x == x);
-    ZASSERT(args->y == y);
-    ZASSERT(args->z == z);
-    ZASSERT(args->w == w);
-    ZASSERT(args->a == a);
-    ZASSERT(args->b == b);
-    ZASSERT(args->c == c);
-    ZASSERT(args->d == d);
+    ZASSERT((int)args->x == x);
+    ZASSERT((int)args->y == y);
+    ZASSERT((int)args->z == z);
+    ZASSERT((int)args->w == w);
+    ZASSERT((int)args->a == a);
+    ZASSERT((int)args->b == b);
+    ZASSERT((int)args->c == c);
+    ZASSERT((int)args->d == d);
     ZASSERT(x * 2 == y);
     ZASSERT(x * 3 == z);
     ZASSERT(x * 4 == w);

@@ -1710,6 +1710,11 @@ static inline filc_ptr filc_cc_cursor_get_next_ptr(filc_cc_cursor* cursor)
     return *filc_cc_cursor_get_next_ptr_ptr(cursor);
 }
 
+static inline void filc_cc_cursor_set_next_ptr(filc_cc_cursor* cursor, filc_ptr ptr)
+{
+    *filc_cc_cursor_get_next_ptr_ptr(cursor) = ptr;
+}
+
 /* NOTE: It's entirely the caller's responsibility to track all pointers returned. Therefore, this
    is the right function to call for retrieving pointers to return values. */
 static inline filc_ptr filc_cc_cursor_get_next_ptr_and_track(filc_thread* my_thread,
@@ -1720,11 +1725,143 @@ static inline filc_ptr filc_cc_cursor_get_next_ptr_and_track(filc_thread* my_thr
     return result;
 }
 
-#define filc_cc_cursor_get_next_int_ptr(cursor, int_type) \
+#define filc_cc_cursor_get_next_int_ptr_impl(cursor, int_type) \
     (int_type*)filc_cc_cursor_get_next(cursor, sizeof(int_type), FILC_WORD_TYPE_INT)
 
-#define filc_cc_cursor_get_next_int(cursor, int_type) \
-    *filc_cc_cursor_get_next_int_ptr(cursor, int_type)
+#define filc_cc_cursor_get_next_int_impl(cursor, int_type) \
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, int_type)
+
+static inline int filc_cc_cursor_get_next_int(filc_cc_cursor* cursor)
+{
+    return (int)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_int(filc_cc_cursor* cursor, int value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned)value;
+}
+
+static inline unsigned filc_cc_cursor_get_next_unsigned(filc_cc_cursor* cursor)
+{
+    return (unsigned)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned(filc_cc_cursor* cursor, unsigned value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline long filc_cc_cursor_get_next_long(filc_cc_cursor* cursor)
+{
+    return (long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_long(filc_cc_cursor* cursor, long value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned long)value;
+}
+
+static inline unsigned long filc_cc_cursor_get_next_unsigned_long(filc_cc_cursor* cursor)
+{
+    return (unsigned long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned_long(filc_cc_cursor* cursor, unsigned long value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline size_t filc_cc_cursor_get_next_size_t(filc_cc_cursor* cursor)
+{
+    return (size_t)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_size_t(filc_cc_cursor* cursor, size_t value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline double filc_cc_cursor_get_next_double(filc_cc_cursor* cursor)
+{
+    return filc_cc_cursor_get_next_int_impl(cursor, double);
+}
+
+static inline void filc_cc_cursor_set_next_double(filc_cc_cursor* cursor, double value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, double) = value;
+}
+
+static inline float filc_cc_cursor_get_next_float(filc_cc_cursor* cursor)
+{
+    return (float)filc_cc_cursor_get_next_int_impl(cursor, double);
+}
+
+static inline void filc_cc_cursor_set_next_float(filc_cc_cursor* cursor, float value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, double) = (double)value;
+}
+
+static inline bool filc_cc_cursor_get_next_bool(filc_cc_cursor* cursor)
+{
+    return (bool)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_bool(filc_cc_cursor* cursor, bool value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline ssize_t filc_cc_cursor_get_next_ssize_t(filc_cc_cursor* cursor)
+{
+    return (ssize_t)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_ssize_t(filc_cc_cursor* cursor, ssize_t value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(size_t)value;
+}
+
+static inline unsigned short filc_cc_cursor_get_next_unsigned_short(filc_cc_cursor* cursor)
+{
+    return (unsigned short)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned_short(filc_cc_cursor* cursor,
+                                                          unsigned short value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline unsigned long long filc_cc_cursor_get_next_unsigned_long_long(filc_cc_cursor* cursor)
+{
+    return (unsigned long long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned_long_long(filc_cc_cursor* cursor,
+                                                              unsigned long long value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline long long filc_cc_cursor_get_next_long_long(filc_cc_cursor* cursor)
+{
+    return (long long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_long_long(filc_cc_cursor* cursor, long long value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned long long)value;
+}
+
+static inline pas_uint128 filc_cc_cursor_get_next_pas_uint128(filc_cc_cursor* cursor)
+{
+    return filc_cc_cursor_get_next_int_impl(cursor, pas_uint128);
+}
+
+static inline void filc_cc_cursor_set_next_pas_uint128(filc_cc_cursor* cursor, pas_uint128 value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(cursor, pas_uint128) = value;
+}
 
 static inline bool filc_word_type_is_special(filc_word_type word_type)
 {

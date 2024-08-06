@@ -5292,7 +5292,7 @@ int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_fl
     }
     unsigned mode = 0;
     if (flags >= 0 && (flags & O_CREAT))
-        mode = filc_cc_cursor_get_next_int(args, unsigned);
+        mode = filc_cc_cursor_get_next_unsigned(args);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
@@ -6860,9 +6860,9 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, int request, filc_cc_cursor* args)
 {
     if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE)) {
-        if (filc_cc_cursor_has_next(args, sizeof(int))) {
+        if (filc_cc_cursor_has_next(args, sizeof(long))) {
             return FILC_SYSCALL(
-                my_thread, ioctl(fd, request, filc_cc_cursor_get_next_int(args, int)));
+                my_thread, ioctl(fd, request, filc_cc_cursor_get_next_long(args)));
         }
         return FILC_SYSCALL(my_thread, ioctl(fd, request));
     }
@@ -7322,7 +7322,7 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_cc_curs
     int arg_int = 0;
     void* arg_ptr = NULL;
     if (have_arg_int)
-        arg_int = filc_cc_cursor_get_next_int(args, int);
+        arg_int = filc_cc_cursor_get_next_int(args);
     else if (have_arg_flock) {
         filc_ptr flock_ptr = filc_cc_cursor_get_next_ptr(args);
         filc_cpt_access_int(my_thread, flock_ptr, sizeof(struct flock), ptr_access_kind);

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 void foo(void)
 {
@@ -50,7 +51,7 @@ int main()
     zprintf("calling foo3:");
     ZASSERT(!zcall_ptr(foo, NULL));
 
-    int* bar_args = malloc(100 * sizeof(int));
+    int64_t* bar_args = malloc(100 * sizeof(int64_t));
     int index;
     for (index = 100; index--;)
         bar_args[index] = index * 3;

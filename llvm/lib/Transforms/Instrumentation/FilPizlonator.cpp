@@ -388,12 +388,14 @@ class Pizlonator {
 
   unsigned PtrBits;
   Type* VoidTy;
-  Type* Int1Ty;
-  Type* Int8Ty;
-  Type* Int16Ty;
-  Type* Int32Ty;
-  Type* IntPtrTy;
-  Type* Int128Ty;
+  IntegerType* Int1Ty;
+  IntegerType* Int8Ty;
+  IntegerType* Int16Ty;
+  IntegerType* Int32Ty;
+  IntegerType* IntPtrTy;
+  IntegerType* Int128Ty;
+  Type* FloatTy;
+  Type* DoubleTy;
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
   StructType* FunctionOriginTy;
@@ -636,7 +638,7 @@ class Pizlonator {
   Type* lowerTypeImpl(Type* T) {
     assert(T != LowWidePtrTy);
     
-    if (FunctionType* FT = dyn_cast<FunctionType>(T))
+    if (isa<FunctionType>(T))
       return PizlonatedFuncTy;
 
     if (isa<TypedPointerType>(T)) {
@@ -670,7 +672,7 @@ class Pizlonator {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
       return FixedVectorType::get(lowerType(VT->getElementType()), VT->getElementCount().getFixedValue());
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(T)) {
+    if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't see scalable vector types");
       return nullptr;
     }
@@ -1165,7 +1167,7 @@ class Pizlonator {
 
   // This happens to work just as well for high types and low types, and that's important.
   bool hasPtrsForCheck(Type *T) {
-    if (FunctionType* FT = dyn_cast<FunctionType>(T)) {
+    if (isa<FunctionType>(T)) {
       llvm_unreachable("shouldn't see function types in hasPtrsForCheck");
       return false;
     }
@@ -1198,7 +1200,7 @@ class Pizlonator {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
       return hasPtrsForCheck(VT->getElementType());
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(T)) {
+    if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't ever see scalable vectors in hasPtrsForCheck");
       return false;
     }
@@ -1214,7 +1216,7 @@ class Pizlonator {
       return;
     }
     
-    if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
+    if (isa<FunctionType>(LowT)) {
       llvm_unreachable("shouldn't see function types in checkRecurse");
       return;
     }
@@ -1264,7 +1266,7 @@ class Pizlonator {
       return;
     }
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(LowT)) {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
       return;
     }
@@ -1290,7 +1292,7 @@ class Pizlonator {
     if (!hasPtrsForCheck(LowT))
       return new LoadInst(LowT, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
     
-    if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
+    if (isa<FunctionType>(LowT)) {
       llvm_unreachable("shouldn't see function types in checkRecurse");
       return nullptr;
     }
@@ -1349,7 +1351,7 @@ class Pizlonator {
       return Result;
     }
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(LowT)) {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
       return nullptr;
     }
@@ -1378,7 +1380,7 @@ class Pizlonator {
       return;
     }
     
-    if (FunctionType* FT = dyn_cast<FunctionType>(LowT)) {
+    if (isa<FunctionType>(LowT)) {
       llvm_unreachable("shouldn't see function types in checkRecurse");
       return;
     }
@@ -1440,7 +1442,7 @@ class Pizlonator {
       return;
     }
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(LowT)) {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
       return;
     }
@@ -1812,7 +1814,7 @@ class Pizlonator {
       return;
     }
 
-    if (ScalableVectorType* VT = dyn_cast<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(LowT)) {
       llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
       return;
     }
@@ -1821,9 +1823,61 @@ class Pizlonator {
     while ((Size + WordSize - 1) / WordSize > WordTypes.size())
       WordTypes.push_back(WordTypeInt);
   }
+
+  Type* argType(Type* T) {
+    if (IntegerType* IT = dyn_cast<IntegerType>(T)) {
+      if (IT->getBitWidth() < IntPtrTy->getBitWidth())
+        return IntPtrTy;
+      return IT;
+    }
+    if (T == FloatTy)
+      return DoubleTy;
+    return T;
+  }
+
+  StructType* argsType(ArrayRef<Type*> Elements) {
+    std::vector<Type*> NewElements;
+    for (Type* T : Elements)
+      NewElements.push_back(argType(T));
+    return StructType::get(C, NewElements);
+  }
   
   StructType* argsType(FunctionType* FT) {
-    return StructType::get(C, FT->params());
+    return argsType(FT->params());
+  }
+
+  Value* castToArg(Value* V, Type* OriginalArgT, Type* CanonicalArgT, Instruction* InsertBefore) {
+    if (OriginalArgT == CanonicalArgT)
+      return V;
+    if (IntegerType* VIT = dyn_cast<IntegerType>(OriginalArgT)) {
+      IntegerType* CanonicalArgIT = cast<IntegerType>(CanonicalArgT);
+      assert(VIT->getBitWidth() < CanonicalArgIT->getBitWidth());
+      Instruction *ZExt = new ZExtInst(V, CanonicalArgT, "filc_cast_to_arg_int", InsertBefore);
+      ZExt->setDebugLoc(InsertBefore->getDebugLoc());
+      return ZExt;
+    }
+    assert(OriginalArgT == FloatTy);
+    assert(CanonicalArgT == DoubleTy);
+    Instruction* FPExt = new FPExtInst(V, DoubleTy, "filc_cast_to_arg_double", InsertBefore);
+    FPExt->setDebugLoc(InsertBefore->getDebugLoc());
+    return FPExt;
+  }
+
+  Value* castFromArg(Value* V, Type* OriginalArgT, Instruction* InsertBefore) {
+    if (V->getType() == OriginalArgT)
+      return V;
+    if (IntegerType* VIT = dyn_cast<IntegerType>(V->getType())) {
+      IntegerType* OriginalArgIT = cast<IntegerType>(OriginalArgT);
+      assert(VIT->getBitWidth() > OriginalArgIT->getBitWidth());
+      Instruction* Trunc = new TruncInst(V, OriginalArgT, "filc_cast_from_arg_int", InsertBefore);
+      Trunc->setDebugLoc(InsertBefore->getDebugLoc());
+      return Trunc;
+    }
+    assert(V->getType() == DoubleTy);
+    assert(OriginalArgT == FloatTy);
+    Instruction* FPTrunc = new FPTruncInst(V, FloatTy, "filc_cast_from_arg_double", InsertBefore);
+    FPTrunc->setDebugLoc(InsertBefore->getDebugLoc());
+    return FPTrunc;
   }
 
   std::vector<WordType> wordTypesForLowType(Type* LowT) {
@@ -2684,7 +2738,7 @@ class Pizlonator {
       return;
     }
 
-    if (FenceInst* FI = dyn_cast<FenceInst>(I)) {
+    if (isa<FenceInst>(I)) {
       // We don't need to do anything because it doesn't take operands.
       return;
     }
@@ -2849,7 +2903,7 @@ class Pizlonator {
       if (CI->arg_size()) {
         assert(InstLowTypeVectors.count(CI));
         std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
-        StructType* ArgsType = StructType::get(C, ArgTypes);
+        StructType* ArgsType = argsType(ArgTypes);
         Constant* CCType = ccTypeForLowType(ArgsType);
         size_t ArgsSize = (DL.getTypeAllocSize(ArgsType) + WordSize - 1) / WordSize * WordSize;
         Instruction* ClearArgBuffer = CallInst::Create(
@@ -2861,16 +2915,19 @@ class Pizlonator {
         ArgBufferAlignment = std::max(
           ArgBufferAlignment, static_cast<size_t>(DL.getABITypeAlign(ArgsType).value()));
         assert(CI->arg_size() == ArgsType->getNumElements());
+        assert(CI->arg_size() == ArgTypes.size());
         const StructLayout* SL = DL.getStructLayout(ArgsType);
         for (size_t Index = CI->arg_size(); Index--;) {
           Instruction* ArgSlotPtr = GetElementPtrInst::Create(
             Int8Ty, FutureArgBuffer, { ConstantInt::get(IntPtrTy, SL->getElementOffset(Index)) },
             "filc_arg_slot", CI);
           ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
-          Type* LowT = ArgsType->getElementType(Index);
+          Type* OriginalLowT = ArgTypes[Index];
+          Type* CanonicalLowT = ArgsType->getElementType(Index);
           storeValueRecurseAfterCheck(
-            LowT, CI->getArgOperand(Index), ArgSlotPtr, false, DL.getABITypeAlign(LowT),
-            AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::CC, CI);
+            CanonicalLowT, castToArg(CI->getArgOperand(Index), OriginalLowT, CanonicalLowT, CI),
+            ArgSlotPtr, false, DL.getABITypeAlign(CanonicalLowT), AtomicOrdering::NotAtomic,
+            SyncScope::System, MemoryKind::CC, CI);
         }
         Args = createCCPtr(CCType, FutureArgBuffer, CI);
       } else
@@ -2977,8 +3034,9 @@ class Pizlonator {
     if (VAArgInst* VI = dyn_cast<VAArgInst>(I)) {
       Type* T = VI->getType();
       Type* LowT = lowerType(T);
-      size_t Size = DL.getTypeAllocSize(LowT);
-      size_t Alignment = DL.getABITypeAlign(LowT).value();
+      Type* CanonicalLowT = argType(LowT);
+      size_t Size = DL.getTypeAllocSize(CanonicalLowT);
+      size_t Alignment = DL.getABITypeAlign(CanonicalLowT).value();
       CallInst* Call = CallInst::Create(
         GetNextBytesForVAArg,
         { MyThread, VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size),
@@ -2986,9 +3044,9 @@ class Pizlonator {
         "filc_va_arg", VI);
       Call->setDebugLoc(VI->getDebugLoc());
       Value* Load = loadValueRecurse(
-        LowT, Call, ptrPtr(Call, VI), false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic,
-        SyncScope::System, VI);
-      VI->replaceAllUsesWith(Load);
+        CanonicalLowT, Call, ptrPtr(Call, VI), false, DL.getABITypeAlign(CanonicalLowT),
+        AtomicOrdering::NotAtomic, SyncScope::System, VI);
+      VI->replaceAllUsesWith(castFromArg(Load, LowT, VI));
       VI->eraseFromParent();
       return;
     }
@@ -3505,6 +3563,8 @@ public:
     IntPtrTy = Type::getIntNTy(C, PtrBits);
     assert(IntPtrTy == Type::getInt64Ty(C)); // FilC is 64-bit-only, for now.
     Int128Ty = Type::getInt128Ty(C);
+    FloatTy = Type::getFloatTy(C);
+    DoubleTy = Type::getDoubleTy(C);
     LowRawPtrTy = PointerType::get(C, TargetAS);
     CtorDtorTy = FunctionType::get(VoidTy, false);
     SetjmpTy = FunctionType::get(Int32Ty, LowRawPtrTy, false);
@@ -4001,16 +4061,18 @@ public:
         assert(F->getFunctionType()->getNumParams() == ArgsTy->getNumElements());
         size_t LastOffset;
         for (unsigned Index = 0; Index < F->getFunctionType()->getNumParams(); ++Index) {
-          Type* LowT = ArgsTy->getElementType(Index);
+          Type* CanonicalLowT = ArgsTy->getElementType(Index);
+          Type* OriginalLowT = lowerType(F->getFunctionType()->getParamType(Index));
           size_t ArgOffset = SL->getElementOffset(Index);
           Instruction* ArgPtr = GetElementPtrInst::Create(
             Int8Ty, RawDataPtr, { ConstantInt::get(IntPtrTy, ArgOffset) }, "filc_arg_ptr",
             InsertionPoint);
           Value* V = loadValueRecurseAfterCheck(
-            LowT, ArgPtr, false, DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic,
-            SyncScope::System, MemoryKind::CC, InsertionPoint);
+            CanonicalLowT, ArgPtr, false, DL.getABITypeAlign(CanonicalLowT),
+            AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::CC, InsertionPoint);
+          V = castFromArg(V, OriginalLowT, InsertionPoint);
           Args.push_back(V);
-          LastOffset = ArgOffset + DL.getTypeAllocSize(LowT);
+          LastOffset = ArgOffset + DL.getTypeAllocSize(CanonicalLowT);
         }
         if (UsesVastartOrZargs) {
           // Do this after we have recorded all the args for GC, so it's safe to have a pollcheck.

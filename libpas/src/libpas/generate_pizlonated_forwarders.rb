@@ -26,7 +26,7 @@
 def checkType(type)
     case type
     when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
-         "ssize_t", 'unsigned short', 'unsigned long long', 'long long', 'pas_uint128'
+         'ssize_t', 'unsigned short', 'unsigned long long', 'long long', 'pas_uint128'
     else
         raise "Bad type #{type}"
     end
@@ -37,6 +37,36 @@ def underbarType(type)
         return "ptr"
     else
         type.gsub(/ /, '_')
+    end
+end
+
+def unsignedType(type)
+    case type
+    when 'filc_ptr', 'unsigned', 'unsigned long', 'size_t', 'double', 'bool',
+         'unsigned short', 'unsigned long long', 'pas_uint128'
+        type
+    when 'int'
+        'unsigned'
+    when 'long'
+        'unsigned long'
+    when 'ssize_t'
+        'size_t'
+    when 'long long'
+        'unsigned long long'
+    else
+        raise "Bad type #{type}"
+    end
+end
+
+def canonicalArgType(type)
+    case type
+    when 'filc_ptr', 'double', 'pas_uint128'
+        type
+    when 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'bool',
+         'ssize_t', 'unsigned short', 'unsigned long long', 'long long'
+        'uint64_t'
+    else
+        raise "Bad type #{type}"
     end
 end
 
@@ -438,11 +468,9 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "    filc_cc_cursor args_cursor = filc_cc_cursor_create_begin(args);"
             signature.args.each_with_index {
                 | arg, index |
-                if arg == "filc_ptr"
-                    outp.puts "    filc_ptr arg#{index} = filc_cc_cursor_get_next_ptr(&args_cursor);"
-                elsif arg != "..."
+                if arg != "..."
                     outp.puts "    #{arg} arg#{index} = "
-                    outp.puts "        filc_cc_cursor_get_next_int(&args_cursor, #{arg});"
+                    outp.puts "        filc_cc_cursor_get_next_#{underbarType(arg)}(&args_cursor);"
                 end
             }
             case signature.rets
@@ -469,16 +497,12 @@ when "src/libpas/filc_native_forwarders.c"
                 outp.puts "    PAS_UNUSED_PARAM(rets);"
             else
                 outp.puts "    filc_cc_cursor rets_cursor = filc_cc_cursor_create_begin(rets);"
-                if signature.actualRets == "filc_ptr"
-                    outp.print "    *filc_cc_cursor_get_next_ptr_ptr(&rets_cursor) = "
-                else
-                    outp.puts "    *filc_cc_cursor_get_next_int_ptr("
-                    outp.print "        &rets_cursor, #{signature.actualRets}) = "
-                end
+                outp.puts "    filc_cc_cursor_set_next_#{underbarType(signature.actualRets)}("
+                outp.print "        &rets_cursor, "
                 if signature.throwsException
-                    outp.puts "result.value;"
+                    outp.puts "result.value);"
                 else
-                    outp.puts "result;"
+                    outp.puts "result);"
                 end
             end
             outp.puts "    filc_pop_native_frame(my_thread, &native_frame);"
@@ -509,7 +533,7 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "struct call_user_#{signature.name}_args {"
             signature.args.each_with_index {
                 | arg, index |
-                outp.puts "    #{arg} arg#{index};"
+                outp.puts "    #{canonicalArgType(arg)} arg#{index};"
             }
             outp.puts "};"
             outp.print "#{signature.rets} "
@@ -541,8 +565,9 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "    args.base = args_obj;"
             signature.args.each_with_index {
                 | arg, index |
-                outp.puts "    PAS_ASSERT(sizeof(#{arg}) == alignof(#{arg}));"
-                outp.puts "    PAS_ASSERT(pas_is_power_of_2(sizeof(#{arg})));"
+                outp.puts "    PAS_ASSERT(sizeof(#{canonicalArgType(arg)})"
+                outp.puts "               == alignof(#{canonicalArgType(arg)}));"
+                outp.puts "    PAS_ASSERT(pas_is_power_of_2(sizeof(#{canonicalArgType(arg)})));"
                 outp.puts "    index = PAS_OFFSETOF(struct call_user_#{signature.name}_args,"
                 outp.puts "                         arg#{index}) / FILC_WORD_SIZE;"
                 outp.puts "    PAS_ASSERT(index < num_arg_words);"
@@ -555,7 +580,7 @@ when "src/libpas/filc_native_forwarders.c"
                 outp.puts "    PAS_ASSERT(args_type->word_types[index] == FILC_WORD_TYPE_UNSET ||"
                 outp.puts "               args_type->word_types[index] == #{wantedType});"
                 outp.puts "    args_type->word_types[index] = #{wantedType};"
-                outp.puts "    args_obj->arg#{index} = arg#{index};"
+                outp.puts "    args_obj->arg#{index} = (#{unsignedType(arg)})arg#{index};"
             }
             outp.puts "    filc_cc_ptr rets;"
             if signature.rets == "filc_ptr"
@@ -578,7 +603,8 @@ when "src/libpas/filc_native_forwarders.c"
                 outp.puts "    filc_thread_track_object(my_thread, filc_ptr_object(rets_obj));"
                 outp.puts "    return rets_obj;"
             elsif signature.rets != "void"
-                outp.puts "    return *(#{signature.rets}*)&rets_obj;"
+                outp.puts "    return (#{signature.rets})"
+                outp.puts "        *(#{canonicalArgType(signature.rets)}*)&rets_obj;"
             end
             outp.puts "}"
         }
