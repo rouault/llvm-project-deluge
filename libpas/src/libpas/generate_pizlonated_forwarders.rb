@@ -580,7 +580,11 @@ when "src/libpas/filc_native_forwarders.c"
                 outp.puts "    PAS_ASSERT(args_type->word_types[index] == FILC_WORD_TYPE_UNSET ||"
                 outp.puts "               args_type->word_types[index] == #{wantedType});"
                 outp.puts "    args_type->word_types[index] = #{wantedType};"
-                outp.puts "    args_obj->arg#{index} = (#{unsignedType(arg)})arg#{index};"
+                outp.print "    args_obj->arg#{index} = "
+                if unsignedType(arg) != arg
+                    outp.print "(#{unsignedType(arg)})"
+                end
+                outp.puts "arg#{index};"
             }
             outp.puts "    filc_cc_ptr rets;"
             if signature.rets == "filc_ptr"
