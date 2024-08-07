@@ -34,7 +34,7 @@ static void work(void)
         pthread_mutex_unlock(&memory->lock);
     }
 }
-      
+
 int main()
 {
     memory = mmap(NULL, 16384, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANON, -1, 0);
