@@ -70,6 +70,7 @@
 #include <sys/epoll.h>
 #include <sys/sysinfo.h>
 #include <sched.h>
+#include <sys/prctl.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -8091,6 +8092,20 @@ int filc_native_zsys_sigsuspend(filc_thread* my_thread, filc_ptr mask_ptr)
     filc_check_user_sigset(mask_ptr, filc_read_access);
     filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(mask_ptr), &mask);
     return FILC_SYSCALL(my_thread, sigsuspend(&mask));
+}
+
+int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* args)
+{
+    switch (option) {
+    case PR_SET_DUMPABLE: {
+        unsigned long value = filc_cc_cursor_get_next_unsigned_long(args);
+        return FILC_SYSCALL(my_thread, prctl(PR_SET_DUMPABLE, value));
+    }
+    
+    default:
+        filc_set_errno(ENOSYS);
+        return -1;
+    }
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

@@ -225,5 +225,6 @@ int zsys_posix_fadvise(int fd, long base, long len, int advice);
 int zsys_ppoll(void* fds, unsigned long nfds, const void* to, const void* mask);
 int zsys_wait4(int pid, int* status, int options, void* ru);
 int zsys_sigsuspend(const void* mask);
+int zsys_prctl(int option, ...);
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

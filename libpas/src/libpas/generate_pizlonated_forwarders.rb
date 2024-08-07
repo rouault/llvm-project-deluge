@@ -384,6 +384,7 @@ addSig "int", "zsys_posix_fadvise", "int", "long", "long", "int"
 addSig "int", "zsys_ppoll", "filc_ptr", "unsigned long", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_wait4", "int", "filc_ptr", "int", "filc_ptr"
 addSig "int", "zsys_sigsuspend", "filc_ptr"
+addSig "int", "zsys_prctl", "int", "..."
 
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"
