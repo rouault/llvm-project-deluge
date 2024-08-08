@@ -494,12 +494,19 @@ struct zstack_frame_description {
     
        Supporting throwing doesn't mean that there's a personality function. It's totally unrelated
        For example, a C++ function may have a personality function, but since it's throw(), it's got
-       nounwind set, and so it doesn't supporting throwing. */
+       nounwind set, and so it doesn't supporting throwing.
+    
+       By convention, this is always false for inline frames (is_inline == true). */
     filc_bool can_throw;
 
     /* Whether the frame supports catching. Only frames that support catching can have personality
-       functions. But not all of them do. */
+       functions. But not all of them do.
+    
+       By convention, this is always false for inline frames (is_inline == true). */
     filc_bool can_catch;
+
+    /* Tells if this frame description corresponds to an inline frame. */
+    filc_bool is_inline;
 
     /* personality_function and eh_data are set for frames that can catch exceptions. The eh_data is
        NULL if the personality_function is NULL. If the personality_function is not NULL, then the
@@ -507,7 +514,9 @@ struct zstack_frame_description {
        compiler. The signature of the eh_data is up to the compiler. When unwinding, you can call the
        personality_function, or not - up to you. If you call it, you have to know what the signature
        is. It's expected that only the libunwind implementation calls personality_function, since
-       that's what knows what its signature is supposed to be. */
+       that's what knows what its signature is supposed to be.
+    
+       By convention, these are always NULL for inline frames (is_inline == true). */
     void* personality_function;
     void* eh_data;
 };

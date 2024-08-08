@@ -398,8 +398,10 @@ class Pizlonator {
   Type* DoubleTy;
   PointerType* LowRawPtrTy;
   StructType* LowWidePtrTy;
+  StructType* OriginNodeTy;
   StructType* FunctionOriginTy;
   StructType* OriginTy;
+  StructType* InlineFrameTy;
   StructType* OriginWithEHTy;
   StructType* ObjectTy;
   StructType* CCTypeTy;
@@ -570,12 +572,16 @@ class Pizlonator {
     
     bool CanThrow = !OldF->doesNotThrow();
     unsigned NumSetjmps = Setjmps.size();
+
+    assert(FrameSize < UINT_MAX);
     
     Constant* C = ConstantStruct::get(
       FunctionOriginTy,
-      { getString(getFunctionName(OldF)),
-        OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
-        ConstantInt::get(Int32Ty, FrameSize),
+      { ConstantStruct::get(
+          OriginNodeTy,
+          { getString(getFunctionName(OldF)),
+            OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
+            ConstantInt::get(Int32Ty, FrameSize) }),
         Personality, ConstantInt::get(Int8Ty, CanThrow), ConstantInt::get(Int8Ty, CanCatch),
         ConstantInt::get(Int32Ty, NumSetjmps) });
     GlobalVariable* Result = new GlobalVariable(
@@ -3592,9 +3598,11 @@ public:
     FunctionName = "<internal>";
     
     LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
+    OriginNodeTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty}, "filc_origin_node");
     FunctionOriginTy = StructType::create(
-      {LowRawPtrTy, LowRawPtrTy, Int32Ty, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
+      {OriginNodeTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
     OriginTy = StructType::create({LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
+    InlineFrameTy = StructType::create({OriginNodeTy, OriginTy}, "filc_inline_frame");
     OriginWithEHTy = StructType::create(
       {LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy}, "filc_origin_with_eh");
     ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");

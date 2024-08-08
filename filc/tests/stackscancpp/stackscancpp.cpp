@@ -17,9 +17,18 @@ static bool callback(zstack_frame_description description,
         ZASSERT(!description.can_catch);
         ZASSERT(!description.personality_function);
         ZASSERT(!description.eh_data);
+        ZASSERT(!description.is_inline);
     } else {
-        ZASSERT(description.can_catch);
-        ZASSERT(description.personality_function == __gxx_personality_v0);
+        if (!strcmp(description.function_name, "main"))
+            ZASSERT(!description.is_inline);
+        if (description.is_inline) {
+            ZASSERT(!description.can_catch);
+            ZASSERT(!description.personality_function);
+            ZASSERT(!description.eh_data);
+        } else {
+            ZASSERT(description.can_catch);
+            ZASSERT(description.personality_function == __gxx_personality_v0);
+        }
     }
     zprintf("%s,%s,%u,%u;",
             description.function_name, description.filename, description.line, description.column);

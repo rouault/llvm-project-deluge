@@ -1147,13 +1147,14 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     filc_frame* frame;
     for (frame = my_thread->top_frame; frame; frame = frame->parent) {
         PAS_ASSERT(frame->origin);
-        PAS_ASSERT(frame->origin->function_origin);
+        const filc_function_origin* function_origin = filc_origin_get_function_origin(frame->origin);
+        PAS_ASSERT(function_origin);
         if (verbose) {
             pas_log("Marking roots for ");
-            filc_origin_dump(frame->origin, &pas_log_stream.base);
+            filc_origin_dump_all_inline(frame->origin, "; ", &pas_log_stream.base);
             pas_log("\n");
         }
-        for (index = frame->origin->function_origin->num_objects; index--;) {
+        for (index = function_origin->base.num_objects_ish; index--;) {
             if (verbose)
                 pas_log("Marking thread root %p\n", frame->objects[index]);
             fugc_mark(&my_thread->mark_stack, frame->objects[index]);
@@ -1298,12 +1299,26 @@ static void signal_pizlonator(int signum)
     filc_exit(thread);
 }
 
-void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
+const filc_function_origin* filc_origin_get_function_origin(const filc_origin* origin)
+{
+    while (filc_origin_node_is_inline_frame(origin->origin_node))
+        origin = &filc_origin_node_as_inline_frame(origin->origin_node)->origin;
+    return filc_origin_node_as_function_origin(origin->origin_node);
+}
+
+const filc_origin* filc_origin_next_inline(const filc_origin* origin)
+{
+    if (filc_origin_node_is_inline_frame(origin->origin_node))
+        return &filc_origin_node_as_inline_frame(origin->origin_node)->origin;
+    return NULL;
+}
+
+void filc_origin_dump_self(const filc_origin* origin, pas_stream* stream)
 {
     if (origin) {
-        PAS_ASSERT(origin->function_origin);
-        if (origin->function_origin->filename)
-            pas_stream_printf(stream, "%s", origin->function_origin->filename);
+        PAS_ASSERT(origin->origin_node);
+        if (origin->origin_node->filename)
+            pas_stream_printf(stream, "%s", origin->origin_node->filename);
         else
             pas_stream_printf(stream, "<somewhere>");
         if (origin->line) {
@@ -1311,11 +1326,20 @@ void filc_origin_dump(const filc_origin* origin, pas_stream* stream)
             if (origin->column)
                 pas_stream_printf(stream, ":%u", origin->column);
         }
-        if (origin->function_origin->function)
-            pas_stream_printf(stream, ": %s", origin->function_origin->function);
+        if (origin->origin_node->function)
+            pas_stream_printf(stream, ": %s", origin->origin_node->function);
     } else {
         /* FIXME: Maybe just assert that this doesn't happen? */
         pas_stream_printf(stream, "<null origin>");
+    }
+}
+
+void filc_origin_dump_all_inline(const filc_origin* origin, const char* separator, pas_stream* stream)
+{
+    bool comma = false;
+    for (; origin; origin = filc_origin_next_inline(origin)) {
+        pas_stream_print_comma(stream, &comma, separator);
+        filc_origin_dump_self(origin, stream);
     }
 }
 
@@ -4337,7 +4361,7 @@ void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream)
     filc_frame* frame;
     for (frame = thread->top_frame; frame; frame = frame->parent) {
         pas_stream_printf(stream, "    ");
-        filc_origin_dump(frame->origin, stream);
+        filc_origin_dump_all_inline(frame->origin, "\n    ", stream);
         pas_stream_printf(stream, "\n");
     }
 }
@@ -4600,6 +4624,7 @@ struct stack_frame_description {
     unsigned column;
     bool can_throw;
     bool can_catch;
+    bool is_inline;
     filc_ptr personality_function;
     filc_ptr eh_data;
 };
@@ -4614,8 +4639,12 @@ static void check_stack_frame_description(
     FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, filename, access_kind);
     FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, line, access_kind);
     FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, column, access_kind);
-    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, can_throw, access_kind);
-    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, can_catch, access_kind);
+    FILC_CHECK_INT_FIELD(
+        stack_frame_description_ptr, stack_frame_description, can_throw, access_kind);
+    FILC_CHECK_INT_FIELD(
+        stack_frame_description_ptr, stack_frame_description, can_catch, access_kind);
+    FILC_CHECK_INT_FIELD(
+        stack_frame_description_ptr, stack_frame_description, is_inline, access_kind);
     FILC_CHECK_PTR_FIELD(
         stack_frame_description_ptr, stack_frame_description, personality_function, access_kind);
     FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, eh_data, access_kind);
@@ -4624,54 +4653,76 @@ static void check_stack_frame_description(
 void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr arg_ptr)
 {
     filc_check_function_call(callback_ptr);
-    bool (*callback)(PIZLONATED_SIGNATURE) = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
+    bool (*callback)(PIZLONATED_SIGNATURE) =
+        (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
 
     filc_frame* my_frame = my_thread->top_frame;
     PAS_ASSERT(my_frame->origin);
-    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->function, "zstack_scan"));
-    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->filename, "<runtime>"));
+    PAS_ASSERT(!strcmp(
+                   filc_origin_node_as_function_origin(my_frame->origin->origin_node)->base.function,
+                   "zstack_scan"));
+    PAS_ASSERT(!strcmp(
+                   filc_origin_node_as_function_origin(my_frame->origin->origin_node)->base.filename,
+                   "<runtime>"));
     PAS_ASSERT(my_frame->parent);
 
     filc_frame* first_frame = my_frame->parent;
     filc_frame* current_frame;
     for (current_frame = first_frame; current_frame; current_frame = current_frame->parent) {
-        PAS_ASSERT(current_frame->origin);
-        filc_ptr description_ptr = filc_ptr_create(
-            my_thread, filc_allocate(my_thread, sizeof(stack_frame_description)));
-        check_stack_frame_description(description_ptr, filc_write_access);
-        stack_frame_description* description = (stack_frame_description*)filc_ptr_ptr(description_ptr);
-        filc_ptr_store(
-            my_thread,
-            &description->function_name,
-            filc_strdup(my_thread, current_frame->origin->function_origin->function));
-        filc_ptr_store(
-            my_thread,
-            &description->filename,
-            filc_strdup(my_thread, current_frame->origin->function_origin->filename));
-        description->line = current_frame->origin->line;
-        description->column = current_frame->origin->column;
-        description->can_throw = current_frame->origin->function_origin->can_throw;
-        description->can_catch = current_frame->origin->function_origin->can_catch;
-        filc_ptr personality_function;
-        bool has_personality;
-        if (current_frame->origin->function_origin->personality_getter) {
-            has_personality = true;
-            personality_function = current_frame->origin->function_origin->personality_getter(NULL);
-        } else {
-            has_personality = false;
-            personality_function = filc_ptr_forge_null();
-        }
-        filc_ptr_store(my_thread, &description->personality_function, personality_function);
-        filc_ptr eh_data;
-        filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)current_frame->origin;
-        if (has_personality && origin_with_eh->eh_data_getter)
-            eh_data = origin_with_eh->eh_data_getter(NULL);
-        else
-            eh_data = filc_ptr_forge_null();
-        filc_ptr_store(my_thread, &description->eh_data, eh_data);
+        const filc_origin* outer_origin = current_frame->origin;
+        PAS_ASSERT(outer_origin);
+        for (const filc_origin* origin = outer_origin;
+             origin;
+             origin = filc_origin_next_inline(origin)) {
+            bool is_inline = filc_origin_node_is_inline_frame(origin->origin_node);
+            filc_ptr description_ptr = filc_ptr_create(
+                my_thread, filc_allocate(my_thread, sizeof(stack_frame_description)));
+            check_stack_frame_description(description_ptr, filc_write_access);
+            stack_frame_description* description =
+                (stack_frame_description*)filc_ptr_ptr(description_ptr);
+            filc_ptr_store(
+                my_thread,
+                &description->function_name,
+                filc_strdup(my_thread, origin->origin_node->function));
+            filc_ptr_store(
+                my_thread,
+                &description->filename,
+                filc_strdup(my_thread, origin->origin_node->filename));
+            description->line = origin->line;
+            description->column = origin->column;
+            description->is_inline = is_inline;
+            if (is_inline) {
+                description->can_throw = false;
+                description->can_catch = false;
+                filc_ptr_store(my_thread, &description->personality_function, filc_ptr_forge_null());
+                filc_ptr_store(my_thread, &description->eh_data, filc_ptr_forge_null());
+            } else {
+                const filc_function_origin* function_origin =
+                    filc_origin_node_as_function_origin(origin->origin_node);
+                description->can_throw = function_origin->can_throw;
+                description->can_catch = function_origin->can_catch;
+                filc_ptr personality_function;
+                bool has_personality;
+                if (function_origin->personality_getter) {
+                    has_personality = true;
+                    personality_function = function_origin->personality_getter(NULL);
+                } else {
+                    has_personality = false;
+                    personality_function = filc_ptr_forge_null();
+                }
+                filc_ptr_store(my_thread, &description->personality_function, personality_function);
+                filc_ptr eh_data;
+                filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)outer_origin;
+                if (has_personality && origin_with_eh->eh_data_getter)
+                    eh_data = origin_with_eh->eh_data_getter(NULL);
+                else
+                    eh_data = filc_ptr_forge_null();
+                filc_ptr_store(my_thread, &description->eh_data, eh_data);
+            }
 
-        if (!filc_call_user_bool_ptr_ptr(my_thread, callback, description_ptr, arg_ptr))
-            return;
+            if (!filc_call_user_bool_ptr_ptr(my_thread, callback, description_ptr, arg_ptr))
+                return;
+        }
     }
 }
 
@@ -4754,7 +4805,8 @@ static unwind_reason_code call_personality(
     unwind_exception* exception_object = (unwind_exception*)filc_ptr_ptr(exception_object_ptr);
     unwind_exception_class exception_class = exception_object->exception_class;
 
-    filc_ptr personality_ptr = current_frame->origin->function_origin->personality_getter(NULL);
+    filc_ptr personality_ptr =
+        filc_origin_get_function_origin(current_frame->origin)->personality_getter(NULL);
     filc_thread_track_object(my_thread, filc_ptr_object(personality_ptr));
     filc_check_function_call(personality_ptr);
 
@@ -4770,8 +4822,12 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
 
     filc_frame* my_frame = my_thread->top_frame;
     PAS_ASSERT(my_frame->origin);
-    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->function, "_Unwind_RaiseException"));
-    PAS_ASSERT(!strcmp(my_frame->origin->function_origin->filename, "<runtime>"));
+    PAS_ASSERT(!strcmp(
+                   filc_origin_node_as_function_origin(my_frame->origin->origin_node)->base.function,
+                   "_Unwind_RaiseException"));
+    PAS_ASSERT(!strcmp(
+                   filc_origin_node_as_function_origin(my_frame->origin->origin_node)->base.filename,
+                   "<runtime>"));
     PAS_ASSERT(my_frame->parent);
 
     filc_frame* first_frame = my_frame->parent;
@@ -4780,18 +4836,21 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
     /* Phase 1 */
     for (current_frame = first_frame; current_frame; current_frame = current_frame->parent) {
         PAS_ASSERT(current_frame->origin);
+        const filc_function_origin* function_origin =
+            filc_origin_get_function_origin(current_frame->origin);
         
-        if (!current_frame->origin->function_origin->can_catch)
+        if (!function_origin->can_catch)
             return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
 
-        if (!current_frame->origin->function_origin->personality_getter) {
-            if (!current_frame->origin->function_origin->can_throw)
+        if (!function_origin->personality_getter) {
+            if (!function_origin->can_throw)
                 return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
             continue;
         }
 
         unwind_reason_code personality_result = call_personality(
-            my_thread, current_frame, 1, unwind_action_search_phase, exception_object_ptr, context_ptr);
+            my_thread, current_frame, 1, unwind_action_search_phase, exception_object_ptr,
+            context_ptr);
         if (personality_result == unwind_reason_handler_found) {
             my_thread->found_frame_for_unwind = current_frame;
             filc_ptr_store(my_thread, &my_thread->unwind_context_ptr, context_ptr);
@@ -4800,8 +4859,7 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
             return filc_exception_and_int_with_exception();
         }
 
-        if (personality_result == unwind_reason_continue_unwind
-            && current_frame->origin->function_origin->can_throw)
+        if (personality_result == unwind_reason_continue_unwind && function_origin->can_throw)
             continue;
 
         return filc_exception_and_int_with_int(unwind_reason_fatal_phase1_error);
@@ -4810,8 +4868,9 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
     return filc_exception_and_int_with_int(unwind_reason_end_of_stack);
 }
 
-static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr, filc_ptr exception_object_ptr,
-                             filc_frame* found_frame, filc_frame* current_frame)
+static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr,
+                             filc_ptr exception_object_ptr, filc_frame* found_frame,
+                             filc_frame* current_frame)
 {
     static const bool verbose = false;
     
@@ -4821,9 +4880,11 @@ static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr, filc_
 
     /* If the frame didn't support catching, then we wouldn't have gotten here. Only frames that
        support unwinding call landing_pads. */
-    PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+    const filc_function_origin* function_origin =
+        filc_origin_get_function_origin(current_frame->origin);
+    PAS_ASSERT(function_origin->can_catch);
     
-    if (!current_frame->origin->function_origin->personality_getter)
+    if (!function_origin->personality_getter)
         return false;
 
     unwind_action action = unwind_action_cleanup_phase;
@@ -4886,9 +4947,11 @@ bool filc_landing_pad(filc_thread* my_thread)
             current_frame != found_frame,
             NULL,
             "personality function told us to continue phase2 unwinding past the frame found in phase1.");
-        PAS_ASSERT(current_frame->origin->function_origin->can_catch);
+        const filc_function_origin* function_origin =
+            filc_origin_get_function_origin(current_frame->origin);
+        PAS_ASSERT(function_origin->can_catch);
         FILC_CHECK(
-            current_frame->origin->function_origin->can_throw,
+            function_origin->can_throw,
             NULL,
             "cannot unwind from landing pad, function claims not to throw.");
         FILC_CHECK(
@@ -4896,7 +4959,7 @@ bool filc_landing_pad(filc_thread* my_thread)
             NULL,
             "cannot unwind from landing pad, reached end of stack.");
         FILC_CHECK(
-            current_frame->parent->origin->function_origin->can_catch,
+            filc_origin_get_function_origin(current_frame->parent->origin)->can_catch,
             NULL,
             "cannot unwind from landing pad, parent frame doesn't support catching.");
     }
@@ -4907,7 +4970,7 @@ bool filc_landing_pad(filc_thread* my_thread)
     return result;
 }
 
-void filc_resume_unwind(filc_thread* my_thread, filc_origin *origin)
+void filc_resume_unwind(filc_thread* my_thread, const filc_origin *origin)
 {
     filc_frame* current_frame = my_thread->top_frame;
 
@@ -4924,7 +4987,7 @@ void filc_resume_unwind(filc_thread* my_thread, filc_origin *origin)
        resume instruction. The resume instruction doesn't "catch". */
 
     FILC_CHECK(
-        current_frame->origin->function_origin->can_throw,
+        filc_origin_get_function_origin(current_frame->origin)->can_throw,
         NULL,
         "cannot resume unwinding, current frame claims not to throw.");
     FILC_CHECK(
@@ -4932,7 +4995,7 @@ void filc_resume_unwind(filc_thread* my_thread, filc_origin *origin)
         NULL,
         "cannot resume unwinding, reached end of stack.");
     FILC_CHECK(
-        current_frame->parent->origin->function_origin->can_catch,
+        filc_origin_get_function_origin(current_frame->parent->origin)->can_catch,
         NULL,
         "cannot resume unwinding, parent frame doesn't support catching.");
 }
@@ -4947,12 +5010,13 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
 
     filc_frame* frame = my_thread->top_frame;
     PAS_ASSERT(frame->origin);
-    PAS_ASSERT(frame->origin->function_origin);
+    const filc_function_origin* function_origin = filc_origin_get_function_origin(frame->origin);
+    PAS_ASSERT(function_origin);
     
     filc_jmp_buf* result = (filc_jmp_buf*)filc_allocate_special(
         my_thread,
         PAS_OFFSETOF(filc_jmp_buf, objects)
-        + frame->origin->function_origin->num_objects * sizeof(filc_object*),
+        + filc_mul_size(function_origin->base.num_objects_ish, sizeof(filc_object*)),
         FILC_WORD_TYPE_JMP_BUF)->lower;
 
     result->kind = kind; /* We save the kind because it lets us do a safety check, but that check isn't
@@ -4963,14 +5027,16 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
     filc_native_frame_assert_locked(my_thread->top_native_frame);
     result->saved_top_native_frame = my_thread->top_native_frame;
     result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
-    result->num_objects = frame->origin->function_origin->num_objects;
+    result->num_objects = function_origin->base.num_objects_ish;
     size_t index;
-    for (index = frame->origin->function_origin->num_objects; index--;) {
+    for (index = function_origin->base.num_objects_ish; index--;) {
         filc_store_barrier(my_thread, frame->objects[index]);
         result->objects[index] = frame->objects[index];
     }
 
-    PAS_ASSERT(result->num_objects == result->saved_top_frame->origin->function_origin->num_objects);
+    PAS_ASSERT(
+        result->num_objects ==
+        filc_origin_get_function_origin(result->saved_top_frame->origin)->base.num_objects_ish);
 
     if ((kind == filc_jmp_buf_sigsetjmp && value) ||
         (kind == filc_jmp_buf_setjmp && setjmp_saves_sigmask)) {
@@ -4988,7 +5054,8 @@ void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* s
         fugc_mark(stack, jmp_buf->objects[index]);
 }
 
-static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value, filc_jmp_buf_kind kind)
+static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value,
+                         filc_jmp_buf_kind kind)
 {
     PAS_ASSERT(kind == filc_jmp_buf_setjmp ||
                kind == filc_jmp_buf__setjmp ||
@@ -5009,13 +5076,14 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
          current_frame && !found_frame;
          current_frame = current_frame->parent) {
         PAS_ASSERT(current_frame->origin);
-        PAS_ASSERT(current_frame->origin->function_origin);
-        PAS_ASSERT(current_frame->origin->function_origin->num_setjmps
-                   <= current_frame->origin->function_origin->num_objects);
+        const filc_function_origin* function_origin =
+            filc_origin_get_function_origin(current_frame->origin);
+        PAS_ASSERT(function_origin);
+        PAS_ASSERT(function_origin->num_setjmps <= function_origin->base.num_objects_ish);
         unsigned index;
-        for (index = current_frame->origin->function_origin->num_setjmps; index-- && !found_frame;) {
-            unsigned object_index = current_frame->origin->function_origin->num_objects - 1 - index;
-            PAS_ASSERT(object_index < current_frame->origin->function_origin->num_objects);
+        for (index = function_origin->num_setjmps; index-- && !found_frame;) {
+            unsigned object_index = function_origin->base.num_objects_ish - 1 - index;
+            PAS_ASSERT(object_index < function_origin->base.num_objects_ish);
             if (filc_object_for_special_payload(jmp_buf) == current_frame->objects[object_index]) {
                 PAS_ASSERT(current_frame == jmp_buf->saved_top_frame);
                 found_frame = true;
@@ -5039,7 +5107,8 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
     my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
 
     PAS_ASSERT(my_thread->top_frame == jmp_buf->saved_top_frame);
-    PAS_ASSERT(my_thread->top_frame->origin->function_origin->num_objects == jmp_buf->num_objects);
+    PAS_ASSERT(filc_origin_get_function_origin(my_thread->top_frame->origin)->base.num_objects_ish
+               == jmp_buf->num_objects);
     size_t index;
     for (index = jmp_buf->num_objects; index--;)
         my_thread->top_frame->objects[index] = jmp_buf->objects[index];

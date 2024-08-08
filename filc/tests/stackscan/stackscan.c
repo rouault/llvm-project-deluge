@@ -1,5 +1,6 @@
 #include <stdfil.h>
 #include <stdbool.h>
+#include <string.h>
 
 static bool callback(zstack_frame_description description,
                      void* arg)
@@ -8,6 +9,8 @@ static bool callback(zstack_frame_description description,
     ZASSERT(!description.can_catch);
     ZASSERT(!description.personality_function);
     ZASSERT(!description.eh_data);
+    if (!strcmp(description.function_name, "main"))
+        ZASSERT(!description.is_inline);
     zprintf("%s,%s,%u,%u,%s;",
             description.function_name, description.filename, description.line, description.column,
             description.can_throw ? "yes" : "no");

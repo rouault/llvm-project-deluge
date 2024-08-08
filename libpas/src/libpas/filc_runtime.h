@@ -78,11 +78,13 @@ struct filc_exception_and_int;
 struct filc_frame;
 struct filc_function_origin;
 struct filc_global_initialization_context;
+struct filc_inline_frame;
 struct filc_jmp_buf;
 struct filc_native_frame;
 struct filc_object;
 struct filc_object_array;
 struct filc_origin;
+struct filc_origin_node;
 struct filc_origin_with_eh;
 struct filc_ptr;
 struct filc_ptr_array;
@@ -108,11 +110,13 @@ typedef struct filc_exception_and_int filc_exception_and_int;
 typedef struct filc_frame filc_frame;
 typedef struct filc_function_origin filc_function_origin;
 typedef struct filc_global_initialization_context filc_global_initialization_context;
+typedef struct filc_inline_frame filc_inline_frame;
 typedef struct filc_jmp_buf filc_jmp_buf;
 typedef struct filc_native_frame filc_native_frame;
 typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
 typedef struct filc_origin filc_origin;
+typedef struct filc_origin_node filc_origin_node;
 typedef struct filc_origin_with_eh filc_origin_with_eh;
 typedef struct filc_ptr filc_ptr;
 typedef struct filc_ptr_array filc_ptr_array;
@@ -249,16 +253,18 @@ typedef uint16_t filc_object_flags;
 
 #define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_objects) \
     static const filc_function_origin function_ ## origin_name = { \
-        .function = (function_name), \
-        .filename = "<runtime>", \
-        .num_objects = (passed_num_objects), \
+        .base = { \
+            .function = (function_name), \
+            .filename = "<runtime>", \
+            .num_objects_ish = (passed_num_objects) \
+        }, \
         .personality_getter = NULL, \
         .can_throw = true, \
         .can_catch = false, \
         .num_setjmps = 0 \
     }; \
     static const filc_origin origin_name = { \
-        .function_origin = &function_ ## origin_name, \
+        .origin_node = &function_ ## origin_name.base, \
         .line = 0, \
         .column = 0 \
     }
@@ -316,13 +322,22 @@ struct filc_cc_cursor {
 #define FILC_SPECIAL_OBJECT_SIZE \
     PAS_ROUND_UP_TO_POWER_OF_2(PAS_OFFSETOF(filc_object, word_types) + 1, FILC_WORD_SIZE)
 
-/* NOTE: A function may have two different function origins - one for origins that are capable of
-   catching, and one for origins not capable of catching. */
-struct filc_function_origin {
+struct filc_origin_node {
     const char* function;
     const char* filename;
 
-    unsigned num_objects;
+    /* This tells the number of objects in the frame, or indicates that this is an inline frame.
+       
+       num_objects_ish < UINT_MAX   => This is a filc_function_origin object.
+       
+       num_objects_ish == UINT_MAX  => This is a filc_inline_frame object. */
+    unsigned num_objects_ish;
+};
+
+/* NOTE: A function may have two different function origins - one for origins that are capable of
+   catching, and one for origins not capable of catching. */
+struct filc_function_origin {
+    filc_origin_node base;
     
     /* If this is not NULL, then the filc_origin is really a filc_origin_with_eh, so that it includes
        the eh_data_getter.
@@ -351,10 +366,28 @@ struct filc_function_origin {
     unsigned num_setjmps;
 };
 
+/* Given an origin, you can get the combined function/filename/line/column like so:
+   
+   origin->origin_node->function
+   origin->origin_node->filename
+   origin->line
+   origin->column.
+   
+   I.e. the function/filename are in the node and correspond to the line/column stored in the
+   origin itself. */
 struct filc_origin {
-    const filc_function_origin* function_origin;
+    const filc_origin_node* origin_node;
     unsigned line;
     unsigned column;
+};
+
+struct filc_inline_frame {
+    /* The function_name/filename fields in base tell us about the origin that is pointing at us. */
+    filc_origin_node base;
+
+    /* And this origin tells us about the frame above. This may form a linked list, since
+       inline_frame->origin.origin_node may itself be an filc_inline_frame. */
+    filc_origin origin;
 };
 
 /* Origins are guaranteed to be of this type if !!origin->function_origin->personality_getter. */
@@ -1133,18 +1166,51 @@ static inline bool filc_pollcheck(filc_thread* my_thread, const filc_origin* ori
    the compiler uses this, but, like, fugc it. */
 PAS_API void filc_pollcheck_outline(filc_thread* my_thread, const filc_origin* origin);
 
-void filc_thread_stop_allocators(filc_thread* my_thread);
-void filc_thread_mark_roots(filc_thread* my_thread);
-void filc_thread_sweep_mark_stack(filc_thread* my_thread);
-void filc_thread_donate(filc_thread* my_thread);
+PAS_API void filc_thread_stop_allocators(filc_thread* my_thread);
+PAS_API void filc_thread_mark_roots(filc_thread* my_thread);
+PAS_API void filc_thread_sweep_mark_stack(filc_thread* my_thread);
+PAS_API void filc_thread_donate(filc_thread* my_thread);
 
-void filc_mark_global_roots(filc_object_array* mark_stack);
+PAS_API void filc_mark_global_roots(filc_object_array* mark_stack);
 
-void filc_origin_dump(const filc_origin* origin, pas_stream* stream);
+static inline bool filc_origin_node_is_inline_frame(const filc_origin_node* origin_node)
+{
+    return origin_node->num_objects_ish == UINT_MAX;
+}
 
-void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream);
+static inline bool filc_origin_node_is_function_origin(const filc_origin_node* origin_node)
+{
+    return !filc_origin_node_is_inline_frame(origin_node);
+}
 
-void filc_validate_object(filc_object* object, const filc_origin* origin);
+static inline const filc_inline_frame* filc_origin_node_as_inline_frame(
+    const filc_origin_node* origin_node)
+{
+    PAS_ASSERT(filc_origin_node_is_inline_frame(origin_node));
+    return (const filc_inline_frame*)origin_node;
+}
+
+static inline const filc_function_origin* filc_origin_node_as_function_origin(
+    const filc_origin_node* origin_node)
+{
+    PAS_ASSERT(filc_origin_node_is_function_origin(origin_node));
+    return (const filc_function_origin*)origin_node;
+}
+
+PAS_API const filc_function_origin* filc_origin_get_function_origin(const filc_origin* origin);
+
+PAS_API const filc_origin* filc_origin_next_inline(const filc_origin* origin);
+
+/* This dumps just the origin itself, not its entire inline stack. */
+PAS_API void filc_origin_dump_self(const filc_origin* origin, pas_stream* stream);
+
+/* This dumps the origin plus its inline stack. */
+PAS_API void filc_origin_dump_all_inline(const filc_origin* origin, const char* separator,
+                                         pas_stream* stream);
+
+PAS_API void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream);
+
+PAS_API void filc_validate_object(filc_object* object, const filc_origin* origin);
 
 static inline void filc_testing_validate_object(filc_object* object, const filc_origin* origin)
 {
@@ -1166,7 +1232,7 @@ static inline void filc_testing_validate_object(filc_object* object, const filc_
    This does not check if the pointer is in bounds or that it's pointing at something that has any
    particular type. This isn't the actual FilC check that the compiler uses to achieve memory
    safety! */
-void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin);
+PAS_API void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin);
 
 static inline void filc_testing_validate_ptr(filc_ptr ptr)
 {
@@ -2374,7 +2440,7 @@ bool filc_landing_pad(filc_thread* my_thread);
    result of a CallInst returning exceptionally. This is necessary since this only checks that our
    caller will be able to handle exceptional returns, not that our caller's caller also will be able
    to. */
-void filc_resume_unwind(filc_thread* my_thread, filc_origin* origin);
+void filc_resume_unwind(filc_thread* my_thread, const filc_origin* origin);
 
 static inline const char* filc_jmp_buf_kind_get_string(filc_jmp_buf_kind kind)
 {
