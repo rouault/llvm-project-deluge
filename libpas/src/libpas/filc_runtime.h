@@ -390,7 +390,8 @@ struct filc_inline_frame {
     filc_origin origin;
 };
 
-/* Origins are guaranteed to be of this type if !!origin->function_origin->personality_getter. */
+/* Origins referenced directly from filc_frame::origin are guaranteed to be of this type if
+   !!filc_origin_get_function_origin(frame->origin)->personality_getter. */
 struct filc_origin_with_eh {
     filc_origin base;
 
