@@ -20,7 +20,7 @@
 
 struct shared {
     unsigned count;
-    pthread_mutex_t lock;
+    pthread_rwlock_t lock;
 };
 
 static struct shared* memory;
@@ -29,9 +29,9 @@ static void work(void)
 {
     unsigned count;
     for (count = COUNT; count--;) {
-        pthread_mutex_lock(&memory->lock);
+        pthread_rwlock_wrlock(&memory->lock);
         memory->count++;
-        pthread_mutex_unlock(&memory->lock);
+        pthread_rwlock_unlock(&memory->lock);
     }
 }
 
@@ -41,10 +41,10 @@ int main()
     ASSERT(memory);
     ASSERT(memory != (void*)(intptr_t)-1);
 
-    pthread_mutexattr_t lock_attr;
-    ASSERT(!pthread_mutexattr_init(&lock_attr));
-    ASSERT(!pthread_mutexattr_setpshared(&lock_attr, 1));
-    ASSERT(!pthread_mutex_init(&memory->lock, &lock_attr));
+    pthread_rwlockattr_t lock_attr;
+    ASSERT(!pthread_rwlockattr_init(&lock_attr));
+    ASSERT(!pthread_rwlockattr_setpshared(&lock_attr, 1));
+    ASSERT(!pthread_rwlock_init(&memory->lock, &lock_attr));
     
     int fork_result = fork();
     ASSERT(fork_result >= 0);

@@ -16,7 +16,7 @@
     abort(); \
 } while (0)
 
-#define COUNT 10000
+#define COUNT 20000
 
 struct shared {
     unsigned count;
