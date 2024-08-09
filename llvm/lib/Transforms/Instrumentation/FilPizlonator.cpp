@@ -259,6 +259,29 @@ struct OriginKey {
   }
 };
 
+struct InlineFrameKey {
+  InlineFrameKey() = default;
+
+  InlineFrameKey(Function* OldF, DISubprogram* Subprogram, DILocation* InlinedAt, bool CanCatch)
+    : OldF(OldF), Subprogram(Subprogram), InlinedAt(InlinedAt), CanCatch(CanCatch) {
+  }
+
+  Function* OldF { nullptr };
+  DISubprogram* Subprogram { nullptr };
+  DILocation* InlinedAt { nullptr };
+  bool CanCatch { false };
+
+  bool operator==(const InlineFrameKey& Other) const {
+    return OldF == Other.OldF && Subprogram == Other.Subprogram && InlinedAt == Other.InlinedAt
+      && CanCatch == Other.CanCatch;
+  }
+
+  size_t hash() const {
+    return std::hash<Function*>()(OldF) + std::hash<DISubprogram*>()(Subprogram)
+      + std::hash<DILocation*>()(InlinedAt) + static_cast<size_t>(CanCatch);
+  }
+};
+
 } // anonymous namespace
 
 template<> struct std::hash<FunctionOriginKey> {
@@ -275,6 +298,12 @@ template<> struct std::hash<EHDataKey> {
 
 template<> struct std::hash<OriginKey> {
   size_t operator()(const OriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<InlineFrameKey> {
+  size_t operator()(const InlineFrameKey& Key) const {
     return Key.hash();
   }
 };
@@ -469,6 +498,7 @@ class Pizlonator {
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
   std::unordered_map<OriginKey, GlobalVariable*> Origins;
+  std::unordered_map<InlineFrameKey, GlobalVariable*> InlineFrames;
   std::unordered_map<EHDataKey, GlobalVariable*> EHDatas; /* the value is a high-level GV, need to lookup
                                                              the getter. */
   std::unordered_map<Constant*, int> EHTypeIDs;
@@ -598,6 +628,42 @@ class Pizlonator {
     return GlobalToGetter[EHDatas[LPI]];
   }
 
+  Constant* getInlineFrame(DISubprogram* Subprogram, DILocation* InlinedAt, bool CanCatch) {
+    assert(OldF);
+    assert(InlinedAt);
+
+    InlineFrameKey IFK(OldF, Subprogram, InlinedAt, CanCatch);
+    auto iter = InlineFrames.find(IFK);
+    if (iter != InlineFrames.end())
+      return iter->second;
+
+    unsigned Line = InlinedAt->getLine();
+    unsigned Col = InlinedAt->getColumn();
+
+    Constant* C = ConstantStruct::get(
+      InlineFrameTy,
+      { ConstantStruct::get(
+          OriginNodeTy,
+          { getString(Subprogram->getName()), getString(Subprogram->getFilename()),
+            ConstantInt::get(Int32Ty, UINT_MAX) }),
+        ConstantStruct::get(
+          OriginTy,
+          { getOriginNode(InlinedAt->getScope()->getSubprogram(), InlinedAt->getInlinedAt(),
+                          CanCatch),
+            ConstantInt::get(Int32Ty, Line), ConstantInt::get(Int32Ty, Col) }) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, InlineFrameTy, true, GlobalVariable::PrivateLinkage, C, "filc_inline_frame");
+    InlineFrames[IFK] = Result;
+    return Result;
+  }
+
+  Constant* getOriginNode(DISubprogram* Subprogram, DILocation* InlinedAt, bool CanCatch) {
+    assert(Subprogram);
+    if (InlinedAt)
+      return getInlineFrame(Subprogram, InlinedAt, CanCatch);
+    return getFunctionOrigin(CanCatch);
+  }
+
   // See the definition of CanCatch, above.
   Constant* getOrigin(DebugLoc Loc, bool CanCatch = false, LandingPadInst* LPI = nullptr) {
     assert(OldF);
@@ -612,23 +678,26 @@ class Pizlonator {
 
     unsigned Line = 0;
     unsigned Col = 0;
+    Constant* OriginNode;
     if (Loc) {
       Line = Loc.getLine();
       Col = Loc.getCol();
-    }
+      OriginNode = getOriginNode(Loc->getScope()->getSubprogram(), Loc->getInlinedAt(), CanCatch);
+    } else
+      OriginNode = getFunctionOrigin(CanCatch);
 
     GlobalVariable* Result;
     if (CanCatch && OldF->hasPersonalityFn()) {
       Constant* C = ConstantStruct::get(
         OriginWithEHTy,
-        { getFunctionOrigin(CanCatch), ConstantInt::get(Int32Ty, Line),
-          ConstantInt::get(Int32Ty, Col), getEHData(LPI) });
+        { OriginNode, ConstantInt::get(Int32Ty, Line), ConstantInt::get(Int32Ty, Col),
+          getEHData(LPI) });
       Result = new GlobalVariable(
         M, OriginWithEHTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin_with_eh");
     } else {
       Constant* C = ConstantStruct::get(
         OriginTy,
-        { getFunctionOrigin(CanCatch), ConstantInt::get(Int32Ty, Line), ConstantInt::get(Int32Ty, Col) });
+        { OriginNode, ConstantInt::get(Int32Ty, Line), ConstantInt::get(Int32Ty, Col) });
       Result = new GlobalVariable(
         M, OriginTy, true, GlobalVariable::PrivateLinkage, C, "filc_origin");
     }
