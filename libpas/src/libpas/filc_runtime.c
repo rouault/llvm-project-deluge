@@ -337,6 +337,28 @@ static bool dump_errnos = false;
 static bool run_global_ctors = true;
 static bool run_global_dtors = true;
 
+static void set_stack_limit(filc_thread* thread)
+{
+    static const bool verbose = false;
+    
+    static const size_t stack_slack = 32768;
+    
+    char* stack = (char*)pthread_getstack_yolo(pthread_self());
+    size_t stack_size = pthread_getstacksize_yolo(pthread_self());
+
+    if (verbose)
+        pas_log("stack = %p, stack_size = %zu\n", stack, stack_size);
+
+    PAS_ASSERT(stack);
+    PAS_ASSERT(stack_size);
+    PAS_ASSERT((char*)&stack < stack);
+    PAS_ASSERT((char*)&stack > stack - stack_size);
+    PAS_ASSERT(stack_size > stack_slack);
+    PAS_ASSERT((char*)&stack > stack - stack_size + stack_slack);
+
+    thread->stack_limit = stack - stack_size + stack_slack;
+}
+
 void filc_initialize(void)
 {
     PAS_ASSERT(!is_initialized);
@@ -376,6 +398,7 @@ void filc_initialize(void)
     thread->tlc_node_version = pas_thread_local_cache_node_version(thread->tlc_node);
     PAS_ASSERT(!pthread_key_create(&filc_thread_key, NULL));
     PAS_ASSERT(!pthread_setspecific(filc_thread_key, thread));
+    set_stack_limit(thread);
 
     /* This has to happen *after* we do our primordial allocations. */
     fugc_initialize();
@@ -1723,18 +1746,23 @@ void filc_check_access_special(filc_ptr ptr, filc_word_type word_type, const fil
         filc_word_type_to_new_string(word_type), filc_ptr_to_new_string(ptr));
 }
 
-void filc_cc_args_check_failure(
+PAS_NO_RETURN void filc_cc_args_check_failure(
     filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin)
 {
     filc_safety_panic(origin, "argument type mismatch (args = %s, expected type = %s).",
                       filc_cc_ptr_to_new_string(args), filc_cc_type_to_new_string(expected_type));
 }
 
-void filc_cc_rets_check_failure(
+PAS_NO_RETURN void filc_cc_rets_check_failure(
     filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin)
 {
     filc_safety_panic(origin, "return type mismatch (rets = %s, expected type = %s).",
                       filc_cc_ptr_to_new_string(rets), filc_cc_type_to_new_string(expected_type));
+}
+
+PAS_API PAS_NO_RETURN void filc_stack_overflow_failure_impl(void)
+{
+    filc_safety_panic(NULL, "stack overflow.");
 }
 
 static void check_not_free(filc_ptr ptr, const filc_origin* origin)
@@ -4082,6 +4110,9 @@ filc_global_initialization_context* filc_global_initialization_context_create(
     static const bool verbose = false;
     
     filc_global_initialization_context* result;
+
+    if ((char*)&result < (char*)filc_get_my_thread()->stack_limit)
+        filc_stack_overflow_failure_impl();
 
     if (verbose)
         pas_log("creating context with parent = %p\n", parent);
@@ -8295,6 +8326,8 @@ static void* start_thread(void* arg)
     filc_thread* thread;
 
     thread = (filc_thread*)arg;
+
+    set_stack_limit(thread);
 
     pas_system_mutex_lock(&thread->lock);
     unsigned tid = gettid();

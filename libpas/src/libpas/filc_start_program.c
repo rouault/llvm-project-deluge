@@ -26,6 +26,7 @@
 #include "filc_native.h"
 #include "filc_runtime.h"
 #include <elf.h>
+#include <pthread.h>
 #include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,9 +34,18 @@
 
 extern char** environ;
 
-void filc_start_program(int argc, char** argv,
-                        filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
-                        filc_ptr pizlonated_main(filc_global_initialization_context*))
+struct args {
+    int argc;
+    char** argv;
+    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*);
+    filc_ptr (*pizlonated_main)(filc_global_initialization_context*);
+    sigset_t oldset;
+};
+
+static void really_start_program(
+    int argc, char** argv,
+    filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
+    filc_ptr pizlonated_main(filc_global_initialization_context*))
 {
     static const bool verbose = false;
     
@@ -163,5 +173,52 @@ void filc_start_program(int argc, char** argv,
     exit(exit_status);
 
     PAS_ASSERT(!"Should not get here");
+}
+
+static void* thread_main(void* arg)
+{
+    struct args* args = (struct args*)arg;
+
+    int argc = args->argc;
+    char** argv = args->argv;
+    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*) =
+        args->pizlonated___libc_start_main;
+    filc_ptr (*pizlonated_main)(filc_global_initialization_context*) = args->pizlonated_main;
+
+    PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &args->oldset, NULL));
+
+    bmalloc_deallocate(args);
+
+    really_start_program(argc, argv, pizlonated___libc_start_main, pizlonated_main);
+    
+    PAS_ASSERT(!"Should not get here");
+    return NULL;
+}
+
+void filc_start_program(int argc, char** argv,
+                        filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
+                        filc_ptr pizlonated_main(filc_global_initialization_context*))
+{
+    PAS_ASSERT(!pthread_getstack_yolo(pthread_self()));
+    PAS_ASSERT(!pthread_getstacksize_yolo(pthread_self()));
+    
+    struct args* args = (struct args*)bmalloc_allocate(sizeof(struct args));
+    args->argc = argc;
+    args->argv = argv;
+    args->pizlonated___libc_start_main = pizlonated___libc_start_main;
+    args->pizlonated_main = pizlonated_main;
+
+    /* Make sure the phony main thread receives no signals and stash the true sigset for the main
+       thread. */
+    sigset_t allset;
+    pas_reasonably_fill_sigset(&allset);
+    PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &allset, &args->oldset));
+
+    pthread_t thread;
+    PAS_ASSERT(!pthread_create(&thread, NULL, thread_main, args));
+    PAS_ASSERT(!pthread_detach(thread));
+
+    /* We have to keep the main thread alive because otherwise /proc/self stops working. */
+    for (;;) pause();
 }
 

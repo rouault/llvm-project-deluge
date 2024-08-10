@@ -18,6 +18,7 @@
 #include <llvm/Analysis/CFG.h>
 #include <llvm/Demangle/Demangle.h>
 #include <llvm/IR/DebugInfo.h>
+#include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/Operator.h>
 #include <llvm/IR/TypedPointerType.h>
 #include <llvm/IR/Verifier.h>
@@ -2668,7 +2669,7 @@ class Pizlonator {
             !FT->isVarArg() &&
             FT->getReturnType() == Int32Ty) {
           Instruction* TidPtr = GetElementPtrInst::Create(
-            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
             "filc_tid_ptr", CI);
           TidPtr->setDebugLoc(CI->getDebugLoc());
           Instruction* Tid = new LoadInst(Int32Ty, TidPtr, "filc_tid", CI);
@@ -2692,7 +2693,7 @@ class Pizlonator {
             !FT->isVarArg() &&
             FT->getReturnType() == LowRawPtrTy) {
           Instruction* CookiePtr = GetElementPtrInst::Create(
-            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 4) },
+            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 5) },
             "filc_cookie_ptr", CI);
           CookiePtr->setDebugLoc(CI->getDebugLoc());
           Instruction* Cookie = new LoadInst(LowWidePtrTy, CookiePtr, "filc_cookie", CI);
@@ -2721,7 +2722,7 @@ class Pizlonator {
       for (unsigned Idx = ST->getNumElements(); Idx--;) {
         Instruction* UnwindRegisterPtr = GetElementPtrInst::Create(
           ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3),
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 4),
             ConstantInt::get(Int32Ty, Idx) },
           "filc_unwind_register_ptr", I);
         UnwindRegisterPtr->setDebugLoc(I->getDebugLoc());
@@ -3276,6 +3277,22 @@ class Pizlonator {
     return false;
   }
 
+  void stackOverflowCheck(Instruction* InsertBefore) {
+    assert(MyThread);
+    Instruction* GEP = GetElementPtrInst::Create(
+      ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+      "filc_stack_limit_ptr", InsertBefore);
+    FunctionType* FT = FunctionType::get(VoidTy, { LowRawPtrTy }, false);
+    InlineAsm* Asm = InlineAsm::get(
+      FT,
+      "cmp %rsp, $0\n\t"
+      "jae filc_stack_overflow_failure@PLT",
+      "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
+      /*hasSideEffects=*/true);
+    CallInst* CI = CallInst::Create(FT, Asm, { GEP }, "", InsertBefore);
+    CI->addParamAttr(0, Attribute::get(C, Attribute::ElementType, LowRawPtrTy));
+  }
+
   void lowerThreadLocals() {
     // - Lower all threadlocal variables to pthread_key_t, which is an i32, and a function that allocates
     //   the initial "value" (i.e. object containing the initial value). I guess that function can call
@@ -3679,7 +3696,8 @@ public:
     CCPtrTy = StructType::create({LowRawPtrTy, LowRawPtrTy}, "filc_cc_ptr");
     FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "filc_frame");
     ThreadTy = StructType::create(
-      {Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters), LowWidePtrTy},
+      {IntPtrTy, Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters),
+       LowWidePtrTy},
       "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
       {IntPtrTy, Int32Ty, LowRawPtrTy}, "filc_constant_relocation");
@@ -4043,7 +4061,7 @@ public:
             DebugLoc DL = BB->getTerminator()->getDebugLoc();
             GetElementPtrInst* StatePtr = GetElementPtrInst::Create(
               ThreadTy, MyThread,
-              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
               "filc_thread_state_ptr", BB->getTerminator());
             StatePtr->setDebugLoc(DL);
             LoadInst* StateLoad = new LoadInst(
@@ -4091,9 +4109,10 @@ public:
         StructType* MyFrameTy = StructType::get(
           C, { LowRawPtrTy, LowRawPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
         Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
+        stackOverflowCheck(InsertionPoint);
         Value* ThreadTopFramePtr = GetElementPtrInst::Create(
           ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
+          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
           "filc_thread_top_frame_ptr", InsertionPoint);
         new StoreInst(
           new LoadInst(LowRawPtrTy, ThreadTopFramePtr, "filc_thread_top_frame", InsertionPoint),
@@ -4121,7 +4140,7 @@ public:
               "filc_frame_parent", Return),
             GetElementPtrInst::Create(
               ThreadTy, MyThread,
-              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
+              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
               "filc_thread_top_frame_ptr", Return),
             Return);
         };

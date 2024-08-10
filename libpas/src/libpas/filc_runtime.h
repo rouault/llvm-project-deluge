@@ -437,6 +437,8 @@ struct filc_signal_handler {
 
 struct filc_thread {
     /* Begin fields that the compiler has to know about. */
+    void* stack_limit;
+
     uint8_t state;
     unsigned tid; /* This is the result of gettid(). It's reset to zero when the thread dies. If it
                      hasn't been assigned yet, then its value will be zero and has_set_tid will be
@@ -2245,6 +2247,8 @@ PAS_NO_RETURN void filc_cc_args_check_failure(
     filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin);
 PAS_NO_RETURN void filc_cc_rets_check_failure(
     filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin);
+
+PAS_API PAS_NO_RETURN void filc_stack_overflow_failure_impl(void);
 
 /* Checks that the pointer is in fact an mmap, isn't free, and then pins and tracks
    it.

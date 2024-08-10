@@ -26,6 +26,7 @@ all: \
 	../pizfix/lib/filc_crt.o ../pizfix/lib/filc_mincrt.o
 
 PASCC = clang -march=x86-64-v2 -fPIC -pthread -nostdinc -isystem ../pizfix/yolo/include
+PASASM = clang -march=x86-64-v2 -fPIC
 FILCC = ../build/bin/clang
 SHLD = clang -Wl,-dynamic-linker,$(PWD)/../pizfix/yolo/lib/ld-musl-x86_64.so.1 \
 	-nostdlib -shared ../pizfix/yolo/lib/crti.o \
@@ -41,8 +42,12 @@ FILCFLAGS = -O3 -g -W -Werror -MD
 MAINSRC = ../filc/main/main.c
 FILSRCS = $(wildcard ../filc/src/*.c)
 
-PASPIZLOOBJS = $(patsubst %.c,build/pas-pizlo-release-%.o,$(notdir $(PASSRCS)))
-PASPIZLOTESTOBJS = $(patsubst %.c,build/pas-pizlo-test-%.o,$(notdir $(PASSRCS)))
+PASPIZLOOBJS = \
+	$(patsubst %.c,build/pas-pizlo-release-%.o,$(notdir $(PASSRCS))) \
+	$(patsubst %.s,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS)))
+PASPIZLOTESTOBJS = \
+	$(patsubst %.c,build/pas-pizlo-test-%.o,$(notdir $(PASSRCS))) \
+	$(patsubst %.s,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS)))
 
 FILPIZLOOBJS = $(patsubst %.c,build/fil-pizlo-%.o,$(notdir $(FILSRCS)))
 
@@ -71,6 +76,9 @@ build/pas-pizlo-test-%.o: src/libpas/%.c
 
 build/fil-pizlo-%.o: ../filc/src/%.c ../build/bin/clang
 	$(FILCC) $(FILCFLAGS) -c -o $@ $<
+
+build/pas-pizlo-release-%.o: src/libpas/%.s
+	$(PASASM) $(PASASMFLAGS) -c -o $@ $<
 
 build/pas-pizlo-release-filc_runtime.o: src/libpas/filc_native.h
 build/pas-pizlo-test-filc_runtime.o: src/libpas/filc_native.h

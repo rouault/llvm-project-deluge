@@ -114,7 +114,7 @@ $testDirectory.each_entry {
     expectedReturn = manifest["return"]
     raise unless expectedReturn == "success" or expectedReturn == "failure" or
         expectedReturn == "crash" or expectedReturn == "compileFailure" or
-        expectedReturn == "dontCrash"
+        expectedReturn == "dontCrash" or expectedReturn == "exit13"
     expectedOutputs = handleArray(manifest["output-includes"])
     forbiddenOutputs = handleArray(manifest["output-excludes"])
     runScript = outputPath + "run.sh"
@@ -282,6 +282,8 @@ $testDirectory.each_entry {
                     outp.puts "if [ $? -eq 0 ]"
                 when "success"
                     outp.puts "if [ $? -ne 0 ]"
+                when "exit13"
+                    outp.puts "if [ $? -ne 13 ]"
                 when "dontCrash"
                     outp.puts "if [ $? -ne 0 -a $? -ne 42 ]"
                 else
@@ -295,6 +297,8 @@ $testDirectory.each_entry {
                     outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to crash"))
                 when "success"
                     outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return success"))
+                when "exit13"
+                    outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return 13"))
                 when "dontCrash"
                     outp.puts("    echo " + Shellwords.shellescape(params[:script].to_s + ": FAIL: expected program to return success or failure, but not crash"))
                 else

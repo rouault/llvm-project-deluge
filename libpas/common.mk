@@ -22,5 +22,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
 PASCFLAGS = -g -O3 -W -Werror -fno-strict-aliasing -MD
+PASASMFLAGS = 
 PASSRCS = $(sort $(wildcard src/libpas/*.c) src/libpas/filc_native_forwarders.c)
+PASASMSRCS = $(sort $(wildcard src/libpas/*.s))
 

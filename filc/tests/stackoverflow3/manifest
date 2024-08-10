@@ -1,0 +1,6 @@
+return:
+  failure
+output-includes:
+  - "Got this far"
+  - "filc safety error"
+  - "stack overflow"
