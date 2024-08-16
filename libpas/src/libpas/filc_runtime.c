@@ -2028,8 +2028,15 @@ static PAS_ALWAYS_INLINE filc_object* finish_allocate(
 static PAS_ALWAYS_INLINE filc_object* allocate_impl(
     filc_thread* my_thread, size_t size, filc_object_flags object_flags, filc_word_type initial_word_type)
 {
+    static const bool verbose = false;
+    
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    if (verbose) {
+        pas_log("Allocating %zu bytes\n", size);
+        filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    }
 
     size_t num_words;
     size_t offset_to_payload;
