@@ -2054,8 +2054,15 @@ filc_object* filc_allocate(filc_thread* my_thread, size_t size)
 
 filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment)
 {
+    static const bool verbose = false;
+    
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+
+    if (verbose) {
+        pas_log("Allocating %zu bytes with %zu alignment\n", size, alignment);
+        filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    }
 
     alignment = pas_max_uintptr(alignment, FILC_WORD_SIZE);
     size_t num_words;

@@ -24,6 +24,7 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
+#include <llvm/Transforms/Utils/PromoteMemToReg.h>
 #include <llvm/TargetParser/Triple.h>
 #include <vector>
 #include <unordered_map>
@@ -407,6 +408,38 @@ public:
     return Tok;
   }
 };
+
+enum class AIState {
+  Unknown,
+  Uninitialized,
+  Initialized,
+  MaybeInitialized
+};
+
+AIState mergeAIState(AIState A, AIState B) {
+  if (A == B)
+    return A;
+  if (A == AIState::Unknown)
+    return B;
+  if (B == AIState::Unknown)
+    return A;
+  return AIState::MaybeInitialized;
+}
+
+const char* aiStateString(AIState State) {
+  switch (State) {
+  case AIState::Unknown:
+    return "Unknown";
+  case AIState::Uninitialized:
+    return "Uninitialized";
+  case AIState::Initialized:
+    return "Initialized";
+  case AIState::MaybeInitialized:
+    return "MaybeInitialized";
+  }
+  llvm_unreachable("bad AIState");
+  return nullptr;
+}
 
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
@@ -2504,7 +2537,10 @@ class Pizlonator {
 
       case Intrinsic::lifetime_start:
       case Intrinsic::lifetime_end:
-        II->eraseFromParent();
+      case Intrinsic::stacksave:
+      case Intrinsic::stackrestore:
+      case Intrinsic::assume:
+        llvm_unreachable("Should have already been erased");
         return true;
 
       case Intrinsic::vastart:
@@ -2527,21 +2563,6 @@ class Pizlonator {
       }
         
       case Intrinsic::vaend:
-        II->eraseFromParent();
-        return true;
-
-      case Intrinsic::stacksave:
-        // Stupidly, in earlyLower, we have to make sure we don't RAUW with a constant, because that
-        // would later confuse lowerConstant. WTF.
-        II->replaceAllUsesWith(badPtr(LowRawNull, II));
-        II->eraseFromParent();
-        return true;
-
-      case Intrinsic::stackrestore:
-        II->eraseFromParent();
-        return true;
-
-      case Intrinsic::assume:
         II->eraseFromParent();
         return true;
 
@@ -3601,6 +3622,208 @@ class Pizlonator {
     M.setModuleInlineAsm("");
   }
 
+  void removeIrrelevantIntrinsics() {
+    for (Function& F : M) {
+      if (F.isDeclaration())
+        continue;
+      for (BasicBlock& BB : F) {
+        std::vector<Instruction*> ToErase;
+        for (Instruction& I : BB) {
+          CallBase* CI = dyn_cast<CallBase>(&I);
+          if (!CI)
+            continue;
+          Function* Callee = dyn_cast<Function>(CI->getCalledOperand());
+          if (!Callee || !Callee->isIntrinsic())
+            continue;
+          bool ShouldErase = false;
+          switch (Callee->getIntrinsicID()) {
+          case Intrinsic::lifetime_start:
+          case Intrinsic::lifetime_end:
+          case Intrinsic::stackrestore:
+          case Intrinsic::assume:
+          case Intrinsic::dbg_declare:
+          case Intrinsic::dbg_value:
+          case Intrinsic::dbg_assign:
+          case Intrinsic::dbg_label:
+            ShouldErase = true;
+            break;
+          case Intrinsic::stacksave:
+            CI->replaceAllUsesWith(LowRawNull);
+            ShouldErase = true;
+            break;
+          default:
+            break;
+          }
+          if (ShouldErase) {
+            if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
+              BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
+            ToErase.push_back(CI);
+          }
+        }
+        for (Instruction* I : ToErase)
+          I->eraseFromParent();
+      }
+    }
+  }
+
+  void lazifyAllocasInFunction(Function& F) {
+    if (F.isDeclaration())
+      return;
+    
+    std::unordered_set<AllocaInst*> Allocas;
+
+    for (Instruction& I : F.getEntryBlock()) {
+      if (AllocaInst* AI = dyn_cast<AllocaInst>(&I)) {
+        // For now, don't bother with AllocaInsts that flow into PHINodes. Pretty sure that doesn't
+        // happen and it would be annoying to deal with.
+        bool FoundPhi = false;
+
+        for (User* U : AI->users()) {
+          if (isa<PHINode>(U)) {
+            FoundPhi = true;
+            break;
+          }
+        }
+        if (!FoundPhi)
+          Allocas.insert(AI);
+      }
+    }
+
+    std::unordered_map<BasicBlock*, std::unordered_map<AllocaInst*, AIState>> AtHeadForBB;
+    for (BasicBlock& BB : F) {
+      AIState State;
+      if (&BB == &F.getEntryBlock())
+        State = AIState::Uninitialized;
+      else
+        State = AIState::Unknown;
+      std::unordered_map<AllocaInst*, AIState>& AtHead = AtHeadForBB[&BB];
+      for (AllocaInst* AI : Allocas)
+        AtHead[AI] = State;
+    }
+
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (BasicBlock& BB : F) {
+        std::unordered_map<AllocaInst*, AIState> State = AtHeadForBB[&BB];
+        for (Instruction& I : BB) {
+          for (Use& U : I.operands()) {
+            AllocaInst* AI = dyn_cast<AllocaInst>(U);
+            if (!AI || !Allocas.count(AI))
+              continue;
+            State[AI] = AIState::Initialized;
+          }
+        }
+        for (BasicBlock* SBB : successors(&BB)) {
+          std::unordered_map<AllocaInst*, AIState>& AtSuccessorHead = AtHeadForBB[SBB];
+          for (auto& Pair : State) {
+            AIState MyState = Pair.second;
+            AIState SuccessorState = AtSuccessorHead[Pair.first];
+            AIState NewSuccessorState = mergeAIState(MyState, SuccessorState);
+            if (NewSuccessorState != SuccessorState) {
+              AtSuccessorHead[Pair.first] = NewSuccessorState;
+              Changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    std::unordered_map<AllocaInst*, AllocaInst*> ToLazyAlloca;
+    std::vector<AllocaInst*> LazyAllocas;
+    for (AllocaInst* AI : Allocas) {
+      AllocaInst* LazyAI = new AllocaInst(LowRawPtrTy, 0, nullptr, "filc_lazy_alloca", AI);
+      LazyAI->setDebugLoc(AI->getDebugLoc());
+      (new StoreInst(LowRawNull, LazyAI, AI))->setDebugLoc(AI->getDebugLoc());
+      ToLazyAlloca[AI] = LazyAI;
+      LazyAllocas.push_back(LazyAI);
+    }
+
+    std::vector<Use*> MaybeInitialized;
+    std::vector<Use*> Uninitialized;
+    std::vector<Use*> NeedsLoad;
+    
+    for (BasicBlock& BB : F) {
+      std::unordered_map<AllocaInst*, AIState> State = AtHeadForBB[&BB];
+      for (Instruction& I : BB) {
+        for (Use& U : I.operands()) {
+          AllocaInst* AI = dyn_cast<AllocaInst>(U);
+          if (!AI || !Allocas.count(AI))
+            continue;
+          AIState OldState = State[AI];
+          NeedsLoad.push_back(&U);
+          if (OldState == AIState::Initialized)
+            continue;
+          if (OldState == AIState::MaybeInitialized)
+            MaybeInitialized.push_back(&U);
+          else
+            Uninitialized.push_back(&U);
+          State[AI] = AIState::Initialized;
+        }
+      }
+    }
+
+    auto CloneAI = [] (AllocaInst* AI, Instruction* InsertBefore) -> AllocaInst* {
+      AllocaInst* Result = new AllocaInst(
+        AI->getAllocatedType(), AI->getAddressSpace(), AI->getArraySize(), AI->getAlign(),
+        "filc_lazy_clone_" + AI->getName(), InsertBefore);
+      Result->setDebugLoc(InsertBefore->getDebugLoc());
+      return Result;
+    };
+
+    for (Use* U : MaybeInitialized) {
+      Instruction* I = cast<Instruction>(U->getUser());
+      AllocaInst* AI = cast<AllocaInst>(*U);
+      assert(Allocas.count(AI));
+      assert(!isa<PHINode>(I));
+      AllocaInst* LazyAI = ToLazyAlloca[AI];
+      assert(LazyAI);
+      LoadInst* LI = new LoadInst(LowRawPtrTy, LazyAI, "filc_load_lazy_alloca_for_check", I);
+      LI->setDebugLoc(I->getDebugLoc());
+      ICmpInst* NotInitialized =
+        new ICmpInst(I, ICmpInst::ICMP_EQ, LI, LowRawNull, "filc_lazy_alloca_not_initialized");
+      NotInitialized->setDebugLoc(I->getDebugLoc());
+      Instruction* InitializeTerm = SplitBlockAndInsertIfThen(NotInitialized, I, false);
+      (new StoreInst(CloneAI(AI, InitializeTerm), LazyAI, InitializeTerm))
+        ->setDebugLoc(I->getDebugLoc());
+    }
+
+    for (Use* U : Uninitialized) {
+      Instruction* I = cast<Instruction>(U->getUser());
+      AllocaInst* AI = cast<AllocaInst>(*U);
+      assert(Allocas.count(AI));
+      assert(!isa<PHINode>(I));
+      AllocaInst* LazyAI = ToLazyAlloca[AI];
+      assert(LazyAI);
+      (new StoreInst(CloneAI(AI, I), LazyAI, I))->setDebugLoc(I->getDebugLoc());
+    }
+
+    for (Use* U : NeedsLoad) {
+      Instruction* I = cast<Instruction>(U->getUser());
+      AllocaInst* AI = cast<AllocaInst>(*U);
+      assert(Allocas.count(AI));
+      assert(!isa<PHINode>(I));
+      AllocaInst* LazyAI = ToLazyAlloca[AI];
+      assert(LazyAI);
+      LoadInst* LI = new LoadInst(LowRawPtrTy, LazyAI, "filc_load_lazy_alloca", I);
+      LI->setDebugLoc(I->getDebugLoc());
+      *U = LI;
+    }
+
+    for (AllocaInst* AI : Allocas) {
+      assert(!AI->hasNUsesOrMore(1));
+      AI->eraseFromParent();
+    }
+
+    DominatorTree DT(F);
+    PromoteMemToReg(LazyAllocas, DT);
+  }
+  
+  void lazifyAllocas() {
+    for (Function& F : M.functions())
+      lazifyAllocasInFunction(F);
+  }
+
   void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
@@ -3668,9 +3891,13 @@ public:
     lowerThreadLocals();
     makeEHDatas();
     compileModuleAsm();
+    removeIrrelevantIntrinsics();
+    lazifyAllocas();
     
-    if (verbose)
-      errs() << "Module with lowered thread locals, EH data, and module asm:\n" << M << "\n";
+    if (verbose) {
+      errs() << "Module with lowered thread locals, EH data, module asm, removing irrelevant "
+             << "intrinsics, and lazifying allocas:\n" << M << "\n";
+    }
 
     prepare();
 
