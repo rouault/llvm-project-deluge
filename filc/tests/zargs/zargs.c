@@ -6,7 +6,7 @@ struct foo_args {
     int64_t x;
     int64_t y;
 };
-static void foo(int x, int y)
+static __attribute__((__noinline__)) void foo(int x, int y)
 {
     struct foo_args* args = zargs();
     ZASSERT((int)args->x == x);
@@ -24,7 +24,7 @@ struct bar_args {
     int64_t c;
     int64_t d;
 };
-static void bar(int x, int y, int z, int w, int a, int b, int c, int d)
+static __attribute__((__noinline__)) void bar(int x, int y, int z, int w, int a, int b, int c, int d)
 {
     struct bar_args* args = zargs();
     ZASSERT((int)args->x == x);
@@ -50,7 +50,7 @@ struct baz_args {
     char* c;
     int d;
 };
-static void baz(char* a, int b, char* c, int d)
+static __attribute__((__noinline__)) void baz(char* a, int b, char* c, int d)
 {
     struct baz_args* args = zargs();
     ZASSERT(args->a == a);

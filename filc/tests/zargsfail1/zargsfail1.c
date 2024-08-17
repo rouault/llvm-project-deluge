@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdfil.h>
 
-static void thingy(void)
+static __attribute__((__noinline__)) void thingy(void)
 {
     printf("%d\n", *(char*)zargs());
 }

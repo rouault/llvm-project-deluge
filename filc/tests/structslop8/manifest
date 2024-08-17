@@ -1,0 +1,5 @@
+return:
+  success
+output-includes:
+  - "(1) (NULL)"
+  - "(2) bleh"

@@ -5,7 +5,7 @@ struct bad_args {
     char* x;
     char* y;
 };
-static void thingy(char* x)
+static __attribute__((__noinline__)) void thingy(char* x)
 {
     struct bad_args* args = zargs();
     ZASSERT(args->x == x);

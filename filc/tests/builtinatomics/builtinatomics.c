@@ -55,10 +55,10 @@
 
 int main()
 {
-    void* ptr;
+    void* ptr = 0;
     void* a = malloc(1);
     void* b = malloc(1);
-    void* expected;
+    void* expected = 0;
     ZASSERT(a != b);
     ZASSERT(!ptr);
     ZASSERT(!unfenced_weak_cas_ptr(&ptr, a, b));

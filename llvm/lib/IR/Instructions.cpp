@@ -3186,10 +3186,12 @@ bool CastInst::isNoopCast(Instruction::CastOps Opcode,
       return true;  // BitCast never modifies bits.
     case Instruction::PtrToInt:
       return DL.getIntPtrType(SrcTy)->getScalarSizeInBits() ==
-             DestTy->getScalarSizeInBits();
+             DestTy->getScalarSizeInBits() &&
+             !DL.isNonIntegralPointerType(SrcTy);
     case Instruction::IntToPtr:
       return DL.getIntPtrType(DestTy)->getScalarSizeInBits() ==
-             SrcTy->getScalarSizeInBits();
+             SrcTy->getScalarSizeInBits() &&
+             !DL.isNonIntegralPointerType(DestTy);
   }
 }
 

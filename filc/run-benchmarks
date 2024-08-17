@@ -27,7 +27,7 @@ require 'pathname'
 require 'getoptlong'
 require 'shellwords'
 
-BENCHMARK_NAME = "PizBench9002"
+BENCHMARK_NAME = "PizBench9003"
 
 $repeats = 5
 $filter = /./

@@ -39,6 +39,7 @@ int main()
     ZASSERT(b.w == 4);
 
     struct foo c;
+    memset(&c, 0, sizeof(c));
     memcpy(&c, &a, __builtin_offsetof(struct foo, w));
     ZASSERT(c.x == 1);
     ZASSERT(c.y == 2);
@@ -47,6 +48,7 @@ int main()
     ZASSERT(!c.w);
 
     struct foo d;
+    memset(&d, 0, sizeof(d));
     memcpy(&d.y, &a.y, sizeof(struct foo) - __builtin_offsetof(struct foo, y));
     ZASSERT(!d.x);
     ZASSERT(d.y == 2);

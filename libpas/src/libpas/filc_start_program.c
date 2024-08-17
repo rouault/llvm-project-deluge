@@ -34,14 +34,6 @@
 
 extern char** environ;
 
-struct args {
-    int argc;
-    char** argv;
-    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*);
-    filc_ptr (*pizlonated_main)(filc_global_initialization_context*);
-    sigset_t oldset;
-};
-
 static void really_start_program(
     int argc, char** argv,
     filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
@@ -175,6 +167,14 @@ static void really_start_program(
     PAS_ASSERT(!"Should not get here");
 }
 
+struct args {
+    int argc;
+    char** argv;
+    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*);
+    filc_ptr (*pizlonated_main)(filc_global_initialization_context*);
+    sigset_t oldset;
+};
+
 static void* thread_main(void* arg)
 {
     struct args* args = (struct args*)arg;
@@ -207,6 +207,8 @@ void filc_start_program(int argc, char** argv,
     args->argv = argv;
     args->pizlonated___libc_start_main = pizlonated___libc_start_main;
     args->pizlonated_main = pizlonated_main;
+
+    /* FIXME: Instead of starting a thread, we could just hop stack. */
 
     /* Make sure the phony main thread receives no signals and stash the true sigset for the main
        thread. */

@@ -55,10 +55,10 @@
 
 int main()
 {
-    int value;
+    int value = 0;
     int a = 1;
     int b = 2;
-    int expected;
+    int expected = 0;
     ZASSERT(a != b);
     ZASSERT(!value);
     ZASSERT(!unfenced_weak_cas_int(&value, a, b));

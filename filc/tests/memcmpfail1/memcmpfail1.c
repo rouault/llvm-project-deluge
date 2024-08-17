@@ -1,8 +1,9 @@
 #include <string.h>
+#include "utils.h"
 
 int main()
 {
-    memcmp("hello", main, 1);
+    opaque((void*)memcmp(opaque("hello"), opaque(main), 1));
     return 0;
 }
 

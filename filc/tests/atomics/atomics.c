@@ -3,10 +3,10 @@
 
 int main()
 {
-    void* ptr;
+    void* ptr = NULL;
     void* a = malloc(1);
     void* b = malloc(1);
-    void* expected;
+    void* expected = NULL;
     ZASSERT(a != b);
     ZASSERT(!ptr);
     ZASSERT(!zunfenced_weak_cas_ptr(&ptr, a, b));

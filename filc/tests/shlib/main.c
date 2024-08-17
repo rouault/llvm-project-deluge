@@ -34,6 +34,7 @@ int main()
     ZASSERT(green == 1000);
     ZASSERT(yellow == 1000);
     green = 2000;
+    zcompiler_fence();
     ZASSERT(green == 2000);
     ZASSERT(yellow == 2000);
     return 0;

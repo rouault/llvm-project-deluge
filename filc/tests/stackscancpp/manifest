@@ -1,5 +1,5 @@
 return:
   success
 output-includes:
-  - "foo(),filc/tests/stackscancpp/stackscancpp.cpp,46,5;bar(),filc/tests/stackscancpp/stackscancpp.cpp,52,5;main,filc/tests/stackscancpp/stackscancpp.cpp,58,5;__libc_start_main,src/env/__libc_start_main.c,79,7;start_program,<runtime>,0,0;"
+  - "foo,filc/tests/stackscancpp/stackscancpp.cpp,48,5;bar,filc/tests/stackscancpp/stackscancpp.cpp,54,5;main,filc/tests/stackscancpp/stackscancpp.cpp,60,5;__libc_start_main,src/env/__libc_start_main.c,79,7;start_program,<runtime>,0,0;"
 

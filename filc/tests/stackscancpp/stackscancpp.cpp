@@ -10,7 +10,9 @@ static bool callback(zstack_frame_description description,
                      void* arg)
 {
     ZASSERT(arg == (void*)666);
-    ZASSERT(description.can_throw || !strcmp(description.function_name, "__libc_start_main"));
+    ZASSERT(description.is_inline ||
+            description.can_throw ||
+            !strcmp(description.function_name, "__libc_start_main"));
     if ((!strcmp(description.filename, "<runtime>") &&
          !strcmp(description.function_name, "start_program")) ||
         !strcmp(description.function_name, "__libc_start_main")) {

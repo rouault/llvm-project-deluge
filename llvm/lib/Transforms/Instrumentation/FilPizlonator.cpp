@@ -2540,6 +2540,12 @@ class Pizlonator {
       case Intrinsic::stacksave:
       case Intrinsic::stackrestore:
       case Intrinsic::assume:
+      case Intrinsic::experimental_noalias_scope_decl:
+      case Intrinsic::donothing:
+      case Intrinsic::dbg_declare:
+      case Intrinsic::dbg_value:
+      case Intrinsic::dbg_assign:
+      case Intrinsic::dbg_label:
         llvm_unreachable("Should have already been erased");
         return true;
 
@@ -2613,6 +2619,18 @@ class Pizlonator {
 
       if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
         FunctionType* FT = CI->getFunctionType();
+
+        auto Erasify = [&] () {
+          if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
+            BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
+          CI->eraseFromParent();
+        };
+        
+        if (F->isIntrinsic() &&
+            F->getIntrinsicID() == Intrinsic::donothing) {
+          llvm_unreachable("Should not see donothing intrinsic here.");
+          return true;
+        }
         
         if (isSetjmp(F)) {
           if (verbose)
@@ -2644,9 +2662,7 @@ class Pizlonator {
           CallInst* NewCI = CallInst::Create(_Setjmp, { Create }, "filc_setjmp", CI);
           CI->replaceAllUsesWith(NewCI);
           NewCI->setDebugLoc(CI->getDebugLoc());
-          if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
-            BranchInst::Create(II->getNormalDest(), CI)->setDebugLoc(CI->getDebugLoc());
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -2655,7 +2671,7 @@ class Pizlonator {
             FT->getReturnType() == LowRawPtrTy) {
           assert(UsesVastartOrZargs);
           CI->replaceAllUsesWith(SnapshottedArgsPtrForZargs);
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -2681,7 +2697,7 @@ class Pizlonator {
           Phi->addIncoming(LowRawNull, NullObject->getParent());
           Phi->addIncoming(LowerUpper, NotNullTerm->getParent());
           CI->replaceAllUsesWith(ptrWithPtr(CI->getArgOperand(0), Phi, CI));
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -2696,7 +2712,7 @@ class Pizlonator {
           Instruction* Tid = new LoadInst(Int32Ty, TidPtr, "filc_tid", CI);
           Tid->setDebugLoc(CI->getDebugLoc());
           CI->replaceAllUsesWith(Tid);
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -2705,7 +2721,7 @@ class Pizlonator {
             !FT->isVarArg() &&
             FT->getReturnType() == LowRawPtrTy) {
           CI->replaceAllUsesWith(ptrForSpecialPayload(MyThread, CI));
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -2720,7 +2736,7 @@ class Pizlonator {
           Instruction* Cookie = new LoadInst(LowWidePtrTy, CookiePtr, "filc_cookie", CI);
           Cookie->setDebugLoc(CI->getDebugLoc());
           CI->replaceAllUsesWith(Cookie);
-          CI->eraseFromParent();
+          Erasify();
           return true;
         }
 
@@ -3153,7 +3169,8 @@ class Pizlonator {
         isa<ShuffleVectorInst>(I) ||
         isa<ExtractValueInst>(I) ||
         isa<InsertValueInst>(I) ||
-        isa<SelectInst>(I)) {
+        isa<SelectInst>(I) ||
+        isa<FreezeInst>(I)) {
       I->mutateType(lowerType(I->getType()));
       return;
     }
@@ -3225,7 +3242,8 @@ class Pizlonator {
       if (hasPtrsForCheck(I->getType())) {
         assert(hasPtrsForCheck(I->getOperand(0)->getType()));
         assert(I->getType() == LowRawPtrTy || I->getType() == LowWidePtrTy);
-        assert(I->getOperand(0)->getType() == LowRawPtrTy || I->getOperand(0)->getType() == LowWidePtrTy);
+        assert(I->getOperand(0)->getType() == LowRawPtrTy ||
+               I->getOperand(0)->getType() == LowWidePtrTy);
         I->replaceAllUsesWith(I->getOperand(0));
         I->eraseFromParent();
       } else
@@ -3242,14 +3260,6 @@ class Pizlonator {
           hackRAUW(I, [&] () { return badPtr(I, I->getNextNode()); });
       } else if (hasPtrsForCheck(I->getOperand(0)->getType()))
         I->getOperandUse(0) = ptrPtr(I->getOperand(0), I);
-      return;
-    }
-
-    if (isa<FreezeInst>(I)) {
-      if (hasPtrsForCheck(I->getType())) {
-        I->replaceAllUsesWith(LowWideNull);
-        I->eraseFromParent();
-      }
       return;
     }
 
@@ -3645,6 +3655,8 @@ class Pizlonator {
           case Intrinsic::dbg_value:
           case Intrinsic::dbg_assign:
           case Intrinsic::dbg_label:
+          case Intrinsic::donothing:
+          case Intrinsic::experimental_noalias_scope_decl:
             ShouldErase = true;
             break;
           case Intrinsic::stacksave:

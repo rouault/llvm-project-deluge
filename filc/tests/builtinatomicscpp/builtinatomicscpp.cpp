@@ -53,10 +53,10 @@
 
 int main(int argc, char** argv)
 {
-    void* ptr;
+    void* ptr = nullptr;
     void* a = malloc(1);
     void* b = malloc(1);
-    void* expected;
+    void* expected = nullptr;
     ZASSERT(a != b);
     ZASSERT(!ptr);
     ZASSERT(!unfenced_weak_cas_ptr(&ptr, a, b));

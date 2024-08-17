@@ -4406,7 +4406,7 @@ void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream)
     filc_frame* frame;
     for (frame = thread->top_frame; frame; frame = frame->parent) {
         pas_stream_printf(stream, "    ");
-        filc_origin_dump_all_inline(frame->origin, "\n    ", stream);
+        filc_origin_dump_all_inline(frame->origin, " (inlined)\n    ", stream);
         pas_stream_printf(stream, "\n");
     }
 }
