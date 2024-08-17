@@ -23,7 +23,6 @@
 
 all: \
 	../../pizfix/benchmarks/stepanov_container \
-	../../pizfix/benchmarks/stepanov_container_10x \
 	../../pizfix/benchmarks/richards \
 	../../pizfix/benchmarks/pcre_benchmark \
 	../../pizfix/benchmarks/deltablue
@@ -38,11 +37,6 @@ clean:
 	../../build/bin/clang++ \
 	    -o ../../pizfix/benchmarks/stepanov_container \
 	    stepanov_container.cpp -O3 -g
-
-../../pizfix/benchmarks/stepanov_container_10x: stepanov_container_10x.cpp
-	../../build/bin/clang++ \
-	    -o ../../pizfix/benchmarks/stepanov_container_10x \
-	    stepanov_container_10x.cpp -O3 -g
 
 ../../pizfix/benchmarks/richards: richards.c
 	../../build/bin/clang \

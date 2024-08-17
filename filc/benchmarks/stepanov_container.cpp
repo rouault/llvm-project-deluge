@@ -271,7 +271,7 @@ double logtwo(double x)
 } 
 
 
-const int largest_size = 10000; 
+const int largest_size = 100000; 
 
 int number_of_tests(int size) { 
         double n = size; 
@@ -331,7 +331,7 @@ void run_tests(int size)
 int main() 
 { 
   do_head(); 
-  const int sizes [] = {10, 100, 1000, 10000}; 
+  const int sizes [] = {10, 100, 1000, 10000, 100000}; 
   const int n = sizeof(sizes)/sizeof(int); 
   for (int i = 0; i < n; ++i) run_tests(sizes[i]); 
   return do_tail(); 
