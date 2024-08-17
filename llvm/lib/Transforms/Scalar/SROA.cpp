@@ -4623,20 +4623,23 @@ AllocaInst *SROAPass::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
         SliceTy = TypePartitionTy;
     }
 
-  bool NoType = false;
-  if (!SliceTy) {
+  if (!SliceTy)
     SliceTy = ArrayType::get(Type::getInt8Ty(*C), P.size());
-    NoType = true;
-  }
   assert(DL.getTypeAllocSize(SliceTy).getFixedValue() >= P.size());
 
   bool IsIntegerPromotable = isIntegerWideningViable(P, SliceTy, DL);
 
   VectorType *VecTy =
       IsIntegerPromotable ? nullptr : isVectorPromotionViable(P, DL);
-  if (VecTy) {
+  if (VecTy)
     SliceTy = VecTy;
-    NoType = false;
+
+  bool NoType = true;
+  for (Slice& S : P) {
+    if (isa<LoadInst>(S.getUse()->getUser()) || isa<StoreInst>(S.getUse()->getUser())) {
+      NoType = false;
+      break;
+    }
   }
 
   // Check for the case where we're going to rewrite to a new alloca of the
@@ -4762,10 +4765,7 @@ AllocaInst *SROAPass::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
     // Fil-C Hack!
     constexpr uint64_t FilCWordSize = 16;
     uint64_t Skew = P.beginOffset() % FilCWordSize;
-    if (DL.isNonIntegralAddressSpace(0) && NoType && Skew != 0) {
-      assert(isa<ArrayType>(SliceTy));
-      assert(cast<ArrayType>(SliceTy)->getElementType() == Type::getInt8Ty(*C));
-      
+    if (DL.isNonIntegralAddressSpace(0) && NoType && Skew != 0 && P.size() >= FilCWordSize) {
       // If we have made a nonpromotable alloca without a type then it's likely that we
       // are copying around data out of phase with the Fil-C word size. Fix the alloca so
       // that copies to/from it keep pointers in phase.
