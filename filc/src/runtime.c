@@ -27,55 +27,9 @@
 #include <pizlonated_syscalls.h>
 #include <pizlonated_runtime.h>
 
-_Bool zinbounds(void* ptr)
-{
-    return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
-}
-
-_Bool zvalinbounds(void* ptr, __SIZE_TYPE__ size)
-{
-    if (!size)
-        return 1;
-    return zinbounds(ptr) && zinbounds((char*)ptr + size - 1);
-}
-
-_Bool zisptr(void* ptr)
-{
-    return zptrphase(ptr) != -1;
-}
-
 _Bool zisintorptr(void* ptr)
 {
     return zisint(ptr) || zisptr(ptr);
-}
-
-void* zmkptr(void* object, unsigned long address)
-{
-    char* ptr = (char*)object;
-    ptr -= (unsigned long)object;
-    ptr += address;
-    return ptr;
-}
-
-void* zorptr(void* ptr, unsigned long bits)
-{
-    return zmkptr(ptr, (unsigned long)ptr | bits);
-}
-
-void* zandptr(void* ptr, unsigned long bits)
-{
-    return zmkptr(ptr, (unsigned long)ptr & bits);
-}
-
-void* zxorptr(void* ptr, unsigned long bits)
-{
-    return zmkptr(ptr, (unsigned long)ptr ^ bits);
-}
-
-void* zretagptr(void* newptr, void* oldptr, unsigned long mask)
-{
-    ZASSERT(!((unsigned long)newptr & ~mask));
-    return zorptr(newptr, (unsigned long)oldptr & ~mask);
 }
 
 static void copy_byte_to_nonptr(char* dst, char* src, __SIZE_TYPE__ index)
@@ -125,22 +79,6 @@ void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
                 index -= sizeof(void*) - 1;
         }
     }
-}
-
-_Bool zunfenced_intense_cas_ptr(void** ptr, void** expected_ptr, void* new_value)
-{
-    void* expected = *expected_ptr;
-    void* result = zunfenced_strong_cas_ptr(ptr, expected, new_value);
-    *expected_ptr = result;
-    return result == expected;
-}
-
-_Bool zintense_cas_ptr(void** ptr, void** expected_ptr, void* new_value)
-{
-    void* expected = *expected_ptr;
-    void* result = zstrong_cas_ptr(ptr, expected, new_value);
-    *expected_ptr = result;
-    return result == expected;
 }
 
 void* zthread_self_cookie(void)

@@ -44,6 +44,20 @@ typedef bool filc_bool;
 typedef _Bool filc_bool;
 #endif
 
+/* This prints the given message and then shuts down the program using the same shutdown codepath
+   used for memory safety violatins (i.e. it's designed to really kill the shit out of the process). */
+void zerror(const char* str);
+void zerrorf(const char* str, ...);
+
+/* Definitely assert something. This is not some kind of optional assert that you can compile out.
+   It's gonna be there and do its thing no matter what, even in production, like a real assert
+   should. */
+#define ZASSERT(exp) do { \
+        if ((exp)) \
+            break; \
+        zerrorf("%s:%d: %s: assertion %s failed.", __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
+    } while (0)
+
 /* Allocate `count` bytes of memory zero-initialized and with all word types set to the unset type.
    May allocate slightly more than `count`, based on the runtime's minalign (which is currently 16).
    
@@ -133,10 +147,18 @@ filc_bool zhasvalidcap(void* ptr);
 /* Tells if the pointer is in bounds of lower/upper. This is not a guarantee that accesses will
    succeed, since this does not check type. For example, valid function pointers are zinbounds but
    cannot be "accessed" regardless of type (can only be called if in bounds). */
-filc_bool zinbounds(void* ptr);
+static inline __attribute__((__always_inline__)) filc_bool zinbounds(void* ptr)
+{
+    return ptr >= zgetlower(ptr) && ptr < zgetupper(ptr);
+}
 
 /* Tells if a value of the given size is in bounds of the pointer. */
-filc_bool zvalinbounds(void* ptr, __SIZE_TYPE__ size);
+static inline __attribute__((__always_inline__)) filc_bool zvalinbounds(void* ptr, __SIZE_TYPE__ size)
+{
+    if (!size)
+        return 1;
+    return zinbounds(ptr) && zinbounds((char*)ptr + size - 1);
+}
 
 /* Returns true if the pointer points to a byte with unset type. */
 filc_bool zisunset(void* ptr);
@@ -164,7 +186,10 @@ int zptrphase(void* ptr);
 
 /* Returns true if the pointer points at any kind of pointer memory. Equivalent to
    isptrphase(p) != -1. */
-filc_bool zisptr(void* ptr);
+static inline __attribute__((__always_inline__)) filc_bool zisptr(void* ptr)
+{
+    return zptrphase(ptr) != -1;
+}
 
 /* Returns true if the pointer points at pointers or integers.
  
@@ -178,19 +203,41 @@ filc_bool zisintorptr(void* ptr);
        object += address;
    
    This is useful for situations where you want to use part of the object's address for tag bits. */
-void* zmkptr(void* object, unsigned long address);
+static inline __attribute__((__always_inline__)) void* zmkptr(void* object, unsigned long address)
+{
+    char* ptr = (char*)object;
+    ptr -= (unsigned long)object;
+    ptr += address;
+    return ptr;
+}
 
 /* Memory-safe helpers for doing bit math on addresses. */
-void* zorptr(void* ptr, unsigned long bits);
-void* zandptr(void* ptr, unsigned long bits);
-void* zxorptr(void* ptr, unsigned long bits);
+static inline __attribute__((__always_inline__)) void* zorptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr | bits);
+}
+
+static inline __attribute__((__always_inline__)) void* zandptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr & bits);
+}
+
+static inline __attribute__((__always_inline__)) void* zxorptr(void* ptr, unsigned long bits)
+{
+    return zmkptr(ptr, (unsigned long)ptr ^ bits);
+}
 
 /* Returns a pointer that points to `newptr` masked by the `mask`, while preserving the
    bits from `oldptr` masked by `~mask`. Also asserts that `newptr` has no bits in `~mask`.
    
    Useful for situations where you want to reassign a pointer from `oldptr` to `newptr` but
    you have some kind of tagging in `~mask`. */
-void* zretagptr(void* newptr, void* oldptr, unsigned long mask);
+static inline __attribute__((__always_inline__)) void* zretagptr(void* newptr, void* oldptr,
+                                                                 unsigned long mask)
+{
+    ZASSERT(!((unsigned long)newptr & ~mask));
+    return zorptr(newptr, (unsigned long)oldptr & ~mask);
+}
 
 /* Direct access to the runtime's internal memset/memmove.
 
@@ -198,16 +245,16 @@ void* zretagptr(void* newptr, void* oldptr, unsigned long mask);
    which then go through normal checking. But the runtime's internal implementations are much more
    forgiving:
 
-   - zmemset with a zero value does not set the type of the memory; it just leaves it alone. This means
-     that after the zmemset-to-zero executes, you can still use the memory using whatever type you
-     like. The only exception is if you memset a misaligned smidgen (like not all 16 bytes of a word).
-     In that case, the type is set to int.
+   - zmemset with a zero value does not set the type of the memory; it just leaves it alone. This
+     means that after the zmemset-to-zero executes, you can still use the memory using whatever type
+     you like. The only exception is if you memset a misaligned smidgen (like not all 16 bytes of a
+     word). In that case, the type is set to int.
 
      Note that you will get this behavior from any memset/bzero or even zeroing loop inferred as bzero
      that the compiler doesn't then turn into direct stores.
 
-   - zmemmove will detect when it's copying zeroes. Any pointer-wide zeroes in the source will leave the
-     destination memory in whatever type it had previously. This is true even if the source is
+   - zmemmove will detect when it's copying zeroes. Any pointer-wide zeroes in the source will leave
+     the destination memory in whatever type it had previously. This is true even if the source is
      misaligned relative to the destination. The main copying loop moves over the destination in a word
      aligned manner, so if the "phase" of the src and dst relative to word size is different, the loop
      is performing misaligned loads from the source. If such a misaligned load yields a zero - even as
@@ -365,23 +412,24 @@ char* zasprintf(const char* format, ...);
 void zvprintf(const char* format, __builtin_va_list args);
 void zprintf(const char* format, ...);
 
-/* This prints the given message and then shuts down the program using the same shutdown codepath
-   used for memory safety violatins (i.e. it's designed to really kill the shit out of the process). */
-void zerror(const char* str);
-void zerrorf(const char* str, ...);
+static inline __attribute__((__always_inline__)) void zfence(void)
+{
+    __c11_atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
 
-/* Definitely assert something. This is not some kind of optional assert that you can compile out.
-   It's gonna be there and do its thing no matter what, even in production, like a real assert
-   should. */
-#define ZASSERT(exp) do { \
-        if ((exp)) \
-            break; \
-        zerrorf("%s:%d: %s: assertion %s failed.", __FILE__, __LINE__, __PRETTY_FUNCTION__, #exp); \
-    } while (0)
+static inline __attribute__((__always_inline__)) void zstore_store_fence(void)
+{
+#if defined(__x86_64__) || defined(__x86__)
+    __c11_atomic_signal_fence(__ATOMIC_SEQ_CST);
+#else
+    __c11_atomic_thread_fence(__ATOMIC_SEQ_CST);
+#endif
+}
 
-void zfence(void);
-void zstore_store_fence(void);
-void zcompiler_fence(void);
+static inline __attribute__((__always_inline__)) void zcompiler_fence(void)
+{
+    __c11_atomic_signal_fence(__ATOMIC_SEQ_CST);
+}
 
 /* These functions are deprecated. I added them back when the clang builtin atomics didn't work
    for pointers. I have since fixed that. Therefore, you don't need to use these functions.
@@ -397,18 +445,80 @@ void zcompiler_fence(void);
    a comparison of your expected value and the old value returned by CAS.
 
    I may add more ptr atomic functions as I find a need for them. */
-filc_bool zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value);
-filc_bool zweak_cas_ptr(void** ptr, void* expected, void* new_value);
-void* zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value);
-void* zstrong_cas_ptr(void** ptr, void* expected, void* new_value);
-filc_bool zunfenced_intense_cas_ptr(void** ptr, void** expected, void* new_value);
-filc_bool zintense_cas_ptr(void** ptr, void** expected, void* new_value);
-void* zunfenced_xchg_ptr(void** ptr, void* new_value);
-void* zxchg_ptr(void** ptr, void* new_value);
-void zatomic_store_ptr(void** ptr, void* new_value);
-void zunfenced_atomic_store_ptr(void** ptr, void* new_value);
-void* zatomic_load_ptr(void** ptr);
-void* zunfenced_atomic_load_ptr(void** ptr);
+static inline __attribute__((__always_inline__)) filc_bool
+zunfenced_weak_cas_ptr(void** ptr, void* expected, void* new_value)
+{
+    return __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, &expected, new_value,
+                                              __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+static inline __attribute__((__always_inline__)) filc_bool
+zweak_cas_ptr(void** ptr, void* expected, void* new_value)
+{
+    return __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, &expected, new_value,
+                                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static inline __attribute__((__always_inline__)) void*
+zunfenced_strong_cas_ptr(void** ptr, void* expected, void* new_value)
+{
+    __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, &expected, new_value,
+                                       __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    return expected;
+}
+
+static inline __attribute__((__always_inline__)) void*
+zstrong_cas_ptr(void** ptr, void* expected, void* new_value)
+{
+    __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, &expected, new_value,
+                                       __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return expected;
+}
+
+static inline __attribute__((__always_inline__)) filc_bool
+zunfenced_intense_cas_ptr(void** ptr, void** expected, void* new_value)
+{
+    return __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, expected, new_value,
+                                              __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+static inline __attribute__((__always_inline__)) filc_bool
+zintense_cas_ptr(void** ptr, void** expected, void* new_value)
+{
+    return __c11_atomic_compare_exchange_weak((void*_Atomic*)ptr, expected, new_value,
+                                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static inline __attribute__((__always_inline__)) void* zunfenced_xchg_ptr(void** ptr, void* new_value)
+{
+    return __c11_atomic_exchange((void*_Atomic*)ptr, new_value, __ATOMIC_RELAXED);
+}
+
+static inline __attribute__((__always_inline__)) void* zxchg_ptr(void** ptr, void* new_value)
+{
+    return __c11_atomic_exchange((void*_Atomic*)ptr, new_value, __ATOMIC_SEQ_CST);
+}
+
+static inline __attribute__((__always_inline__)) void zatomic_store_ptr(void** ptr, void* new_value)
+{
+    __c11_atomic_store((void*_Atomic*)ptr, new_value, __ATOMIC_SEQ_CST);
+}
+
+static inline __attribute__((__always_inline__)) void zunfenced_atomic_store_ptr(void** ptr,
+                                                                                 void* new_value)
+{
+    __c11_atomic_store((void*_Atomic*)ptr, new_value, __ATOMIC_RELAXED);
+}
+
+static inline __attribute__((__always_inline__)) void* zatomic_load_ptr(void** ptr)
+{
+    return __c11_atomic_load((void*_Atomic*)ptr, __ATOMIC_SEQ_CST);
+}
+
+static inline __attribute__((__always_inline__)) void* zunfenced_atomic_load_ptr(void** ptr)
+{
+    return __c11_atomic_load((void*_Atomic*)ptr, __ATOMIC_RELAXED);
+}
 
 /* Returns a readonly snapshot of the passed-in arguments object. The arguments are laid out as if you
    had written a struct with the arguments as fields. */
