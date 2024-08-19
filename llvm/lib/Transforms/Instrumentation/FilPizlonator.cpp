@@ -4162,6 +4162,10 @@ public:
       if (G->isDeclaration())
         continue;
 
+      Function* SlowF = Function::Create(GlobalGetterTy, GlobalValue::PrivateLinkage,
+                                         G->getAddressSpace(), "filc_getter_slow", &M);
+      SlowF->addFnAttr(Attribute::NoInline);
+
       Constant* NewC = paddedConstant(
         tryLowerConstantToConstant(G->getInitializer(), ResultMode::NeedConstantWithPtrPlaceholders));
       assert(NewC);
@@ -4184,8 +4188,9 @@ public:
       BasicBlock* OtherCheckBB = BasicBlock::Create(C, "filc_global_getter_other_check", NewF);
       BasicBlock* FastBB = BasicBlock::Create(C, "filc_global_getter_fast", NewF);
       BasicBlock* SlowBB = BasicBlock::Create(C, "filc_global_getter_slow", NewF);
-      BasicBlock* RecurseBB = BasicBlock::Create(C, "filc_global_getter_recurse", NewF);
-      BasicBlock* BuildBB = BasicBlock::Create(C, "filc_global_getter_build", NewF);
+      BasicBlock* SlowRootBB = BasicBlock::Create(C, "filc_global_getter_slow_root", SlowF);
+      BasicBlock* RecurseBB = BasicBlock::Create(C, "filc_global_getter_recurse", SlowF);
+      BasicBlock* BuildBB = BasicBlock::Create(C, "filc_global_getter_build", SlowF);
 
       // We can load the NewPtrG in two 64-bit chunks and then check if either the object or the
       // raw ptr as NULL. If either are NULL, then it's either not initialized yet, or we experienced
@@ -4204,9 +4209,14 @@ public:
       
       ReturnInst::Create(C, LoadPtr, FastBB);
 
-      Branch = BranchInst::Create(BuildBB, RecurseBB, UndefValue::get(Int1Ty), SlowBB);
+      ReturnInst::Create(
+        C,
+        CallInst::Create(GlobalGetterTy, SlowF, { NewF->getArg(0) }, "filc_call_getter_slow", SlowBB),
+        SlowBB);
+
+      Branch = BranchInst::Create(BuildBB, RecurseBB, UndefValue::get(Int1Ty), SlowRootBB);
       Instruction* MyInitializationContext = CallInst::Create(
-        GlobalInitializationContextCreate, { NewF->getArg(0) }, "filc_context_create",
+        GlobalInitializationContextCreate, { SlowF->getArg(0) }, "filc_context_create",
         Branch);
       Value* Ptr = createPtr(NewObjectG, NewDataG, Branch);
       // NOTE: This function call is necessary even for the cases of globals with no meaningful
