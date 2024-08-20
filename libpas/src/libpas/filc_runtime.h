@@ -1697,20 +1697,6 @@ PAS_API char* filc_cc_type_to_new_string(const filc_cc_type* type);
 PAS_API char* filc_cc_ptr_to_new_string(filc_cc_ptr ptr);
 PAS_API char* filc_cc_cursor_to_new_string(filc_cc_cursor cursor);
 
-static inline bool filc_cc_cursor_has_next(filc_cc_cursor* cursor,
-                                           size_t size_and_alignment)
-{
-    PAS_TESTING_ASSERT(size_and_alignment);
-    PAS_TESTING_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
-    uintptr_t original_cursor_as_int = (uintptr_t)cursor->cursor;
-    uintptr_t cursor_as_int = original_cursor_as_int;
-    cursor_as_int = pas_round_up_to_power_of_2(cursor_as_int, size_and_alignment);
-    PAS_TESTING_ASSERT(cursor_as_int >= original_cursor_as_int);
-    uintptr_t word_type_index =
-        filc_cc_ptr_word_type_index_for_ptr(cursor->cc_ptr, (void*)cursor_as_int);
-    return word_type_index < cursor->cc_ptr.type->num_words;
-}
-
 static inline bool filc_is_valid_actual_cc_type(filc_word_type type)
 {
     return type == FILC_WORD_TYPE_UNSET
@@ -1730,6 +1716,23 @@ static inline bool filc_cc_type_complies(filc_word_type actual_type,
     PAS_TESTING_ASSERT(filc_is_valid_actual_cc_type(actual_type));
     PAS_TESTING_ASSERT(filc_is_valid_expected_cc_type(expected_type));
     return !(actual_type & (expected_type ^ (FILC_WORD_TYPE_INT | FILC_WORD_TYPE_PTR)));
+}
+
+static inline bool filc_cc_cursor_has_next(filc_cc_cursor* cursor,
+                                           size_t size_and_alignment,
+                                           filc_word_type word_type)
+{
+    PAS_TESTING_ASSERT(size_and_alignment);
+    PAS_TESTING_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    uintptr_t original_cursor_as_int = (uintptr_t)cursor->cursor;
+    uintptr_t cursor_as_int = original_cursor_as_int;
+    cursor_as_int = pas_round_up_to_power_of_2(cursor_as_int, size_and_alignment);
+    PAS_TESTING_ASSERT(cursor_as_int >= original_cursor_as_int);
+    uintptr_t word_type_index =
+        filc_cc_ptr_word_type_index_for_ptr(cursor->cc_ptr, (void*)cursor_as_int);
+    if (word_type_index >= cursor->cc_ptr.type->num_words)
+        return false;
+    return filc_cc_type_complies(cursor->cc_ptr.type->word_types[word_type_index], word_type);
 }
 
 /* Cursors assume that you're always getting something that is native-aligned, so the size is the

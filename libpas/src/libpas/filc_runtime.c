@@ -6891,8 +6891,8 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
 
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, int request, filc_cc_cursor* args)
 {
-    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE)) {
-        if (filc_cc_cursor_has_next(args, sizeof(long))) {
+    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR)) {
+        if (filc_cc_cursor_has_next(args, sizeof(long), FILC_WORD_TYPE_INT)) {
             return FILC_SYSCALL(
                 my_thread, ioctl(fd, request, filc_cc_cursor_get_next_long(args)));
         }
