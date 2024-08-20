@@ -90,24 +90,23 @@ def handleArray(thing)
 end
 
 $testDirectory.each_entry {
-    | entry |
-    next if entry == Pathname.new(".")
-    next if entry == Pathname.new("..")
-    testName = entry.basename
+    | testName |
+    next if testName == Pathname.new(".")
+    next if testName == Pathname.new("..")
     next unless testName.to_s =~ $filter
-    fullPath = $testDirectory + entry
+    fullPath = $testDirectory + testName
     next unless fullPath.directory?
     unless (fullPath + "manifest").exist?
         puts "Skipping #{entry}, no manifest."
         next
     end
-    outputPath = $testOutputDirectory + entry
+    outputPath = $testOutputDirectory + testName
     outputPath.mkpath
     manifest = YAML.load_file(fullPath + "manifest")
     onlyOnPlatform = manifest["only-on-platform"]
     if onlyOnPlatform and RUBY_PLATFORM !~ Regexp.new(onlyOnPlatform)
         if $verbose
-            puts "Skipping #{entry}, requires #{onlyOnPlatform}"
+            puts "Skipping #{testName}, requires #{onlyOnPlatform}"
         end
         next
     end
