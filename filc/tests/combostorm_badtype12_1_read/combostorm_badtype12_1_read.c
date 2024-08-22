@@ -12,9 +12,13 @@ int main()
     *(int16_t*)(buf + 24) = 42;
     *(int16_t*)(buf + 32) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(*(int16_t*)(buf + 0) == 42);
-    ZASSERT(*(int16_t*)(buf + 8) == 42);
-    ZASSERT(!strcmp(*(char**)(buf + 16), "hello"));
-    ZASSERT(*(int16_t*)(buf + 32) == 42);
+    int16_t f0 = *(int16_t*)(buf + 0);
+    int16_t f1 = *(int16_t*)(buf + 8);
+    char* f2 = *(char**)(buf + 16);
+    int16_t f3 = *(int16_t*)(buf + 32);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
+    ZASSERT(!strcmp(f2, "hello"));
+    ZASSERT(f3 == 42);
     return 0;
 }

@@ -175,8 +175,25 @@ $allPossibilities.keys.sort.each {
 puts "# possibilities: #{$allPossibilities.size}"
 puts "total # fields: #{numFields}"
 
-def generateTest(outp, writeFields, readFields, offset)
-    outp.puts "    char* buf = opaque(malloc(#{totalSize(writeFields)}));"
+class OpaqueCfg
+    attr_reader :opaque1, :opaque2, :suffix
+
+    def initialize(opaque1, opaque2, suffix)
+        @opaque1 = opaque1
+        @opaque2 = opaque2
+        @suffix = suffix
+    end
+end
+
+OPAQUE_CFGS = [
+    OpaqueCfg.new("opaque", "opaque", ""),
+    OpaqueCfg.new("opaque", "", "_no2ndopaque"),
+    OpaqueCfg.new("", "opaque", "_no1stopaque"),
+    OpaqueCfg.new("", "", "_noopaque")
+]
+
+def generateTest(outp, writeFields, readFields, offset, opaqueCfg)
+    outp.puts "    char* buf = #{opaqueCfg.opaque1}(malloc(#{totalSize(writeFields)}));"
     writeFields.each_with_index {
         | field, index |
         if field.type == :ptr
@@ -185,13 +202,17 @@ def generateTest(outp, writeFields, readFields, offset)
             outp.puts "    #{field.bufAccess} = 42;"
         end
     }
-    outp.puts "    buf = (char*)opaque(buf) + #{offset};"
+    outp.puts "    buf = (char*)#{opaqueCfg.opaque2}(buf) + #{offset};"
+    readFields.each_with_index {
+        | field, index |
+        outp.puts "    #{field.ctype} f#{index} = #{field.bufAccess};"
+    }
     readFields.each_with_index {
         | field, index |
         if field.type == :ptr
-            outp.puts "    ZASSERT(!strcmp(#{field.bufAccess}, \"hello\"));"
+            outp.puts "    ZASSERT(!strcmp(f#{index}, \"hello\"));"
         else
-            outp.puts "    ZASSERT(#{field.bufAccess} == 42);"
+            outp.puts "    ZASSERT(f#{index} == 42);"
         end
     }
 end
@@ -211,20 +232,23 @@ File.open("filc/tests/combostorm_success/combostorm_success.c", "w") {
     numTests = 0
     $allPossibilities.keys.each_with_index {
         | fields, index |
-        outp.puts "static void test#{numTests}(void)"
-        outp.puts "{"
-        generateTest(outp, fields, fields, 0)
-        outp.puts "}"
-        numTests += 1
-
-        unless fields.select{ | field | field.type == :ptr }.empty? or
-              fields.select{ | field | field.type == :int }.empty?
+        OPAQUE_CFGS.each {
+            | opaqueCfg |
             outp.puts "static void test#{numTests}(void)"
             outp.puts "{"
-            generateTest(outp, fields, fields.select{ | field | field.type != :ptr }, 0)
+            generateTest(outp, fields, fields, 0, opaqueCfg)
             outp.puts "}"
             numTests += 1
-        end
+            
+            unless fields.select{ | field | field.type == :ptr }.empty? or
+                  fields.select{ | field | field.type == :int }.empty?
+                outp.puts "static void test#{numTests}(void)"
+                outp.puts "{"
+                generateTest(outp, fields, fields.select{ | field | field.type != :ptr }, 0, opaqueCfg)
+                outp.puts "}"
+                numTests += 1
+            end
+        }
     }
     outp.puts "int main()"
     outp.puts "{"
@@ -239,33 +263,36 @@ IO::write("filc/tests/combostorm_success/manifest", "return: success")
 
 $allPossibilities.keys.each_with_index {
     | fields, index |
-    testName = "combostorm_oobleft#{index}"
-    FileUtils.mkdir_p("filc/tests/#{testName}")
-    File.open("filc/tests/#{testName}/#{testName}.c", "w") {
-        | outp |
-        generateIncludes(outp)
-        outp.puts "int main()"
-        outp.puts "{"
-        generateTest(outp, fields, fields, -0x6660)
-        outp.puts "    return 0;"
-        outp.puts "}"
-    }
-    IO::write("filc/tests/#{testName}/manifest",
-              "return: failure\noutput-includes: \"filc safety error\"")
+    OPAQUE_CFGS.each {
+        | opaqueCfg |
+        testName = "combostorm_oobleft#{index}#{opaqueCfg.suffix}"
+        FileUtils.mkdir_p("filc/tests/#{testName}")
+        File.open("filc/tests/#{testName}/#{testName}.c", "w") {
+            | outp |
+            generateIncludes(outp)
+            outp.puts "int main()"
+            outp.puts "{"
+            generateTest(outp, fields, fields, -0x6660, opaqueCfg)
+            outp.puts "    return 0;"
+            outp.puts "}"
+        }
+        IO::write("filc/tests/#{testName}/manifest",
+                  "return: failure\noutput-includes: \"filc safety error\"")
 
-    testName = "combostorm_oobright#{index}"
-    FileUtils.mkdir_p("filc/tests/#{testName}")
-    File.open("filc/tests/#{testName}/#{testName}.c", "w") {
-        | outp |
-        generateIncludes(outp)
-        outp.puts "int main()"
-        outp.puts "{"
-        generateTest(outp, fields, fields, 0x6660)
-        outp.puts "    return 0;"
-        outp.puts "}"
+        testName = "combostorm_oobright#{index}#{opaqueCfg.suffix}"
+        FileUtils.mkdir_p("filc/tests/#{testName}")
+        File.open("filc/tests/#{testName}/#{testName}.c", "w") {
+            | outp |
+            generateIncludes(outp)
+            outp.puts "int main()"
+            outp.puts "{"
+            generateTest(outp, fields, fields, 0x6660, opaqueCfg)
+            outp.puts "    return 0;"
+            outp.puts "}"
+        }
+        IO::write("filc/tests/#{testName}/manifest",
+                  "return: failure\noutput-includes: \"filc safety error\"")
     }
-    IO::write("filc/tests/#{testName}/manifest",
-              "return: failure\noutput-includes: \"filc safety error\"")
 }
 
 def replaceIntsWithPtrs(fields)
@@ -293,32 +320,35 @@ $allPossibilities.keys.each_with_index {
     borkedFields = replaceIntsWithPtrs(fields)
     borkedFields.each_with_index {
         | otherFields, index2 |
-        testName = "combostorm_badtype#{index}_#{index2}_read"
-        FileUtils.mkdir_p("filc/tests/#{testName}")
-        File.open("filc/tests/#{testName}/#{testName}.c", "w") {
-            | outp |
-            generateIncludes(outp)
-            outp.puts "int main()"
-            outp.puts "{"
-            generateTest(outp, fields, otherFields, 0)
-            outp.puts "    return 0;"
-            outp.puts "}"
-        }
-        IO::write("filc/tests/#{testName}/manifest",
-                  "return: failure\noutput-includes: \"filc safety error\"")
+        OPAQUE_CFGS.each {
+            | opaqueCfg |
+            testName = "combostorm_badtype#{index}_#{index2}_read#{opaqueCfg.suffix}"
+            FileUtils.mkdir_p("filc/tests/#{testName}")
+            File.open("filc/tests/#{testName}/#{testName}.c", "w") {
+                | outp |
+                generateIncludes(outp)
+                outp.puts "int main()"
+                outp.puts "{"
+                generateTest(outp, fields, otherFields, 0, opaqueCfg)
+                outp.puts "    return 0;"
+                outp.puts "}"
+            }
+            IO::write("filc/tests/#{testName}/manifest",
+                      "return: failure\noutput-includes: \"filc safety error\"")
 
-        testName = "combostorm_badtype#{index}_#{index2}_write"
-        FileUtils.mkdir_p("filc/tests/#{testName}")
-        File.open("filc/tests/#{testName}/#{testName}.c", "w") {
-            | outp |
-            generateIncludes(outp)
-            outp.puts "int main()"
-            outp.puts "{"
-            generateTest(outp, otherFields, fields, 0)
-            outp.puts "    return 0;"
-            outp.puts "}"
+            testName = "combostorm_badtype#{index}_#{index2}_write#{opaqueCfg.suffix}"
+            FileUtils.mkdir_p("filc/tests/#{testName}")
+            File.open("filc/tests/#{testName}/#{testName}.c", "w") {
+                | outp |
+                generateIncludes(outp)
+                outp.puts "int main()"
+                outp.puts "{"
+                generateTest(outp, otherFields, fields, 0, opaqueCfg)
+                outp.puts "    return 0;"
+                outp.puts "}"
+            }
+            IO::write("filc/tests/#{testName}/manifest",
+                      "return: failure\noutput-includes: \"filc safety error\"")
         }
-        IO::write("filc/tests/#{testName}/manifest",
-                  "return: failure\noutput-includes: \"filc safety error\"")
     }
 }

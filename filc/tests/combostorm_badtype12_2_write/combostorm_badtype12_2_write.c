@@ -12,10 +12,15 @@ int main()
     *(int16_t*)(buf + 24) = 42;
     *(char**)(buf + 32) = "hello";
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(*(int16_t*)(buf + 0) == 42);
-    ZASSERT(*(int16_t*)(buf + 8) == 42);
-    ZASSERT(*(int16_t*)(buf + 16) == 42);
-    ZASSERT(*(int16_t*)(buf + 24) == 42);
-    ZASSERT(*(int16_t*)(buf + 32) == 42);
+    int16_t f0 = *(int16_t*)(buf + 0);
+    int16_t f1 = *(int16_t*)(buf + 8);
+    int16_t f2 = *(int16_t*)(buf + 16);
+    int16_t f3 = *(int16_t*)(buf + 24);
+    int16_t f4 = *(int16_t*)(buf + 32);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
+    ZASSERT(f2 == 42);
+    ZASSERT(f3 == 42);
+    ZASSERT(f4 == 42);
     return 0;
 }

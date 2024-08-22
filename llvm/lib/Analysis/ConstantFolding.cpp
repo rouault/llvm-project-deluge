@@ -566,6 +566,10 @@ Constant *FoldReinterpretLoadFromConst(Constant *C, Type *LoadTy,
         !LoadTy->isVectorTy())
       return nullptr;
 
+    PointerType* PtrTy = dyn_cast<PointerType>(LoadTy);
+    if (PtrTy && DL.isNonIntegralPointerType(PtrTy))
+      return nullptr;
+
     Type *MapTy = Type::getIntNTy(C->getContext(),
                                   DL.getTypeSizeInBits(LoadTy).getFixedValue());
     if (Constant *Res = FoldReinterpretLoadFromConst(C, MapTy, Offset, DL)) {

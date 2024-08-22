@@ -9,7 +9,9 @@ int main()
     *(int16_t*)(buf + 0) = 42;
     *(int16_t*)(buf + 18) = 42;
     buf = (char*)opaque(buf) + -26208;
-    ZASSERT(*(int16_t*)(buf + 0) == 42);
-    ZASSERT(*(int16_t*)(buf + 18) == 42);
+    int16_t f0 = *(int16_t*)(buf + 0);
+    int16_t f1 = *(int16_t*)(buf + 18);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
     return 0;
 }

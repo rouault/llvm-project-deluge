@@ -10,7 +10,9 @@ int main()
     *(int16_t*)(buf + 12) = 42;
     *(int16_t*)(buf + 24) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(!strcmp(*(char**)(buf + 0), "hello"));
-    ZASSERT(*(int16_t*)(buf + 24) == 42);
+    char* f0 = *(char**)(buf + 0);
+    int16_t f1 = *(int16_t*)(buf + 24);
+    ZASSERT(!strcmp(f0, "hello"));
+    ZASSERT(f1 == 42);
     return 0;
 }

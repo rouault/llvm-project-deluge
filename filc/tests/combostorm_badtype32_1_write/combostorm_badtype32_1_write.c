@@ -10,8 +10,11 @@ int main()
     *(char**)(buf + 16) = "hello";
     *(__int128*)(buf + 32) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(*(__int128*)(buf + 0) == 42);
-    ZASSERT(*(__int128*)(buf + 16) == 42);
-    ZASSERT(*(__int128*)(buf + 32) == 42);
+    __int128 f0 = *(__int128*)(buf + 0);
+    __int128 f1 = *(__int128*)(buf + 16);
+    __int128 f2 = *(__int128*)(buf + 32);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
+    ZASSERT(f2 == 42);
     return 0;
 }

@@ -9,7 +9,9 @@ int main()
     *(int8_t*)(buf + 0) = 42;
     *(int8_t*)(buf + 17) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(!strcmp(*(char**)(buf + 0), "hello"));
-    ZASSERT(*(int8_t*)(buf + 17) == 42);
+    char* f0 = *(char**)(buf + 0);
+    int8_t f1 = *(int8_t*)(buf + 17);
+    ZASSERT(!strcmp(f0, "hello"));
+    ZASSERT(f1 == 42);
     return 0;
 }

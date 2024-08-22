@@ -15,10 +15,15 @@ int main()
     *(int16_t*)(buf + 26) = 42;
     *(int16_t*)(buf + 30) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(!strcmp(*(char**)(buf + 0), "hello"));
-    ZASSERT(*(int16_t*)(buf + 18) == 42);
-    ZASSERT(*(int16_t*)(buf + 22) == 42);
-    ZASSERT(*(int16_t*)(buf + 26) == 42);
-    ZASSERT(*(int16_t*)(buf + 30) == 42);
+    char* f0 = *(char**)(buf + 0);
+    int16_t f1 = *(int16_t*)(buf + 18);
+    int16_t f2 = *(int16_t*)(buf + 22);
+    int16_t f3 = *(int16_t*)(buf + 26);
+    int16_t f4 = *(int16_t*)(buf + 30);
+    ZASSERT(!strcmp(f0, "hello"));
+    ZASSERT(f1 == 42);
+    ZASSERT(f2 == 42);
+    ZASSERT(f3 == 42);
+    ZASSERT(f4 == 42);
     return 0;
 }

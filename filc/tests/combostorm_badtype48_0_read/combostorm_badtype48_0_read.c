@@ -8,6 +8,7 @@ int main()
     char* buf = opaque(malloc(16));
     *(int64_t*)(buf + 8) = 42;
     buf = (char*)opaque(buf) + 0;
-    ZASSERT(!strcmp(*(char**)(buf + 0), "hello"));
+    char* f0 = *(char**)(buf + 0);
+    ZASSERT(!strcmp(f0, "hello"));
     return 0;
 }

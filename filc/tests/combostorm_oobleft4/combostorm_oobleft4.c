@@ -12,10 +12,15 @@ int main()
     *(int8_t*)(buf + 23) = 42;
     *(int8_t*)(buf + 29) = 42;
     buf = (char*)opaque(buf) + -26208;
-    ZASSERT(*(int8_t*)(buf + 5) == 42);
-    ZASSERT(*(int8_t*)(buf + 11) == 42);
-    ZASSERT(*(int8_t*)(buf + 17) == 42);
-    ZASSERT(*(int8_t*)(buf + 23) == 42);
-    ZASSERT(*(int8_t*)(buf + 29) == 42);
+    int8_t f0 = *(int8_t*)(buf + 5);
+    int8_t f1 = *(int8_t*)(buf + 11);
+    int8_t f2 = *(int8_t*)(buf + 17);
+    int8_t f3 = *(int8_t*)(buf + 23);
+    int8_t f4 = *(int8_t*)(buf + 29);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
+    ZASSERT(f2 == 42);
+    ZASSERT(f3 == 42);
+    ZASSERT(f4 == 42);
     return 0;
 }

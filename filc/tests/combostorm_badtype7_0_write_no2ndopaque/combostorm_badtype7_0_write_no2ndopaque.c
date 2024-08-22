@@ -1,0 +1,17 @@
+#include <stdfil.h>
+#include <inttypes.h>
+#include <string.h>
+#include <stdlib.h>
+#include "utils.h"
+int main()
+{
+    char* buf = opaque(malloc(18));
+    *(char**)(buf + 0) = "hello";
+    *(int8_t*)(buf + 17) = 42;
+    buf = (char*)(buf) + 0;
+    int8_t f0 = *(int8_t*)(buf + 0);
+    int8_t f1 = *(int8_t*)(buf + 17);
+    ZASSERT(f0 == 42);
+    ZASSERT(f1 == 42);
+    return 0;
+}

@@ -1,0 +1,17 @@
+#include <stdfil.h>
+#include <inttypes.h>
+#include <string.h>
+#include <stdlib.h>
+#include "utils.h"
+int main()
+{
+    char* buf = opaque(malloc(32));
+    *(int32_t*)(buf + 12) = 42;
+    *(int32_t*)(buf + 28) = 42;
+    buf = (char*)(buf) + 0;
+    int32_t f0 = *(int32_t*)(buf + 12);
+    char* f1 = *(char**)(buf + 16);
+    ZASSERT(f0 == 42);
+    ZASSERT(!strcmp(f1, "hello"));
+    return 0;
+}

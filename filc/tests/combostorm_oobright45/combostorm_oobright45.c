@@ -8,6 +8,7 @@ int main()
     char* buf = opaque(malloc(32));
     *(char**)(buf + 16) = "hello";
     buf = (char*)opaque(buf) + 26208;
-    ZASSERT(!strcmp(*(char**)(buf + 16), "hello"));
+    char* f0 = *(char**)(buf + 16);
+    ZASSERT(!strcmp(f0, "hello"));
     return 0;
 }
