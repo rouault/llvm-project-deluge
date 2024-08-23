@@ -8,8 +8,8 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-static const size_t num_nodes = 10000;
-static const size_t repeat = 10;
+static size_t num_nodes = 10000;
+static size_t repeat = 10;
 
 struct foo;
 typedef struct foo foo;
@@ -82,6 +82,11 @@ static void* thread_main(void* arg)
 
 int main()
 {
+    if (!zgc_is_stw()) {
+        num_nodes *= 4;
+        repeat *= 2;
+    }
+    
     bool is_first_process = true;
     pthread_t ignored;
     pthread_create(&ignored, NULL, thread_main, NULL);

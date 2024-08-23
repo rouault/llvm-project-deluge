@@ -649,6 +649,11 @@ void fugc_wait(uint64_t cycle)
     pas_system_mutex_unlock(&collector_thread_state_lock);
 }
 
+bool fugc_is_stw(void)
+{
+    return should_stop_the_world;
+}
+
 void fugc_dump_setup(void)
 {
     pas_log("    fugc minimum threshold: %zu\n", minimum_threshold);

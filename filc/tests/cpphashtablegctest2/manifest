@@ -5,3 +5,5 @@ subRuns:
   release: true
 output-includes:
   - "Sukces!"
+slow:
+  true

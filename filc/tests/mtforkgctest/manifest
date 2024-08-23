@@ -5,3 +5,5 @@ output-includes:
   - "Forked, now in pid ="
   - "Success!"
   - "Total victory!"
+slow:
+  true

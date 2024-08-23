@@ -12,12 +12,12 @@
 
 using namespace std;
 
-constexpr size_t num_threads = 5;
-constexpr size_t repeats = 15000;
-constexpr size_t num_toplevel_keys = 1000;
-constexpr size_t num_inner_keys = 1000;
-constexpr size_t max_nodes_to_add = 10;
-constexpr size_t max_nodes_to_remove = 10;
+constexpr size_t num_threads = 10;
+constexpr size_t repeats = 50000;
+constexpr size_t num_toplevel_keys = 2000;
+constexpr size_t num_inner_keys = 2000;
+constexpr size_t max_nodes_to_add = 20;
+constexpr size_t max_nodes_to_remove = 20;
 
 constexpr unsigned selection_range = 100;
 constexpr unsigned add_nodes_probability = 60;

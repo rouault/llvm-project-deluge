@@ -4553,6 +4553,12 @@ void filc_native_zgc_request_and_wait(filc_thread* my_thread)
         pas_log("Done with GC.\n");
 }
 
+bool filc_native_zgc_is_stw(filc_thread* my_thread)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    return fugc_is_stw();
+}
+
 void filc_native_zscavenge_synchronously(filc_thread* my_thread)
 {
     filc_exit(my_thread);

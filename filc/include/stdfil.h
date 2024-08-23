@@ -570,6 +570,10 @@ void zvalidate_ptr(void* ptr);
    stop all threads to do the GC. */
 void zgc_request_and_wait(void);
 
+/* Tells if the GC is running in STW (stop the world) mode. The default is false. You can enable STW
+   mode by setting the FUGC_STW=1 environment variable. */
+filc_bool zgc_is_stw(void);
+
 /* Request a synchronous scavenge. This decommits all memory that can be decommitted.
    
    If we you want to free all memory that can possibly be freed and you're happy to wait, then you should

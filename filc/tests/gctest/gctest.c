@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdfil.h>
 
 #define ASSERT(exp) do { \
     if ((exp)) \
@@ -10,8 +11,8 @@
     abort(); \
 } while (0)
 
-static const size_t num_nodes = 40000;
-static const size_t repeat = 10;
+static size_t num_nodes = 40000;
+static size_t repeat = 10;
 
 struct foo;
 typedef struct foo foo;
@@ -69,6 +70,11 @@ static void verify(void)
 
 int main()
 {
+    if (!zgc_is_stw()) {
+        num_nodes *= 2;
+        repeat *= 2;
+    }
+    
     build();
     verify();
     size_t index;

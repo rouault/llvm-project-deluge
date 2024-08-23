@@ -6,4 +6,5 @@ output-excludes:
   - hello
   - ello
   - llo
-
+slow:
+  true

@@ -92,6 +92,8 @@ PAS_API uint64_t fugc_request_fresh(void);
    To do the equivalent of "System.gc()", you do fugc_wait(fugc_request_fresh()). */
 PAS_API void fugc_wait(uint64_t cycle);
 
+PAS_API bool fugc_is_stw(void);
+
 PAS_API void fugc_dump_setup(void);
 
 #endif /* FUGC_H */

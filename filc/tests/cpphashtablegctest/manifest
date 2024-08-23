@@ -1,4 +1,9 @@
 return:
   success
+subRuns:
+  default: true
+  release: true
 output-includes:
   - "Sukces!"
+slow:
+  true

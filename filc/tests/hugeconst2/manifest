@@ -2,3 +2,5 @@ return:
   success
 output-includes:
   hello 5000
+slow:
+  true

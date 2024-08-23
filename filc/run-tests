@@ -353,7 +353,11 @@ $testDirectory.each_entry {
         subRunReleaseScript.chmod(0755)
     end
     runScript.chmod(0755)
-    $tests << runScript
+    if manifest["slow"]
+        $tests.unshift runScript
+    else
+        $tests << runScript
+    end
 }
 
 File.open("filc/tests/testmakefile", "w") {

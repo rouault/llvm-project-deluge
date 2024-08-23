@@ -1,6 +1,9 @@
 return:
   success
-exclude-modes:
-  - STW
+subRuns:
+  default: true
+  release: true
 output-includes:
   - "Sukces!"
+slow:
+  true

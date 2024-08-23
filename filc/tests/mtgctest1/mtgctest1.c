@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdfil.h>
 
 #define ASSERT(exp) do { \
     if ((exp)) \
@@ -89,6 +90,11 @@ static void* thread_main(void* arg)
 
 int main()
 {
+    if (!zgc_is_stw()) {
+        repeat *= 6;
+        num_nodes *= 2;
+    }
+    
     pthread_t* threads = malloc(sizeof(pthread_t) * num_threads);
     size_t index;
     for (index = num_threads; index--;)

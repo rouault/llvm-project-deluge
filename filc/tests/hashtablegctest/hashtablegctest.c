@@ -7,12 +7,12 @@
 #include <pthread.h>
 #include <unistd.h>
 
-static const size_t num_threads = 4;
-static const size_t repeats = 7000;
-static const size_t num_toplevel_keys = 1000;
-static const size_t num_inner_keys = 1000;
-static const size_t max_nodes_to_add = 10;
-static const size_t max_nodes_to_remove = 10;
+static const size_t num_threads = 8;
+static const size_t repeats = 20000;
+static const size_t num_toplevel_keys = 2000;
+static const size_t num_inner_keys = 2000;
+static const size_t max_nodes_to_add = 20;
+static const size_t max_nodes_to_remove = 20;
 
 static const unsigned selection_range = 100;
 static const unsigned add_nodes_probability = 60;

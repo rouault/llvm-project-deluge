@@ -259,7 +259,7 @@ File.open("filc/tests/combostorm_success/combostorm_success.c", "w") {
     outp.puts "    return 0;"
     outp.puts "}"
 }
-IO::write("filc/tests/combostorm_success/manifest", "return: success")
+IO::write("filc/tests/combostorm_success/manifest", "return: success\nslow: true")
 
 $allPossibilities.keys.each_with_index {
     | fields, index |
