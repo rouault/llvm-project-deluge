@@ -522,6 +522,7 @@ class Pizlonator {
   FunctionCallee CCArgsCheckFailure;
   FunctionCallee CCRetsCheckFailure;
   FunctionCallee _Setjmp;
+  FunctionCallee ExpectI1;
 
   Constant* EmptyCCType;
   Constant* VoidCCType;
@@ -808,6 +809,22 @@ class Pizlonator {
     LoweredTypes[T] = LowT;
     return LowT;
   }
+
+  Value* expectBool(Value* Predicate, bool Expected, Instruction* InsertBefore) {
+    CallInst* Result = CallInst::Create(
+      ExpectI1, { Predicate, ConstantInt::getBool(Int1Ty, Expected) }, "filc_expect_true",
+      InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* expectTrue(Value* Predicate, Instruction* InsertBefore) {
+    return expectBool(Predicate, true, InsertBefore);
+  }
+  
+  Value* expectFalse(Value* Predicate, Instruction* InsertBefore) {
+    return expectBool(Predicate, false, InsertBefore);
+  }
   
   void inlineCheckAccess(Value* P, size_t SizeAndAlignment, AccessKind AK, WordType ExpectedType,
                          FunctionCallee AccessFailure, Instruction* InsertBefore) {
@@ -823,7 +840,8 @@ class Pizlonator {
     ICmpInst* NullObject = new ICmpInst(
       InsertBefore, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_null_access_object");
     NullObject->setDebugLoc(DL);
-    Instruction* FailBlockTerm = SplitBlockAndInsertIfThen(NullObject, InsertBefore, true);
+    Instruction* FailBlockTerm = SplitBlockAndInsertIfThen(
+      expectFalse(NullObject, InsertBefore), InsertBefore, true);
     BasicBlock* FailBlock = FailBlockTerm->getParent();
     CallInst::Create(AccessFailure, { P, getOrigin(DL) }, "", FailBlockTerm)->setDebugLoc(DL);
     Instruction* PtrInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertBefore);
@@ -837,7 +855,9 @@ class Pizlonator {
         InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
         "filc_ptr_is_aligned");
       IsAligned->setDebugLoc(DL);
-      SplitBlockAndInsertIfElse(IsAligned, InsertBefore, false, nullptr, nullptr, nullptr, FailBlock);
+      SplitBlockAndInsertIfElse(
+        expectTrue(IsAligned, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
+        FailBlock);
     }
     if (AK == AccessKind::Write) {
       BinaryOperator* Masked = BinaryOperator::Create(
@@ -849,20 +869,23 @@ class Pizlonator {
         "filc_object_is_not_read_only");
       IsNotReadOnly->setDebugLoc(DL);
       SplitBlockAndInsertIfElse(
-        IsNotReadOnly, InsertBefore, false, nullptr, nullptr, nullptr, FailBlock);
+        expectTrue(IsNotReadOnly, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
+        FailBlock);
     }
     Instruction* IsBelowUpper = new ICmpInst(
       InsertBefore, ICmpInst::ICMP_ULT, Ptr, objectUpper(Object, InsertBefore),
       "filc_ptr_below_upper");
     IsBelowUpper->setDebugLoc(DL);
     SplitBlockAndInsertIfElse(
-      IsBelowUpper, InsertBefore, false, nullptr, nullptr, nullptr, FailBlock);
+      expectTrue(IsBelowUpper, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
+      FailBlock);
     Value* Lower = objectLower(Object, InsertBefore);
     Instruction* IsBelowLower = new ICmpInst(
       InsertBefore, ICmpInst::ICMP_ULT, Ptr, Lower, "filc_ptr_below_lower");
     IsBelowLower->setDebugLoc(DL);
     SplitBlockAndInsertIfThen(
-      IsBelowLower, InsertBefore, false, nullptr, nullptr, nullptr, FailBlock);
+      expectFalse(IsBelowLower, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
+      FailBlock);
     Instruction* LowerInt = new PtrToIntInst(Lower, IntPtrTy, "filc_lower_as_int", InsertBefore);
     LowerInt->setDebugLoc(DL);
     Instruction* Offset = BinaryOperator::Create(
@@ -882,13 +905,15 @@ class Pizlonator {
       InsertBefore, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, ExpectedType),
       "filc_good_type");
     GoodType->setDebugLoc(DL);
-    Instruction* MaybeBadTypeTerm = SplitBlockAndInsertIfElse(GoodType, InsertBefore, false);
+    Instruction* MaybeBadTypeTerm = SplitBlockAndInsertIfElse(
+      expectTrue(GoodType, InsertBefore), InsertBefore, false);
     ICmpInst* UnsetType = new ICmpInst(
       MaybeBadTypeTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeUnset),
       "filc_unset_type");
     UnsetType->setDebugLoc(DL);
     SplitBlockAndInsertIfElse(
-      UnsetType, MaybeBadTypeTerm, false, nullptr, nullptr, nullptr, FailBlock);
+      expectTrue(UnsetType, MaybeBadTypeTerm), MaybeBadTypeTerm, false, nullptr, nullptr, nullptr,
+      FailBlock);
     Instruction* CAS = new AtomicCmpXchgInst(
       WordTypePtr, ConstantInt::get(Int8Ty, WordTypeUnset), ConstantInt::get(Int8Ty, ExpectedType),
       Align(1), AtomicOrdering::SequentiallyConsistent, AtomicOrdering::SequentiallyConsistent,
@@ -906,7 +931,8 @@ class Pizlonator {
       "filc_good_old_type");
     GoodOldType->setDebugLoc(DL);
     assert(cast<BranchInst>(MaybeBadTypeTerm)->getSuccessor(0) == InsertBefore->getParent());
-    BranchInst::Create(InsertBefore->getParent(), FailBlock, GoodOldType, MaybeBadTypeTerm)
+    BranchInst::Create(InsertBefore->getParent(), FailBlock,
+                       expectTrue(GoodOldType, MaybeBadTypeTerm), MaybeBadTypeTerm)
       ->setDebugLoc(DL);
     MaybeBadTypeTerm->eraseFromParent();
   }
@@ -1234,7 +1260,8 @@ class Pizlonator {
       NotNullTerm, ICmpInst::ICMP_EQ, IsMarkingByte, ConstantInt::get(Int8Ty, 0),
       "filc_is_not_marking");
     IsNotMarking->setDebugLoc(DL);
-    Instruction* IsMarkingTerm = SplitBlockAndInsertIfElse(IsNotMarking, NotNullTerm, false);
+    Instruction* IsMarkingTerm = SplitBlockAndInsertIfElse(
+      expectTrue(IsNotMarking, NotNullTerm), NotNullTerm, false);
     CallInst::Create(StoreBarrierSlow, { MyThread, Object }, "", IsMarkingTerm)->setDebugLoc(DL);
   }
   
@@ -2039,7 +2066,8 @@ class Pizlonator {
     ICmpInst* InBounds = new ICmpInst(
       InsertBefore, ICmpInst::ICMP_ULE, ConstantInt::get(IntPtrTy, WordTypes.size()), NumWords,
       "filc_cc_type_big_enough");
-    SplitBlockAndInsertIfElse(InBounds, InsertBefore, false, nullptr, nullptr, nullptr, FailB);
+    SplitBlockAndInsertIfElse(
+      expectTrue(InBounds, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr, FailB);
     GetElementPtrInst* WordTypesPtr = GetElementPtrInst::Create(
       CCTypeTy, CCType, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
       "filc_cc_type_word_types_ptr", InsertBefore);
@@ -2056,7 +2084,8 @@ class Pizlonator {
       ICmpInst* GoodType = new ICmpInst(
         InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
         "filc_cc_good_type");
-      SplitBlockAndInsertIfElse(GoodType, InsertBefore, false, nullptr, nullptr, nullptr, FailB);
+      SplitBlockAndInsertIfElse(
+        expectTrue(GoodType, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr, FailB);
     }
   }
 
@@ -3090,7 +3119,7 @@ class Pizlonator {
       ICmpInst* NullObject = new ICmpInst(
         CI, ICmpInst::ICMP_EQ, CalledObject, LowRawNull, "filc_null_called_object");
       NullObject->setDebugLoc(CI->getDebugLoc());
-      Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(NullObject, CI, true);
+      Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(expectFalse(NullObject, CI), CI, true);
       BasicBlock* NewBlock = NewBlockTerm->getParent();
       CallInst::Create(
         CheckFunctionCallFail, { CI->getCalledOperand() }, "", NewBlockTerm)
@@ -3099,7 +3128,8 @@ class Pizlonator {
         CI, ICmpInst::ICMP_EQ, ptrPtr(CI->getCalledOperand(), CI), objectLower(CalledObject, CI),
         "filc_call_at_lower");
       AtLower->setDebugLoc(CI->getDebugLoc());
-      SplitBlockAndInsertIfElse(AtLower, CI, false, nullptr, nullptr, nullptr, NewBlock);
+      SplitBlockAndInsertIfElse(
+        expectTrue(AtLower, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
       BinaryOperator* Masked = BinaryOperator::Create(
         Instruction::And, objectFlags(CalledObject, CI), ConstantInt::get(Int16Ty, ObjectFlagSpecial),
         "filc_call_mask_special", CI);
@@ -3107,7 +3137,8 @@ class Pizlonator {
       ICmpInst* NotSpecial = new ICmpInst(
         CI, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0), "filc_call_not_special");
       NotSpecial->setDebugLoc(CI->getDebugLoc());
-      SplitBlockAndInsertIfThen(NotSpecial, CI, false, nullptr, nullptr, nullptr, NewBlock);
+      SplitBlockAndInsertIfThen(
+        expectFalse(NotSpecial, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
       LoadInst* WordType = new LoadInst(
         Int8Ty, objectWordTypesPtr(CalledObject, CI), "filc_call_word_type", CI);
       WordType->setDebugLoc(CI->getDebugLoc());
@@ -3115,17 +3146,19 @@ class Pizlonator {
         CI, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeFunction),
         "filc_call_is_fuction");
       IsFunction->setDebugLoc(CI->getDebugLoc());
-      SplitBlockAndInsertIfElse(IsFunction, CI, false, nullptr, nullptr, nullptr, NewBlock);
+      SplitBlockAndInsertIfElse(
+        expectTrue(IsFunction, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
 
       assert(!CI->hasOperandBundles());
       CallInst* TheCall = CallInst::Create(
         PizlonatedFuncTy, ptrPtr(CI->getCalledOperand(), CI), { MyThread, Args, Rets }, "filc_call",
         CI);
 
-      if (isa<CallInst>(CI) && CanCatch)
-        SplitBlockAndInsertIfThen(TheCall, CI, false, nullptr, nullptr, nullptr, ResumeB);
-      else if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
-        BranchInst::Create(II->getUnwindDest(), II->getNormalDest(), TheCall, II);
+      if (isa<CallInst>(CI) && CanCatch) {
+        SplitBlockAndInsertIfThen(
+          expectFalse(TheCall, CI), CI, false, nullptr, nullptr, nullptr, ResumeB);
+      } else if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
+        BranchInst::Create(II->getUnwindDest(), II->getNormalDest(), expectFalse(TheCall, II), II);
       
       Instruction* PostInsertionPt;
       if (isa<CallInst>(CI))
@@ -4048,6 +4081,7 @@ public:
     CCRetsCheckFailure = M.getOrInsertFunction("filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
     _Setjmp = M.getOrInsertFunction("_setjmp", Int32Ty, LowRawPtrTy);
     cast<Function>(_Setjmp.getCallee())->addFnAttr(Attribute::ReturnsTwice);
+    ExpectI1 = Intrinsic::getDeclaration(&M, Intrinsic::expect, Int1Ty);
 
     EmptyCCType = M.getOrInsertGlobal("filc_empty_cc_type", CCTypeTy);
     VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);
@@ -4328,7 +4362,8 @@ public:
               "filc_pollcheck_not_needed");
             Masked->setDebugLoc(DL);
             Instruction* NewTerm =
-              SplitBlockAndInsertIfElse(PollcheckNotNeeded, BB->getTerminator(), false);
+              SplitBlockAndInsertIfElse(
+                expectTrue(PollcheckNotNeeded, BB->getTerminator()), BB->getTerminator(), false);
             CallInst::Create(
               PollcheckSlow, { MyThread, getOrigin(DL) }, "", NewTerm)->setDebugLoc(DL);
           }
