@@ -3923,7 +3923,14 @@ class Pizlonator {
     DominatorTree DT(*NewF);
 
     for (auto& Pair : GetterCallsForGetter) {
+      Value* Getter = Pair.first;
       std::vector<CallInst*>& Calls = Pair.second;
+
+      if (verbose) {
+        errs() << "For getter " << Getter->getName() << ", considering calls:\n";
+        for (CallInst* CI : Calls)
+          errs() << "    " << *CI << "\n";
+      }
 
       assert(Calls.size() >= 1);
       for (size_t Index = Calls.size(); Index--;) {
@@ -3934,11 +3941,14 @@ class Pizlonator {
             continue;
           if (Calls[Index] == Calls[Index2])
             continue;
+          if (verbose)
+            errs() << "Considering " << *Calls[Index] << " and " << *Calls[Index2] << "\n";
           if (DT.dominates(Calls[Index], Calls[Index2])) {
+            if (verbose)
+              errs() << "    Dominates!\n";
             Calls[Index2]->replaceAllUsesWith(Calls[Index]);
             Calls[Index2]->eraseFromParent();
             Calls[Index2] = nullptr;
-            break;
           }
         }
       }
