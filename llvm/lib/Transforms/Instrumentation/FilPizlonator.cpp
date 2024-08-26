@@ -3898,6 +3898,53 @@ class Pizlonator {
     }
   }
 
+  void optimizeGetters() {
+    std::unordered_map<Value*, std::vector<CallInst*>> GetterCallsForGetter;
+
+    for (BasicBlock& BB : *NewF) {
+      for (Instruction& I : BB) {
+        CallInst* CI = dyn_cast<CallInst>(&I);
+        if (!CI)
+          continue;
+
+        Function* Getter = CI->getCalledFunction();
+        if (!Getter)
+          continue;
+
+        if (!Getters.count(Getter))
+          continue;
+
+        assert(CI->getFunctionType() == GlobalGetterTy);
+
+        GetterCallsForGetter[Getter].push_back(CI);
+      }
+    }
+
+    DominatorTree DT(*NewF);
+
+    for (auto& Pair : GetterCallsForGetter) {
+      std::vector<CallInst*>& Calls = Pair.second;
+
+      assert(Calls.size() >= 1);
+      for (size_t Index = Calls.size(); Index--;) {
+        if (!Calls[Index])
+          continue;
+        for (size_t Index2 = Calls.size(); Index2--;) {
+          if (!Calls[Index2])
+            continue;
+          if (Calls[Index] == Calls[Index2])
+            continue;
+          if (DT.dominates(Calls[Index], Calls[Index2])) {
+            Calls[Index2]->replaceAllUsesWith(Calls[Index]);
+            Calls[Index2]->eraseFromParent();
+            Calls[Index2] = nullptr;
+            break;
+          }
+        }
+      }
+    }
+  }
+
 public:
   Pizlonator(Module &M)
     : C(M.getContext()), M(M), DLBefore(M.getDataLayout()), DL(M.getDataLayoutAfterFilC()) {
@@ -4521,6 +4568,11 @@ public:
         
         if (verbose)
           errs() << "New function: " << *NewF << "\n";
+
+        optimizeGetters();
+
+        if (verbose)
+          errs() << "New function after getter optimization: " << *NewF << "\n";
       }
       
       FunctionName = "<internal>";
