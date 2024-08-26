@@ -100,6 +100,17 @@ enum class AccessKind {
   Write
 };
 
+static inline const char* accessKindString(AccessKind AK) {
+  switch (AK) {
+  case AccessKind::Read:
+    return "Read";
+  case AccessKind::Write:
+    return "Write";
+  }
+  llvm_unreachable("Bad access kind");
+  return nullptr;
+}
+
 enum class ConstantKind {
   Global,
   Expr
@@ -426,7 +437,7 @@ AIState mergeAIState(AIState A, AIState B) {
   return AIState::MaybeInitialized;
 }
 
-const char* aiStateString(AIState State) {
+__attribute__((used)) const char* aiStateString(AIState State) {
   switch (State) {
   case AIState::Unknown:
     return "Unknown";
@@ -440,6 +451,24 @@ const char* aiStateString(AIState State) {
   llvm_unreachable("bad AIState");
   return nullptr;
 }
+
+struct AccessCheck {
+  size_t Size { 0 }; // LOL this should be a different type if we ever want to work on 32-bit.
+  size_t Alignment { 0 };
+  Value* CanonicalPtr { nullptr };
+  int64_t Offset { 0 };
+  WordType Type { WordTypeUnset };
+  AccessKind AK { AccessKind::Read };
+  DebugLoc DI;
+
+  AccessCheck() = default;
+  
+  AccessCheck(size_t Size, size_t Alignment, Value* CanonicalPtr, int64_t Offset, WordType Type,
+              AccessKind AK, DebugLoc DI):
+    Size(Size), Alignment(Alignment), CanonicalPtr(CanonicalPtr), Offset(Offset), Type(Type), AK(AK),
+    DI(DI) {
+  }
+};
 
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
@@ -539,6 +568,7 @@ class Pizlonator {
   std::unordered_map<Constant*, int> EHTypeIDs;
   std::unordered_map<CallBase*, unsigned> Setjmps;
   std::unordered_map<Type*, Constant*> CCTypes;
+  std::unordered_map<Instruction*, std::vector<AccessCheck>> ChecksForInst;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -827,7 +857,7 @@ class Pizlonator {
   }
   
   void inlineCheckAccess(Value* P, size_t SizeAndAlignment, AccessKind AK, WordType ExpectedType,
-                         FunctionCallee AccessFailure, Instruction* InsertBefore) {
+                         FunctionCallee AccessFailure, Instruction* InsertBefore, DebugLoc DI) {
     assert(SizeAndAlignment >= 1);
     assert(SizeAndAlignment <= WordSize);
     assert(!(SizeAndAlignment & (SizeAndAlignment - 1)));
@@ -843,7 +873,7 @@ class Pizlonator {
     Instruction* FailBlockTerm = SplitBlockAndInsertIfThen(
       expectFalse(NullObject, InsertBefore), InsertBefore, true);
     BasicBlock* FailBlock = FailBlockTerm->getParent();
-    CallInst::Create(AccessFailure, { P, getOrigin(DL) }, "", FailBlockTerm)->setDebugLoc(DL);
+    CallInst::Create(AccessFailure, { P, getOrigin(DI) }, "", FailBlockTerm)->setDebugLoc(DL);
     Instruction* PtrInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertBefore);
     PtrInt->setDebugLoc(DL);
     if (SizeAndAlignment > 1) {
@@ -937,106 +967,106 @@ class Pizlonator {
     MaybeBadTypeTerm->eraseFromParent();
   }
 
-  void checkReadInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore) {
+  void checkReadInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore, DebugLoc DI) {
     if (Size == 1) {
-      inlineCheckAccess(P, 1, AccessKind::Read, WordTypeInt, CheckReadInt8Fail, InsertBefore);
+      inlineCheckAccess(P, 1, AccessKind::Read, WordTypeInt, CheckReadInt8Fail, InsertBefore, DI);
       return;
     }
     if (Size == 2 && Alignment >= 2) {
-      inlineCheckAccess(P, 2, AccessKind::Read, WordTypeInt, CheckReadInt16Fail, InsertBefore);
+      inlineCheckAccess(P, 2, AccessKind::Read, WordTypeInt, CheckReadInt16Fail, InsertBefore, DI);
       return;
     }
     if (Size == 4 && Alignment >= 4) {
-      inlineCheckAccess(P, 4, AccessKind::Read, WordTypeInt, CheckReadInt32Fail, InsertBefore);
+      inlineCheckAccess(P, 4, AccessKind::Read, WordTypeInt, CheckReadInt32Fail, InsertBefore, DI);
       return;
     }
     if (Size == 8 && Alignment >= 8) {
-      inlineCheckAccess(P, 8, AccessKind::Read, WordTypeInt, CheckReadInt64Fail, InsertBefore);
+      inlineCheckAccess(P, 8, AccessKind::Read, WordTypeInt, CheckReadInt64Fail, InsertBefore, DI);
       return;
     }
     if (Size == 16 && Alignment >= 16) {
-      inlineCheckAccess(P, 16, AccessKind::Read, WordTypeInt, CheckReadInt128Fail, InsertBefore);
+      inlineCheckAccess(P, 16, AccessKind::Read, WordTypeInt, CheckReadInt128Fail, InsertBefore, DI);
       return;
     }
     if (Alignment == 1) {
       CallInst::Create(
         CheckReadInt,
-        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
-        "", InsertBefore)
+        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(DI) }, "", InsertBefore)
         ->setDebugLoc(InsertBefore->getDebugLoc());
       return;
     }
     CallInst::Create(
       CheckReadAlignedInt,
-      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment),
-        getOrigin(InsertBefore->getDebugLoc()) },
+      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment), getOrigin(DI) },
       "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void checkWriteInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore) {
+  void checkWriteInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore,
+                     DebugLoc DI) {
     if (Size == 1) {
-      inlineCheckAccess(P, 1, AccessKind::Write, WordTypeInt, CheckWriteInt8Fail, InsertBefore);
+      inlineCheckAccess(P, 1, AccessKind::Write, WordTypeInt, CheckWriteInt8Fail, InsertBefore, DI);
       return;
     }
     if (Size == 2 && Alignment >= 2) {
-      inlineCheckAccess(P, 2, AccessKind::Write, WordTypeInt, CheckWriteInt16Fail, InsertBefore);
+      inlineCheckAccess(P, 2, AccessKind::Write, WordTypeInt, CheckWriteInt16Fail, InsertBefore, DI);
       return;
     }
     if (Size == 4 && Alignment >= 4) {
-      inlineCheckAccess(P, 4, AccessKind::Write, WordTypeInt, CheckWriteInt32Fail, InsertBefore);
+      inlineCheckAccess(P, 4, AccessKind::Write, WordTypeInt, CheckWriteInt32Fail, InsertBefore, DI);
       return;
     }
     if (Size == 8 && Alignment >= 8) {
-      inlineCheckAccess(P, 8, AccessKind::Write, WordTypeInt, CheckWriteInt64Fail, InsertBefore);
+      inlineCheckAccess(P, 8, AccessKind::Write, WordTypeInt, CheckWriteInt64Fail, InsertBefore, DI);
       return;
     }
     if (Size == 16 && Alignment >= 16) {
-      inlineCheckAccess(P, 16, AccessKind::Write, WordTypeInt, CheckWriteInt128Fail, InsertBefore);
+      inlineCheckAccess(P, 16, AccessKind::Write, WordTypeInt, CheckWriteInt128Fail, InsertBefore,
+                        DI);
       return;
     }
     if (Alignment == 1) {
       CallInst::Create(
         CheckWriteInt,
-        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(InsertBefore->getDebugLoc()) },
-        "", InsertBefore)
+        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(DI) }, "", InsertBefore)
         ->setDebugLoc(InsertBefore->getDebugLoc());
     }
     CallInst::Create(
       CheckWriteAlignedInt,
-      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment),
-        getOrigin(InsertBefore->getDebugLoc()) },
+      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment), getOrigin(DI) },
       "", InsertBefore)
       ->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void checkInt(Value* P, size_t Size, size_t Alignment, AccessKind AK, Instruction *InsertBefore) {
+  void checkInt(Value* P, size_t Size, size_t Alignment, AccessKind AK, Instruction *InsertBefore,
+                DebugLoc DI) {
     switch (AK) {
     case AccessKind::Read:
-      checkReadInt(P, Size, Alignment, InsertBefore);
+      checkReadInt(P, Size, Alignment, InsertBefore, DI);
       return;
     case AccessKind::Write:
-      checkWriteInt(P, Size, Alignment, InsertBefore);
+      checkWriteInt(P, Size, Alignment, InsertBefore, DI);
       return;
     }
     llvm_unreachable("Bad access kind");
   }
 
-  void checkReadPtr(Value *P, Instruction *InsertBefore) {
-    inlineCheckAccess(P, WordSize, AccessKind::Read, WordTypePtr, CheckReadPtrFail, InsertBefore);
+  void checkReadPtr(Value *P, Instruction *InsertBefore, DebugLoc DI) {
+    inlineCheckAccess(P, WordSize, AccessKind::Read, WordTypePtr, CheckReadPtrFail, InsertBefore, DI);
   }
 
-  void checkWritePtr(Value *P, Instruction *InsertBefore) {
-    inlineCheckAccess(P, WordSize, AccessKind::Write, WordTypePtr, CheckWritePtrFail, InsertBefore);
+  void checkWritePtr(Value *P, Instruction *InsertBefore, DebugLoc DI) {
+    inlineCheckAccess(
+      P, WordSize, AccessKind::Write, WordTypePtr, CheckWritePtrFail, InsertBefore, DI);
   }
 
-  void checkPtr(Value *P, AccessKind AK, Instruction *InsertBefore) {
+  void checkPtr(Value *P, AccessKind AK, Instruction *InsertBefore, DebugLoc DI) {
     switch (AK) {
     case AccessKind::Read:
-      checkReadPtr(P, InsertBefore);
+      checkReadPtr(P, InsertBefore, DI);
       return;
     case AccessKind::Write:
-      checkWritePtr(P, InsertBefore);
+      checkWritePtr(P, InsertBefore, DI);
       return;
     }
     llvm_unreachable("Bad access kind");
@@ -1348,7 +1378,8 @@ class Pizlonator {
                     Instruction *InsertBefore) {
     if (!hasPtrsForCheck(LowT)) {
       checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT),
-               MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), AK, InsertBefore);
+               MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), AK, InsertBefore,
+               InsertBefore->getDebugLoc());
       return;
     }
     
@@ -1365,7 +1396,7 @@ class Pizlonator {
     assert(LowT != LowRawPtrTy);
 
     if (LowT == LowWidePtrTy) {
-      checkPtr(ptrWithPtr(HighP, P, InsertBefore), AK, InsertBefore);
+      checkPtr(ptrWithPtr(HighP, P, InsertBefore), AK, InsertBefore, InsertBefore->getDebugLoc());
       return;
     }
 
@@ -1410,15 +1441,6 @@ class Pizlonator {
     llvm_unreachable("Should not get here.");
   }
 
-  // Insert whatever checks are needed to perform the access and then return the lowered pointer to
-  // access.
-  Value* prepareForAccess(Type *LowT, Value *HighP, size_t Alignment, AccessKind AK,
-                          Instruction *InsertBefore) {
-    Value* LowP = ptrPtr(HighP, InsertBefore);
-    checkRecurse(LowT, HighP, LowP, Alignment, AK, InsertBefore);
-    return LowP;
-  }
-
   Value* loadValueRecurseAfterCheck(
     Type* LowT, Value* P,
     bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, MemoryKind MK,
@@ -1429,7 +1451,7 @@ class Pizlonator {
       return new LoadInst(LowT, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
     
     if (isa<FunctionType>(LowT)) {
-      llvm_unreachable("shouldn't see function types in checkRecurse");
+      llvm_unreachable("shouldn't see function types in loadValueRecurseAfterCheck");
       return nullptr;
     }
 
@@ -1488,7 +1510,7 @@ class Pizlonator {
     }
 
     if (isa<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
+      llvm_unreachable("Shouldn't see scalable vector types in loadValueRecurseAfterCheck");
       return nullptr;
     }
 
@@ -1517,7 +1539,7 @@ class Pizlonator {
     }
     
     if (isa<FunctionType>(LowT)) {
-      llvm_unreachable("shouldn't see function types in checkRecurse");
+      llvm_unreachable("shouldn't see function types in storeValueRecurseAfterCheck");
       return;
     }
 
@@ -1579,7 +1601,7 @@ class Pizlonator {
     }
 
     if (isa<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
+      llvm_unreachable("Shouldn't see scalable vector types in storeValueRecurseAfterCheck");
       return;
     }
 
@@ -1638,7 +1660,7 @@ class Pizlonator {
     return 0;
   }
 
-  void computeFrameIndexMap(std::vector<BasicBlock*> Blocks) {
+  void computeFrameIndexMap(const std::vector<BasicBlock*>& Blocks) {
     FrameIndexMap.clear();
     FrameSize = NumSpecialFrameObjects;
     Setjmps.clear();
@@ -1891,6 +1913,185 @@ class Pizlonator {
     recordObjects(V, lowerType(V->getType()), V, InsertBefore);
   }
 
+  void buildChecksRecurse(Type* LowT, Value* HighP, size_t Offset, size_t Alignment, AccessKind AK,
+                          DebugLoc DI, std::vector<AccessCheck>& Checks) {
+    if (!hasPtrsForCheck(LowT)) {
+      Checks.push_back(
+        AccessCheck(
+          DL.getTypeStoreSize(LowT), MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), HighP,
+          Offset, WordTypeInt, AK, DI));
+      return;
+    }
+    
+    if (isa<FunctionType>(LowT)) {
+      llvm_unreachable("shouldn't see function types in buildChecksRecurse");
+      return;
+    }
+
+    if (isa<TypedPointerType>(LowT)) {
+      llvm_unreachable("Shouldn't ever see typed pointers");
+      return;
+    }
+
+    assert(LowT != LowRawPtrTy);
+
+    if (LowT == LowWidePtrTy) {
+      Checks.push_back(AccessCheck(WordSize, WordSize, HighP, Offset, WordTypePtr, AK, DI));
+      return;
+    }
+
+    assert(!isa<PointerType>(LowT));
+
+    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+      const StructLayout* SL = DL.getStructLayout(ST);
+      for (unsigned Index = ST->getNumElements(); Index--;) {
+        Type* InnerT = ST->getElementType(Index);
+        buildChecksRecurse(
+          InnerT, HighP, Offset + SL->getElementOffset(Index), Alignment, AK, DI, Checks);
+      }
+      return;
+    }
+      
+    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+      Type* ET = AT->getElementType();
+      size_t ESize = DL.getTypeAllocSize(ET);
+      for (uint64_t Index = AT->getNumElements(); Index--;)
+        buildChecksRecurse(ET, HighP, Offset + Index * ESize, Alignment, AK, DI, Checks);
+      return;
+    }
+      
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+      Type* ET = VT->getElementType();
+      size_t ESize = DL.getTypeAllocSize(ET);
+      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
+        buildChecksRecurse(ET, HighP, Offset + Index * ESize, Alignment, AK, DI, Checks);
+      return;
+    }
+
+    if (isa<ScalableVectorType>(LowT)) {
+      llvm_unreachable("Shouldn't see scalable vector types in buildChecksRecurse");
+      return;
+    }
+
+    llvm_unreachable("Should not get here.");
+  }
+
+  void buildChecks(Instruction* I, Type* LowT, Value* HighP, Align Alignment, AccessKind AK) {
+    if (verbose) {
+      errs() << "Building checks for " << *I << " with LowT = " << *LowT << ", HighP = " << *HighP
+             << ", Alignment = " << Alignment.value() << ", AK = " << accessKindString(AK) << "\n";
+    }
+    
+    int64_t Offset = 0;
+
+    if (GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(HighP)) {
+      APInt OffsetAP(64, 0, false);
+      if (GEP->accumulateConstantOffset(DLBefore, OffsetAP)) {
+        Offset += OffsetAP.getZExtValue();
+        HighP = GEP->getPointerOperand();
+      }
+    }
+
+    // FIXME: This is probably pointless, since we need to canonicalize GEPS before getting here
+    // anyway.
+    if (ConstantExpr* CE = dyn_cast<ConstantExpr>(HighP)) {
+      if (CE->getOpcode() == Instruction::GetElementPtr) {
+        GetElementPtrInst* GEP = cast<GetElementPtrInst>(CE->getAsInstruction());
+        APInt OffsetAP(64, 0, false);
+        if (GEP->accumulateConstantOffset(DLBefore, OffsetAP)) {
+          Offset += OffsetAP.getZExtValue();
+          HighP = GEP->getPointerOperand();
+        }
+        GEP->deleteValue();
+      }
+    }
+
+    std::vector<AccessCheck> Checks;
+    buildChecksRecurse(LowT, HighP, Offset, Alignment.value(), AK, I->getDebugLoc(), Checks);
+    assert(!ChecksForInst.count(I));
+    ChecksForInst[I] = std::move(Checks);
+  }
+
+  void emitChecksForInst(Instruction* Inst) {
+    if (verbose)
+      errs() << "Emitting checks for " << *Inst << "\n";
+    auto Iter = ChecksForInst.find(Inst);
+    if (Iter == ChecksForInst.end())
+      return;
+    const std::vector<AccessCheck>& Checks = Iter->second;
+
+    for (const AccessCheck& AC : Checks) {
+      Value* Ptr = lowerConstantValue(AC.CanonicalPtr, Inst, LowRawNull);
+      Value* OffsetP = ptrWithOffset(Ptr, ConstantInt::get(IntPtrTy, AC.Offset), Inst);
+      switch (AC.Type) {
+      case WordTypeInt:
+        checkInt(OffsetP, AC.Size, AC.Alignment, AC.AK, Inst, AC.DI);
+        break;
+      case WordTypePtr:
+        assert(AC.Size == WordSize);
+        assert(AC.Alignment == WordSize);
+        checkPtr(OffsetP, AC.AK, Inst, AC.DI);
+        break;
+      default:
+        llvm_unreachable("Bad AccessCheck type");
+        break;
+      }
+    }
+  }
+
+  void identifyChecks(const std::vector<BasicBlock*>& Blocks) {
+    ChecksForInst.clear();
+
+    for (BasicBlock* BB : Blocks) {
+      for (Instruction& I : *BB) {
+        if (LoadInst* LI = dyn_cast<LoadInst>(&I)) {
+          Type* LowT = lowerType(LI->getType());
+          Value* HighP = LI->getPointerOperand();
+          buildChecks(LI, LowT, HighP, LI->getAlign(), AccessKind::Read);
+          continue;
+        }
+
+        if (StoreInst* SI = dyn_cast<StoreInst>(&I)) {
+          Type* LowT = lowerType(SI->getValueOperand()->getType());
+          Value* HighP = SI->getPointerOperand();
+          buildChecks(SI, LowT, HighP, SI->getAlign(), AccessKind::Write);
+          continue;
+        }
+
+        if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(&I)) {
+          Type* LowT = lowerType(AI->getNewValOperand()->getType());
+          Value* HighP = AI->getPointerOperand();
+          buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write);
+          continue;
+        }
+
+        if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(&I)) {
+          Type* LowT = lowerType(AI->getValOperand()->getType());
+          Value* HighP = AI->getPointerOperand();
+          buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write);
+          continue;
+        }
+      }
+    }
+  }
+  
+  void pushChecksBack(const std::vector<BasicBlock*>& Blocks,
+                      const std::unordered_set<const BasicBlock*>& LoopFooters) {
+    // FIXME: Implement this - but maybe first, just change the codegen to emit checks based on
+    // ChecksForInst.
+
+    // FIXME: We could have checks emitted at the point where they become invalid:
+    //
+    // - Defs of canonical ptrs.
+    // - Effects.
+    //
+    // Basically, anywhere that the running checks vector has stuff removed from it according to the
+    // abstract interpreter.
+    //
+    // But it would be better to then have the checks sunk down to the first place where they're
+    // needed? Maybe? The theory being that this is easier for the regalloc.
+  }
+
   void buildWordTypesRecurse(
     Type* OuterLowT, Type* LowT, size_t& Size, std::vector<WordType>& WordTypes) {
     if (verbose)
@@ -1951,7 +2152,7 @@ class Pizlonator {
     }
 
     if (isa<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
+      llvm_unreachable("Shouldn't see scalable vector types in buildWordTypesRecurse");
       return;
     }
 
@@ -2493,23 +2694,29 @@ class Pizlonator {
     }
   }
 
-  void lowerConstantOperand(Use& U, Instruction* I, Value* InitializationContext) {
+  Value* lowerConstantValue(Value* V, Instruction* I, Value* InitializationContext) {
     assert(!isa<PHINode>(I));
-    if (Constant* C = dyn_cast<Constant>(U)) {
+    if (Constant* C = dyn_cast<Constant>(V)) {
       if (ultraVerbose)
-        errs() << "Got U = " << *U << ", C = " << *C << "\n";
+        errs() << "Got V = " << *V << ", C = " << *C << "\n";
       Value* NewC = lowerConstant(C, I, InitializationContext);
       if (ultraVerbose)
         errs() << "Got NewC = " << *NewC <<"\n";
-      U = NewC;
-    } else if (Argument* A = dyn_cast<Argument>(U)) {
+      return NewC;
+    }
+    if (Argument* A = dyn_cast<Argument>(V)) {
       if (ultraVerbose) {
         errs() << "A = " << *A << "\n";
         errs() << "A->getArgNo() == " << A->getArgNo() << "\n";
         errs() << "Args[A->getArgNo()] == " << *Args[A->getArgNo()] << "\n";
       }
-      U = Args[A->getArgNo()];
+      return Args[A->getArgNo()];
     }
+    return V;
+  }
+
+  void lowerConstantOperand(Use& U, Instruction* I, Value* InitializationContext) {
+    U = lowerConstantValue(U, I, InitializationContext);
   }
 
   void lowerConstantOperands(Instruction* I, Value* InitializationContext) {
@@ -2581,7 +2788,7 @@ class Pizlonator {
       case Intrinsic::vastart:
         assert(UsesVastartOrZargs);
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        checkWritePtr(II->getArgOperand(0), II);
+        checkWritePtr(II->getArgOperand(0), II, II->getDebugLoc());
         storePtr(SnapshottedArgsPtrForVastart, ptrPtr(II->getArgOperand(0), II), II);
         II->eraseFromParent();
         return true;
@@ -2589,8 +2796,8 @@ class Pizlonator {
       case Intrinsic::vacopy: {
         lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
         lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        checkWritePtr(II->getArgOperand(0), II);
-        checkReadPtr(II->getArgOperand(1), II);
+        checkWritePtr(II->getArgOperand(0), II, II->getDebugLoc());
+        checkReadPtr(II->getArgOperand(1), II, II->getDebugLoc());
         Value* Load = loadPtr(ptrPtr(II->getArgOperand(1), II), II);
         storePtr(Load, ptrPtr(II->getArgOperand(0), II), II);
         II->eraseFromParent();
@@ -2685,7 +2892,7 @@ class Pizlonator {
             "filc_jmp_buf_create", CI);
           Create->setDebugLoc(CI->getDebugLoc());
           Value* UserJmpBuf = CI->getArgOperand(0);
-          checkWritePtr(UserJmpBuf, CI);
+          checkWritePtr(UserJmpBuf, CI, CI->getDebugLoc());
           storePtr(ptrForSpecialPayload(Create, CI), ptrPtr(UserJmpBuf, CI), CI);
           recordObjectAtIndex(objectForSpecialPayload(Create, CI), FrameIndex, CI);
           CallInst* NewCI = CallInst::Create(_Setjmp, { Create }, "filc_setjmp", CI);
@@ -2862,10 +3069,9 @@ class Pizlonator {
     if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
       Type *LowT = lowerType(LI->getType());
       Value* HighP = LI->getPointerOperand();
-      Value* Result = loadValueRecurse(
-        LowT, HighP, ptrPtr(HighP, LI),
-        LI->isVolatile(), LI->getAlign(), LI->getOrdering(), LI->getSyncScopeID(),
-        LI);
+      Value* Result = loadValueRecurseAfterCheck(
+        LowT, ptrPtr(HighP, LI), LI->isVolatile(), LI->getAlign(), LI->getOrdering(),
+        LI->getSyncScopeID(), MemoryKind::Heap, LI);
       LI->replaceAllUsesWith(Result);
       LI->eraseFromParent();
       return;
@@ -2873,9 +3079,9 @@ class Pizlonator {
 
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
       Value* HighP = SI->getPointerOperand();
-      storeValueRecurse(
-        InstLowTypes[SI], HighP, SI->getValueOperand(), ptrPtr(HighP, SI),
-        SI->isVolatile(), SI->getAlign(), SI->getOrdering(), SI->getSyncScopeID(), SI);
+      storeValueRecurseAfterCheck(
+        InstLowTypes[SI], SI->getValueOperand(), ptrPtr(HighP, SI), SI->isVolatile(), SI->getAlign(),
+        SI->getOrdering(), SI->getSyncScopeID(), MemoryKind::Heap, SI);
       SI->eraseFromParent();
       return;
     }
@@ -2886,8 +3092,7 @@ class Pizlonator {
     }
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      Value* LowP = prepareForAccess(
-        InstLowTypes[AI], AI->getPointerOperand(), AI->getAlign().value(), AccessKind::Write, AI);
+      Value* LowP = ptrPtr(AI->getPointerOperand(), AI);
       if (InstLowTypes[AI] == LowWidePtrTy) {
         storeBarrierForValue(AI->getNewValOperand(), AI);
         Value* ExpectedWord = ptrWord(AI->getCompareOperand(), AI);
@@ -2918,9 +3123,7 @@ class Pizlonator {
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      Value* LowP = prepareForAccess(
-        AI->getValOperand()->getType(), AI->getPointerOperand(), AI->getAlign().value(),
-        AccessKind::Write, AI);
+      Value* LowP = ptrPtr(AI->getPointerOperand(), AI);
       if (InstLowTypes[AI] == LowWidePtrTy) {
         storeBarrierForValue(AI->getValOperand(), AI);
         Instruction* NewAI = new AtomicRMWInst(
@@ -4389,6 +4592,8 @@ public:
           BB->insertInto(NewF);
         }
         computeFrameIndexMap(Blocks);
+        identifyChecks(Blocks);
+        pushChecksBack(Blocks, LoopFooters);
         // Snapshot the instructions before we do crazy stuff.
         std::vector<Instruction*> Instructions;
         for (BasicBlock* BB : Blocks) {
@@ -4543,6 +4748,8 @@ public:
             recordObjects(I, I->getNextNode());
         }
         assert(Phis.empty());
+        for (Instruction* I : Instructions)
+          emitChecksForInst(I);
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I); });
         for (Instruction* I : Instructions)
           lowerInstruction(I, LowRawNull);

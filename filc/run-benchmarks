@@ -83,11 +83,31 @@ class Stats
         Math.sqrt(accumulator / (data.length - 1.0))
     end
 
+    def stdDevFraction
+        stdDev / mean
+    end
+
+    def stdDevPercent
+        100 * stdDevFraction
+    end
+
+    def stdErr
+        stdDev / Math.sqrt(data.length)
+    end
+
+    def stdErrFraction
+        stdErr / mean
+    end
+
+    def stdErrPercent
+        100 * stdErrFraction
+    end
+
     def to_s
         if data.length <= 1
-            mean.to_s
+            "%.4f" % [mean]
         else
-            "#{mean} += #{stdDev}"
+            "%.4f += %.2f%%" % [mean, stdErrPercent]
         end
     end
 end
@@ -333,9 +353,9 @@ $results.each {
             if mean == otherMean
                 puts "        exactly the same#{asStr}"
             elsif mean < otherMean
-                puts "        #{otherMean / mean}x faster#{thanStr}"
+                puts("        %.6fx faster%s" % [otherMean / mean, thanStr])
             else
-                puts "        #{mean / otherMean}x slower#{thanStr}"
+                puts("        %.6fx slower%s" % [mean / otherMean, thanStr])
             end
             otherIndex += 1
         end
