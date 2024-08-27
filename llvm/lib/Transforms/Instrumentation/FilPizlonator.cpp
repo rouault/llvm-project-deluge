@@ -29,6 +29,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <sstream>
 
 using namespace llvm;
 
@@ -470,6 +471,41 @@ struct AccessCheck {
   }
 };
 
+struct GEPKey {
+  Type* SourceTy { nullptr };
+  Value* Pointer { nullptr };
+  std::vector<Value*> Indices;
+
+  GEPKey() = default;
+
+  GEPKey(GetElementPtrInst* GEP):
+    SourceTy(GEP->getSourceElementType()), Pointer(GEP->getPointerOperand()) {
+    for (Value* Index : GEP->indices())
+      Indices.push_back(Index);
+  }
+
+  bool operator==(const GEPKey& Other) const {
+    return SourceTy == Other.SourceTy && Pointer == Other.Pointer && Indices == Other.Indices;
+  }
+
+  size_t hash() const {
+    size_t Result = std::hash<Type*>()(SourceTy) + std::hash<Value*>()(Pointer) + Indices.size();
+    for (Value* Index : Indices)
+      Result += std::hash<Value*>()(Index);
+    return Result;
+  }
+};
+
+} // anonymous namespace
+
+template<> struct std::hash<GEPKey> {
+  size_t operator()(const GEPKey& Key) const {
+    return Key.hash();
+  }
+};
+
+namespace {
+
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
   
@@ -552,6 +588,7 @@ class Pizlonator {
   FunctionCallee CCRetsCheckFailure;
   FunctionCallee _Setjmp;
   FunctionCallee ExpectI1;
+  FunctionCallee StackCheckAsm;
 
   Constant* EmptyCCType;
   Constant* VoidCCType;
@@ -1992,8 +2029,6 @@ class Pizlonator {
       }
     }
 
-    // FIXME: This is probably pointless, since we need to canonicalize GEPS before getting here
-    // anyway.
     if (ConstantExpr* CE = dyn_cast<ConstantExpr>(HighP)) {
       if (CE->getOpcode() == Instruction::GetElementPtr) {
         GetElementPtrInst* GEP = cast<GetElementPtrInst>(CE->getAsInstruction());
@@ -2022,15 +2057,29 @@ class Pizlonator {
 
     for (const AccessCheck& AC : Checks) {
       Value* Ptr = lowerConstantValue(AC.CanonicalPtr, Inst, LowRawNull);
-      Value* OffsetP = ptrWithOffset(Ptr, ConstantInt::get(IntPtrTy, AC.Offset), Inst);
+      if (AC.Offset) {
+        if ((int32_t)AC.Offset == AC.Offset) {
+          Value* LowP = ptrPtr(Ptr, Inst);
+          std::ostringstream buf;
+          buf << "leaq " << AC.Offset << "($1), $0";
+          FunctionCallee Asm = InlineAsm::get(
+            FunctionType::get(LowRawPtrTy, { LowRawPtrTy }, false),
+            buf.str(), "=r,r,~{dirflag},~{fpsr},~{flags}",
+            /*hasSideEffects=*/false);
+          Instruction* OffsetP = CallInst::Create(Asm, { LowP }, "filc_lea", Inst);
+          OffsetP->setDebugLoc(Inst->getDebugLoc());
+          Ptr = ptrWithPtr(Ptr, OffsetP, Inst);
+        } else
+          Ptr = ptrWithOffset(Ptr, ConstantInt::get(IntPtrTy, AC.Offset), Inst);
+      }
       switch (AC.Type) {
       case WordTypeInt:
-        checkInt(OffsetP, AC.Size, AC.Alignment, AC.AK, Inst, AC.DI);
+        checkInt(Ptr, AC.Size, AC.Alignment, AC.AK, Inst, AC.DI);
         break;
       case WordTypePtr:
         assert(AC.Size == WordSize);
         assert(AC.Alignment == WordSize);
-        checkPtr(OffsetP, AC.AK, Inst, AC.DI);
+        checkPtr(Ptr, AC.AK, Inst, AC.DI);
         break;
       default:
         llvm_unreachable("Bad AccessCheck type");
@@ -3549,14 +3598,7 @@ class Pizlonator {
     Instruction* GEP = GetElementPtrInst::Create(
       ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
       "filc_stack_limit_ptr", InsertBefore);
-    FunctionType* FT = FunctionType::get(VoidTy, { LowRawPtrTy }, false);
-    InlineAsm* Asm = InlineAsm::get(
-      FT,
-      "cmp %rsp, $0\n\t"
-      "jae filc_stack_overflow_failure@PLT",
-      "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
-      /*hasSideEffects=*/true);
-    CallInst* CI = CallInst::Create(FT, Asm, { GEP }, "", InsertBefore);
+    CallInst* CI = CallInst::Create(StackCheckAsm, { GEP }, "", InsertBefore);
     CI->addParamAttr(0, Attribute::get(C, Attribute::ElementType, LowRawPtrTy));
   }
 
@@ -4072,6 +4114,76 @@ class Pizlonator {
       lazifyAllocasInFunction(F);
   }
 
+  void canonicalizeGEP(Instruction* I) {
+    GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I);
+    if (!GEP)
+      return;
+    
+    unsigned ConstantOperandIndexStart = GEP->getNumOperands();
+    for (unsigned Index = GEP->getNumOperands(); Index-- > 1;) {
+      if (!isa<Constant>(GEP->getOperand(Index)))
+        break;
+      ConstantOperandIndexStart = Index;
+    }
+
+    assert(ConstantOperandIndexStart >= 1);
+    assert(ConstantOperandIndexStart <= GEP->getNumOperands());
+    if (ConstantOperandIndexStart == GEP->getNumOperands()) {
+      // It's not constant at all.
+      return;
+    }
+    if (ConstantOperandIndexStart == 1) {
+      // It's all constants.
+      return;
+    }
+
+    if (verbose)
+      errs() << "Canonicalizing GEP = " << *GEP << "\n";
+
+    std::vector<Value*> LeadingOperands;
+    std::vector<Value*> TrailingOperands;
+    for (unsigned Index = 1; Index < ConstantOperandIndexStart; ++Index)
+      LeadingOperands.push_back(GEP->getOperand(Index));
+    TrailingOperands.push_back(ConstantInt::get(Int32Ty, 0));
+    for (unsigned Index = ConstantOperandIndexStart; Index < GEP->getNumOperands(); ++Index)
+      TrailingOperands.push_back(GEP->getOperand(Index));
+
+    Type* LeadingResult = GetElementPtrInst::getIndexedType(GEP->getSourceElementType(),
+                                                            LeadingOperands);
+
+    GetElementPtrInst* LeadingGEP = GetElementPtrInst::Create(
+      GEP->getSourceElementType(), GEP->getPointerOperand(), LeadingOperands, "filc_leading_gep", I);
+    LeadingGEP->setDebugLoc(I->getDebugLoc());
+    GetElementPtrInst* TrailingGEP = GetElementPtrInst::Create(
+      LeadingResult, LeadingGEP, TrailingOperands, "filc_trailing_gep", I);
+    TrailingGEP->setDebugLoc(I->getDebugLoc());
+    GEP->replaceAllUsesWith(TrailingGEP);
+    GEP->eraseFromParent();
+
+    if (verbose)
+      errs() << "New GEPs:\n" << "    " << *LeadingGEP << "\n    " << *TrailingGEP << "\n";
+  }
+
+  void canonicalizeGEPsInFunction(Function& F) {
+    if (F.isDeclaration())
+      return;
+
+    for (BasicBlock& BB : F) {
+      std::vector<Instruction*> Instructions;
+      for (Instruction& I : BB)
+        Instructions.push_back(&I);
+      for (Instruction* I : Instructions)
+        canonicalizeGEP(I);
+    }
+  }
+
+  void canonicalizeGEPs() {
+    for (Function& F : M.functions()) {
+      canonicalizeGEPsInFunction(F);
+      optimizeGEPsInFunction(F);
+    }
+  }
+
   void prepare() {
     for (Function& F : M.functions()) {
       for (BasicBlock& BB : F) {
@@ -4101,8 +4213,63 @@ class Pizlonator {
     }
   }
 
+  template<typename KeyType>
+  void simpleCSE(Function& F, std::unordered_map<KeyType, std::vector<Instruction*>>& InstMap) {
+    DominatorTree DT(F);
+
+    for (auto& Pair : InstMap) {
+      std::vector<Instruction*>& Insts = Pair.second;
+
+      if (verbose) {
+        errs() << "Considering insts:\n";
+        for (Instruction* I : Insts)
+          errs() << "    " << *I << "\n";
+      }
+
+      assert(Insts.size() >= 1);
+      for (size_t Index = Insts.size(); Index--;) {
+        if (!Insts[Index])
+          continue;
+        for (size_t Index2 = Insts.size(); Index2--;) {
+          if (!Insts[Index2])
+            continue;
+          if (Insts[Index] == Insts[Index2])
+            continue;
+          if (verbose)
+            errs() << "Considering " << *Insts[Index] << " and " << *Insts[Index2] << "\n";
+          if (DT.dominates(Insts[Index], Insts[Index2])) {
+            if (verbose)
+              errs() << "    Dominates!\n";
+            Insts[Index2]->replaceAllUsesWith(Insts[Index]);
+            Insts[Index2]->eraseFromParent();
+            Insts[Index2] = nullptr;
+          }
+        }
+      }
+    }
+  }
+
+  // This does one pass of GEP CSE and is exactly what we need after canonicalizing GEPs.
+  void optimizeGEPsInFunction(Function& F) {
+    if (F.isDeclaration())
+      return;
+
+    std::unordered_map<GEPKey, std::vector<Instruction*>> GEPMap;
+
+    for (BasicBlock& BB : F) {
+      for (Instruction& I : BB) {
+        GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(&I);
+        if (!GEP)
+          continue;
+        GEPMap[GEP].push_back(GEP);
+      }
+    }
+
+    simpleCSE(F, GEPMap);
+  }
+
   void optimizeGetters() {
-    std::unordered_map<Value*, std::vector<CallInst*>> GetterCallsForGetter;
+    std::unordered_map<Value*, std::vector<Instruction*>> GetterCallsForGetter;
 
     for (BasicBlock& BB : *NewF) {
       for (Instruction& I : BB) {
@@ -4123,39 +4290,7 @@ class Pizlonator {
       }
     }
 
-    DominatorTree DT(*NewF);
-
-    for (auto& Pair : GetterCallsForGetter) {
-      Value* Getter = Pair.first;
-      std::vector<CallInst*>& Calls = Pair.second;
-
-      if (verbose) {
-        errs() << "For getter " << Getter->getName() << ", considering calls:\n";
-        for (CallInst* CI : Calls)
-          errs() << "    " << *CI << "\n";
-      }
-
-      assert(Calls.size() >= 1);
-      for (size_t Index = Calls.size(); Index--;) {
-        if (!Calls[Index])
-          continue;
-        for (size_t Index2 = Calls.size(); Index2--;) {
-          if (!Calls[Index2])
-            continue;
-          if (Calls[Index] == Calls[Index2])
-            continue;
-          if (verbose)
-            errs() << "Considering " << *Calls[Index] << " and " << *Calls[Index2] << "\n";
-          if (DT.dominates(Calls[Index], Calls[Index2])) {
-            if (verbose)
-              errs() << "    Dominates!\n";
-            Calls[Index2]->replaceAllUsesWith(Calls[Index]);
-            Calls[Index2]->eraseFromParent();
-            Calls[Index2] = nullptr;
-          }
-        }
-      }
-    }
+    simpleCSE(*NewF, GetterCallsForGetter);
   }
 
 public:
@@ -4198,6 +4333,7 @@ public:
     compileModuleAsm();
     removeIrrelevantIntrinsics();
     lazifyAllocas();
+    canonicalizeGEPs();
     
     if (verbose) {
       errs() << "Module with lowered thread locals, EH data, module asm, removing irrelevant "
@@ -4342,6 +4478,12 @@ public:
     _Setjmp = M.getOrInsertFunction("_setjmp", Int32Ty, LowRawPtrTy);
     cast<Function>(_Setjmp.getCallee())->addFnAttr(Attribute::ReturnsTwice);
     ExpectI1 = Intrinsic::getDeclaration(&M, Intrinsic::expect, Int1Ty);
+    StackCheckAsm = InlineAsm::get(
+      FunctionType::get(VoidTy, { LowRawPtrTy }, false),
+      "cmp %rsp, $0\n\t"
+      "jae filc_stack_overflow_failure@PLT",
+      "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
+      /*hasSideEffects=*/true);
 
     EmptyCCType = M.getOrInsertGlobal("filc_empty_cc_type", CCTypeTy);
     VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);
