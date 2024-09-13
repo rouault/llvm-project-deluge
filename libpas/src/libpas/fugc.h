@@ -68,9 +68,10 @@ static inline void fugc_mark_or_free(filc_object_array* mark_stack, filc_ptr* pt
             fugc_mark(mark_stack, object);
             return;
         }
-        if (object == filc_free_singleton)
+        if (object == &filc_free_singleton)
             return;
-        if (filc_ptr_unfenced_unbarriered_weak_cas_object(ptr, object, filc_free_singleton))
+        if (filc_ptr_unfenced_unbarriered_weak_cas_object(
+                ptr, object, (filc_object*)&filc_free_singleton))
             return;
     }
 }

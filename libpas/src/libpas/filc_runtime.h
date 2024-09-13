@@ -246,6 +246,14 @@ typedef uint16_t filc_object_flags;
 
 #define FILC_NATIVE_FRAME_INLINE_CAPACITY 5u
 
+/* Object bounds have to be at least MIN_BOUND, which is 1<<32, so that a valid way to check if
+   ptr + size <= upper is to instead say ptr <= upper - size. */
+#define FILC_MIN_BOUND                    ((void*)(uintptr_t)0x100000000llu)
+
+/* To make it easy to recognize free object bounds, we use this as the lower/upper of free objects.
+   Note that this is at least FILC_MIN_BOUND. */
+#define FILC_FREE_BOUND                   ((void*)(uintptr_t)0x66600000000llu)
+
 #define PIZLONATED_SIGNATURE \
     filc_thread* my_thread, \
     filc_cc_ptr args, \
@@ -816,7 +824,7 @@ PAS_API extern pas_heap* filc_default_heap;
 PAS_API extern pas_heap* filc_destructor_heap;
 PAS_API extern verse_heap_object_set* filc_destructor_set;
 
-PAS_API extern filc_object* filc_free_singleton;
+PAS_API extern const filc_object filc_free_singleton;
 
 PAS_API extern filc_object_array filc_global_variable_roots;
 
@@ -1283,14 +1291,14 @@ static inline bool filc_ptr_is_boxed_int(filc_ptr ptr)
 static inline void* filc_ptr_upper(filc_ptr ptr)
 {
     if (filc_ptr_is_boxed_int(ptr))
-        return NULL;
+        return 0;
     return filc_ptr_object(ptr)->upper;
 }
 
 static inline void* filc_ptr_lower(filc_ptr ptr)
 {
     if (filc_ptr_is_boxed_int(ptr))
-        return NULL;
+        return 0;
     return filc_ptr_object(ptr)->lower;
 }
 

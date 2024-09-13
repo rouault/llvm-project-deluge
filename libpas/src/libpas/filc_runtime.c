@@ -107,7 +107,12 @@ pas_heap* filc_default_heap;
 pas_heap* filc_destructor_heap;
 verse_heap_object_set* filc_destructor_set;
 
-filc_object* filc_free_singleton;
+const filc_object filc_free_singleton = {
+    .lower = FILC_FREE_BOUND,
+    .upper = FILC_FREE_BOUND,
+    .flags = FILC_OBJECT_FLAG_FREE | FILC_OBJECT_FLAG_GLOBAL | FILC_OBJECT_FLAG_READONLY,
+    .word_types = { }
+};
 
 filc_object_array filc_global_variable_roots;
 
@@ -378,13 +383,6 @@ void filc_initialize(void)
     filc_destructor_set = verse_heap_object_set_create();
     verse_heap_add_to_set(filc_destructor_heap, filc_destructor_set);
     verse_heap_did_become_ready_for_allocation();
-
-    filc_free_singleton = (filc_object*)verse_heap_allocate(
-        filc_default_heap, pas_round_up_to_power_of_2(PAS_OFFSETOF(filc_object, word_types),
-                                                      FILC_WORD_SIZE));
-    filc_free_singleton->lower = NULL;
-    filc_free_singleton->upper = NULL;
-    filc_free_singleton->flags = FILC_OBJECT_FLAG_FREE;
 
     filc_object_array_construct(&filc_global_variable_roots);
 
@@ -1235,8 +1233,6 @@ void filc_mark_global_roots(filc_object_array* mark_stack)
     for (index = FILC_MAX_USER_SIGNUM + 1; index--;)
         fugc_mark(mark_stack, filc_object_for_special_payload(signal_table[index]));
 
-    fugc_mark(mark_stack, filc_free_singleton);
-
     filc_global_initialization_lock_lock();
     /* Global roots point to filc_objects that are global, i.e. they are not GC-allocated, but they do
        have outgoing pointers. So, rather than fugc_marking them, we just shove them into the mark
@@ -1893,6 +1889,7 @@ filc_object* filc_allocate_with_existing_data(
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_FREE));
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_SPECIAL));
     PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_GLOBAL));
+    PAS_ASSERT(data >= FILC_MIN_BOUND);
 
     size_t num_words;
     size_t base_object_size;
@@ -1917,6 +1914,7 @@ filc_object* filc_allocate_special_with_existing_payload(
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
     PAS_ASSERT(word_type == FILC_WORD_TYPE_FUNCTION ||
                word_type == FILC_WORD_TYPE_DL_HANDLE);
+    PAS_ASSERT(payload >= FILC_MIN_BOUND);
 
     filc_object* result = (filc_object*)filc_thread_allocate(my_thread, FILC_SPECIAL_OBJECT_SIZE);
     result->lower = payload;
@@ -2757,16 +2755,16 @@ size_t filc_native_ztesting_get_num_ptrtables(filc_thread* my_thread)
 
 void filc_validate_object(filc_object* object, const filc_origin* origin)
 {
-    if (object == filc_free_singleton) {
-        FILC_ASSERT(!object->lower, origin);
-        FILC_ASSERT(!object->upper, origin);
+    FILC_ASSERT(object->lower >= FILC_MIN_BOUND, origin);
+    FILC_ASSERT(object->upper >= FILC_MIN_BOUND, origin);
+    
+    if (object == &filc_free_singleton) {
+        FILC_ASSERT(object->lower == FILC_FREE_BOUND, origin);
+        FILC_ASSERT(object->upper == FILC_FREE_BOUND, origin);
         FILC_ASSERT(object->flags == FILC_OBJECT_FLAG_FREE, origin);
         return;
     }
 
-    FILC_ASSERT(object->lower, origin);
-    FILC_ASSERT(object->upper, origin);
-    
     if (object->flags & FILC_OBJECT_FLAG_SPECIAL) {
         FILC_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE, origin);
         FILC_ASSERT(object->word_types[0] == FILC_WORD_TYPE_FREE ||
