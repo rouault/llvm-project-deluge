@@ -629,18 +629,17 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   }
   
   if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
-      && !DriverArgs.hasArg(options::OPT_nobuiltininc)) {
-    SmallString<128> P(D.InstalledDir);
-    llvm::sys::path::append(P, "..", "..", "pizfix", "builtins-include");
-    addSystemInclude(DriverArgs, CC1Args, P);
-  }
-
-  if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
       && !DriverArgs.hasArg(options::OPT_nostdlibinc)) {
     SmallString<128> P(D.InstalledDir);
     llvm::sys::path::append(P, "..", "..", "pizfix", "include");
     addSystemInclude(DriverArgs, CC1Args, P);
   }
+
+  SmallString<128> ResourceDirInclude(D.ResourceDir);
+  llvm::sys::path::append(ResourceDirInclude, "include");
+  if (!DriverArgs.hasArg(clang::driver::options::OPT_nostdinc)
+      && !DriverArgs.hasArg(options::OPT_nobuiltininc))
+    addSystemInclude(DriverArgs, CC1Args, ResourceDirInclude);
 
   if ((true))
     return;
@@ -652,8 +651,6 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   // GCC_INCLUDE_DIR (private headers) in GCC. Note: the include directory
   // contains some files conflicting with system /usr/include. musl systems
   // prefer the /usr/include copies which are more relevant.
-  SmallString<128> ResourceDirInclude(D.ResourceDir);
-  llvm::sys::path::append(ResourceDirInclude, "include");
   if (!DriverArgs.hasArg(options::OPT_nobuiltininc) &&
       (!getTriple().isMusl() || DriverArgs.hasArg(options::OPT_nostdlibinc)))
     addSystemInclude(DriverArgs, CC1Args, ResourceDirInclude);
