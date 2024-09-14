@@ -32,7 +32,6 @@ mkdir -p build
 mkdir -p ../pizfix/include
 mkdir -p ../pizfix/stdfil-include
 mkdir -p ../pizfix/musl-include
-mkdir -p ../pizfix/builtins-include
 mkdir -p ../pizfix/bin
 mkdir -p ../pizfix/sbin
 mkdir -p ../pizfix/libexec
