@@ -68,6 +68,7 @@ PAS_BEGIN_EXTERN_C;
      go into optimization mode, I will be able to wreak havoc I'm just holding back from going
      there, for now. Lots of running code is better than a small amount of fast code. */
 
+struct filc_alignment_and_offset;
 struct filc_cc_cursor;
 struct filc_cc_ptr;
 struct filc_cc_type;
@@ -83,6 +84,9 @@ struct filc_jmp_buf;
 struct filc_native_frame;
 struct filc_object;
 struct filc_object_array;
+struct filc_optimized_access_check_origin;
+struct filc_optimized_alignment_contradiction_origin;
+struct filc_optimized_type_contradiction_origin;
 struct filc_origin;
 struct filc_origin_node;
 struct filc_origin_with_eh;
@@ -93,6 +97,7 @@ struct filc_ptr_table_array;
 struct filc_ptr_uintptr_hash_map_entry;
 struct filc_signal_handler;
 struct filc_thread;
+struct filc_type_check_and_offset;
 struct filc_uintptr_ptr_hash_map_entry;
 struct filc_user_iovec;
 struct pas_basic_heap_runtime_config;
@@ -115,6 +120,10 @@ typedef struct filc_jmp_buf filc_jmp_buf;
 typedef struct filc_native_frame filc_native_frame;
 typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
+typedef struct filc_alignment_and_offset filc_alignment_and_offset;
+typedef struct filc_optimized_access_check_origin filc_optimized_access_check_origin;
+typedef struct filc_optimized_alignment_contradiction_origin filc_optimized_alignment_contradiction_origin;
+typedef struct filc_optimized_type_contradiction_origin filc_optimized_type_contradiction_origin;
 typedef struct filc_origin filc_origin;
 typedef struct filc_origin_node filc_origin_node;
 typedef struct filc_origin_with_eh filc_origin_with_eh;
@@ -125,6 +134,7 @@ typedef struct filc_ptr_table_array filc_ptr_table_array;
 typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
 typedef struct filc_signal_handler filc_signal_handler;
 typedef struct filc_thread filc_thread;
+typedef struct filc_type_check_and_offset filc_type_check_and_offset;
 typedef struct filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry;
 typedef struct filc_user_iovec filc_user_iovec;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
@@ -387,6 +397,39 @@ struct filc_origin {
     const filc_origin_node* origin_node;
     unsigned line;
     unsigned column;
+};
+
+struct filc_optimized_access_check_origin {
+    uint32_t size;
+    uint8_t alignment;
+    uint8_t alignment_offset;
+    filc_word_type type;
+    bool needs_write;
+    const filc_origin* scheduled_origin;
+    const filc_origin* semantic_origins[];
+};
+
+struct filc_alignment_and_offset {
+    uint8_t alignment;
+    uint8_t alignment_offset;
+};
+
+struct filc_optimized_alignment_contradiction_origin {
+    filc_alignment_and_offset* alignments; /* null-terminated */
+    const filc_origin* scheduled_origin;
+    const filc_origin* semantic_origins[];
+};
+
+struct filc_type_check_and_offset {
+    int32_t offset; /* will happen to be 0 at terminator. */
+    uint8_t size; /* size == 0 serves as a terminator. */
+    filc_word_type type; /* UNSET serves as a terminator. */
+};
+
+struct filc_optimized_type_contradiction_origin {
+    filc_type_check_and_offset* checks; /* terminated by !size and type == UNSET. */
+    const filc_origin* scheduled_origin;
+    const filc_origin* semantic_origins[];
 };
 
 struct filc_inline_frame {
@@ -1218,6 +1261,8 @@ PAS_API void filc_origin_dump_self(const filc_origin* origin, pas_stream* stream
 /* This dumps the origin plus its inline stack. */
 PAS_API void filc_origin_dump_all_inline(const filc_origin* origin, const char* separator,
                                          pas_stream* stream);
+
+PAS_API void filc_origin_dump_all_inline_default(const filc_origin* origin, pas_stream* stream);
 
 PAS_API void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream);
 
@@ -2230,6 +2275,14 @@ static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origi
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_ptr_fail(
     filc_ptr ptr, const filc_origin* origin);
+
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_access_check_fail(
+    filc_ptr ptr, const filc_optimized_access_check_origin* check_origin);
+
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_alignment_contradiction(
+    filc_ptr ptr, const filc_optimized_alignment_contradiction_origin* contradiction_origin);
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_type_contradiction(
+    filc_ptr ptr, const filc_optimized_type_contradiction_origin* contradiction_origin);
 
 static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
 {

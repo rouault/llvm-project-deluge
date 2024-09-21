@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "alignment requirement of 4 bytes not met during int access"
+  - "alignment requirement of 4 bytes not met"
 output-excludes:
   - "x ="

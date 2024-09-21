@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - filc safety error
-  - span contains non-ints
+  - type mismatch
 output-excludes:
   FAIL

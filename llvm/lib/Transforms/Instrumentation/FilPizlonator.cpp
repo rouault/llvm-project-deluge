@@ -70,6 +70,15 @@ static cl::opt<bool> ultraVerbose(
 static cl::opt<bool> logAllocations(
   "filc-log-allocations", cl::desc("Make FilC emit code to log every allocation"),
   cl::Hidden, cl::init(false));
+static cl::opt<bool> optimizeChecks(
+  "filc-optimize-checks", cl::desc("Pick an optimal schedule for checks"),
+  cl::Hidden, cl::init(true));
+static cl::opt<bool> propagateChecksBackward(
+  "filc-propagate-checks-backward", cl::desc("Perform backward propagation of checks"),
+  cl::Hidden, cl::init(true));
+static cl::opt<bool> useAsmForOffsets(
+  "filc-use-asm-for-offset", cl::desc("Use inline assembly to compute offsets"),
+  cl::Hidden, cl::init(false));
 
 // This has to match the FilC runtime.
 
@@ -84,6 +93,7 @@ static constexpr WordType WordTypeInt = 1;
 static constexpr WordType WordTypePtr = 2;
 static constexpr WordType WordTypeFunction = 4;
 
+static constexpr uint16_t ObjectFlagFree = 1;
 static constexpr uint16_t ObjectFlagSpecial = 2;
 static constexpr uint16_t ObjectFlagGlobal = 4;
 static constexpr uint16_t ObjectFlagReadonly = 16;
@@ -100,6 +110,22 @@ enum class AccessKind {
   Read,
   Write
 };
+
+static inline const char* wordTypeString(WordType WT) {
+  switch (WT) {
+  case WordTypeUnset:
+    return "UNSET";
+  case WordTypeInt:
+    return "INT";
+  case WordTypePtr:
+    return "PTR";
+  case WordTypeFunction:
+    return "FUNCTION";
+  default:
+    llvm_unreachable("Bad word type");
+    return nullptr;
+  }
+}
 
 static inline const char* accessKindString(AccessKind AK) {
   switch (AK) {
@@ -453,22 +479,356 @@ __attribute__((used)) const char* aiStateString(AIState State) {
   return nullptr;
 }
 
+enum class CheckKind {
+  // The order of CheckKinds is important for sorting AccessChecks!
+
+  // Check if the object is valid (not NULL). This check has to happen before any of the other
+  // checks.
+  ValidObject,
+
+  // Indicates that we already know that CanonicalPtr + Offset is aligned to Size, and there's no
+  // need to check, but we can rely on it. This kind should only appear in the final ChecksForInst
+  // list but never during backward or forward propagation. Not all CheckKinds have a Known variant.
+  // We need a Known variant for Alignment because it influences how the TypeIsInt and UpperBound
+  // check works. For CheckKinds that have no Known variant, the CheckKind will simply be excluded
+  // from ChecksForInst if it's known already.
+  KnownAlignment,
+
+  // Check if the CanonicalPtr + Offset is aligned to Size.
+  Alignment,
+
+  // Check if the CanonicalPtr + Offset is aligned to Size. This indicates that it's a reduced-Size
+  // alignment check based on merging.
+  MergedAlignment,
+
+  // Check if the object is not readonly.
+  CanWrite,
+
+  // Check that CanonicalPtr + Offset is lessequal object->upper.
+  UpperBound,
+
+  // Indicates that we already know that CanonicalPtr + Offset is greaterequal object->lower, and
+  // there's no need to check, but we can rely on it. This kind should only appear in the final
+  // ChecksForInst list but never during backward or forward propagation.
+  KnownLowerBound,
+
+  // Check that CanonicalPtr + Offset is greaterequal object->lower.
+  LowerBound,
+
+  // Check that starting at CanonicalPtr + Offset there is a span of Size bytes of integers.
+  TypeIsInt,
+
+  // Check that starting at CanonicalPtr + Offset there is a pointer. Size must be WordSize.
+  TypeIsPtr,
+
+  // Check that the object isn't free. Checking any TypeIsInt or TypeIsPtr automatically checks that
+  // the object isn't free.
+  NotFree
+};
+
+bool IsKnownCheckKind(CheckKind CK) {
+  switch (CK) {
+  case CheckKind::KnownAlignment:
+  case CheckKind::KnownLowerBound:
+    return true;
+  case CheckKind::ValidObject:
+  case CheckKind::CanWrite:
+  case CheckKind::Alignment:
+  case CheckKind::MergedAlignment:
+  case CheckKind::UpperBound:
+  case CheckKind::LowerBound:
+  case CheckKind::TypeIsInt:
+  case CheckKind::TypeIsPtr:
+  case CheckKind::NotFree:
+    return false;
+  }
+  llvm_unreachable("Bad CheckKind.");
+  return false;
+}
+
+CheckKind FundamentalCheckKind(CheckKind CK) {
+  switch (CK) {
+  case CheckKind::KnownAlignment:
+  case CheckKind::MergedAlignment:
+    return CheckKind::Alignment;
+  case CheckKind::KnownLowerBound:
+    return CheckKind::LowerBound;
+  case CheckKind::ValidObject:
+  case CheckKind::CanWrite:
+  case CheckKind::Alignment:
+  case CheckKind::UpperBound:
+  case CheckKind::LowerBound:
+  case CheckKind::TypeIsInt:
+  case CheckKind::TypeIsPtr:
+  case CheckKind::NotFree:
+    return CK;
+  }
+  llvm_unreachable("Bad CheckKind.");
+  return CheckKind::ValidObject;
+}
+
+raw_ostream& operator<<(raw_ostream& OS, CheckKind CK) {
+  switch (CK) {
+  case CheckKind::ValidObject:
+    OS << "ValidObject";
+    return OS;
+  case CheckKind::KnownAlignment:
+    OS << "KnownAlignment";
+    return OS;
+  case CheckKind::Alignment:
+    OS << "Alignment";
+    return OS;
+  case CheckKind::MergedAlignment:
+    OS << "MergedAlignment";
+    return OS;
+  case CheckKind::CanWrite:
+    OS << "CanWrite";
+    return OS;
+  case CheckKind::UpperBound:
+    OS << "UpperBound";
+    return OS;
+  case CheckKind::KnownLowerBound:
+    OS << "KnownLowerBound";
+    return OS;
+  case CheckKind::LowerBound:
+    OS << "LowerBound";
+    return OS;
+  case CheckKind::TypeIsInt:
+    OS << "TypeIsInt";
+    return OS;
+  case CheckKind::TypeIsPtr:
+    OS << "TypeIsPtr";
+    return OS;
+  case CheckKind::NotFree:
+    OS << "NotFree";
+    return OS;
+  }
+  llvm_unreachable("Bad CheckKind");
+  return OS;
+}
+
+struct CombinedDI {
+  std::unordered_set<DILocation*> Locations; // This set may contain null.
+
+  CombinedDI() = default;
+  
+  CombinedDI(DILocation* Location) {
+    Locations.insert(Location);
+  }
+
+  bool operator==(const CombinedDI& Other) const {
+    return Locations == Other.Locations;
+  }
+
+  size_t hash() const {
+    size_t Result = Locations.size();
+    for (DILocation* Location : Locations)
+      Result += std::hash<DILocation*>()(Location);
+    return Result;
+  }
+};
+
+} // anonymous namespace
+
+template<> struct std::hash<CombinedDI> {
+  size_t operator()(const CombinedDI& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<std::pair<const CombinedDI*, const CombinedDI*>> {
+  size_t operator()(const std::pair<const CombinedDI*, const CombinedDI*>& Key) const {
+    return std::hash<const CombinedDI*>()(Key.first) + 3 * std::hash<const CombinedDI*>()(Key.second);
+  }
+};
+
+namespace {
+
+int64_t PositiveModulo(int64_t Offset, int64_t Alignment) {
+  int64_t Result = Offset % Alignment;
+  if (Result < 0)
+    Result += Alignment;
+  assert(Result >= 0);
+  assert(Result < Alignment);
+  return Result;
+}
+
 struct AccessCheck {
-  size_t Size { 0 }; // LOL this should be a different type if we ever want to work on 32-bit.
-  size_t Alignment { 0 };
   Value* CanonicalPtr { nullptr };
   int64_t Offset { 0 };
-  WordType Type { WordTypeUnset };
-  AccessKind AK { AccessKind::Read };
-  DebugLoc DI;
+  int64_t Size { 0 };
+  CheckKind CK { CheckKind::ValidObject };
 
   AccessCheck() = default;
   
-  AccessCheck(size_t Size, size_t Alignment, Value* CanonicalPtr, int64_t Offset, WordType Type,
-              AccessKind AK, DebugLoc DI):
-    Size(Size), Alignment(Alignment), CanonicalPtr(CanonicalPtr), Offset(Offset), Type(Type), AK(AK),
-    DI(DI) {
+  AccessCheck(Value* CanonicalPtr, int64_t Offset, int64_t Size, CheckKind CK):
+    CanonicalPtr(CanonicalPtr), Offset(Offset), Size(Size), CK(CK) {
+    assert(CanonicalPtr);
+    assert((int32_t)Offset == Offset);
+    assert(Size >= 0);
+    switch (CK) {
+    case CheckKind::ValidObject:
+    case CheckKind::CanWrite:
+    case CheckKind::NotFree:
+      assert(!Size);
+      assert(!Offset);
+      return;
+    case CheckKind::Alignment:
+    case CheckKind::KnownAlignment:
+    case CheckKind::MergedAlignment:
+      assert(Size >= 1);
+      assert(Size <= static_cast<int64_t>(WordSize));
+      assert(!((Size - 1) & Size));
+      assert(Offset >= 0);
+      assert(Offset < Size);
+      return;
+    case CheckKind::UpperBound:
+    case CheckKind::LowerBound:
+    case CheckKind::KnownLowerBound:
+      assert(!Size);
+      return;
+    case CheckKind::TypeIsInt:
+      assert(Size >= 1);
+      assert(Size <= static_cast<int64_t>(WordSize));
+      assert(!((Size - 1) & Size));
+      return;
+    case CheckKind::TypeIsPtr:
+      assert(Size == WordSize);
+      return;
+    }
+    llvm_unreachable("Bad CheckKind.");
   }
+
+  explicit operator bool() const {
+    return !!CanonicalPtr;
+  }
+
+  bool operator<(const AccessCheck& Other) const {
+    if (CanonicalPtr != Other.CanonicalPtr)
+      return CanonicalPtr < Other.CanonicalPtr;
+
+    // This is important: we require that the CheckKinds fit into the list in ascending order,
+    // according to the order they are declared in CheckKind, ignoring whether they are known/merged
+    // or not.
+    if (FundamentalCheckKind(CK) != FundamentalCheckKind(Other.CK))
+      return FundamentalCheckKind(CK) < FundamentalCheckKind(Other.CK);
+
+    if (FundamentalCheckKind(CK) == CheckKind::Alignment && Size != Other.Size)
+      return Size > Other.Size;
+
+    if (Offset != Other.Offset) {
+      if (CK == CheckKind::UpperBound)
+        return Offset > Other.Offset;
+      else
+        return Offset < Other.Offset;
+    }
+
+    if (Size != Other.Size)
+      return Size > Other.Size;
+
+    // If everything else is equal, then the order is such that known comes before unknown.
+    return CK < Other.CK;
+  }
+
+  // Note: we say that two AccessChecks are equal even if their DI's are different.
+  bool operator==(const AccessCheck& Other) const {
+    return Size == Other.Size && CanonicalPtr == Other.CanonicalPtr && Offset == Other.Offset
+      && CK == Other.CK;
+  }
+
+  bool operator!=(const AccessCheck& Other) const {
+    return !(*this == Other);
+  }
+
+  void print(raw_ostream& OS) const {
+    OS << CK << "(" << CanonicalPtr << ":" << CanonicalPtr->getName();
+    switch (CK) {
+    case CheckKind::ValidObject:
+    case CheckKind::CanWrite:
+    case CheckKind::NotFree:
+      break;
+    case CheckKind::Alignment:
+    case CheckKind::KnownAlignment:
+    case CheckKind::MergedAlignment:
+    case CheckKind::TypeIsInt:
+    case CheckKind::TypeIsPtr:
+      OS << ", Size = " << Size << ", Offset = " << Offset;
+      break;
+    case CheckKind::LowerBound:
+    case CheckKind::KnownLowerBound:
+    case CheckKind::UpperBound:
+      OS << ", Offset = " << Offset;
+      break;
+    }
+    OS << ")";
+  }
+};
+
+raw_ostream& operator<<(raw_ostream& OS, const AccessCheck& AC) {
+  AC.print(OS);
+  return OS;
+}
+
+template<typename T>
+raw_ostream& PrintVector(raw_ostream& OS, const std::vector<T>& V) {
+  for (size_t Index = 0; Index < V.size(); ++Index) {
+    if (Index)
+      OS << ", ";
+    OS << V[Index];
+  }
+  return OS;
+}
+
+raw_ostream& operator<<(raw_ostream& OS, const std::vector<AccessCheck>& Checks) {
+  return PrintVector(OS, Checks);
+}
+
+struct AccessCheckWithDI : AccessCheck {
+  const CombinedDI* DI { nullptr };
+
+  AccessCheckWithDI() = default;
+
+  AccessCheckWithDI(Value* CanonicalPtr, int64_t Offset, int64_t Size, CheckKind CK,
+                    const CombinedDI* DI):
+    AccessCheck(CanonicalPtr, Offset, Size, CK), DI(DI) {
+  }
+
+  AccessCheckWithDI(const AccessCheck& AC):
+    AccessCheck(AC) {
+  }
+
+  AccessCheckWithDI& operator=(const AccessCheck& AC) {
+    *(AccessCheck*)this = AC;
+    DI = nullptr;
+    return *this;
+  }
+};
+
+raw_ostream& operator<<(raw_ostream& OS, const std::vector<AccessCheckWithDI>& Checks) {
+  return PrintVector(OS, Checks);
+}
+
+struct ChecksOrBottom {
+  bool Bottom;
+  std::vector<AccessCheck> Checks;
+
+  ChecksOrBottom(): Bottom(true) {}
+};
+
+struct ChecksWithDIOrBottom {
+  bool Bottom;
+  std::vector<AccessCheckWithDI> Checks;
+
+  ChecksWithDIOrBottom(): Bottom(true) {}
+};
+
+struct PtrAndOffset {
+  Value* HighP { nullptr };
+  int64_t Offset { 0 };
+
+  PtrAndOffset() = default;
+
+  PtrAndOffset(Value* HighP, int64_t Offset): HighP(HighP), Offset(Offset) {}
 };
 
 struct GEPKey {
@@ -496,6 +856,132 @@ struct GEPKey {
   }
 };
 
+struct OptimizedAccessCheckOriginKey {
+  uint32_t Size { 0 };
+  uint8_t Alignment { 0 };
+  uint8_t AlignmentOffset { 0 };
+  WordType Type { WordTypeUnset };
+  bool NeedsWrite { false };
+  DILocation* ScheduledDI { nullptr };
+  const CombinedDI* SemanticDI { nullptr };
+
+  OptimizedAccessCheckOriginKey() = default;
+
+  OptimizedAccessCheckOriginKey(
+    uint32_t Size, uint8_t Alignment, uint8_t AlignmentOffset, WordType Type, bool NeedsWrite,
+    DILocation* ScheduledDI, const CombinedDI* SemanticDI):
+    Size(Size), Alignment(Alignment), AlignmentOffset(AlignmentOffset), Type(Type),
+    NeedsWrite(NeedsWrite), ScheduledDI(ScheduledDI), SemanticDI(SemanticDI) {
+  }
+
+  bool operator==(const OptimizedAccessCheckOriginKey& Other) const {
+    return Size == Other.Size && Alignment == Other.Alignment
+      && AlignmentOffset == Other.AlignmentOffset && Type == Other.Type
+      && NeedsWrite == Other.NeedsWrite && ScheduledDI == Other.ScheduledDI
+      && SemanticDI == Other.SemanticDI;
+  }
+
+  size_t hash() const {
+    return static_cast<size_t>(Size) + static_cast<size_t>(Alignment)
+      + static_cast<size_t>(AlignmentOffset) + static_cast<size_t>(Type)
+      + static_cast<size_t>(NeedsWrite) + std::hash<DILocation*>()(ScheduledDI)
+      + std::hash<const CombinedDI*>()(SemanticDI);
+  }
+};
+
+struct AlignmentAndOffset {
+  uint8_t Alignment { 0 };
+  uint8_t AlignmentOffset { 0 };
+
+  AlignmentAndOffset() = default;
+
+  AlignmentAndOffset(uint8_t Alignment, uint8_t AlignmentOffset):
+    Alignment(Alignment), AlignmentOffset(AlignmentOffset) {
+  }
+
+  bool operator==(const AlignmentAndOffset& Other) const {
+    return Alignment == Other.Alignment && AlignmentOffset == Other.AlignmentOffset;
+  }
+
+  size_t hash() const {
+    return std::hash<uint8_t>()(Alignment) + AlignmentOffset;
+  }
+};
+
+struct OptimizedAlignmentContradictionOriginKey {
+  std::vector<AlignmentAndOffset> Alignments;
+  DILocation* ScheduledDI { nullptr };
+  const CombinedDI* SemanticDI { nullptr };
+
+  OptimizedAlignmentContradictionOriginKey() = default;
+
+  OptimizedAlignmentContradictionOriginKey(const std::vector<AlignmentAndOffset>& Alignments,
+                                           DILocation* ScheduledDI, const CombinedDI* SemanticDI):
+    Alignments(Alignments), ScheduledDI(ScheduledDI), SemanticDI(SemanticDI) {
+  }
+
+  bool operator==(const OptimizedAlignmentContradictionOriginKey& Other) const {
+    return Alignments == Other.Alignments && ScheduledDI == Other.ScheduledDI
+      && SemanticDI == Other.SemanticDI;
+  }
+
+  size_t hash() const {
+    size_t Result = Alignments.size();
+    for (AlignmentAndOffset Alignment : Alignments)
+      Result += Alignment.hash();
+    Result += std::hash<DILocation*>()(ScheduledDI);
+    Result += std::hash<const CombinedDI*>()(SemanticDI);
+    return Result;
+  }
+};
+
+struct TypeCheckAndOffset {
+  int32_t Offset { 0 };
+  int8_t Size { 0 };
+  WordType Type { WordTypeUnset };
+
+  TypeCheckAndOffset() = default;
+
+  TypeCheckAndOffset(int32_t Offset, int8_t Size, WordType Type):
+    Offset(Offset), Size(Size), Type(Type) {
+  }
+
+  bool operator==(const TypeCheckAndOffset& Other) const {
+    return Offset == Other.Offset && Size == Other.Size && Type == Other.Type;
+  }
+
+  size_t hash() const {
+    return std::hash<int32_t>()(Offset) + Size + Type;
+  }
+};
+
+struct OptimizedTypeContradictionOriginKey {
+  std::vector<TypeCheckAndOffset> Checks;
+  DILocation* ScheduledDI { nullptr };
+  const CombinedDI* SemanticDI { nullptr };
+
+  OptimizedTypeContradictionOriginKey() = default;
+
+  OptimizedTypeContradictionOriginKey(const std::vector<TypeCheckAndOffset>& Checks,
+                                      DILocation* ScheduledDI, const CombinedDI* SemanticDI):
+    Checks(Checks), ScheduledDI(ScheduledDI), SemanticDI(SemanticDI) {
+  }
+
+  bool operator==(const OptimizedTypeContradictionOriginKey& Other) const {
+    return Checks == Other.Checks && ScheduledDI == Other.ScheduledDI
+      && SemanticDI == Other.SemanticDI;
+  }
+
+  size_t hash() const {
+    size_t Result = Checks.size();
+    for (TypeCheckAndOffset Check : Checks)
+      Result += Check.hash();
+    Result += std::hash<DILocation*>()(ScheduledDI);
+    Result += std::hash<const CombinedDI*>()(SemanticDI);
+    return Result;
+  }
+};
+
 } // anonymous namespace
 
 template<> struct std::hash<GEPKey> {
@@ -504,7 +990,74 @@ template<> struct std::hash<GEPKey> {
   }
 };
 
+template<> struct std::hash<OptimizedAccessCheckOriginKey> {
+  size_t operator()(const OptimizedAccessCheckOriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<OptimizedAlignmentContradictionOriginKey> {
+  size_t operator()(const OptimizedAlignmentContradictionOriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
+template<> struct std::hash<OptimizedTypeContradictionOriginKey> {
+  size_t operator()(const OptimizedTypeContradictionOriginKey& Key) const {
+    return Key.hash();
+  }
+};
+
 namespace {
+
+struct TypeCheckUnit {
+  int64_t Offset { 0 };
+  WordType Type { WordTypeUnset };
+  const CombinedDI* DI { nullptr };
+
+  TypeCheckUnit() = default;
+
+  TypeCheckUnit(int64_t Offset, WordType Type, const CombinedDI* DI):
+    Offset(Offset), Type(Type), DI(DI) {
+    assert(Type == WordTypeInt || Type == WordTypePtr);
+  }
+
+  explicit operator bool() const {
+    return Type != WordTypeUnset;
+  }
+
+  bool operator<(const TypeCheckUnit& Other) const {
+    if (Offset != Other.Offset)
+      return Offset < Other.Offset;
+
+    return Type < Other.Type;
+  }
+
+  void print(raw_ostream& OS) const {
+    OS << Offset << ":" << wordTypeString(Type);
+  }
+};
+
+raw_ostream& operator<<(raw_ostream& OS, const TypeCheckUnit& TCU) {
+  TCU.print(OS);
+  return OS;
+}
+
+raw_ostream& operator<<(raw_ostream& OS, const std::vector<TypeCheckUnit>& TCUs) {
+  return PrintVector(OS, TCUs);
+}
+
+template<typename VectorT, typename FuncT>
+void EraseIf(VectorT& V, const FuncT& F) {
+  size_t SrcIndex = 0;
+  size_t DstIndex = 0;
+  while (SrcIndex < V.size()) {
+    auto Value = std::move(V[SrcIndex++]);
+    if (!F(Value))
+      V[DstIndex++] = std::move(Value);
+  }
+  V.resize(DstIndex);
+}
 
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
@@ -538,6 +1091,8 @@ class Pizlonator {
   StructType* ThreadTy;
   StructType* ConstantRelocationTy;
   StructType* ConstexprNodeTy;
+  StructType* AlignmentAndOffsetTy;
+  StructType* TypeCheckAndOffsetTy;
   FunctionType* PizlonatedFuncTy;
   FunctionType* GlobalGetterTy;
   FunctionType* CtorDtorTy;
@@ -569,6 +1124,9 @@ class Pizlonator {
   FunctionCallee CheckWriteInt64Fail;
   FunctionCallee CheckWriteInt128Fail;
   FunctionCallee CheckWritePtrFail;
+  FunctionCallee OptimizedAlignmentContradiction;
+  FunctionCallee OptimizedTypeContradiction;
+  FunctionCallee OptimizedAccessCheckFail;
   FunctionCallee CheckFunctionCallFail;
   FunctionCallee Memset;
   FunctionCallee Memmove;
@@ -596,16 +1154,26 @@ class Pizlonator {
   Constant* PtrCCType;
   Constant* IsMarking;
 
+  std::unordered_set<CombinedDI> CombinedDIs;
+  std::unordered_map<std::pair<const CombinedDI*, const CombinedDI*>,
+                     const CombinedDI*> CombinedDIMaker;
+  std::unordered_map<DILocation*, const CombinedDI*> BasicDIs;
+  
   std::unordered_map<std::string, GlobalVariable*> Strings;
   std::unordered_map<FunctionOriginKey, GlobalVariable*> FunctionOrigins;
   std::unordered_map<OriginKey, GlobalVariable*> Origins;
   std::unordered_map<InlineFrameKey, GlobalVariable*> InlineFrames;
-  std::unordered_map<EHDataKey, GlobalVariable*> EHDatas; /* the value is a high-level GV, need to lookup
-                                                             the getter. */
+  std::unordered_map<EHDataKey, GlobalVariable*> EHDatas; /* the value is a high-level GV, need to
+                                                             lookup the getter. */
   std::unordered_map<Constant*, int> EHTypeIDs;
   std::unordered_map<CallBase*, unsigned> Setjmps;
   std::unordered_map<Type*, Constant*> CCTypes;
-  std::unordered_map<Instruction*, std::vector<AccessCheck>> ChecksForInst;
+  std::unordered_map<Instruction*, std::vector<AccessCheckWithDI>> ChecksForInst;
+  std::unordered_map<OptimizedAccessCheckOriginKey, GlobalVariable*> OptimizedAccessCheckOrigins;
+  std::unordered_map<OptimizedAlignmentContradictionOriginKey,
+                     GlobalVariable*> OptimizedAlignmentContradictionOrigins;
+  std::unordered_map<OptimizedTypeContradictionOriginKey,
+                     GlobalVariable*> OptimizedTypeContradictionOrigins;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
@@ -892,7 +1460,7 @@ class Pizlonator {
   Value* expectFalse(Value* Predicate, Instruction* InsertBefore) {
     return expectBool(Predicate, false, InsertBefore);
   }
-  
+
   void inlineCheckAccess(Value* P, size_t SizeAndAlignment, AccessKind AK, WordType ExpectedType,
                          FunctionCallee AccessFailure, Instruction* InsertBefore, DebugLoc DI) {
     assert(SizeAndAlignment >= 1);
@@ -1749,8 +2317,8 @@ class Pizlonator {
           }
         }
 
-        // NOTE: We might be given IR with unreachable blocks. Those will have live-at-head. Like, whatever.
-        // But if it's the root block and it has live-at-head then what the fugc.
+        // NOTE: We might be given IR with unreachable blocks. Those will have live-at-head. Like,
+        // whatever. But if it's the root block and it has live-at-head then what the fugc.
         if (!BlockIndex) {
           for (Value* V : Live)
             assert(isa<Argument>(V));
@@ -1939,8 +2507,10 @@ class Pizlonator {
   }
 
   void recordObjects(Value* ValueKey, Type* LowT, Value* V, Instruction* InsertBefore) {
-    if (verbose)
-      errs() << "Recording objects for " << *ValueKey << ", LowT = " << *LowT << ", V = " << *V << "\n";
+    if (verbose) {
+      errs() << "Recording objects for " << *ValueKey << ", LowT = " << *LowT << ", V = " << *V
+             << "\n";
+    }
     size_t PtrIndex = 0;
     recordObjectsRecurse(ValueKey, LowT, V, PtrIndex, InsertBefore);
     assert(PtrIndex == countPtrs(ValueKey->getType()));
@@ -1950,13 +2520,872 @@ class Pizlonator {
     recordObjects(V, lowerType(V->getType()), V, InsertBefore);
   }
 
-  void buildChecksRecurse(Type* LowT, Value* HighP, size_t Offset, size_t Alignment, AccessKind AK,
-                          DebugLoc DI, std::vector<AccessCheck>& Checks) {
-    if (!hasPtrsForCheck(LowT)) {
+  Constant* optimizedAccessCheckOrigin(
+    int64_t Size, int64_t Alignment, int64_t AlignmentOffset, WordType WordType, bool NeedsWrite,
+    DebugLoc ScheduledDI, const CombinedDI* SemanticDI) {
+    assert(static_cast<uint32_t>(Size) == Size);
+    assert(static_cast<uint8_t>(Alignment) == Alignment);
+    assert(static_cast<uint8_t>(AlignmentOffset) == AlignmentOffset);
+
+    OptimizedAccessCheckOriginKey OACOK(
+      static_cast<uint32_t>(Size), static_cast<uint8_t>(Alignment),
+      static_cast<uint8_t>(AlignmentOffset), WordType, NeedsWrite, ScheduledDI, SemanticDI);
+    auto Iter = OptimizedAccessCheckOrigins.find(OACOK);
+    if (Iter != OptimizedAccessCheckOrigins.end())
+      return Iter->second;
+
+    size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
+    ArrayType* AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
+    StructType* ST = StructType::get(
+      C, { Int32Ty, Int8Ty, Int8Ty, Int8Ty, Int8Ty, LowRawPtrTy, AT });
+    std::vector<Constant*> SemanticDICs;
+    if (SemanticDI) {
+      for (DILocation* DI : SemanticDI->Locations)
+        SemanticDICs.push_back(getOrigin(DI));
+    }
+    SemanticDICs.push_back(LowRawNull);
+    Constant* CS = ConstantStruct::get(
+      ST,
+      { ConstantInt::get(Int32Ty, Size), ConstantInt::get(Int8Ty, Alignment),
+        ConstantInt::get(Int8Ty, AlignmentOffset), ConstantInt::get(Int8Ty, WordType),
+        ConstantInt::get(Int8Ty, static_cast<int>(NeedsWrite)), getOrigin(ScheduledDI),
+        ConstantArray::get(AT, SemanticDICs) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, ST, true, GlobalVariable::PrivateLinkage, CS, "filc_optimized_access_check_origin");
+    OptimizedAccessCheckOrigins[OACOK] = Result;
+    return Result;
+  }
+
+  Constant* optimizedAlignmentContradictionOrigin(
+    const std::vector<AlignmentAndOffset>& Alignments, DebugLoc ScheduledDI,
+    const CombinedDI* SemanticDI) {
+    assert(Alignments.size() >= 2);
+
+    OptimizedAlignmentContradictionOriginKey OACOK(Alignments, ScheduledDI, SemanticDI);
+    auto Iter = OptimizedAlignmentContradictionOrigins.find(OACOK);
+    if (Iter != OptimizedAlignmentContradictionOrigins.end())
+      return Iter->second;
+
+    std::vector<Constant*> AlignmentConsts;
+    for (AlignmentAndOffset Alignment : Alignments) {
+      AlignmentConsts.push_back(
+        ConstantStruct::get(
+          AlignmentAndOffsetTy,
+          { ConstantInt::get(Int8Ty, Alignment.Alignment),
+            ConstantInt::get(Int8Ty, Alignment.AlignmentOffset) }));
+    }
+    AlignmentConsts.push_back(
+      ConstantStruct::get(
+        AlignmentAndOffsetTy, { ConstantInt::get(Int8Ty, 0), ConstantInt::get(Int8Ty, 0) }));
+    ArrayType* AT = ArrayType::get(AlignmentAndOffsetTy, AlignmentConsts.size());
+    GlobalVariable* AlignmentsG = new GlobalVariable(
+      M, AT, true, GlobalVariable::PrivateLinkage, ConstantArray::get(AT, AlignmentConsts),
+      "filc_alignments_and_offsets");
+
+    size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
+    AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
+    StructType* ST = StructType::get(C, { LowRawPtrTy, LowRawPtrTy, AT });
+    std::vector<Constant*> SemanticDICs;
+    if (SemanticDI) {
+      for (DILocation* DI : SemanticDI->Locations)
+        SemanticDICs.push_back(getOrigin(DI));
+    }
+    SemanticDICs.push_back(LowRawNull);
+    Constant* CS = ConstantStruct::get(
+      ST, { AlignmentsG, getOrigin(ScheduledDI), ConstantArray::get(AT, SemanticDICs) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, ST, true, GlobalVariable::PrivateLinkage, CS,
+      "filc_optimized_alignment_contradiction_origin");
+    OptimizedAlignmentContradictionOrigins[OACOK] = Result;
+    return Result;
+  }
+
+  Constant* optimizedTypeContradictionOrigin(
+    const std::vector<TypeCheckAndOffset>& Checks, DebugLoc ScheduledDI,
+    const CombinedDI* SemanticDI) {
+    assert(Checks.size() >= 2);
+
+    OptimizedTypeContradictionOriginKey OTCOK(Checks, ScheduledDI, SemanticDI);
+    auto Iter = OptimizedTypeContradictionOrigins.find(OTCOK);
+    if (Iter != OptimizedTypeContradictionOrigins.end())
+      return Iter->second;
+
+    std::vector<Constant*> CheckConsts;
+    for (TypeCheckAndOffset Check : Checks) {
+      CheckConsts.push_back(
+        ConstantStruct::get(
+          TypeCheckAndOffsetTy,
+          { ConstantInt::get(Int32Ty, Check.Offset),
+            ConstantInt::get(Int8Ty, Check.Size),
+            ConstantInt::get(Int8Ty, static_cast<uint8_t>(Check.Type)) }));
+    }
+    CheckConsts.push_back(
+      ConstantStruct::get(
+        TypeCheckAndOffsetTy,
+        { ConstantInt::get(Int32Ty, 0),
+          ConstantInt::get(Int8Ty, 0),
+          ConstantInt::get(Int8Ty, static_cast<uint8_t>(WordTypeUnset)) }));
+    ArrayType* AT = ArrayType::get(TypeCheckAndOffsetTy, CheckConsts.size());
+    GlobalVariable* ChecksG = new GlobalVariable(
+      M, AT, true, GlobalVariable::PrivateLinkage, ConstantArray::get(AT, CheckConsts),
+      "filc_type_checks_and_offsets");
+
+    size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
+    AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
+    StructType* ST = StructType::get(C, { LowRawPtrTy, LowRawPtrTy, AT });
+    std::vector<Constant*> SemanticDICs;
+    if (SemanticDI) {
+      for (DILocation* DI : SemanticDI->Locations)
+        SemanticDICs.push_back(getOrigin(DI));
+    }
+    SemanticDICs.push_back(LowRawNull);
+    Constant* CS = ConstantStruct::get(
+      ST, { ChecksG, getOrigin(ScheduledDI), ConstantArray::get(AT, SemanticDICs) });
+    GlobalVariable* Result = new GlobalVariable(
+      M, ST, true, GlobalVariable::PrivateLinkage, CS,
+      "filc_optimized_type_contradiction_origin");
+    OptimizedTypeContradictionOrigins[OTCOK] = Result;
+    return Result;
+  }
+
+  template<typename CheckT>
+  void checkCanonicalizedAccessChecks(const std::vector<CheckT>& Checks) {
+    for (size_t Index = 0; Index < Checks.size();) {
+      Value* CanonicalPtr = Checks[Index].CanonicalPtr;
+
+      auto failAssert = [&] (const char* File, int Line, const char* Expression) {
+        errs() << File << ":" << Line << ": assertion " << Expression << " failed for checks on "
+               << CanonicalPtr << ":" << CanonicalPtr->getName() << ":\n"
+               << "    " << Checks << "\n";
+        llvm_unreachable("checkCanonicalizedAccessChecks found an issue with checks!");
+      };
+
+#define acAssert(exp) do { \
+        if (!(exp)) \
+          failAssert(__FILE__, __LINE__, #exp); \
+      } while (false)
+    
+      int64_t Alignment = 0;
+      int64_t AlignmentOffset = 0;
+      bool AlignmentContradiction = false;
+      int64_t LowerBoundOffset = 0;
+      bool HasLowerBound = false;
+      int64_t UpperBoundOffset = 0;
+      bool HasUpperBound = false;
+      
+      size_t BeginIndex = Index;
+      size_t EndIndex;
+      for (EndIndex = BeginIndex;
+           EndIndex < Checks.size() && Checks[EndIndex].CanonicalPtr == CanonicalPtr;
+           ++EndIndex) {
+        CheckT AC = Checks[EndIndex];
+        switch (AC.CK) {
+        case CheckKind::Alignment:
+        case CheckKind::KnownAlignment:
+        case CheckKind::MergedAlignment:
+          if (Alignment) {
+            acAssert((AlignmentOffset % AC.Size) != AC.Offset);
+            AlignmentContradiction = true;
+          } else {
+            Alignment = AC.Size;
+            AlignmentOffset = AC.Offset;
+            acAssert(AlignmentOffset >= 0);
+            acAssert(AlignmentOffset < Alignment);
+          }
+          break;
+        case CheckKind::KnownLowerBound:
+        case CheckKind::LowerBound:
+          HasLowerBound = true;
+          LowerBoundOffset = AC.Offset;
+          break;
+        case CheckKind::UpperBound:
+          HasUpperBound = true;
+          UpperBoundOffset = AC.Offset;
+          break;
+        case CheckKind::TypeIsInt:
+        case CheckKind::TypeIsPtr:
+          if (!AlignmentContradiction) {
+            acAssert(Alignment >= AC.Size);
+            acAssert(!((AC.Offset - AlignmentOffset) % AC.Size));
+          }
+          acAssert(HasLowerBound);
+          acAssert(AC.Offset >= LowerBoundOffset);
+          if (HasUpperBound)
+            acAssert(AC.Offset + AC.Size <= UpperBoundOffset);
+          break;
+        default:
+          break;
+        }
+      }
+
+      if (HasUpperBound)
+        acAssert(HasLowerBound);
+
+      Index = EndIndex;
+    }
+  }
+
+  void emitChecksForInst(Instruction* Inst) {
+    if (verbose)
+      errs() << "Emitting checks for " << *Inst << "\n";
+    auto Iter = ChecksForInst.find(Inst);
+    if (Iter == ChecksForInst.end())
+      return;
+    std::vector<AccessCheckWithDI> Checks = Iter->second;
+    if (verbose)
+      errs() << "Raw checks: " << Checks << "\n";
+    canonicalizeAccessChecks(Checks);
+    if (verbose)
+      errs() << "Canonicalized checks: " << Checks << "\n";
+
+    for (size_t Index = 0; Index < Checks.size();) {
+      Value* CanonicalPtr = Checks[Index].CanonicalPtr;
+      Value* LoweredPtr = lowerConstantValue(CanonicalPtr, Inst, LowRawNull);
+
+      auto loweredPtrWithOffset = [&] (int64_t Offset, Instruction* InsertBefore) {
+        assert((int32_t)Offset == Offset);
+        assert(LoweredPtr);
+        
+        if (!useAsmForOffsets)
+          return ptrWithOffset(LoweredPtr, ConstantInt::get(IntPtrTy, Offset), InsertBefore);
+        
+        Value* LowP = ptrPtr(LoweredPtr, InsertBefore);
+        std::ostringstream buf;
+        buf << "leaq " << Offset << "($1), $0";
+        FunctionCallee Asm = InlineAsm::get(
+          FunctionType::get(LowRawPtrTy, { LowRawPtrTy }, false),
+          buf.str(), "=r,r,~{dirflag},~{fpsr},~{flags}",
+          /*hasSideEffects=*/false);
+        Instruction* OffsetP = CallInst::Create(Asm, { LowP }, "filc_lea", InsertBefore);
+        OffsetP->setDebugLoc(Inst->getDebugLoc());
+        return ptrWithPtr(LoweredPtr, OffsetP, InsertBefore);
+      };
+      
+      int64_t Alignment = 0;
+      int64_t AlignmentOffset = 0;
+      bool AlignmentContradiction = false;
+      bool NeedsWritable = false;
+      int64_t LowerBoundOffset = 0;
+      bool HasLowerBound = false;
+      int64_t UpperBoundOffset = 0;
+      bool HasUpperBound = false;
+      bool HasTypeCheck = false;
+      bool HasRangeCheck = false; // We use "Range" to mean everything that isn't a type check.
+      const CombinedDI* RangeDI = nullptr;
+      bool HasFreeCheck = false;
+      bool HasPtrCheck = false;
+
+      size_t BeginIndex = Index;
+      size_t EndIndex;
+      for (EndIndex = BeginIndex;
+           EndIndex < Checks.size() && Checks[EndIndex].CanonicalPtr == CanonicalPtr;
+           ++EndIndex) {
+        AccessCheckWithDI AC = Checks[EndIndex];
+        switch (AC.CK) {
+        case CheckKind::ValidObject:
+          HasRangeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::Alignment:
+        case CheckKind::KnownAlignment:
+        case CheckKind::MergedAlignment:
+          if (Alignment)
+            AlignmentContradiction = true;
+          Alignment = AC.Size;
+          AlignmentOffset = AC.Offset;
+          HasRangeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::CanWrite:
+          NeedsWritable = true;
+          HasRangeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::KnownLowerBound:
+        case CheckKind::LowerBound:
+          LowerBoundOffset = AC.Offset;
+          HasLowerBound = true;
+          HasRangeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::UpperBound:
+          UpperBoundOffset = AC.Offset;
+          HasUpperBound = true;
+          HasRangeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::TypeIsInt:
+          HasTypeCheck = true;
+          break;
+        case CheckKind::TypeIsPtr:
+          HasTypeCheck = true;
+          HasPtrCheck = true;
+          break;
+        case CheckKind::NotFree:
+          HasRangeCheck = true;
+          HasFreeCheck = true;
+          RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        }
+      }
+      assert(EndIndex > BeginIndex);
+      assert(EndIndex <= Checks.size());
+
+      Index = EndIndex;
+
+      if (AlignmentContradiction) {
+        std::vector<AlignmentAndOffset> Alignments;
+        for (size_t SubIndex = BeginIndex; SubIndex < EndIndex; ++SubIndex) {
+          AccessCheckWithDI AC = Checks[SubIndex];
+          switch (AC.CK) {
+          case CheckKind::Alignment:
+          case CheckKind::KnownAlignment:
+          case CheckKind::MergedAlignment:
+            assert(static_cast<uint8_t>(AC.Offset) == AC.Offset);
+            assert(static_cast<uint8_t>(AC.Size) == AC.Size);
+            Alignments.push_back(AlignmentAndOffset(AC.Size, AC.Offset));
+            break;
+
+          default:
+            break;
+          }
+        }
+
+        CallInst::Create(
+          OptimizedAlignmentContradiction, {
+            LoweredPtr,
+            optimizedAlignmentContradictionOrigin(Alignments, Inst->getDebugLoc(), RangeDI) }, "",
+          Inst)->setDebugLoc(Inst->getDebugLoc());
+        continue;
+      }
+
+      if (HasTypeCheck)
+        assert(Alignment);
+      else if (!Alignment) {
+        assert(!AlignmentOffset);
+        Alignment = 1;
+      }
+      assert(Alignment == 1 || Alignment == 2 || Alignment == 4 || Alignment == 8 || Alignment == 16);
+      assert(AlignmentOffset < Alignment);
+
+      if (HasUpperBound) {
+        // It's not clear if we're actually doing this right.
+        //
+        // Forward propagation by itself does the right thing: if it eliminates a lower bound check,
+        // it replaces it with KnownLowerBound. That's fine.
+        //
+        // But does backward propagation do the right thing? In backward propagation, we convert the
+        // known lower bound checks to just plain lower bound checks. Do they then survive correctly?
+        //
+        // I guess we'll find out!
+        assert(HasLowerBound);
+        assert(UpperBoundOffset > LowerBoundOffset);
+      }
+
+      BasicBlock* RangeFailB = nullptr;
+      if (HasRangeCheck) {
+        RangeFailB = BasicBlock::Create(C, "filc_range_fail_block", NewF);
+        Instruction* RangeFailTerm = new UnreachableInst(C, RangeFailB);
+        CallInst::Create(
+          OptimizedAccessCheckFail,
+          { loweredPtrWithOffset(LowerBoundOffset, RangeFailTerm),
+            optimizedAccessCheckOrigin(
+              HasUpperBound ? UpperBoundOffset - LowerBoundOffset : 0, Alignment,
+              PositiveModulo(AlignmentOffset - LowerBoundOffset, Alignment), WordTypeUnset,
+              NeedsWritable, Inst->getDebugLoc(), RangeDI) },
+          "", RangeFailTerm)->setDebugLoc(Inst->getDebugLoc());
+      }
+
+      std::vector<TypeCheckUnit> TypeCheckUnits;
+      
+      for (size_t SubIndex = BeginIndex; SubIndex < EndIndex; ++SubIndex) {
+        AccessCheckWithDI AC = Checks[SubIndex];
+        switch (AC.CK) {
+        case CheckKind::ValidObject: {
+          ICmpInst* NullObject = new ICmpInst(
+            Inst, ICmpInst::ICMP_EQ, ptrObject(LoweredPtr, Inst), LowRawNull,
+            "filc_null_access_object");
+          NullObject->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfThen(
+            expectFalse(NullObject, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+
+        case CheckKind::KnownAlignment:
+          break;
+
+        case CheckKind::Alignment:
+        case CheckKind::MergedAlignment: {
+          assert(AC.Size == 1 || AC.Size == 2 || AC.Size == 4 || AC.Size == 8 || AC.Size == 16);
+          if (AC.Size == 1)
+            break;
+          Instruction* PtrInt = new PtrToIntInst(
+            ptrPtr(loweredPtrWithOffset(AC.Offset, Inst), Inst), IntPtrTy, "filc_ptr_as_int", Inst);
+          PtrInt->setDebugLoc(Inst->getDebugLoc());
+          Instruction* Masked = BinaryOperator::Create(
+            Instruction::And, PtrInt, ConstantInt::get(IntPtrTy, AC.Size - 1),
+            "filc_ptr_alignment_masked", Inst);
+          Masked->setDebugLoc(Inst->getDebugLoc());
+          ICmpInst* IsAligned = new ICmpInst(
+            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
+            "filc_ptr_is_aligned");
+          IsAligned->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfElse(
+            expectTrue(IsAligned, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+
+        case CheckKind::CanWrite: {
+          assert(NeedsWritable);
+          BinaryOperator* Masked = BinaryOperator::Create(
+            Instruction::And, objectFlags(ptrObject(LoweredPtr, Inst), Inst),
+            ConstantInt::get(Int16Ty, ObjectFlagReadonly | (HasFreeCheck ? ObjectFlagFree : 0)),
+            "filc_flags_masked", Inst);
+          Masked->setDebugLoc(Inst->getDebugLoc());
+          ICmpInst* IsNotReadOnly = new ICmpInst(
+            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0),
+            "filc_object_is_not_read_only");
+          IsNotReadOnly->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfElse(
+            expectTrue(IsNotReadOnly, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+
+        case CheckKind::NotFree: {
+          assert(HasFreeCheck);
+          if (HasTypeCheck || NeedsWritable)
+            break;
+          BinaryOperator* Masked = BinaryOperator::Create(
+            Instruction::And, objectFlags(ptrObject(LoweredPtr, Inst), Inst),
+            ConstantInt::get(Int16Ty, ObjectFlagFree), "filc_flags_masked", Inst);
+          Masked->setDebugLoc(Inst->getDebugLoc());
+          ICmpInst* IsNotFree = new ICmpInst(
+            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0),
+            "filc_object_is_not_free");
+          IsNotFree->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfElse(
+            expectTrue(IsNotFree, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+          
+        case CheckKind::UpperBound: {
+          assert(HasLowerBound);
+          assert(HasUpperBound);
+          assert(UpperBoundOffset > LowerBoundOffset);
+          Value* Upper = objectUpper(ptrObject(LoweredPtr, Inst), Inst);
+          Value* Ptr = ptrPtr(loweredPtrWithOffset(LowerBoundOffset, Inst), Inst);
+          Instruction* IsBelowUpper;
+          if (UpperBoundOffset - LowerBoundOffset == Alignment
+              && !AlignmentContradiction
+              // It's possible for the distance between upper bound and lower bound to be 16, but
+              // the KnownAlignment to be 16, but we're actually checking a 16-sized range of bytes
+              // not aligned to 16 (that straddle two 16 byte words).
+              && PositiveModulo(UpperBoundOffset, Alignment) == AlignmentOffset) {
+            assert(PositiveModulo(LowerBoundOffset, Alignment) == AlignmentOffset);
+            IsBelowUpper = new ICmpInst(
+              Inst, ICmpInst::ICMP_ULT, Ptr, Upper, "filc_ptr_below_upper");
+          } else {
+            Instruction* UpperMinus = GetElementPtrInst::Create(
+              Int8Ty, Upper, { ConstantInt::get(IntPtrTy, LowerBoundOffset - UpperBoundOffset) },
+              "filc_upper_minus", Inst);
+            UpperMinus->setDebugLoc(Inst->getDebugLoc());
+            IsBelowUpper = new ICmpInst(
+              Inst, ICmpInst::ICMP_ULE, Ptr, UpperMinus, "filc_ptr_below_equal_upper");
+          }
+          IsBelowUpper->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfElse(
+            expectTrue(IsBelowUpper, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+
+        case CheckKind::KnownLowerBound:
+          assert(HasLowerBound);
+          break;
+
+        case CheckKind::LowerBound: {
+          assert(HasLowerBound);
+          Instruction* IsBelowLower = new ICmpInst(
+            Inst, ICmpInst::ICMP_ULT, ptrPtr(loweredPtrWithOffset(LowerBoundOffset, Inst), Inst),
+            objectLower(ptrObject(LoweredPtr, Inst), Inst), "filc_ptr_below_lower");
+          IsBelowLower->setDebugLoc(Inst->getDebugLoc());
+          SplitBlockAndInsertIfThen(
+            expectFalse(IsBelowLower, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
+          break;
+        }
+
+        case CheckKind::TypeIsInt: {
+          assert(!((AC.Offset - AlignmentOffset) % AC.Size));
+          assert(AC.Size <= Alignment);
+          assert(Alignment == 1 || Alignment == 2 || Alignment == 4 || Alignment == 8 ||
+                 Alignment == 16);
+          // Note that it's super important to use masking to round to alignment, rather than
+          // doing /Alignment*Alignment, because we want to round down to negative infinity.
+          TypeCheckUnits.push_back(
+            TypeCheckUnit(((AC.Offset - AlignmentOffset) & -Alignment) + AlignmentOffset,
+                          WordTypeInt, AC.DI));
+          break;
+        }
+
+        case CheckKind::TypeIsPtr: {
+          assert(AC.Size == WordSize);
+          assert(Alignment == WordSize);
+          assert(!((AC.Offset - AlignmentOffset) % WordSize));
+          assert(HasPtrCheck);
+          TypeCheckUnits.push_back(TypeCheckUnit(AC.Offset, WordTypePtr, AC.DI));
+          break;
+        } }
+      }
+
+      // NOTE: This is only really needed if HasPtrCheck, but it's harmless.
+      std::sort(TypeCheckUnits.begin(), TypeCheckUnits.end());
+
+      if (verbose)
+        errs() << "Type check units: " << TypeCheckUnits << "\n";
+      
+      TypeCheckUnit LastTCU;
+      size_t SrcIndex = 0;
+      size_t DstIndex = 0;
+      bool HasContradiction = false;
+      while (SrcIndex < TypeCheckUnits.size()) {
+        TypeCheckUnit TCU = TypeCheckUnits[SrcIndex++];
+        assert(!((TCU.Offset - AlignmentOffset) % Alignment));
+        if (LastTCU) {
+          assert(TCU.Offset >= LastTCU.Offset);
+          if (LastTCU.Offset == TCU.Offset) {
+            if (LastTCU.Type == TCU.Type) {
+              assert(DstIndex > 0);
+              assert(TCU.Type == WordTypeInt); // ptr checks should have already been coalesced.
+              TypeCheckUnits[DstIndex - 1].DI = combineDI(LastTCU.DI, TCU.DI);
+              continue;
+            }
+            HasContradiction = true;
+          }
+        }
+        TypeCheckUnits[DstIndex++] = TCU;
+        LastTCU = TCU;
+      }
+      TypeCheckUnits.resize(DstIndex);
+      
+      if (verbose)
+        errs() << "Type check units after redundancy removal: " << TypeCheckUnits << "\n";
+      
+      if (HasContradiction) {
+        assert(TypeCheckUnits.size() >= 2);
+        assert(HasPtrCheck);
+        const CombinedDI* TypeDI = nullptr;
+        std::vector<TypeCheckAndOffset> ContradictoryChecks;
+        for (size_t SubIndex = BeginIndex; SubIndex < EndIndex; ++SubIndex) {
+          AccessCheckWithDI AC = Checks[SubIndex];
+          switch (AC.CK) {
+          case CheckKind::TypeIsInt:
+            ContradictoryChecks.push_back(TypeCheckAndOffset(AC.Offset, AC.Size, WordTypeInt));
+            TypeDI = combineDI(TypeDI, AC.DI);
+            break;
+          case CheckKind::TypeIsPtr:
+            ContradictoryChecks.push_back(TypeCheckAndOffset(AC.Offset, WordSize, WordTypePtr));
+            TypeDI = combineDI(TypeDI, AC.DI);
+            break;
+          default:
+            break;
+          }
+        }
+        CallInst::Create(
+          OptimizedTypeContradiction, {
+            LoweredPtr,
+            optimizedTypeContradictionOrigin(ContradictoryChecks, Inst->getDebugLoc(), TypeDI) }, "",
+          Inst)->setDebugLoc(Inst->getDebugLoc());
+        continue;
+      }
+
+      if (Alignment < static_cast<int64_t>(WordSize)) {
+        assert(!HasPtrCheck);
+
+        // Some guidelines.
+        //
+        // First of all, it's worth noting that the pass we do here is optional from a semantics
+        // standpoint. Things should work correctly even if we don't do this. Worst case, we'll have
+        // DIs that don't tell you all of the accesses that contributed to the check.
+        //
+        // Assuming Alignment==4:
+        // - Say we have a 12 byte range starting at Offset==Foo. Then we would have a TCU with
+        //   Offset=Foo and another TCU with Offset=Foo+8.
+        // - Say we have a 16 byte range starting at Offset==Foo. Then we would have a TCU with
+        //   Offset=Foo and another TCU with Offset=Foo+12.
+        // - Say we have a 20 byte range starting at Offset==Foo. Then we would have a TCU with
+        //   Offset=Foo and another TCU with Offset=Foo+16. And that would get coalesced, as expected.
+        //
+        // The TCUs that come out of this pass need to be careful about DIs. Say we have a 32 byte
+        // range with 8 4-byte accesses. In that case, we'd start with:
+        //
+        //  TCU0  TCU1  TCU2  TCU3  TCU4  TCU5  TCU6  TCU7
+        //
+        // And we end up with:
+        //
+        // cTCU0                   cTCU1             cTCU2
+        //
+        // So, DIs are:
+        //
+        // cTCU0.DI = combineDI(TCU0, TCU1, TCU2, TCU3)
+        // cTCU1.DI = combineDI(TCU1, TCU2, TCU3, TCU4, TCU5, TCU6, TCU7)
+        // cTCU2.DI = combineDI(TCU5, TCU6, TCU7)
+        //
+        // Let's consider another example. 20 bytes with 5 4-byte accesses. In that case:
+        //
+        //  TCU0  TCU1  TCU2  TCU3  TCU4
+        //
+        // And we convert to:
+        //
+        // cTCU0                   cTCU1
+        //
+        // And the DIs are:
+        //
+        // cTCU0.DI = combineDI(TCU0, TCU1, TCU2, TCU3)
+        // cTCU1.DI = combineDI(TCU1, TCU2, TCU3, TCU4)
+        //
+        // In other words, for each cTCU, we combine DIs from all TCU's that are included in every
+        // possible WordSize-span that includes the cTCU, which for 4-byte alignment might mean seven
+        // TCUs for a total of 28 bytes. But, if scanning TCUs left of the cTCU's offset hits an
+        // offset already covered by a cTCU, then we don't include that DI (and this case can only
+        // happen for the last cTCU).
+
+        std::vector<TypeCheckUnit> NewTypeCheckUnits;
+        
+        for (size_t Index = 0; Index < TypeCheckUnits.size(); ++Index) {
+          TypeCheckUnit TCU = TypeCheckUnits[Index];
+
+          // Always add the very first TCU no matter what.
+          if (!Index ||
+              // This ensures that:
+              // - For a contiguous span, we emit a TCU once per WordSize.
+              // - If there's a WordSize or bigger gap between TCUs, then emit a TCU for the beginning
+              //   of the next span.
+              TCU.Offset - NewTypeCheckUnits.back().Offset >= static_cast<int64_t>(WordSize) ||
+              // This ensures that we emit a TCU for the last entry in a contiguous span, by detecting
+              // if the next TCU has a WordSize gap from the one we emitted. Note that:
+              //
+              //     TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset > WordSize
+              //
+              // Is just like saying:
+              //
+              //     TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset + Alignment
+              //         >= WordSize
+              (Index + 1 < TypeCheckUnits.size() &&
+               (TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset
+                > static_cast<int64_t>(WordSize))) ||
+              // Always add the very last TCU no matter what.
+              Index == TypeCheckUnits.size() - 1) {
+            size_t BeginIndex = Index;
+            while (BeginIndex > 0 &&
+                   (TCU.Offset - TypeCheckUnits[BeginIndex - 1].Offset
+                    < static_cast<int64_t>(WordSize)) &&
+                   (NewTypeCheckUnits.empty() ||
+                    TypeCheckUnits[BeginIndex - 1].Offset > NewTypeCheckUnits.back().Offset)) {
+              BeginIndex--;
+              TCU.DI = combineDI(TCU.DI, TypeCheckUnits[BeginIndex].DI);
+            }
+            size_t EndIndex = Index + 2;
+            while (EndIndex <= TypeCheckUnits.size() &&
+                   (TypeCheckUnits[EndIndex - 1].Offset - TCU.Offset
+                    < static_cast<int64_t>(WordSize))) {
+              TCU.DI = combineDI(TCU.DI, TypeCheckUnits[EndIndex - 1].DI);
+              EndIndex++;
+            }
+            NewTypeCheckUnits.push_back(TCU);
+          }
+        }
+
+        TypeCheckUnits = std::move(NewTypeCheckUnits);
+
+        if (verbose)
+          errs() << "Type check units after int optimization: " << TypeCheckUnits << "\n";
+      }
+
+      for (size_t TCUIndex = 0; TCUIndex < TypeCheckUnits.size();) {
+        size_t TCUBeginIndex = TCUIndex;
+        size_t TCUEndIndex;
+
+        // As a matter of policy, we only allow ourselves to do whole-word checks that don't require
+        // masking stuff off. But we could coalesce entire 8-word-type regions even if they have
+        // holes, or we could coalesce not-power-of-2-word-type regions. It's just that if we did
+        // that, then we'd lose ILP, since the check would involve a masking instruction.
+        //
+        // But that's something that should be revisited! Maybe it's faster to be more agro with
+        // coalescing and then just have the mask.
+          
+        for (TCUEndIndex = TCUBeginIndex + 1;
+             TCUEndIndex < TypeCheckUnits.size() &&
+               TypeCheckUnits[TCUEndIndex - 1].Offset + static_cast<int64_t>(WordSize)
+               == TypeCheckUnits[TCUEndIndex].Offset;
+             ++TCUEndIndex);
+
+        if (TCUEndIndex - TCUBeginIndex >= 8)
+          TCUEndIndex = TCUBeginIndex + 8;
+        else if (TCUEndIndex - TCUBeginIndex >= 4)
+          TCUEndIndex = TCUBeginIndex + 4;
+        else if (TCUEndIndex - TCUBeginIndex >= 2)
+          TCUEndIndex = TCUBeginIndex + 2;
+          
+        TCUIndex = TCUEndIndex;
+
+        size_t NumWordTypes = TCUEndIndex - TCUBeginIndex;
+        assert(NumWordTypes == 1 || NumWordTypes == 2 || NumWordTypes == 4 || NumWordTypes == 8);
+
+        Instruction* PtrInt = new PtrToIntInst(
+          ptrPtr(loweredPtrWithOffset(TypeCheckUnits[TCUBeginIndex].Offset, Inst), Inst), IntPtrTy,
+          "filc_ptr_as_int", Inst);
+        PtrInt->setDebugLoc(Inst->getDebugLoc());
+        Instruction* LowerInt = new PtrToIntInst(
+          objectLower(ptrObject(LoweredPtr, Inst), Inst), IntPtrTy, "filc_lower_as_int", Inst);
+        LowerInt->setDebugLoc(Inst->getDebugLoc());
+        Instruction* Offset = BinaryOperator::Create(
+          Instruction::Sub, PtrInt, LowerInt, "filc_ptr_offset", Inst);
+        Offset->setDebugLoc(Inst->getDebugLoc()); 
+        Instruction* WordTypeIndex = BinaryOperator::Create(
+          Instruction::LShr, Offset, ConstantInt::get(IntPtrTy, WordSizeShift),
+          "filc_word_type_index", Inst);
+        WordTypeIndex->setDebugLoc(Inst->getDebugLoc());
+        Instruction* WordTypeComboPtr = GetElementPtrInst::Create(
+          Int8Ty, objectWordTypesPtr(ptrObject(LoweredPtr, Inst), Inst), { WordTypeIndex },
+          "filc_word_type_combo_ptr", Inst);
+        WordTypeComboPtr->setDebugLoc(Inst->getDebugLoc());
+
+        Type* WordTypeComboTy = Type::getIntNTy(C, NumWordTypes * 8);
+        Instruction* WordTypeCombo = new LoadInst(
+          WordTypeComboTy, WordTypeComboPtr, "filc_combo_word_type", Inst);
+        WordTypeCombo->setDebugLoc(Inst->getDebugLoc());
+
+        uint64_t ExpectedCombo = 0;
+        for (size_t TCUSubIndex = TCUBeginIndex; TCUSubIndex < TCUEndIndex; ++TCUSubIndex) {
+          ExpectedCombo |=
+            static_cast<uint64_t>(TypeCheckUnits[TCUSubIndex].Type)
+            << ((TCUSubIndex - TCUBeginIndex) * 8);
+        }
+
+        Instruction* GoodCombo = new ICmpInst(
+          Inst, ICmpInst::ICMP_EQ, WordTypeCombo, ConstantInt::get(WordTypeComboTy, ExpectedCombo),
+          "filc_good_type_combo");
+        GoodCombo->setDebugLoc(Inst->getDebugLoc());
+        Instruction* MaybeBadComboTerm =
+          SplitBlockAndInsertIfElse(expectTrue(GoodCombo, Inst), Inst, false);
+          
+        for (size_t TCUSubIndex = TCUBeginIndex; TCUSubIndex < TCUEndIndex; ++TCUSubIndex) {
+          TypeCheckUnit TCU = TypeCheckUnits[TCUSubIndex];
+          Instruction* WordType;
+          if (WordTypeComboTy == Int8Ty)
+            WordType = WordTypeCombo;
+          else {
+            WordType = new TruncInst(
+              WordTypeCombo, Int8Ty, "filc_extract_word_type", MaybeBadComboTerm);
+            WordType->setDebugLoc(Inst->getDebugLoc());
+          }
+          Instruction* GoodType = new ICmpInst(
+            MaybeBadComboTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, TCU.Type),
+            "filc_good_type");
+          GoodType->setDebugLoc(Inst->getDebugLoc());
+          Instruction* MaybeBadTerm = SplitBlockAndInsertIfElse(GoodType, MaybeBadComboTerm, false);
+
+          Instruction* UnsetType = new ICmpInst(
+            MaybeBadTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeUnset),
+            "filc_unset_type");
+          Instruction* DefinitelyBadTerm = SplitBlockAndInsertIfElse(
+            expectTrue(UnsetType, MaybeBadTerm), MaybeBadTerm, true);
+          CallInst::Create(
+            OptimizedAccessCheckFail,
+            { loweredPtrWithOffset(TCU.Offset, DefinitelyBadTerm),
+              optimizedAccessCheckOrigin(
+                Alignment, Alignment, 0, TCU.Type, NeedsWritable, Inst->getDebugLoc(), TCU.DI) },
+            "", DefinitelyBadTerm)->setDebugLoc(Inst->getDebugLoc());
+
+          Instruction* WordTypePtr = GetElementPtrInst::Create(
+            Int8Ty, WordTypeComboPtr, { ConstantInt::get(IntPtrTy, TCUSubIndex - TCUBeginIndex) },
+            "filc_word_type_ptr", MaybeBadTerm);
+          WordTypePtr->setDebugLoc(Inst->getDebugLoc());
+          Instruction* CAS = new AtomicCmpXchgInst(
+            WordTypePtr, ConstantInt::get(Int8Ty, WordTypeUnset),
+            ConstantInt::get(Int8Ty, TCU.Type), Align(1), AtomicOrdering::SequentiallyConsistent,
+            AtomicOrdering::SequentiallyConsistent, SyncScope::System, MaybeBadTerm);
+          CAS->setDebugLoc(Inst->getDebugLoc());
+          Instruction* OldWordType = ExtractValueInst::Create(
+            Int8Ty, CAS, { 0 }, "filc_old_word_type", MaybeBadTerm);
+          OldWordType->setDebugLoc(Inst->getDebugLoc());
+          Instruction* Masked = BinaryOperator::Create(
+            Instruction::And, OldWordType, ConstantInt::get(Int8Ty, ~TCU.Type),
+            "filc_masked_old_type", MaybeBadTerm);
+          Masked->setDebugLoc(Inst->getDebugLoc());
+          Instruction* GoodOldType = new ICmpInst(
+            MaybeBadTerm, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
+            "filc_good_old_type");
+          GoodOldType->setDebugLoc(Inst->getDebugLoc());
+          assert(cast<BranchInst>(MaybeBadTerm)->getSuccessor(0) == MaybeBadComboTerm->getParent());
+          BranchInst::Create(MaybeBadComboTerm->getParent(), DefinitelyBadTerm->getParent(),
+                             expectTrue(GoodOldType, MaybeBadTerm), MaybeBadTerm)
+            ->setDebugLoc(Inst->getDebugLoc());
+          MaybeBadTerm->eraseFromParent();
+            
+          WordTypeCombo = BinaryOperator::Create(
+            Instruction::LShr, WordTypeCombo, ConstantInt::get(WordTypeComboTy, 8),
+            "filc_shift_word_type_combo", MaybeBadComboTerm);
+          WordTypeCombo->setDebugLoc(Inst->getDebugLoc());
+        }
+      }
+    }
+  }
+
+  void buildCheck(int64_t Size, int64_t Alignment, Value* CanonicalPtr, int64_t Offset, WordType WT,
+                  AccessKind AK, const CombinedDI* DI, std::vector<AccessCheckWithDI>& Checks) {
+    if (verbose) {
+      errs() << "Building check: Size = " << Size << ", Alignment = " << Alignment
+             << ", CanonicalPtr = " << CanonicalPtr->getName() << ", Offset = " << Offset
+             << ", WT = " << wordTypeString(WT) << ", AK = " << accessKindString(AK)
+             << ", DI = " << DI << "\n";
+    }
+    assert(Size);
+    assert(Alignment);
+    assert(!((Alignment - 1) & Alignment));
+    assert(Size >= Alignment);
+    assert((int32_t)Offset == Offset);
+    Alignment = std::min(Alignment, static_cast<int64_t>(WordSize));
+    Checks.push_back(
+      AccessCheckWithDI(CanonicalPtr, 0, 0, CheckKind::ValidObject, DI));
+    Checks.push_back(
+      AccessCheckWithDI(CanonicalPtr, PositiveModulo(Offset, Alignment), Alignment,
+                        CheckKind::Alignment, DI));
+    if (AK == AccessKind::Write) {
       Checks.push_back(
-        AccessCheck(
-          DL.getTypeStoreSize(LowT), MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), HighP,
-          Offset, WordTypeInt, AK, DI));
+        AccessCheckWithDI(CanonicalPtr, 0, 0, CheckKind::CanWrite, DI));
+    }
+    Checks.push_back(
+      AccessCheckWithDI(CanonicalPtr, Offset, 0, CheckKind::LowerBound, DI));
+    assert(Offset + Size > Offset);
+    Checks.push_back(
+      AccessCheckWithDI(CanonicalPtr, Offset + Size, 0, CheckKind::UpperBound, DI));
+    switch (WT) {
+    case WordTypeInt:
+      for (int64_t SubOffset = 0; SubOffset < Size; SubOffset += Alignment) {
+        Checks.push_back(
+          AccessCheckWithDI(CanonicalPtr, Offset + SubOffset, Alignment, CheckKind::TypeIsInt, DI));
+      }
+      break;
+    case WordTypePtr:
+      assert(Size == WordSize);
+      assert(Alignment == WordSize);
+      Checks.push_back(
+        AccessCheckWithDI(CanonicalPtr, Offset, WordSize, CheckKind::TypeIsPtr, DI));
+      break;
+    default:
+      llvm_unreachable("Bad word type");
+      break;
+    }
+    Checks.push_back(
+      AccessCheckWithDI(CanonicalPtr, 0, 0, CheckKind::NotFree, DI));
+  }
+
+  void buildChecksRecurse(Type* LowT, Value* HighP, int64_t Offset, size_t Alignment, AccessKind AK,
+                          const CombinedDI* DI, std::vector<AccessCheckWithDI>& Checks) {
+    if (!hasPtrsForCheck(LowT)) {
+      buildCheck(
+        DL.getTypeAllocSize(LowT), MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), HighP,
+        Offset, WordTypeInt, AK, DI, Checks);
       return;
     }
     
@@ -1973,7 +3402,7 @@ class Pizlonator {
     assert(LowT != LowRawPtrTy);
 
     if (LowT == LowWidePtrTy) {
-      Checks.push_back(AccessCheck(WordSize, WordSize, HighP, Offset, WordTypePtr, AK, DI));
+      buildCheck(WordSize, WordSize, HighP, Offset, WordTypePtr, AK, DI, Checks);
       return;
     }
 
@@ -1992,7 +3421,7 @@ class Pizlonator {
     if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
       Type* ET = AT->getElementType();
       size_t ESize = DL.getTypeAllocSize(ET);
-      for (uint64_t Index = AT->getNumElements(); Index--;)
+      for (int64_t Index = AT->getNumElements(); Index--;)
         buildChecksRecurse(ET, HighP, Offset + Index * ESize, Alignment, AK, DI, Checks);
       return;
     }
@@ -2000,7 +3429,7 @@ class Pizlonator {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
       Type* ET = VT->getElementType();
       size_t ESize = DL.getTypeAllocSize(ET);
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
+      for (int64_t Index = VT->getElementCount().getFixedValue(); Index--;)
         buildChecksRecurse(ET, HighP, Offset + Index * ESize, Alignment, AK, DI, Checks);
       return;
     }
@@ -2013,12 +3442,8 @@ class Pizlonator {
     llvm_unreachable("Should not get here.");
   }
 
-  void buildChecks(Instruction* I, Type* LowT, Value* HighP, Align Alignment, AccessKind AK) {
-    if (verbose) {
-      errs() << "Building checks for " << *I << " with LowT = " << *LowT << ", HighP = " << *HighP
-             << ", Alignment = " << Alignment.value() << ", AK = " << accessKindString(AK) << "\n";
-    }
-    
+  PtrAndOffset canonicalizePtr(Value* HighP) {
+    Value* OriginalHighP = HighP;
     int64_t Offset = 0;
 
     if (GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(HighP)) {
@@ -2041,104 +3466,1074 @@ class Pizlonator {
       }
     }
 
-    std::vector<AccessCheck> Checks;
-    buildChecksRecurse(LowT, HighP, Offset, Alignment.value(), AK, I->getDebugLoc(), Checks);
-    assert(!ChecksForInst.count(I));
-    ChecksForInst[I] = std::move(Checks);
+    // As a way of preventing any overflow shenanigans, we carry around offsets in int64's but give
+    // up if the offset can't fit in a int32. This is more conservative than necessary, but also
+    // likely harmless - it's not clear that we need to worry at all about "optimizations" for
+    // programs that use ginormous field offsets or ginormous constant array indices.
+    if ((int32_t)Offset == Offset)
+      return PtrAndOffset(HighP, Offset);
+    
+    return PtrAndOffset(OriginalHighP, 0);
   }
 
-  void emitChecksForInst(Instruction* Inst) {
-    if (verbose)
-      errs() << "Emitting checks for " << *Inst << "\n";
-    auto Iter = ChecksForInst.find(Inst);
-    if (Iter == ChecksForInst.end())
+  void buildChecks(Instruction* I, Type* LowT, Value* HighP, Align Alignment, AccessKind AK,
+                   std::vector<AccessCheckWithDI>& Checks) {
+    if (verbose) {
+      errs() << "Building checks for " << *I << " with LowT = " << *LowT << ", HighP = " << *HighP
+             << ", Alignment = " << Alignment.value() << ", AK = " << accessKindString(AK) << "\n";
+    }
+
+    PtrAndOffset PAO = canonicalizePtr(HighP);
+    buildChecksRecurse(LowT, PAO.HighP, PAO.Offset, Alignment.value(), AK, basicDI(I->getDebugLoc()),
+                       Checks);
+    canonicalizeAccessChecks(Checks);
+  }
+
+  void buildChecks(Instruction* I, std::vector<AccessCheckWithDI>& Checks) {
+    if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
+      Type* LowT = lowerType(LI->getType());
+      Value* HighP = LI->getPointerOperand();
+      buildChecks(LI, LowT, HighP, LI->getAlign(), AccessKind::Read, Checks);
       return;
-    const std::vector<AccessCheck>& Checks = Iter->second;
-
-    for (const AccessCheck& AC : Checks) {
-      Value* Ptr = lowerConstantValue(AC.CanonicalPtr, Inst, LowRawNull);
-      if (AC.Offset) {
-        if ((int32_t)AC.Offset == AC.Offset) {
-          Value* LowP = ptrPtr(Ptr, Inst);
-          std::ostringstream buf;
-          buf << "leaq " << AC.Offset << "($1), $0";
-          FunctionCallee Asm = InlineAsm::get(
-            FunctionType::get(LowRawPtrTy, { LowRawPtrTy }, false),
-            buf.str(), "=r,r,~{dirflag},~{fpsr},~{flags}",
-            /*hasSideEffects=*/false);
-          Instruction* OffsetP = CallInst::Create(Asm, { LowP }, "filc_lea", Inst);
-          OffsetP->setDebugLoc(Inst->getDebugLoc());
-          Ptr = ptrWithPtr(Ptr, OffsetP, Inst);
-        } else
-          Ptr = ptrWithOffset(Ptr, ConstantInt::get(IntPtrTy, AC.Offset), Inst);
-      }
-      switch (AC.Type) {
-      case WordTypeInt:
-        checkInt(Ptr, AC.Size, AC.Alignment, AC.AK, Inst, AC.DI);
-        break;
-      case WordTypePtr:
-        assert(AC.Size == WordSize);
-        assert(AC.Alignment == WordSize);
-        checkPtr(Ptr, AC.AK, Inst, AC.DI);
-        break;
-      default:
-        llvm_unreachable("Bad AccessCheck type");
-        break;
-      }
+    }
+    
+    if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
+      Type* LowT = lowerType(SI->getValueOperand()->getType());
+      Value* HighP = SI->getPointerOperand();
+      buildChecks(SI, LowT, HighP, SI->getAlign(), AccessKind::Write, Checks);
+      return;
+    }
+    
+    if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
+      Type* LowT = lowerType(AI->getNewValOperand()->getType());
+      Value* HighP = AI->getPointerOperand();
+      buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write, Checks);
+      return;
+    }
+    
+    if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
+      Type* LowT = lowerType(AI->getValOperand()->getType());
+      Value* HighP = AI->getPointerOperand();
+      buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write, Checks);
+      return;
     }
   }
 
-  void identifyChecks(const std::vector<BasicBlock*>& Blocks) {
-    ChecksForInst.clear();
+  PtrAndOffset canonicalPtrOperand(Instruction* I) {
+    if (LoadInst* LI = dyn_cast<LoadInst>(I))
+      return canonicalizePtr(LI->getPointerOperand());
+    
+    if (StoreInst* SI = dyn_cast<StoreInst>(I))
+      return canonicalizePtr(SI->getPointerOperand());
+    
+    if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I))
+      return canonicalizePtr(AI->getPointerOperand());
+    
+    if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I))
+      return canonicalizePtr(AI->getPointerOperand());
 
-    for (BasicBlock* BB : Blocks) {
-      for (Instruction& I : *BB) {
-        if (LoadInst* LI = dyn_cast<LoadInst>(&I)) {
-          Type* LowT = lowerType(LI->getType());
-          Value* HighP = LI->getPointerOperand();
-          buildChecks(LI, LowT, HighP, LI->getAlign(), AccessKind::Read);
-          continue;
-        }
+    return PtrAndOffset();
+  }
 
-        if (StoreInst* SI = dyn_cast<StoreInst>(&I)) {
-          Type* LowT = lowerType(SI->getValueOperand()->getType());
-          Value* HighP = SI->getPointerOperand();
-          buildChecks(SI, LowT, HighP, SI->getAlign(), AccessKind::Write);
-          continue;
-        }
+  const CombinedDI* hashConsDI(const CombinedDI& DI) {
+    return &*CombinedDIs.insert(DI).first;
+  }
 
-        if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(&I)) {
-          Type* LowT = lowerType(AI->getNewValOperand()->getType());
-          Value* HighP = AI->getPointerOperand();
-          buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write);
-          continue;
-        }
+  const CombinedDI* combineDI(const CombinedDI* A, const CombinedDI* B) {
+    if (A == B)
+      return A;
+    if (!A)
+      return B;
+    if (!B)
+      return A;
+    const CombinedDI* First = std::min(A, B);
+    const CombinedDI* Second = std::max(A, B);
+    auto Iter = CombinedDIMaker.find(std::make_pair(First, Second));
+    if (Iter != CombinedDIMaker.end())
+      return Iter->second;
+    CombinedDI NewDI;
+    NewDI.Locations.insert(A->Locations.begin(), A->Locations.end());
+    NewDI.Locations.insert(B->Locations.begin(), B->Locations.end());
+    const CombinedDI* Result = hashConsDI(NewDI);
+    CombinedDIMaker[std::make_pair(First, Second)] = Result;
+    return Result;
+  }
 
-        if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(&I)) {
-          Type* LowT = lowerType(AI->getValOperand()->getType());
-          Value* HighP = AI->getPointerOperand();
-          buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write);
-          continue;
+  const CombinedDI* basicDI(DILocation* Loc) {
+    auto Iter = BasicDIs.find(Loc);
+    if (Iter != BasicDIs.end())
+      return Iter->second;
+    const CombinedDI* Result = hashConsDI(CombinedDI(Loc));
+    BasicDIs[Loc] = Result;
+    return Result;
+  }
+
+  // Notes about backwards propagation.
+  //
+  // Some examples of how this works. Here's an example where we haven't split critical edges. Note
+  // that this analysis is sound if we don't, but in fact we do (see prepare()). However, it's
+  // possible for some edges to be unsplittable in LLVM IR, and we design this pass so that it works
+  // soundly (albeit more conservatively) if we ever choose not to split some edges as a matter of
+  // policy.
+  //
+  //     a:
+  //         abody
+  //         br c
+  //     b:
+  //         bbody
+  //         br c, d
+  //     c:
+  //         cbody
+  //         br e
+  //     d:
+  //         dbody
+  //         br e
+  //
+  // Say that `cbody` has a check that doesn't appear anywhere else. When propagating it backwards
+  // to predecessors (a and b), we merge all of the predecessors attail states together with c'd
+  // athead state. This will remove the check, since d didn't have the check.
+  //
+  // Now consider this criss-cross loop-that-isn't monster.
+  //
+  //     a:
+  //         abody
+  //         br c, d
+  //     b:
+  //         bbody
+  //         br c, d
+  //     c:
+  //         check1
+  //         cbody
+  //         br c, d, e, f
+  //     d:
+  //         check2
+  //         dbody
+  //         br c, d, e, f
+  //     e:
+  //         ebody
+  //         br somewhere
+  //     f:
+  //         fbody
+  //         br somewhere
+  //
+  // There are three backedges here, c->c, d->d, and d->c (assuming c came before d in the
+  // traversal). Also, critical edges aren't split. The backedges mean that we add bonus edges:
+  // c->exit, d->exit. The exit block has no checks. This means that check1 and check2 can't get
+  // propagated, because both c and d have c and d as predecessors, and c and d have attails that
+  // will be forced empty by the exit block.
+  //
+  // Note that if we did split critical edges here, then check1 and check2 would experience some
+  // backward motion.
+  //
+  // Now consider what happens in a simple loop where we had split critical edges.
+  //
+  //         header
+  //         br loop
+  //     reloop:
+  //         br loop
+  //     loop:
+  //         check
+  //         effect
+  //         br reloop, end
+  //     end:
+  //         footer
+  //
+  // The reloop block exists because of critical edge splitting. Note that reloop->loop is a
+  // backedge, so we will add a bonus edge reloop->exit. This forces reloop's attail state to be
+  // empty and prevents the check from being hoisted. Also, the footer lacks the check anyway, so
+  // the loop's attail state will be forced empty, too.
+  //
+  // FIXME: Looks like we need to run the forward analysis before the backward analysis! Also, it's
+  // not obvious that pushing checks backward in a way that duplicates them is a good idea; it seems
+  // like it'll cause code bloat. Maybe we should avoid pushing them back at all unless it leads to
+  // a reduction of work.
+  //
+  // Let's consider what'll happen in the simple loop if we do forward propagation first. The
+  // forward propagation will put the check in the attail of loop and reloop (minus the NotFree
+  // part of the check). Then, I guess, we say that the forward attail overrides the backward
+  // attail, or that the backward attail of a block always includes everything from the forward
+  // attail (the forward part cannot be removed, somehow). So when we backprop the check from loop,
+  // the merge of predecessor attails will include the check, so the check will end up in the
+  // header. But, concretely, what does the equation look like?
+  //
+  // Say that forward propagation produces ForwardChecksAtTail and backward propagation is solving
+  // for BackwardChecksAtTail. We need to answer three questions: how does the backwards execution
+  // of a block start, how does the backwards execution of a block end, and how do checks get
+  // scheduled?
+  //
+  // How to start backward block execution: the running Checks are bootstrapped from
+  // BackwardChecksAtTail - ForwardChecksAtTail.
+  //
+  // How to end backward block execution: for each predecessor, compute the combined ChecksAtTail by
+  // adding BackwardChecksAtTail to ForwardChecksAtTail. Merge the running Checks with each
+  // ChecksAtTail. Then merge the running Checks into each predecessor's BackwardChecksAtTail.
+  //
+  // How checks are scheduled (assuming we ended backward execution in a block): for each
+  // predecessor, compute the combined ChecksAtTail by adding BackwardChecksAtTail to
+  // ForwardChecksAtTail. Save the running Checks as ExpectedChecks. Merge the running Checks with
+  // each ChecksAtTail. Now, ExpectedChecks - Checks is the set of checks that needs to be executed
+  // at the block's head.
+  //
+  // Alternative formulations:
+  //
+  // - Could alternatively say that backwards execution starts with BackwardChecksAtTail, without
+  //   the subtraction. Note that in the loop case, the loop and reloop blocks will both have empty
+  //   BackwardChecksAtTail anyway. But, I don't think that's right in general, since we want to
+  //   backwards propagate the minimal set of checks on the grounds that we want a minimal schedule.
+  //
+  // - Could have end of backward execution subtract ForwardChecksAtTail from BackwardChecksAtTail
+  //   after the merging of Checks into BackwardChecksAtTail.
+
+  void updateLastDI(AccessCheck&, const AccessCheck&) {
+  }
+
+  void updateLastDI(AccessCheckWithDI& LastACRef, const AccessCheckWithDI& NewAC) {
+    if (LastACRef == NewAC)
+      LastACRef.DI = NewAC.DI;
+  }
+
+  // Produces a minimal set of access checks in an order that is suitable for executing them. Assumes
+  // that given two equal checks, the DI of the latest one wins. This has no effect on forward prop,
+  // since forward prop uses AccessCheck, not AccessCheckWithDI. For backward prop, it means that the
+  // checks that dominate win the DI battle.
+  template<typename CheckT>
+  void canonicalizeAccessChecks(std::vector<CheckT>& Checks) {
+    std::stable_sort(Checks.begin(), Checks.end());
+  
+    size_t DstIndex = 0;
+    size_t SrcIndex = 0;
+    CheckT LastAC;
+    Value* CanonicalPtr = nullptr;
+    int64_t Alignment = 0;
+    int64_t AlignmentOffset = 0;
+    bool AlignmentContradiction = false;
+    while (SrcIndex < Checks.size()) {
+      CheckT AC = Checks[SrcIndex++];
+      if (!AlignmentContradiction) {
+        switch (AC.CK) {
+        case CheckKind::TypeIsPtr:
+        case CheckKind::TypeIsInt:
+          assert(Alignment >= AC.Size);
+          assert(!((AC.Offset - AlignmentOffset) % AC.Size));
+          break;
+        default:
+          break;
         }
       }
+      if (AC.CanonicalPtr == LastAC.CanonicalPtr &&
+          FundamentalCheckKind(AC.CK) == FundamentalCheckKind(LastAC.CK)) {
+        switch (AC.CK) {
+        case CheckKind::ValidObject:
+        case CheckKind::CanWrite:
+        case CheckKind::NotFree:
+          // For these, we really only need one of these for each CanonicalPtr.
+          updateLastDI(Checks[DstIndex - 1], AC);
+          continue;
+          
+        case CheckKind::KnownLowerBound:
+        case CheckKind::LowerBound:
+        case CheckKind::UpperBound:
+          // For these, the sort order is such that only the first one in the list matters.
+          // FIXME: Need to assert that if there's an UpperBound, then we need a LowerBound.
+          // And, that:
+          // - The lower bound is below-equal to the type check offsets.
+          // - If we have an upper bound, it's above-equal to the type check offsets.
+          // And, these checks have to happen outside this switch, since this switch is for the case
+          // where we have a check redundancy. Maybe that means having the check happen in some other
+          // function?
+          updateLastDI(Checks[DstIndex - 1], AC);
+          continue;
+  
+        case CheckKind::TypeIsPtr:
+          if (AC.Offset == LastAC.Offset) {
+            updateLastDI(Checks[DstIndex - 1], AC);
+            continue;
+          }
+          break;
+  
+        case CheckKind::KnownAlignment:
+        case CheckKind::Alignment:
+        case CheckKind::MergedAlignment:
+          assert(Alignment);
+          assert(AlignmentOffset < Alignment);
+          assert(AC.Size <= LastAC.Size);
+          assert(AC.Size <= Alignment);
+          if ((AlignmentOffset % AC.Size) == AC.Offset) {
+            if (AC.Size == Alignment)
+              updateLastDI(Checks[DstIndex - 1], AC);
+            continue;
+          }
+          AlignmentContradiction = true;
+          break;
+  
+        case CheckKind::TypeIsInt:
+          assert(AC.Offset >= LastAC.Offset);
+          // We are intentionally weak about combining TypeIsInts, because that would only create
+          // problems when merging. Consider that we have one path that accesses two adjacent int32s
+          // and another path that accesses only one of them. In that case, we want the merge (or
+          // subtraction) to see that one of the int32's is a subset of both of them. If we merged the
+          // int32's into a int64, then merging would be more complex, and would get even more complex
+          // if we had more complex combinations. So, all we do is let TypeIsInts swallow up other ones
+          // that are obviously completely redundant.
+          if (AC.Offset + AC.Size <= LastAC.Offset + LastAC.Size) {
+            if (AC.Size == LastAC.Size)
+              updateLastDI(Checks[DstIndex - 1], AC);
+            continue;
+          }
+          break;
+        }
+      }
+      Checks[DstIndex++] = AC;
+      LastAC = AC;
+      if (AC.CanonicalPtr != CanonicalPtr) {
+        CanonicalPtr = AC.CanonicalPtr;
+        Alignment = 0;
+        AlignmentOffset = 0;
+        AlignmentContradiction = false;
+      }
+      if (FundamentalCheckKind(AC.CK) == CheckKind::Alignment && !AlignmentContradiction) {
+        Alignment = AC.Size;
+        AlignmentOffset = AC.Offset;
+      }
     }
+  
+    Checks.resize(DstIndex);
+
+    checkCanonicalizedAccessChecks(Checks);
   }
   
-  void pushChecksBack(const std::vector<BasicBlock*>& Blocks,
-                      const std::unordered_set<const BasicBlock*>& LoopFooters) {
-    // FIXME: Implement this - but maybe first, just change the codegen to emit checks based on
-    // ChecksForInst.
+  // Given two lists of checks, produces the set of checks that is the superset of the two. This is the
+  // opposite of merging.
+  template<typename ToCheckT, typename FromCheckT>
+  void addAccessChecks(std::vector<ToCheckT>& ToChecks,
+                       const std::vector<FromCheckT>& FromChecks) {
+    ToChecks.insert(ToChecks.end(), FromChecks.begin(), FromChecks.end());
+    canonicalizeAccessChecks(ToChecks);
+  }
 
-    // FIXME: We could have checks emitted at the point where they become invalid:
+  void mergeCheckDI(AccessCheck&, const AccessCheck&, const AccessCheck&) {
+  }
+  
+  void mergeCheckDI(AccessCheckWithDI& NewAC,
+                    const AccessCheckWithDI& AC1, const AccessCheckWithDI& AC2) {
+    NewAC.DI = combineDI(AC1.DI, AC2.DI);
+  }
+  
+  // Given two lists of canonicalized access checks, merges the second one into the first one. The
+  // outcome may shrink ToChecks, or make some checks in ToChecks weaker. It will never grow ToChecks.
+  //
+  // Returns true if ToChecks is changed.
+  template<typename CheckT>
+  bool mergeAccessChecks(std::vector<CheckT>& ToChecks,
+                         const std::vector<CheckT>& FromChecks) {
+    size_t DstToIndex = 0;
+    size_t SrcToIndex = 0;
+    size_t FromIndex = 0;
+    bool Result = false;
+    while (SrcToIndex < ToChecks.size() && FromIndex < FromChecks.size()) {
+      CheckT ToAC = ToChecks[SrcToIndex];
+      CheckT FromAC = FromChecks[FromIndex];
+  
+      assert(!IsKnownCheckKind(ToAC.CK));
+      assert(!IsKnownCheckKind(FromAC.CK));
+      
+      if (ToAC.CanonicalPtr == FromAC.CanonicalPtr &&
+          FundamentalCheckKind(ToAC.CK) == FundamentalCheckKind(FromAC.CK)) {
+        switch (ToAC.CK) {
+        case CheckKind::ValidObject:
+        case CheckKind::CanWrite:
+        case CheckKind::NotFree: {
+          CheckT NewAC = ToAC;
+          mergeCheckDI(NewAC, ToAC, FromAC);
+          ToChecks[DstToIndex++] = NewAC;
+          SrcToIndex++;
+          FromIndex++;
+          continue;
+        }
+        case CheckKind::LowerBound:
+        case CheckKind::UpperBound: {
+          CheckT NewAC = std::max(ToAC, FromAC);
+          mergeCheckDI(NewAC, ToAC, FromAC);
+          Result |= NewAC != ToAC;
+          ToChecks[DstToIndex++] = NewAC;
+          SrcToIndex++;
+          FromIndex++;
+          continue;
+        }
+        case CheckKind::Alignment:
+        case CheckKind::MergedAlignment: {
+          int64_t Size = std::min(ToAC.Size, FromAC.Size);
+          if ((ToAC.Offset % Size) == (FromAC.Offset % Size)) {
+            CheckT NewAC = ToAC;
+            if (Size < ToAC.Size || Size < FromAC.Size)
+              NewAC.CK = CheckKind::MergedAlignment;
+            NewAC.Size = Size;
+            NewAC.Offset = NewAC.Offset % Size;
+            mergeCheckDI(NewAC, ToAC, FromAC);
+            Result |= NewAC != ToAC;
+            ToChecks[DstToIndex++] = NewAC;
+            SrcToIndex++;
+            FromIndex++;
+            continue;
+          }
+          break;
+        }
+        case CheckKind::TypeIsPtr:
+          if (ToAC.Offset == FromAC.Offset) {
+            CheckT NewAC = ToAC;
+            mergeCheckDI(NewAC, ToAC, FromAC);
+            ToChecks[DstToIndex++] = NewAC;
+            SrcToIndex++;
+            FromIndex++;
+            continue;
+          }
+          break;
+        case CheckKind::TypeIsInt:
+          assert(ToAC.Size);
+          assert(FromAC.Size);
+          // We only merge if the TypeIsInts match exactly.
+          if (ToAC.Offset == FromAC.Offset && ToAC.Size == FromAC.Size) {
+            CheckT NewAC = ToAC;
+            mergeCheckDI(NewAC, ToAC, FromAC);
+            ToChecks[DstToIndex++] = NewAC;
+            SrcToIndex++;
+            FromIndex++;
+            continue;
+          }
+          break;
+        case CheckKind::KnownAlignment:
+        case CheckKind::KnownLowerBound:
+          llvm_unreachable("Should never see Known kinds in merging");
+          break;
+        }
+      }
+  
+      if (ToAC < FromAC)
+        SrcToIndex++;
+      else
+        FromIndex++;
+    }
+  
+    Result |= DstToIndex != ToChecks.size();
+    ToChecks.resize(DstToIndex);
+  
+    return Result;
+  }
+
+  template<typename CheckT>
+  void removeUnprofitableChecks(std::vector<CheckT>& Checks) {
+    Value* CurrentCanonicalPtr = nullptr;
+    bool HadTypeCheck = false;
+    for (size_t Index = Checks.size(); Index--;) {
+      CheckT AC = Checks[Index];
+      if (AC.CanonicalPtr != CurrentCanonicalPtr) {
+        CurrentCanonicalPtr = AC.CanonicalPtr;
+        HadTypeCheck = false;
+      }
+      switch (AC.CK) {
+      case CheckKind::ValidObject:
+      case CheckKind::KnownAlignment:
+      case CheckKind::Alignment:
+      case CheckKind::CanWrite:
+      case CheckKind::KnownLowerBound:
+      case CheckKind::NotFree:
+        break;
+      case CheckKind::MergedAlignment:
+      case CheckKind::LowerBound:
+      case CheckKind::UpperBound:
+        if (!HadTypeCheck)
+          Checks[Index] = AccessCheck();
+        break;
+      case CheckKind::TypeIsInt:
+      case CheckKind::TypeIsPtr:
+        HadTypeCheck = true;
+        break;
+      }
+    }
+  
+    size_t DstIndex = 0;
+    size_t SrcIndex = 0;
+    while (SrcIndex < Checks.size()) {
+      CheckT AC = Checks[SrcIndex++];
+      if (AC)
+        Checks[DstIndex++] = AC;
+    }
+    Checks.resize(DstIndex);
+    checkCanonicalizedAccessChecks(Checks);
+  }
+  
+  // Removes checks in ToChecks that are subsumed by FromChecks. Conservatively keeps ToChecks.
+  template<typename ToCheckT, typename FromCheckT>
+  void subtractChecks(std::vector<ToCheckT>& ToChecks,
+                      const std::vector<FromCheckT>& FromChecks,
+                      bool CreateKnowns = false) {
+    size_t DstToIndex = 0;
+    size_t SrcToIndex = 0;
+    size_t FromIndex = 0;
+    while (SrcToIndex < ToChecks.size() && FromIndex < FromChecks.size()) {
+      ToCheckT ToAC = ToChecks[SrcToIndex];
+      FromCheckT FromAC = FromChecks[FromIndex];
+  
+      assert(!IsKnownCheckKind(ToAC.CK));
+      assert(!IsKnownCheckKind(FromAC.CK));
+      
+      if (ToAC.CanonicalPtr == FromAC.CanonicalPtr &&
+          FundamentalCheckKind(ToAC.CK) == FundamentalCheckKind(FromAC.CK)) {
+        switch (ToAC.CK) {
+        case CheckKind::ValidObject:
+        case CheckKind::CanWrite:
+        case CheckKind::NotFree:
+          SrcToIndex++;
+          FromIndex++;
+          continue;
+  
+        case CheckKind::LowerBound:
+        case CheckKind::UpperBound:
+          if (ToAC < FromAC)
+            ToChecks[DstToIndex++] = ToAC;
+          else if (ToAC.CK == CheckKind::LowerBound) {
+            if (CreateKnowns) {
+              // We can keep the ToAC LowerBound and make it Known, since there's nothing to be gained
+              // from knowing that we proved a more aggressive lower bound.
+              ToAC.CK = CheckKind::KnownLowerBound;
+            }
+
+            // If we're not creating knowns, then keep the lower bound as-is.
+            ToChecks[DstToIndex++] = ToAC;
+          }
+          SrcToIndex++;
+          FromIndex++;
+          continue;
+  
+        case CheckKind::Alignment:
+        case CheckKind::MergedAlignment:
+          if (CreateKnowns && FromAC.Size >= ToAC.Size
+              && (FromAC.Offset % ToAC.Size) == ToAC.Offset) {
+            FromAC.CK = CheckKind::KnownAlignment;
+            ToChecks[DstToIndex++] = FromAC;
+          } else
+            ToChecks[DstToIndex++] = ToAC;
+          SrcToIndex++;
+          FromIndex++;
+          continue;
+  
+        case CheckKind::TypeIsPtr:
+          assert(ToAC.Size == WordSize);
+          assert(FromAC.Size == WordSize);
+          if (ToAC.Offset == FromAC.Offset) {
+            SrcToIndex++;
+            FromIndex++;
+            continue;
+          }
+          break;
+  
+        case CheckKind::TypeIsInt:
+          if (ToAC.Offset == FromAC.Offset && ToAC.Size == FromAC.Size) {
+            SrcToIndex++;
+            FromIndex++;
+            continue;
+          }
+          break;
+          
+        case CheckKind::KnownAlignment:
+        case CheckKind::KnownLowerBound:
+          llvm_unreachable("Should never see Known kinds in merging");
+          break;
+        }
+      }
+  
+      if (ToAC < FromAC) {
+        ToChecks[DstToIndex++] = ToAC;
+        SrcToIndex++;
+      } else
+        FromIndex++;
+    }
+
+    while (SrcToIndex < ToChecks.size())
+      ToChecks[DstToIndex++] = ToChecks[SrcToIndex++];
+  
+    ToChecks.resize(DstToIndex);
+    checkCanonicalizedAccessChecks(ToChecks);
+  }
+
+  template<typename ToCheckT, typename FromCheckT>
+  void subtractChecksCreatingKnowns(std::vector<ToCheckT>& ToChecks,
+                                    const std::vector<FromCheckT>& FromChecks) {
+    subtractChecks(ToChecks, FromChecks, /*CreateKnowns=*/true);
+  }
+  
+  void removeRedundantChecksUsingForwardAI(
+    const std::vector<BasicBlock*>& Blocks,
+    const std::unordered_set<const BasicBlock*>& BackEdgePreds,
+    const std::unordered_map<BasicBlock*, std::unordered_set<Value*>> CanonicalPtrLiveAtTail,
+    std::unordered_map<BasicBlock*, ChecksOrBottom>& ForwardChecksAtHead,
+    std::unordered_map<BasicBlock*, std::vector<AccessCheck>>& ForwardChecksAtTail) {
+
+    ForwardChecksAtHead.clear();
+    ForwardChecksAtTail.clear();
+
+    ForwardChecksAtHead[&NewF->getEntryBlock()].Bottom = false;
+
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (BasicBlock* BB : Blocks) {
+        if (verbose)
+          errs() << "Forward propagating in " << BB->getName() << "\n";
+        
+        const ChecksOrBottom& COB = ForwardChecksAtHead[BB];
+        if (COB.Bottom)
+          continue;
+
+        std::vector<AccessCheck> Checks = COB.Checks;
+        if (verbose)
+          errs() << "Checks at head: " << Checks << "\n";
+
+        for (Instruction& I : *BB) {
+          auto HandleEffects = [&] () {
+            EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+              return AC.CK == CheckKind::NotFree;
+            });
+          };
+
+          if (&I == BB->getTerminator() && BackEdgePreds.count(BB)) {
+            // Execute the pollcheck.
+            HandleEffects();
+          }
+
+          auto Iter = ChecksForInst.find(&I);
+          if (Iter != ChecksForInst.end())
+            Checks.insert(Checks.end(), Iter->second.begin(), Iter->second.end());
+          
+          // For now, just conservatively assume that all calls may free stuff.
+          if (isa<CallBase>(&I))
+            HandleEffects();
+
+          if (verbose)
+            errs() << "Checks after " << I << ":\n    " << Checks << "\n";
+        }
+
+        auto Iter = CanonicalPtrLiveAtTail.find(BB);
+        assert(Iter != CanonicalPtrLiveAtTail.end());
+        const std::unordered_set<Value*>& Live = Iter->second;
+        EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+          assert(AC.CanonicalPtr);
+          return !Live.count(AC.CanonicalPtr);
+        });
+        canonicalizeAccessChecks(Checks);
+        if (verbose)
+          errs() << "Liveness-pruned and canonicalized checks at tail: " << Checks << "\n";
+        ForwardChecksAtTail[BB] = Checks;
+
+        for (BasicBlock* SBB : successors(BB)) {
+          ChecksOrBottom& SCOB = ForwardChecksAtHead[SBB];
+          if (SCOB.Bottom) {
+            SCOB.Bottom = false;
+            SCOB.Checks = Checks;
+            Changed = true;
+          } else
+            Changed |= mergeAccessChecks(SCOB.Checks, Checks);
+        }
+      }
+    }
+
+    // We have to pick a check schedule at this point. If we don't then we'll forget what we learned
+    // from forward propagation.
+
+    std::unordered_map<Instruction*, std::vector<AccessCheckWithDI>> NewChecksForInst;
+    
+    for (BasicBlock* BB : Blocks) {
+      if (verbose)
+        errs() << "Optimizing " << BB->getName() << " using forward propagation results.\n";
+      const ChecksOrBottom& StateWithBottom = ForwardChecksAtHead[BB];
+      
+      // It's weird, but possible, that we have an unreachable block.
+      if (StateWithBottom.Bottom)
+        continue;
+      
+      std::vector<AccessCheck> Checks = StateWithBottom.Checks;
+      bool NeedToCanonicalize = false;
+
+      if (verbose)
+        errs() << "Checks at head: " << Checks << "\n";
+      
+      for (Instruction& I : *BB) {
+        auto HandleEffects = [&] () {
+          EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+            return AC.CK == CheckKind::NotFree;
+          });
+        };
+        
+        if (&I == BB->getTerminator() && BackEdgePreds.count(BB)) {
+          // Execute the pollcheck.
+          HandleEffects();
+        }
+
+        auto Iter = ChecksForInst.find(&I);
+        if (Iter != ChecksForInst.end()) {
+          std::vector<AccessCheckWithDI> NewChecks = Iter->second;
+          if (verbose) {
+            errs() << "Dealing with previously scheduled checks at " << I << ":\n    "
+                   << NewChecks << "\n";
+          }
+          if (NeedToCanonicalize) {
+            canonicalizeAccessChecks(Checks);
+            NeedToCanonicalize = false;
+          }
+          subtractChecksCreatingKnowns(NewChecks, Checks);
+          if (!NewChecks.empty()) {
+            assert(!NewChecksForInst.count(&I));
+            if (verbose)
+              errs() << "Checks scheduled at " << I << ":\n    " << NewChecks << "\n";
+            NewChecksForInst[&I] = NewChecks;
+            EraseIf(NewChecks, [&] (const AccessCheck& AC) -> bool {
+              return IsKnownCheckKind(AC.CK);
+            });
+            if (!NewChecks.empty()) {
+              Checks.insert(Checks.end(), NewChecks.begin(), NewChecks.end());
+              NeedToCanonicalize = true;
+            }
+          }
+        }
+        
+        // For now, just conservatively assume that all calls may free stuff.
+        if (isa<CallBase>(&I))
+          HandleEffects();
+        
+        if (verbose)
+          errs() << "Checks after " << I << ":\n    " << Checks << "\n";
+      }
+    }
+
+    ChecksForInst = std::move(NewChecksForInst);
+  }
+  
+  void scheduleChecks(
+    const std::vector<BasicBlock*>& Blocks,
+    const std::unordered_set<const BasicBlock*>& BackEdgePreds) {
+
+    if (verbose)
+      errs() << "Scheduling checks for " << OldF->getName() << "\n";
+
+    ChecksForInst.clear();
+    
+    for (BasicBlock* BB : Blocks) {
+      for (Instruction& I : *BB) {
+        std::vector<AccessCheckWithDI> Checks;
+        buildChecks(&I, Checks);
+        if (!Checks.empty()) {
+          assert(!ChecksForInst.count(&I));
+          if (verbose)
+            errs() << "Checks for " << I << ":\n    " << Checks << "\n";
+          ChecksForInst[&I] = std::move(Checks);
+        }
+      }
+    }
+    
+    if (!optimizeChecks) {
+      if (verbose)
+        errs() << "Not optimizing the check schedule.\n";
+      return;
+    }
+    
+    bool Changed;
+    
+    // Liveness of canonical ptrs.
     //
-    // - Defs of canonical ptrs.
-    // - Effects.
+    // We need this so that we can GC the abstract state. Without this, the abstract state is likely
+    // to get very large, causing memory usage issues and long running times.
+    
+    std::unordered_map<BasicBlock*, std::unordered_set<Value*>> CanonicalPtrLiveAtTail;
+    Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (size_t BlockIndex = Blocks.size(); BlockIndex--;) {
+        BasicBlock* BB = Blocks[BlockIndex];
+        std::unordered_set<Value*> Live = CanonicalPtrLiveAtTail[BB];
+
+        for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
+          Instruction* I = &*It;
+          Live.erase(I);
+          if (Value* P = canonicalPtrOperand(I).HighP) {
+            assert(isa<Instruction>(P) || isa<Argument>(P) || isa<Constant>(P));
+            Live.insert(P);
+          }
+        }
+
+        if (!BlockIndex) {
+          for (Value* P : Live)
+            assert(isa<Argument>(P) || isa<Constant>(P));
+        }
+
+        for (BasicBlock* PBB : predecessors(BB)) {
+          for (Value* P : Live)
+            Changed |= CanonicalPtrLiveAtTail[PBB].insert(P).second;
+        }
+      }
+    }
+
+    if (verbose)
+      errs() << "Liveness done, doing forward propagation.\n";
+    
+    // Forward propagation
     //
-    // Basically, anywhere that the running checks vector has stuff removed from it according to the
-    // abstract interpreter.
-    //
-    // But it would be better to then have the checks sunk down to the first place where they're
-    // needed? Maybe? The theory being that this is easier for the regalloc.
+    // This eliminates redundant checks and also shows us which checks are definitely performed along
+    // which paths, which aids in making good choices during backward propagation.
+    
+    std::unordered_map<BasicBlock*, ChecksOrBottom> ForwardChecksAtHead;
+    std::unordered_map<BasicBlock*, std::vector<AccessCheck>> ForwardChecksAtTail;
+
+    removeRedundantChecksUsingForwardAI(
+      Blocks, BackEdgePreds, CanonicalPtrLiveAtTail, ForwardChecksAtHead, ForwardChecksAtTail);
+
+    if (!propagateChecksBackward) {
+      if (verbose)
+        errs() << "Not doing backwards propagation.\n";
+      return;
+    }
+
+    if (verbose)
+      errs() << "Forward propagation done, proceeding to backward propagation.\n";
+
+    // For the purpose of backward propagation, we revert known checks to unknown.
+    for (auto& Pair : ChecksForInst) {
+      for (AccessCheck& AC : Pair.second)
+        AC.CK = FundamentalCheckKind(AC.CK);
+    }
+    
+    std::unordered_map<BasicBlock*, ChecksWithDIOrBottom> BackwardChecksAtTail;
+    std::unordered_map<BasicBlock*, std::vector<AccessCheckWithDI>> BackwardChecksAtHead;
+
+    if (verbose) {
+      for (const BasicBlock* BB : BackEdgePreds)
+        errs() << "Backwards edge predecessor: " << BB->getName() << "\n";
+    }
+
+    for (BasicBlock* BB : Blocks) {
+      // The following cases mean that the block cannot have any checks hoisted into the tail of it:
+      //
+      // - It's a block that backward-branches.
+      // - The terminator is a call.
+      //
+      // And if the block's terminator represents an exit, then we need to bootstrap it with no
+      // checks.
+      if (BackEdgePreds.count(BB) ||
+          isa<ReturnInst>(BB->getTerminator()) ||
+          isa<ResumeInst>(BB->getTerminator()) ||
+          isa<UnreachableInst>(BB->getTerminator()) ||
+          isa<CallBase>(BB->getTerminator())) {
+        if (verbose)
+          errs() << "Labeling " << BB->getName() << " as being a non-bottom.\n";
+        BackwardChecksAtTail[BB].Bottom = false;
+      }
+    }
+
+    Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (size_t BlockIndex = Blocks.size(); BlockIndex--;) {
+        BasicBlock* BB = Blocks[BlockIndex];
+
+        if (verbose)
+          errs() << "Backwards propagation at " << BB->getName() << "\n";
+        
+        ChecksWithDIOrBottom& COB = BackwardChecksAtTail[BB];
+        if (COB.Bottom)
+          continue;
+
+        std::vector<AccessCheckWithDI> Checks = COB.Checks;
+
+        if (verbose)
+          errs() << "Starting with checks: " << Checks << "\n";
+        
+        subtractChecks(Checks, ForwardChecksAtTail[BB]);
+
+        if (verbose)
+          errs() << "Checks after forward-pruning and removing unprofitable: " << Checks << "\n";
+
+        for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
+          Instruction* I = &*It;
+
+          EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+            return AC.CanonicalPtr == I;
+          });
+
+          if (isa<CallBase>(I)) {
+            // Conservatively assume that the call might not return!
+            Checks.clear();
+          }
+
+          auto Iter = ChecksForInst.find(I);
+          if (Iter != ChecksForInst.end())
+            Checks.insert(Checks.end(), Iter->second.begin(), Iter->second.end());
+
+          if (I == BB->getTerminator() && BackEdgePreds.count(BB)) {
+            EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+              return AC.CK == CheckKind::NotFree;
+            });
+          }
+
+          if (verbose)
+            errs() << "Checks after " << *I << ":\n    " << Checks << "\n";
+        }
+        
+        if (pred_empty(BB))
+          Checks.clear();
+        else {
+          canonicalizeAccessChecks(Checks);
+          for (BasicBlock* PBB : predecessors(BB)) {
+            ChecksWithDIOrBottom& PCOB = BackwardChecksAtTail[PBB];
+            if (PCOB.Bottom)
+              continue;
+            if (verbose)
+              errs() << "Considering non-bottom predecessor " << PBB->getName() << "\n";
+            std::vector<AccessCheckWithDI> ChecksAtTail = PCOB.Checks;
+            if (verbose)
+              errs() << "    Backwards checks at tail: " << ChecksAtTail << "\n";
+            // Avoid having the merged Checks include all of the DI's if the predecessors' merged
+            // Checks.
+            for (AccessCheckWithDI& AC : ChecksAtTail)
+              AC.DI = nullptr;
+            if (verbose)
+              errs() << "    Forward checks at tail: " << ForwardChecksAtTail[PBB] << "\n";
+            addAccessChecks(ChecksAtTail, ForwardChecksAtTail[PBB]);
+            if (verbose)
+              errs() << "    Combined checks at tail: " << ChecksAtTail << "\n";
+            mergeAccessChecks(Checks, ChecksAtTail);
+            if (verbose)
+              errs() << "    Merged checks: " << Checks << "\n";
+          }
+        }
+        if (verbose)
+          errs() << "Checks at head after merging with predecessors: " << Checks << "\n";
+        // Make sure we never hoist checks that are unprofitable. Note, it's tempting to say that we
+        // remove unprofitable checks right before emitting checks - but that would be wrong, since it
+        // could mean that we *moved* a check backward (i.e. it used to be at some later point, now
+        // it's somewhere earlier) and then removed it. For example:
+        //
+        //     if (p)
+        //         o->f
+        //     else
+        //         o->g
+        //
+        // Say that &o->f < &o->g. In that case, if we didn't do removeUnprofitableChedcks here, the
+        // merge of the checks would have g's lower bound and f's upper bound. So, g's lower bound
+        // would stop being executed on the else branch, and f's upper bound would stop being executed
+        // on the then branch. And then - if we called removeUnprofitableChecks just before emitting -
+        // we'd simply drop those checks entirely.
+        removeUnprofitableChecks(Checks);
+        if (verbose)
+          errs() << "Checks at head after removing unprofitable: " << Checks << "\n";
+        BackwardChecksAtHead[BB] = Checks;
+        for (BasicBlock* PBB : predecessors(BB)) {
+          ChecksWithDIOrBottom& PCOB = BackwardChecksAtTail[PBB];
+          if (PCOB.Bottom) {
+            PCOB.Bottom = false;
+            PCOB.Checks = Checks;
+            Changed = true;
+          } else
+            Changed |= mergeAccessChecks(PCOB.Checks, Checks);
+        }
+      }
+    }
+
+    std::unordered_map<Instruction*, std::vector<AccessCheckWithDI>> NewChecksForInst;
+    
+    for (BasicBlock* BB : Blocks) {
+      if (verbose) {
+        errs() << "Scheduling checks in " << BB->getName()
+               << " using results of backward propagation\n";
+      }
+      std::vector<AccessCheckWithDI> Checks = BackwardChecksAtTail[BB].Checks;
+      if (verbose)
+        errs() << "Starting with checks: " << Checks << "\n";
+      subtractChecks(Checks, ForwardChecksAtTail[BB]);
+      if (verbose)
+        errs() << "Checks after forward-pruning and removing unprofitable: " << Checks << "\n";
+
+      Instruction* LastI = nullptr;
+      std::vector<AccessCheckWithDI> ChecksToEmit;
+      bool SawPhi = false;
+      for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
+        Instruction* I = &*It;
+
+        if (isa<CallBase>(I)) {
+          // Conservatively assume that the call might not return!
+          ChecksToEmit.insert(ChecksToEmit.end(), Checks.begin(), Checks.end());
+          Checks.clear();
+        } else {
+          EraseIf(Checks, [&] (const AccessCheckWithDI& AC) -> bool {
+            if (AC.CanonicalPtr == I) {
+              ChecksToEmit.push_back(AC);
+              return true;
+            }
+            return false;
+          });
+        }
+        
+        auto Iter = ChecksForInst.find(I);
+        if (Iter != ChecksForInst.end())
+          Checks.insert(Checks.end(), Iter->second.begin(), Iter->second.end());
+
+        if (isa<PHINode>(I))
+          SawPhi = true;
+        if (SawPhi)
+          assert(isa<PHINode>(I));
+        else {
+          assert(!isa<PHINode>(I));
+          if (!ChecksToEmit.empty()) {
+            assert(LastI);
+            assert(!NewChecksForInst.count(LastI));
+            canonicalizeAccessChecks(ChecksToEmit);
+            if (verbose)
+              errs() << "Checks scheduled at " << *LastI << ":\n    " << ChecksToEmit << "\n";
+            NewChecksForInst[LastI] = std::move(ChecksToEmit);
+          }
+          LastI = I;
+        }
+
+        if (I == BB->getTerminator() && BackEdgePreds.count(BB)) {
+          EraseIf(Checks, [&] (const AccessCheckWithDI& AC) -> bool {
+            if (AC.CK == CheckKind::NotFree) {
+              // FIXME: We should be able to put these checks into the slow path of the pollcheck!
+              ChecksToEmit.push_back(AC);
+              return true;
+            }
+            return false;
+          });
+        }
+        
+        if (verbose)
+          errs() << "Checks after " << *I << ":\n    " << Checks << "\n";
+      }
+
+      assert(LastI);
+      if (LastI == BB->getTerminator() && BackEdgePreds.count(BB)) {
+        assert(ChecksToEmit.empty());
+        assert(Checks.empty());
+      }
+      canonicalizeAccessChecks(Checks);
+      subtractChecks(Checks, BackwardChecksAtHead[BB]);
+      ChecksToEmit.insert(ChecksToEmit.end(), Checks.begin(), Checks.end());
+      assert(!NewChecksForInst.count(LastI));
+      canonicalizeAccessChecks(ChecksToEmit);
+      if (!ChecksToEmit.empty()) {
+        if (verbose)
+          errs() << "Checks scheduled at " << *LastI << ":\n    " << ChecksToEmit << "\n";
+        NewChecksForInst[LastI] = std::move(ChecksToEmit);
+      }
+    }
+
+    ChecksForInst = std::move(NewChecksForInst);
+
+    if (verbose)
+      errs() << "Backwards propagation done, doing another round of forward propagation.\n";
+
+    // Now we need to remove redundant checks again. Note that this primarily solves the problem of
+    // identifying cases of known alignment and known lower bound.
+
+    removeRedundantChecksUsingForwardAI(
+      Blocks, BackEdgePreds, CanonicalPtrLiveAtTail, ForwardChecksAtHead, ForwardChecksAtTail);
   }
 
   void buildWordTypesRecurse(
@@ -4351,26 +6746,29 @@ public:
 
     FunctionName = "<internal>";
     
-    LowWidePtrTy = StructType::create({Int128Ty}, "filc_wide_ptr");
-    OriginNodeTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int32Ty}, "filc_origin_node");
+    LowWidePtrTy = StructType::create({ Int128Ty }, "filc_wide_ptr");
+    OriginNodeTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, Int32Ty }, "filc_origin_node");
     FunctionOriginTy = StructType::create(
-      {OriginNodeTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty}, "filc_function_origin");
-    OriginTy = StructType::create({LowRawPtrTy, Int32Ty, Int32Ty}, "filc_origin");
-    InlineFrameTy = StructType::create({OriginNodeTy, OriginTy}, "filc_inline_frame");
+      { OriginNodeTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty }, "filc_function_origin");
+    OriginTy = StructType::create({ LowRawPtrTy, Int32Ty, Int32Ty }, "filc_origin");
+    InlineFrameTy = StructType::create({ OriginNodeTy, OriginTy }, "filc_inline_frame");
     OriginWithEHTy = StructType::create(
-      {LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy}, "filc_origin_with_eh");
-    ObjectTy = StructType::create({LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty}, "filc_object");
-    CCTypeTy = StructType::create({IntPtrTy, Int8Ty}, "filc_cc_type");
-    CCPtrTy = StructType::create({LowRawPtrTy, LowRawPtrTy}, "filc_cc_ptr");
-    FrameTy = StructType::create({LowRawPtrTy, LowRawPtrTy, LowRawPtrTy}, "filc_frame");
+      { LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy }, "filc_origin_with_eh");
+    ObjectTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty }, "filc_object");
+    CCTypeTy = StructType::create({ IntPtrTy, Int8Ty }, "filc_cc_type");
+    CCPtrTy = StructType::create({ LowRawPtrTy, LowRawPtrTy }, "filc_cc_ptr");
+    FrameTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, "filc_frame");
     ThreadTy = StructType::create(
-      {IntPtrTy, Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters),
-       LowWidePtrTy},
+      { IntPtrTy, Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters),
+        LowWidePtrTy },
       "filc_thread_ish");
     ConstantRelocationTy = StructType::create(
-      {IntPtrTy, Int32Ty, LowRawPtrTy}, "filc_constant_relocation");
+      { IntPtrTy, Int32Ty, LowRawPtrTy }, "filc_constant_relocation");
     ConstexprNodeTy = StructType::create(
-      { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy}, "filc_constexpr_node");
+      { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy }, "filc_constexpr_node");
+    AlignmentAndOffsetTy = StructType::create({ Int8Ty, Int8Ty }, "filc_alignment_and_offset");
+    TypeCheckAndOffsetTy = StructType::create(
+      { Int32Ty, Int8Ty, Int8Ty }, "filc_type_check_and_offset");
     // See PIZLONATED_SIGNATURE in filc_runtime.h.
     PizlonatedFuncTy = FunctionType::get(
       Int1Ty, { LowRawPtrTy, CCPtrTy, CCPtrTy }, false);
@@ -4437,45 +6835,90 @@ public:
     FutureArgBuffer = makeDummy(LowRawPtrTy);
     FutureReturnBuffer = makeDummy(LowRawPtrTy);
 
-    PollcheckSlow = M.getOrInsertFunction("filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    StoreBarrierSlow = M.getOrInsertFunction("filc_store_barrier_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    GetNextBytesForVAArg = M.getOrInsertFunction("filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    Allocate = M.getOrInsertFunction("filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
-    AllocateWithAlignment = M.getOrInsertFunction("filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    CheckReadInt = M.getOrInsertFunction("filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckReadAlignedInt = M.getOrInsertFunction("filc_check_read_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    CheckReadInt8Fail = M.getOrInsertFunction("filc_check_read_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt16Fail = M.getOrInsertFunction("filc_check_read_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt32Fail = M.getOrInsertFunction("filc_check_read_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt64Fail = M.getOrInsertFunction("filc_check_read_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt128Fail = M.getOrInsertFunction("filc_check_read_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadPtrFail = M.getOrInsertFunction("filc_check_read_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt = M.getOrInsertFunction("filc_check_write_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckWriteAlignedInt = M.getOrInsertFunction("filc_check_write_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    CheckWriteInt8Fail = M.getOrInsertFunction("filc_check_write_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt16Fail = M.getOrInsertFunction("filc_check_write_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt32Fail = M.getOrInsertFunction("filc_check_write_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt64Fail = M.getOrInsertFunction("filc_check_write_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt128Fail = M.getOrInsertFunction("filc_check_write_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWritePtrFail = M.getOrInsertFunction("filc_check_write_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckFunctionCallFail = M.getOrInsertFunction("filc_check_function_call_fail", VoidTy, LowWidePtrTy);
-    Memset = M.getOrInsertFunction("filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
-    Memmove = M.getOrInsertFunction("filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    GlobalInitializationContextCreate = M.getOrInsertFunction("filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);
-    GlobalInitializationContextAdd = M.getOrInsertFunction("filc_global_initialization_context_add", Int1Ty, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
-    GlobalInitializationContextDestroy = M.getOrInsertFunction("filc_global_initialization_context_destroy", VoidTy, LowRawPtrTy);
-    ExecuteConstantRelocations = M.getOrInsertFunction("filc_execute_constant_relocations", VoidTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
-    DeferOrRunGlobalCtor = M.getOrInsertFunction("filc_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
-    RunGlobalDtor = M.getOrInsertFunction("filc_run_global_dtor", VoidTy, LowRawPtrTy);
-    Error = M.getOrInsertFunction("filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    RealMemset = M.getOrInsertFunction("llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
-    LandingPad = M.getOrInsertFunction("filc_landing_pad", Int1Ty, LowRawPtrTy);
-    ResumeUnwind = M.getOrInsertFunction("filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    JmpBufCreate = M.getOrInsertFunction("filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty);
-    PromoteArgsToHeap = M.getOrInsertFunction("filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy);
-    CCArgsCheckFailure = M.getOrInsertFunction("filc_cc_args_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
-    CCRetsCheckFailure = M.getOrInsertFunction("filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
-    _Setjmp = M.getOrInsertFunction("_setjmp", Int32Ty, LowRawPtrTy);
+    PollcheckSlow = M.getOrInsertFunction(
+      "filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    StoreBarrierSlow = M.getOrInsertFunction(
+      "filc_store_barrier_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    GetNextBytesForVAArg = M.getOrInsertFunction(
+      "filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    Allocate = M.getOrInsertFunction(
+      "filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+    AllocateWithAlignment = M.getOrInsertFunction(
+      "filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
+    CheckReadInt = M.getOrInsertFunction(
+      "filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckReadAlignedInt = M.getOrInsertFunction(
+      "filc_check_read_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    CheckReadInt8Fail = M.getOrInsertFunction(
+      "filc_check_read_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt16Fail = M.getOrInsertFunction(
+      "filc_check_read_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt32Fail = M.getOrInsertFunction(
+      "filc_check_read_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt64Fail = M.getOrInsertFunction(
+      "filc_check_read_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadInt128Fail = M.getOrInsertFunction(
+      "filc_check_read_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckReadPtrFail = M.getOrInsertFunction(
+      "filc_check_read_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt = M.getOrInsertFunction(
+      "filc_check_write_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    CheckWriteAlignedInt = M.getOrInsertFunction(
+      "filc_check_write_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+    CheckWriteInt8Fail = M.getOrInsertFunction(
+      "filc_check_write_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt16Fail = M.getOrInsertFunction(
+      "filc_check_write_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt32Fail = M.getOrInsertFunction(
+      "filc_check_write_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt64Fail = M.getOrInsertFunction(
+      "filc_check_write_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWriteInt128Fail = M.getOrInsertFunction(
+      "filc_check_write_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckWritePtrFail = M.getOrInsertFunction(
+      "filc_check_write_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    CheckFunctionCallFail = M.getOrInsertFunction(
+      "filc_check_function_call_fail", VoidTy, LowWidePtrTy);
+    OptimizedAlignmentContradiction = M.getOrInsertFunction(
+      "filc_optimized_alignment_contradiction", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    OptimizedTypeContradiction = M.getOrInsertFunction(
+      "filc_optimized_type_contradiction", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    OptimizedAccessCheckFail = M.getOrInsertFunction(
+      "filc_optimized_access_check_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+    Memset = M.getOrInsertFunction(
+      "filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
+    Memmove = M.getOrInsertFunction(
+      "filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+    GlobalInitializationContextCreate = M.getOrInsertFunction(
+      "filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);
+    GlobalInitializationContextAdd = M.getOrInsertFunction(
+      "filc_global_initialization_context_add", Int1Ty, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+    GlobalInitializationContextDestroy = M.getOrInsertFunction(
+      "filc_global_initialization_context_destroy", VoidTy, LowRawPtrTy);
+    ExecuteConstantRelocations = M.getOrInsertFunction(
+      "filc_execute_constant_relocations", VoidTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
+    DeferOrRunGlobalCtor = M.getOrInsertFunction(
+      "filc_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
+    RunGlobalDtor = M.getOrInsertFunction(
+      "filc_run_global_dtor", VoidTy, LowRawPtrTy);
+    Error = M.getOrInsertFunction(
+      "filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    RealMemset = M.getOrInsertFunction(
+      "llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
+    LandingPad = M.getOrInsertFunction(
+      "filc_landing_pad", Int1Ty, LowRawPtrTy);
+    ResumeUnwind = M.getOrInsertFunction(
+      "filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
+    JmpBufCreate = M.getOrInsertFunction(
+      "filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty);
+    PromoteArgsToHeap = M.getOrInsertFunction(
+      "filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy);
+    CCArgsCheckFailure = M.getOrInsertFunction(
+      "filc_cc_args_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
+    CCRetsCheckFailure = M.getOrInsertFunction(
+      "filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
+    _Setjmp = M.getOrInsertFunction(
+      "_setjmp", Int32Ty, LowRawPtrTy);
     cast<Function>(_Setjmp.getCallee())->addFnAttr(Attribute::ReturnsTwice);
     ExpectI1 = Intrinsic::getDeclaration(&M, Intrinsic::expect, Int1Ty);
     StackCheckAsm = InlineAsm::get(
@@ -4484,6 +6927,22 @@ public:
       "jae filc_stack_overflow_failure@PLT",
       "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
       /*hasSideEffects=*/true);
+
+    cast<Function>(CheckReadInt8Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckReadInt16Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckReadInt32Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckReadInt64Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckReadInt128Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckReadPtrFail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWriteInt8Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWriteInt16Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWriteInt32Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWriteInt64Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWriteInt128Fail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(CheckWritePtrFail.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(OptimizedAlignmentContradiction.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(OptimizedTypeContradiction.getCallee())->addFnAttr(Attribute::NoReturn);
+    cast<Function>(OptimizedAccessCheckFail.getCallee())->addFnAttr(Attribute::NoReturn);
 
     EmptyCCType = M.getOrInsertGlobal("filc_empty_cc_type", CCTypeTy);
     VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);
@@ -4711,12 +7170,13 @@ public:
         OldF = F;
         NewF = FunctionToHiddenFunction[F];
         assert(NewF);
+        OptimizedAccessCheckOrigins.clear();
 
         SmallVector<std::pair<const BasicBlock*, const BasicBlock*>> BackEdges;
         FindFunctionBackedges(*F, BackEdges);
-        std::unordered_set<const BasicBlock*> LoopFooters;
+        std::unordered_set<const BasicBlock*> BackEdgePreds;
         for (std::pair<const BasicBlock*, const BasicBlock*>& Edge : BackEdges)
-          LoopFooters.insert(Edge.first);
+          BackEdgePreds.insert(Edge.first);
       
         MyThread = NewF->getArg(0);
         FixupTypes(F, NewF);
@@ -4734,8 +7194,7 @@ public:
           BB->insertInto(NewF);
         }
         computeFrameIndexMap(Blocks);
-        identifyChecks(Blocks);
-        pushChecksBack(Blocks, LoopFooters);
+        scheduleChecks(Blocks, BackEdgePreds);
         // Snapshot the instructions before we do crazy stuff.
         std::vector<Instruction*> Instructions;
         for (BasicBlock* BB : Blocks) {
@@ -4744,7 +7203,7 @@ public:
             captureTypesIfNecessary(&I);
           }
 
-          if (LoopFooters.count(BB)) {
+          if (BackEdgePreds.count(BB)) {
             DebugLoc DL = BB->getTerminator()->getDebugLoc();
             GetElementPtrInst* StatePtr = GetElementPtrInst::Create(
               ThreadTy, MyThread,

@@ -2,7 +2,7 @@ return:
   failure
 output-includes:
   - filc safety error
-  - span contains non-ints
+  - type mismatch
   - "special,global,[function]"
 output-excludes:
   - blah

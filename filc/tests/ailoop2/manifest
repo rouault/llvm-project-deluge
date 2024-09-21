@@ -1,0 +1,7 @@
+return:
+  success
+output-includes:
+  - "values: 666, 1410"
+output-excludes:
+  - "filc panic"
+  - "filc safety error"

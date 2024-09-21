@@ -3059,6 +3059,156 @@ void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
     filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access);
 }
 
+PAS_NO_RETURN static void finish_panicking(const char* kind_string)
+{
+    if (exit_on_panic) {
+        pas_log("[%d] filc panic: %s\n", pas_getpid(), kind_string);
+        _exit(42);
+        PAS_ASSERT(!"Should not be reached");
+    }
+    pas_panic("%s\n", kind_string);
+}
+
+PAS_NO_RETURN static void optimized_check_fail_impl(const filc_origin* scheduled_origin,
+                                                    const filc_origin*const* semantic_origins)
+{
+    filc_thread* my_thread = filc_get_my_thread();
+    size_t index;
+    for (index = 0; semantic_origins[index]; ++index) {
+        pas_log("semantic origin:\n");
+        filc_origin_dump_all_inline_default(semantic_origins[index], &pas_log_stream.base);
+    }
+    PAS_ASSERT(my_thread->top_frame);
+    if (scheduled_origin) {
+        my_thread->top_frame->origin = scheduled_origin;
+        pas_log("check scheduled at:\n");
+    } else
+        pas_log("check scheduled at (uncertain):\n");
+    filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    finish_panicking("thwarted a futile attempt to violate memory safety.");
+}
+
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_access_check_fail(
+    filc_ptr ptr, const filc_optimized_access_check_origin* check_origin)
+{
+    pas_log("filc safety error: ");
+    if (!filc_ptr_object(ptr)) {
+        pas_log("cannot %s pointer with null object.\n",
+                check_origin->needs_write ? "write" : "read");
+    } else if (check_origin->size && filc_ptr_ptr(ptr) < filc_ptr_lower(ptr)) {
+        pas_log("cannot %s pointer with ptr < lower.\n",
+                check_origin->needs_write ? "write" : "read");
+    } else if (check_origin->size && filc_ptr_ptr(ptr) >= filc_ptr_upper(ptr)) {
+        pas_log("cannot %s pointer with ptr >= upper.\n",
+                check_origin->needs_write ? "write" : "read");
+    } else if (check_origin->size > (char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)) {
+        pas_log("cannot %s %zu bytes when upper - ptr = %zu.\n",
+                check_origin->needs_write ? "write" : "read", (size_t)check_origin->size,
+                (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)));
+    } else if (check_origin->needs_write &&
+               (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY))
+        pas_log("cannot write to read-only object.\n");
+    else if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr) + (uintptr_t)check_origin->alignment_offset,
+                             check_origin->alignment))
+        pas_log("alignment requirement of %u bytes not met.\n", (unsigned)check_origin->alignment);
+    else if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE)
+        pas_log("cannot access pointer to free object.\n");
+    else {
+        PAS_ASSERT(check_origin->type == FILC_WORD_TYPE_INT ||
+                   check_origin->type == FILC_WORD_TYPE_PTR);
+        pas_log("type mismatch.\n");
+    }
+    pas_log("    pointer: ");
+    filc_ptr_dump(ptr, &pas_log_stream.base);
+    pas_log("\n");
+    switch (check_origin->type) {
+    case FILC_WORD_TYPE_UNSET:
+        pas_log("    expected");
+        if (check_origin->size) {
+            pas_log(" %zu %sbytes",
+                    (size_t)check_origin->size, check_origin->needs_write ? "writable " : "");
+        } else if (check_origin->needs_write)
+            pas_log(" writable capability");
+        else
+            pas_log(" valid capability");
+        PAS_ASSERT(check_origin->alignment >= 1);
+        PAS_ASSERT(check_origin->alignment <= FILC_WORD_SIZE);
+        PAS_ASSERT(pas_is_power_of_2(check_origin->alignment));
+        PAS_ASSERT(check_origin->alignment_offset < check_origin->alignment);
+        if (check_origin->alignment > 1) {
+            pas_log(" aligned to %zu bytes", (size_t)check_origin->alignment);
+            if (check_origin->alignment_offset)
+                pas_log(" at offset %zu", (size_t)check_origin->alignment_offset);
+        }
+        pas_log(".\n");
+        break;
+    case FILC_WORD_TYPE_INT:
+        PAS_ASSERT(check_origin->size);
+        PAS_ASSERT(!check_origin->alignment_offset);
+        PAS_ASSERT(check_origin->alignment == check_origin->size);
+        pas_log("    expected %zu %saligned bytes of int.\n",
+                (size_t)check_origin->size, check_origin->needs_write ? "writable " : "");
+        break;
+    case FILC_WORD_TYPE_PTR:
+        PAS_ASSERT(check_origin->size == FILC_WORD_SIZE);
+        PAS_ASSERT(!check_origin->alignment_offset);
+        PAS_ASSERT(check_origin->alignment == FILC_WORD_SIZE);
+        pas_log("    expected %saligned ptr.\n", check_origin->needs_write ? "writable " : "");
+        break;
+    default:
+        PAS_ASSERT(!"Should not be reached");
+        break;
+    }
+    optimized_check_fail_impl(check_origin->scheduled_origin, check_origin->semantic_origins);
+}
+
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_alignment_contradiction(
+    filc_ptr ptr, const filc_optimized_alignment_contradiction_origin* contradiction_origin)
+{
+    pas_log("filc safety error: alignment contradiction.\n");
+    pas_log("    pointer: ");
+    filc_ptr_dump(ptr, &pas_log_stream.base);
+    pas_log("\n");
+    pas_log("required alignments:\n");
+    /* Gotta have at least two alignments for there to have been a contradiction! */
+    PAS_ASSERT(contradiction_origin->alignments[0].alignment);
+    PAS_ASSERT(contradiction_origin->alignments[1].alignment);
+    size_t index;
+    for (index = 0; contradiction_origin->alignments[index].alignment; ++index) {
+        pas_log("    align to %zu at offset %zu.\n",
+                (size_t)contradiction_origin->alignments[index].alignment,
+                (size_t)contradiction_origin->alignments[index].alignment_offset);
+    }
+    optimized_check_fail_impl(contradiction_origin->scheduled_origin,
+                              contradiction_origin->semantic_origins);
+}
+
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_type_contradiction(
+    filc_ptr ptr, const filc_optimized_type_contradiction_origin* contradiction_origin)
+{
+    pas_log("filc safety error: type contradiction.\n");
+    pas_log("    pointer: ");
+    filc_ptr_dump(ptr, &pas_log_stream.base);
+    pas_log("\n");
+    pas_log("required types:\n");
+    /* Gotta have at least two required types for there to have been a contradiction! */
+    PAS_ASSERT(contradiction_origin->checks[0].size);
+    PAS_ASSERT(contradiction_origin->checks[1].size);
+    size_t index;
+    for (index = 0; contradiction_origin->checks[index].size; ++index) {
+        PAS_ASSERT(contradiction_origin->checks[index].type != FILC_WORD_TYPE_UNSET);
+        pas_log("    type ");
+        filc_word_type_dump(contradiction_origin->checks[index].type, &pas_log_stream.base);
+        pas_log(" at offset %d and size %u.\n",
+                contradiction_origin->checks[index].offset,
+                (unsigned)contradiction_origin->checks[index].size);
+    }
+    PAS_ASSERT(!contradiction_origin->checks[index].size);
+    PAS_ASSERT(contradiction_origin->checks[index].type == FILC_WORD_TYPE_UNSET);
+    optimized_check_fail_impl(contradiction_origin->scheduled_origin,
+                              contradiction_origin->semantic_origins);
+}
+
 void filc_check_function_call(filc_ptr ptr)
 {
     filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
@@ -4399,14 +4549,18 @@ void filc_native_zrun_deferred_global_ctors(filc_thread* my_thread)
     filc_run_deferred_global_ctors(my_thread);
 }
 
+void filc_origin_dump_all_inline_default(const filc_origin* origin, pas_stream* stream)
+{
+    pas_stream_printf(stream, "    ");
+    filc_origin_dump_all_inline(origin, " (inlined)\n    ", stream);
+    pas_stream_printf(stream, "\n");
+}
+
 void filc_thread_dump_stack(filc_thread* thread, pas_stream* stream)
 {
     filc_frame* frame;
-    for (frame = thread->top_frame; frame; frame = frame->parent) {
-        pas_stream_printf(stream, "    ");
-        filc_origin_dump_all_inline(frame->origin, " (inlined)\n    ", stream);
-        pas_stream_printf(stream, "\n");
-    }
+    for (frame = thread->top_frame; frame; frame = frame->parent)
+        filc_origin_dump_all_inline_default(frame->origin, stream);
 }
 
 PAS_NEVER_INLINE PAS_NO_RETURN static void panic_impl(
@@ -4420,12 +4574,7 @@ PAS_NEVER_INLINE PAS_NO_RETURN static void panic_impl(
     pas_vlog(format, args);
     pas_log("\n");
     filc_thread_dump_stack(my_thread, &pas_log_stream.base);
-    if (exit_on_panic) {
-        pas_log("[%d] filc panic: %s\n", pas_getpid(), kind_string);
-        _exit(42);
-        PAS_ASSERT(!"Should not be reached");
-    }
-    pas_panic("%s\n", kind_string);
+    finish_panicking(kind_string);
 }
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_safety_panic(
