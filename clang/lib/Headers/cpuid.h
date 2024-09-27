@@ -245,6 +245,17 @@
 #define bit_WBNOINVD    0x00000200
 
 
+#ifdef __PIZLONATOR_WAS_HERE__
+void zsys_cpuid(unsigned int leaf,
+                unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
+void zsys_cpuid_count(unsigned int leaf, unsigned int count,
+                      unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
+
+#define __cpuid(__leaf, __eax, __ebx, __ecx, __edx) \
+    zsys_cpuid((__leaf), &(__eax), &(__ebx), &(__ecx), &(__edx))
+#define __cpuid_count(__leaf, __count, __eax, __ebx, __ecx, __edx) \
+    zsys_cpuid_count((__leaf), (__count), &(__eax), &(__ebx), &(__ecx), &(__edx))
+#else
 #if __i386__
 #define __cpuid(__leaf, __eax, __ebx, __ecx, __edx) \
     __asm("cpuid" : "=a"(__eax), "=b" (__ebx), "=c"(__ecx), "=d"(__edx) \
@@ -269,6 +280,7 @@
         : "=a"(__eax), "=r" (__ebx), "=c"(__ecx), "=d"(__edx) \
         : "0"(__leaf), "2"(__count))
 #endif
+#endif /* __PIZLONATOR_WAS_HERE__ */
 
 static __inline unsigned int __get_cpuid_max (unsigned int __leaf,
                                               unsigned int *__sig)

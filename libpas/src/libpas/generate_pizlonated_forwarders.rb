@@ -188,6 +188,9 @@ addSig "void", "zlongjmp", "filc_ptr", "int"
 addSig "void", "z_longjmp", "filc_ptr", "int"
 addSig "void", "zsiglongjmp", "filc_ptr", "int"
 addSig "void", "zmake_setjmp_save_sigmask", "bool"
+addSig "void", "zsys_cpuid", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
+addSig "void", "zsys_cpuid_count", "unsigned", "unsigned", "filc_ptr", "filc_ptr", "filc_ptr",
+       "filc_ptr"
 addSig "void", "zregister_sys_errno_handler", "filc_ptr"
 addSig "void", "zregister_sys_dlerror_handler", "filc_ptr"
 
