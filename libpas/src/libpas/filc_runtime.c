@@ -33,7 +33,6 @@
 
 #include "bmalloc_heap.h"
 #include "bmalloc_heap_config.h"
-#include "filc_cpuid.h"
 #include "filc_native.h"
 #include "fugc.h"
 #include "pas_hashtable.h"
@@ -5257,16 +5256,29 @@ void filc_native_zmake_setjmp_save_sigmask(filc_thread* my_thread, bool save_sig
     setjmp_saves_sigmask = save_sigmask;
 }
 
-void filc_native_zsys_cpuid(filc_thread* my_thread, unsigned leaf, filc_ptr eax_ptr, filc_ptr ebx_ptr,
-                            filc_ptr ecx_ptr, filc_ptr edx_ptr)
+static void cpuid_impl(unsigned leaf, unsigned count, filc_ptr eax_ptr, filc_ptr ebx_ptr,
+                       filc_ptr ecx_ptr, filc_ptr edx_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
+    unsigned eax = leaf;
+    unsigned ebx = 0;
+    unsigned ecx = count;
+    unsigned edx = 0;
+    asm volatile("cpuid": "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx));
     filc_check_write_int32(eax_ptr, NULL);
     filc_check_write_int32(ebx_ptr, NULL);
     filc_check_write_int32(ecx_ptr, NULL);
     filc_check_write_int32(edx_ptr, NULL);
-    filc_cpuid(leaf, *(unsigned*)filc_ptr_ptr(eax_ptr), *(unsigned*)filc_ptr_ptr(ebx_ptr),
-               *(unsigned*)filc_ptr_ptr(ecx_ptr), *(unsigned*)filc_ptr_ptr(edx_ptr));
+    *(unsigned*)filc_ptr_ptr(eax_ptr) = eax;
+    *(unsigned*)filc_ptr_ptr(ebx_ptr) = ebx;
+    *(unsigned*)filc_ptr_ptr(ecx_ptr) = ecx;
+    *(unsigned*)filc_ptr_ptr(edx_ptr) = edx;
+}
+
+void filc_native_zsys_cpuid(filc_thread* my_thread, unsigned leaf, filc_ptr eax_ptr, filc_ptr ebx_ptr,
+                            filc_ptr ecx_ptr, filc_ptr edx_ptr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    cpuid_impl(leaf, 0, eax_ptr, ebx_ptr, ecx_ptr, edx_ptr);
 }
 
 void filc_native_zsys_cpuid_count(filc_thread* my_thread, unsigned leaf, unsigned count,
@@ -5274,13 +5286,7 @@ void filc_native_zsys_cpuid_count(filc_thread* my_thread, unsigned leaf, unsigne
                                   filc_ptr edx_ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    filc_check_write_int32(eax_ptr, NULL);
-    filc_check_write_int32(ebx_ptr, NULL);
-    filc_check_write_int32(ecx_ptr, NULL);
-    filc_check_write_int32(edx_ptr, NULL);
-    filc_cpuid_count(leaf, count, *(unsigned*)filc_ptr_ptr(eax_ptr),
-                     *(unsigned*)filc_ptr_ptr(ebx_ptr), *(unsigned*)filc_ptr_ptr(ecx_ptr),
-                     *(unsigned*)filc_ptr_ptr(edx_ptr));
+    cpuid_impl(leaf, count, eax_ptr, ebx_ptr, ecx_ptr, edx_ptr);
 }
 
 static bool (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
