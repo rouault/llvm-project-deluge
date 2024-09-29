@@ -246,15 +246,21 @@
 
 
 #ifdef __PIZLONATOR_WAS_HERE__
-void zsys_cpuid(unsigned int leaf,
-                unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
-void zsys_cpuid_count(unsigned int leaf, unsigned int count,
-                      unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
+#ifdef __cplusplus
+extern "C" {
+#endif
+void zcpuid(unsigned int leaf,
+            unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
+void zcpuid_count(unsigned int leaf, unsigned int count,
+                  unsigned int* eax, unsigned int* ebx, unsigned int* ecx, unsigned int* edx);
+#ifdef __cplusplus
+}
+#endif
 
 #define __cpuid(__leaf, __eax, __ebx, __ecx, __edx) \
-    zsys_cpuid((__leaf), &(__eax), &(__ebx), &(__ecx), &(__edx))
+    zcpuid((__leaf), &(__eax), &(__ebx), &(__ecx), &(__edx))
 #define __cpuid_count(__leaf, __count, __eax, __ebx, __ecx, __edx) \
-    zsys_cpuid_count((__leaf), (__count), &(__eax), &(__ebx), &(__ecx), &(__edx))
+    zcpuid_count((__leaf), (__count), &(__eax), &(__ebx), &(__ecx), &(__edx))
 #else
 #if __i386__
 #define __cpuid(__leaf, __eax, __ebx, __ecx, __edx) \
