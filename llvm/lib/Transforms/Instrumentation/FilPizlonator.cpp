@@ -5226,6 +5226,10 @@ class Pizlonator {
       case Intrinsic::dbg_value:
       case Intrinsic::dbg_assign:
       case Intrinsic::dbg_label:
+      case Intrinsic::invariant_start:
+      case Intrinsic::invariant_end:
+      case Intrinsic::launder_invariant_group:
+      case Intrinsic::strip_invariant_group:
         llvm_unreachable("Should have already been erased");
         return true;
 
@@ -6330,6 +6334,10 @@ class Pizlonator {
           case Intrinsic::dbg_label:
           case Intrinsic::donothing:
           case Intrinsic::experimental_noalias_scope_decl:
+          case Intrinsic::invariant_start:
+          case Intrinsic::invariant_end:
+          case Intrinsic::launder_invariant_group:
+          case Intrinsic::strip_invariant_group:
             ShouldErase = true;
             break;
           case Intrinsic::stacksave:
