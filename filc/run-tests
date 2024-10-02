@@ -34,10 +34,19 @@ $runTests = true
 $verbose = false
 $filter = /./
 
+$compilerPrefix = ""
+$bundleOpt = "-shared"
+$dylibOpt = "-shared"
+$dylibExt = ".so"
+$libraryPathEnv = "LD_LIBRARY_PATH"
+$make = "make"
+$pizfix = "pizfix"
+
 GetoptLong.new(
     [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ],
     [ '--verbose', '-v', GetoptLong::NO_ARGUMENT ],
-    [ '--filter', '-f', GetoptLong::REQUIRED_ARGUMENT ]
+    [ '--filter', '-f', GetoptLong::REQUIRED_ARGUMENT ],
+    [ '--pizfix', '-p', GetoptLong::REQUIRED_ARGUMENT ],
 ).each {
     | opt, arg |
     case opt
@@ -47,33 +56,15 @@ GetoptLong.new(
         $verbose = true
     when '--filter'
         $filter = Regexp.new(arg)
+    when '--pizfix'
+        $pizfix = arg
     else
         raise
     end
 }
 
-if RUBY_PLATFORM =~ /darwin/
-    $compilerPrefix = "xcrun "
-    $bundleOpt = "-bundle"
-    $dylibOpt = "-dynamiclib"
-    $dylibExt = ".dylib"
-    $libraryPathEnv = "DYLD_LIBRARY_PATH"
-else
-    $compilerPrefix = ""
-    $bundleOpt = "-shared"
-    $dylibOpt = "-shared"
-    $dylibExt = ".so"
-    $libraryPathEnv = "LD_LIBRARY_PATH"
-end
-
-if RUBY_PLATFORM =~ /freebsd/ or RUBY_PLATFORM =~ /openbsd/
-    $make = "gmake"
-else
-    $make = "make"
-end
-
 raise unless system("#{$compilerPrefix}clang -c -o filc/tests/legacy_utils.o filc/tests/legacy_utils.c -Ilibpas/src/libpas -g")
-raise unless system("#{$compilerPrefix}build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
+raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
 $testOutputDirectory = Pathname.new("filc/test-output")
@@ -146,7 +137,7 @@ $testDirectory.each_entry {
                 clang = "clang"
                 extraOpts = ""
             end
-            outp.puts "#{$compilerPrefix}build/bin/#{clang} -c -o #{Shellwords.shellescape(outputPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            outp.puts "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clang} -c -o #{Shellwords.shellescape(outputPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests -O2 -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
             if expectedReturn == "compileFailure"
                 outp.puts "if [ $? -eq 0 ]"
                 outp.puts "then"
@@ -183,7 +174,7 @@ $testDirectory.each_entry {
                 else
                     clangLinker = "clang"
                 end
-                outp.print "#{$compilerPrefix}build/bin/#{clangLinker} #{libraryOpt} -o #{Shellwords.shellescape(outputPath + libname)}"
+                outp.print "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clangLinker} #{libraryOpt} -o #{Shellwords.shellescape(outputPath + libname)}"
                 data["files"].each {
                     | file |
                     libraryFiles[file] = true
@@ -210,7 +201,7 @@ $testDirectory.each_entry {
         else
             clangLinker = "clang"
         end
-        outp.print "#{$compilerPrefix}build/bin/#{clangLinker} -o #{Shellwords.shellescape(binary)}"
+        outp.print "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clangLinker} -o #{Shellwords.shellescape(binary)}"
         fullPath.each_entry {
             | entry |
             next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp"
@@ -233,7 +224,7 @@ $testDirectory.each_entry {
             | outp |
             outp.puts "#!/bin/sh"
             outp.puts "set -e"
-            outp.print "#{$libraryPathEnv}=pizfix/lib_test"
+            outp.print "#{$libraryPathEnv}=#{$pizfix}/pizfix/lib_test"
             if manifest["extraLDPath"]
                 outp.print ":#{manifest["extraLDPath"]}"
             end

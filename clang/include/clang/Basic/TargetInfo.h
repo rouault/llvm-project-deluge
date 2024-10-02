@@ -473,6 +473,10 @@ public:
     return PointerWidth;
   }
 
+  virtual uint64_t getMaxConstexprPointerWidth() const {
+    return ConstexprPointerWidth;
+  }
+
   /// Get integer value for null pointer.
   /// \param AddrSpace address space of pointee in source language.
   virtual uint64_t getNullPointerValue(LangAS AddrSpace) const { return 0; }
