@@ -27,7 +27,7 @@ require 'pathname'
 require 'getoptlong'
 require 'shellwords'
 
-BENCHMARK_NAME = "PizBench9003"
+BENCHMARK_NAME = "PizBench9004"
 
 $repeats = 5
 $filter = /./
@@ -288,6 +288,28 @@ $benchmarks << Benchmark.new(
 $benchmarks << Benchmark.new(
     "bin/lua",
     "benchmarkData/richards.lua",
+    [])
+
+$benchmarks << Benchmark.new(
+    "../pizlonated-simdutf/build/benchmarks/benchmark",
+    "-F benchmarkData/simdutf-README.md -I 2000 " +
+    "-P convert_latin1_to_utf16+haswell " +
+    "-P convert_latin1_to_utf32+haswell " +
+    "-P convert_latin1_to_utf8+haswell " +
+    "-P convert_utf8_to_utf16+haswell " +
+    "-P convert_utf8_to_utf16_with_dynamic_allocation+haswell " +
+    "-P convert_utf8_to_utf16_with_errors+haswell " +
+    "-P convert_utf8_to_utf32+haswell " +
+    "-P convert_utf8_to_utf32_with_dynamic_allocation+haswell " +
+    "-P convert_utf8_to_utf32_with_errors+haswell " +
+    "-P convert_valid_utf8_to_latin1+haswell " +
+    "-P convert_valid_utf8_to_utf16+haswell " +
+    "-P convert_valid_utf8_to_utf32+haswell " +
+    "-P count_utf8+haswell " +
+    "-P detect_encodings+haswell " +
+    "-P utf8_length_from_latin1+haswell " +
+    "-P validate_utf8+haswell " +
+    "-P validate_utf8_with_errors+haswell",
     [])
 
 $benchmarks.filter! {
