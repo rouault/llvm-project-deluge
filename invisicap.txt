@@ -1,0 +1,186 @@
+This document outlines a new capability model for Fil-C called InvisiCap. InvisiCap is a possible
+replacement for the current Fil-C MonoCap model. The goal of InvisiCap is that it:
+
+- Aims at super fast checks of all int (i.e. non-ptr) accesses. Because int accesses outnumber ptr
+  accesses, this should result in a big speed-up.
+- Aims at ptr accesses that are no worse than in Fil-C right now (and are possibly better).
+- Allows ptr-int unions where you can flip-flop between ptr and int.
+    -> Storing an int where there used to be a ptr changes where the ptr points, but retains the old
+       capability. So, int stores only result in a valid ptr if the address is in bounds of whatever
+       that pointer used to point to.
+    -> Storing a ptr where there used to be an int is fine. Future int reads will see the ptr's raw
+       value.
+  This removes one of the big reasons why Fil-C is currently incompatible with some C code and changes
+  are needed to make that C code work in Fil-C.
+- Retains atomicity of ptrs so long as they are marked volatile, _Atomic, or std::atomic (just like
+  MonoCaps).
+- Does not require CAS on stores or loads, ever. This should be a big speed-up over MonoCaps, which do
+  require CAS on first access (and this shows up in profiles).
+- Gives the illusion of pointers being 64-bit. This removes another compatibility hurdle (lots of code
+  just assumes that pointers are either 32-bit or 64-bit and nothing else).
+- Does not sacrifice memory safety at all.
+
+InvisiCap introduces a different space trade-off than MonoCap. MonoCaps require 1 byte for every 16
+bytes and a 32 byte object header. InvisiCaps require 8 bytes for every 8 bytes in any object that has
+at least one pointer, but zero otherwise, plus a 16 byte header. So, InvisiCaps are more efficient for
+integer-only objects, more efficient for pointer-only objects, equally efficient for small objects
+that mix integers and pointers, and less efficient for large objects that mix integers and pointers.
+
+The capability object precedes the allocation, always. It's:
+
+    struct filc_object {
+        size_t size;
+        uintptr_t* aux;
+        unsigned flags; /* This could be in the high 16 bits of aux. */
+    };
+
+Pointers are a tuple of the raw pointer and the lower bound, i.e. the end of the capability object.
+
+So, filc_ptr_lower(ptr) points at the tail end of the filc_object, and that's what the capability
+pointer carries. So, to get the filc_ptr_object(ptr), we do ((filc_object*)filc_ptr_lower(ptr)) - 1.
+
+And to support atomics, we have:
+
+    struct PAS_ALIGNED(16) filc_atomic_box {
+        void* lower;
+        void* ptr;
+    };
+
+For normal objects, the object->aux pointer points at an array of either lowers or atomic boxes. The
+aux entries are tagged with FILC_ATOMIC_BOX_BIT (i.e. (uintptr_t)1) to indicate that the lower points
+at a filc_atomic_box.
+
+The aux array may not exist (for int-only objects). If it exists, it has exactly the same number of
+bytes as the main object. Integers in the object have no corresponding entry in aux (it will be zero).
+Pointers in the object will have the raw pointer in the main object and the capability pointer (in the
+form of a pointer to the lower bound, i.e. a pointer to the "top" of the filc_object) in the
+corresponding entry in aux. Finally, atomic pointers (pointers that were accessed using atomics) will
+have a filc_atomic_box pointer in the corresponding entry in aux, and that box will have the
+authoritative value of that atomic pointer. But, the pointers value will be non-atomically replicated
+into the main object payload, so nonatomic integers loads get *some* value that is reasonably recent.
+
+Aux is created lazily, on first pointer store. Atomic boxes are created lazily, on first atomic
+pointer store.
+
+In the case of specials, size is zero, preventing all access. Flags tells what kind of special object
+we have.
+
+In the case of function pointers, aux points to the actual function. In the case of all other
+specials, the aux points to wherever we say it's legal for the pointer to point in order to actually
+use it.
+
+Pointers at rest always have lower pointing at the tail of a filc_object, and never at an atomic box.
+
+An nonatomic integer read looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    return *(uintptr_t*)filc_ptr_ptr(ptr);
+
+An nonatomic integer write looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY)
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
+
+An atomic integer read looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (filc_ptr_object(ptr)->aux) {
+        uintptr_t lower_or_box = *(uintptr_t*)(
+            filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+        if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
+            return (uintptr_t)((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT)box)->raw_ptr;
+    }
+    return *(uintptr_t*)filc_ptr_ptr(ptr);
+
+An atomic integer write looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (filc_ptr_object(ptr)->aux) {
+        uintptr_t lower_or_box = *(uintptr_t*)(
+            filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+        if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
+            ((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT))->raw_ptr = (void*)new_value;
+    }
+    *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
+
+A pointer read (atomic or not) looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (!filc_ptr_object(ptr)->aux)
+        return filc_ptr_create(NULL, *(void**)filc_ptr_ptr(ptr));
+    uintptr_t lower_or_box = *(uintptr_t*)(
+        filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+    if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
+        return filc_atomic_box_load_atomic(
+            (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT)box);
+    }
+    return filc_ptr_create((void*)lower_or_box, *(void**)filc_ptr_ptr(ptr));
+
+A nonatomic pointer write looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY)
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (!filc_ptr_object(ptr)->aux)
+        filc_object_make_aux(filc_ptr_object(ptr));
+    filc_store_barrier(filc_ptr_object(new_value));
+    *(void**)(filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr))) =
+        filc_ptr_lower(new_value);
+    *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+
+An atomic pointer write looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY)
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (!filc_ptr_object(ptr)->aux)
+        filc_object_make_aux(filc_ptr_object(ptr));
+    filc_store_barrier(filc_ptr_object(new_value));
+    uintptr_t lower_or_box = *(uintptr_t*)(
+        filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+    if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
+        filc_atomic_box_store_atomic(
+            (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT), new_value);
+    } else {
+        *(filc_atomic_box**)(lower_or_box & ~FILC_ATOMIC_BOX_BIT) = filc_atomic_box_create(new_value);
+    *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+
+Atomic RMWs and CAS are also supported (and use variants of the atomic int write or atomic ptr write
+algorithms).
