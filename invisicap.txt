@@ -30,7 +30,7 @@ The capability object precedes the allocation, always. It's:
 
     struct filc_object {
         size_t size;
-        uintptr_t* aux;
+        uintptr_t aux;
         unsigned flags; /* This could be in the high 16 bits of aux. */
     };
 
