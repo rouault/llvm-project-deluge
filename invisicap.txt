@@ -13,9 +13,11 @@ replacement for the current Fil-C MonoCap model. The goal of InvisiCap is that i
   This removes one of the big reasons why Fil-C is currently incompatible with some C code and changes
   are needed to make that C code work in Fil-C.
 - Retains atomicity of ptrs so long as they are marked volatile, _Atomic, or std::atomic (just like
-  MonoCaps).
-- Does not require CAS on stores or loads, ever. This should be a big speed-up over MonoCaps, which do
-  require CAS on first access (and this shows up in profiles).
+  MonoCaps) and there is no atomic int versus atomic ptr type confusion. See bottom of the doc for an
+  analysis of atomicity.
+- Does not require CAS on stores or loads, except exactly one CAS the first time that a ptr is stored
+  into an object. This should be a big speed-up over MonoCaps, which require CAS on first access to
+  each word (and this shows up in profiles).
 - Gives the illusion of pointers being 64-bit. This removes another compatibility hurdle (lots of code
   just assumes that pointers are either 32-bit or 64-bit and nothing else).
 - Does not sacrifice memory safety at all.
@@ -30,9 +32,11 @@ The capability object precedes the allocation, always. It's:
 
     struct filc_object {
         size_t size;
-        uintptr_t aux;
-        unsigned flags; /* This could be in the high 16 bits of aux. */
+        uintptr_t aux; /* High 16 bits hold flags, low 48 bits holds the aux ptr. */
     };
+
+Newly allocated memory always gets a filc_object header, the aux starts out zero, the size is the
+object's size (rounded up to 8 bytes), and the payload is always initialized to zero.
 
 Pointers are a tuple of the raw pointer and the lower bound, i.e. the end of the capability object.
 
@@ -46,9 +50,9 @@ And to support atomics, we have:
         void* ptr;
     };
 
-For normal objects, the object->aux pointer points at an array of either lowers or atomic boxes. The
-aux entries are tagged with FILC_ATOMIC_BOX_BIT (i.e. (uintptr_t)1) to indicate that the lower points
-at a filc_atomic_box.
+For normal objects, the object->aux & FILC_AUX_PTR_MASK pointer points at an array of either lowers or
+atomic boxes. The aux entries are tagged with FILC_ATOMIC_BOX_BIT (i.e. (uintptr_t)1) to indicate that
+the lower points at a filc_atomic_box.
 
 The aux array may not exist (for int-only objects). If it exists, it has exactly the same number of
 bytes as the main object. Integers in the object have no corresponding entry in aux (it will be zero).
@@ -65,11 +69,42 @@ pointer store.
 In the case of specials, size is zero, preventing all access. Flags tells what kind of special object
 we have.
 
-In the case of function pointers, aux points to the actual function. In the case of all other
-specials, the aux points to wherever we say it's legal for the pointer to point in order to actually
-use it.
+In the case of function pointers, aux & FILC_AUX_PTR_MASK points to the actual function. In the case
+of all other specials, the aux points to wherever we say it's legal for the pointer to point in order
+to actually use it.
 
 Pointers at rest always have lower pointing at the tail of a filc_object, and never at an atomic box.
+
+It's still the case that pointers-at-rest have the filc_ptr type, which carries both the lower and the
+raw_ptr. But pointers stored in the heap are usually split - the raw_ptr is in the main object payload
+while the lower is in the aux.
+
+We rely on the following helpers:
+
+    void* filc_ptr_lower(filc_ptr); /* Returns the lower portion of the ptr. This is zero actual work
+                                       since the lower will be carried in a register. */
+    filc_object* filc_ptr_object(filc_ptr); /* Returns the filc_object (i.e. lower minus object
+                                               size). Also zero actual work, since the compiler will
+                                               just generate object accesses as negative offsets to
+                                               lower. */
+    void* filc_ptr_ptr(filc_ptr); /* The raw pointer. Zero actual work since the raw ptr will be
+                                     carried in a register. */
+    filc_ptr filc_ptr_create(void* lower, void* raw_ptr); /* Wrap up a lower/raw_ptr into a filc_ptr.
+                                                             Zero actual work. */
+    void filc_object_make_aux(filc_object*); /* Allocate an aux for the object. Fast inlined object
+                                                allocation plus a CAS to set the low 48 bits of aux
+                                                without disturbing the flags. The payload of the aux
+                                                is always initialized to zero on allocation. */
+    char* filc_object_aux_ptr(filc_object*); /* Return the pointer portion of the aux (the low 48
+                                                bits). I.e. object->aux & FILC_AUX_PTR_MASK. Returned
+                                                as a char* because all uses involve arithmetic in
+                                                terms of bytes. */
+    void filc_store_barrier(filc_object*); /* Execute a GC store barrier when the value being stored
+                                              points at the given object. */
+    filc_atomic_box* filc_atomic_box_create(filc_ptr value); /* Allocate an atomic box and initialize
+                                                                it to the given ptr. */
+    filc_ptr filc_atomic_box_load_atomic(filc_atomic_box*); /* 128-bit atomic load. */
+    void filc_atomic_box_store_atomic(filc_atomic_box*, filc_ptr); /* 128-bit atomic store. */
 
 An nonatomic integer read looks like:
 
@@ -101,9 +136,9 @@ An atomic integer read looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (filc_ptr_object(ptr)->aux) {
+    if (filc_object_aux_ptr(filc_ptr_object(ptr)) {
         uintptr_t lower_or_box = *(uintptr_t*)(
-            filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
         if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
             return (uintptr_t)((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT)box)->raw_ptr;
     }
@@ -117,13 +152,35 @@ An atomic integer write looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (filc_ptr_object(ptr)->aux) {
+    if (filc_object_aux_ptr(filc_ptr_object(ptr))) {
         uintptr_t lower_or_box = *(uintptr_t*)(
-            filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
         if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
             ((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT))->raw_ptr = (void*)new_value;
     }
     *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
+
+An atomic integer CAS looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (filc_object_aux_ptr(filc_ptr_object(ptr))) {
+        uintptr_t lower_or_box = *(uintptr_t*)(
+            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+        if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
+            if (CAS(&((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT))->raw_ptr,
+                    (void*)expected_value, (void*)new_value)) {
+                *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
+                return true;
+            } else
+                return false;
+        }
+    }
+    return CAS((uintptr_t*)filc_ptr_ptr(ptr), expected_value, new_value);
 
 A pointer read (atomic or not) looks like:
 
@@ -133,10 +190,10 @@ A pointer read (atomic or not) looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (!filc_ptr_object(ptr)->aux)
+    if (!filc_object_aux_ptr(filc_ptr_object(ptr)))
         return filc_ptr_create(NULL, *(void**)filc_ptr_ptr(ptr));
     uintptr_t lower_or_box = *(uintptr_t*)(
-        filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+        filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
     if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
         return filc_atomic_box_load_atomic(
             (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT)box);
@@ -153,10 +210,10 @@ A nonatomic pointer write looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (!filc_ptr_object(ptr)->aux)
+    if (!filc_object_aux_ptr(filc_ptr_object(ptr)))
         filc_object_make_aux(filc_ptr_object(ptr));
     filc_store_barrier(filc_ptr_object(new_value));
-    *(void**)(filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr))) =
+    *(void**)(filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr))) =
         filc_ptr_lower(new_value);
     *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
 
@@ -170,17 +227,76 @@ An atomic pointer write looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (!filc_ptr_object(ptr)->aux)
+    if (!filc_object_aux_ptr(filc_ptr_object(ptr)))
         filc_object_make_aux(filc_ptr_object(ptr));
     filc_store_barrier(filc_ptr_object(new_value));
-    uintptr_t lower_or_box = *(uintptr_t*)(
-        filc_ptr_object(ptr)->aux + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+    uintptr_t* lower_or_box_ptr = (uintptr_t*)(
+        filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+    uintptr_t lower_or_box = *lower_or_box_ptr;
     if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
         filc_atomic_box_store_atomic(
             (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT), new_value);
     } else {
-        *(filc_atomic_box**)(lower_or_box & ~FILC_ATOMIC_BOX_BIT) = filc_atomic_box_create(new_value);
+        *lower_or_box_ptr = (uintptr_t)filc_atomic_box_create(new_value) | FILC_ATOMIC_BOX_BIT;
     *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
 
-Atomic RMWs and CAS are also supported (and use variants of the atomic int write or atomic ptr write
-algorithms).
+An atomic pointer CAS looks like:
+
+    if (misaligned)
+        fail;
+    if (!filc_ptr_lower(ptr))
+        fail;
+    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY)
+        fail;
+    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
+        fail;
+    if (!filc_object_aux_ptr(filc_ptr_object(ptr)))
+        filc_object_make_aux(filc_ptr_object(ptr));
+    filc_store_barrier(filc_ptr_object(new_value));
+    uintptr_t* lower_or_box_ptr = (uintptr_t*)(
+        filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
+    for (;;) {
+        uintptr_t lower_or_box = *lower_or_box_ptr;
+        bool cas_successful;
+        if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
+            cas_successful = filc_atomic_box_cas_atomic(
+                (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT), expected_value, new_value);
+        } else if ((void*)lower_or_box == filc_ptr_lower(expected_value) &&
+                   *(void**)filc_ptr_ptr(ptr) == filc_ptr_ptr(expected_value)) {
+            if (!CAS(lower_or_box_ptr, lower_or_box,
+                     (uintptr_t)filc_atomic_box_create(new_value) | FILC_ATOMIC_BOX_BIT))
+                continue;
+            cas_successful = true;
+        } else
+            cas_successful = false;
+        *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+        return cas_successful;
+    }
+
+Note that the CAS algorithms are guaranteed to linearize if certain conditions are met:
+
+- There's no int-ptr type confusion. Int-ptr type confusion could cause CAS to not be linear, so you
+  might get time travel and races.
+- Ptr fields are marked volatile, _Atomic, or std::atomic.
+
+Integer CAS linearizes even if the field is not marked volatile, _Atomic, or std::atomic, but isn't
+guaranteed to linearize if the same field is also used for pointer CAS. That said, integer CAS does
+linearize even for pointer fields provided that the field was used for a pointer atomic access before
+any integer atomic access. But if there's a race between an integer CAS on a field and the first ever
+pointer CAS on that field, then the CASes fail to be atomic.
+
+Pointer CAS is guaranteed to linearize if the field has only ever been used with pointer atomic
+accesses. But there are exceptions where it'll still linearize even if that's not the case:
+
+- As soon as a ptr field is used for an atomic store or atomic CAS, all subsequent integer atomic
+  accesses and all subsequent pointer accesses (atomic or not) will linearize. So it's valid to, for
+  example, make a ptr field atomic by doing an atomic store of NULL right after allocation and then
+  have all subsequent loads/stores not be atomic.
+- If a field is initialized using non-atomic stores (or is left in its initial NULL state after
+  allocaction) but all subsequent stores and CASes are atomic, then accesses to the field linearize.
+
+To summarize, atomics really are atomic - for both integers and pointers - so long as there's no
+int-ptr type confusion and atomically accessed ptr fields are marked volatile, _Atomic, or
+std::atomic. If there is int-ptr type confusion or atomic loads/stores to ptrs not marked atomic, then
+those accesses might still be atomic provided that a more subtle set of rules is followed.
+
