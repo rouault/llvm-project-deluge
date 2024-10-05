@@ -13,13 +13,16 @@ replacement for the current Fil-C MonoCap model. The goal of InvisiCap is that i
   This removes one of the big reasons why Fil-C is currently incompatible with some C code and changes
   are needed to make that C code work in Fil-C.
 - Retains atomicity of ptrs so long as they are marked volatile, _Atomic, or std::atomic (just like
-  MonoCaps) and there is no atomic int versus atomic ptr type confusion. See bottom of the doc for an
-  analysis of atomicity.
+  MonoCaps) and there is no atomic int versus atomic ptr type confusion. If these conditions are
+  violated, then memory safety still holds, but you might get outcomes that don't linearlize (i.e.
+  violate atomicity). See bottom of the doc for an analysis of atomicity.
 - Does not require CAS on stores or loads, except exactly one CAS the first time that a ptr is stored
   into an object. This should be a big speed-up over MonoCaps, which require CAS on first access to
   each word (and this shows up in profiles).
 - Gives the illusion of pointers being 64-bit. This removes another compatibility hurdle (lots of code
   just assumes that pointers are either 32-bit or 64-bit and nothing else).
+    -> There's nothing in the algorithm that requires 64-bit systems; this approach would work fine on
+       32-bit systems (you'd get the illusion that ptrs are 32-bit, as you'd expect on such a system).
 - Does not sacrifice memory safety at all.
 
 InvisiCap introduces a different space trade-off than MonoCap. MonoCaps require 1 byte for every 16
@@ -269,7 +272,8 @@ An atomic pointer CAS looks like:
             cas_successful = true;
         } else
             cas_successful = false;
-        *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+        if (cas_successful)
+            *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
         return cas_successful;
     }
 
