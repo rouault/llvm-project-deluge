@@ -50,23 +50,7 @@
 
 PAS_BEGIN_EXTERN_C;
 
-/* Internal FilC runtime header, defining how the FilC runtime maintains its state.
- 
-   Currently, including this header is the only way to perform FFI to FilC code, and the API for
-   that is too low-level for comfort. That's probably fine, since the FilC ABI is going to
-   change the moment I start giving a shit about performance.
-
-   This runtime is engineered under the following principles:
-
-   - It's based on libpas with the verse_heap, so we get to have a concurrent GC.
-
-   - Coding standards have to be extremely high, and assert usage should be full-ass
-     belt-and-suspenders. The goal of this code is to achieve memory safety under the FilC
-     "Bounded P^I" type system. It's fine to take extra cycles or bytes to achieve that goal.
-
-   - There are no optimizations yet, but the structure of this code is such that when I choose to 
-     go into optimization mode, I will be able to wreak havoc I'm just holding back from going
-     there, for now. Lots of running code is better than a small amount of fast code. */
+/* Internal FilC runtime header, defining how the FilC runtime maintains its state. */
 
 struct filc_alignment_and_offset;
 struct filc_cc_cursor;
