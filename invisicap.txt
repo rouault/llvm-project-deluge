@@ -14,8 +14,9 @@ replacement for the current Fil-C MonoCap model. The goal of InvisiCap is that i
   are needed to make that C code work in Fil-C.
 - Retains atomicity of ptrs so long as they are marked volatile, _Atomic, or std::atomic (just like
   MonoCaps) and there is no atomic int versus atomic ptr type confusion. If these conditions are
-  violated, then memory safety still holds, but you might get outcomes that don't linearlize (i.e.
-  violate atomicity). See bottom of the doc for an analysis of atomicity.
+  violated, then memory safety still holds, but you might get weird outcomes (either you don't get the
+  atomicity or ints and ptrs stored to the same location behave as if they were at different
+  locations). See bottom of the doc for an analysis of atomicity.
 - Does not require CAS on stores or loads, except exactly one CAS the first time that a ptr is stored
   into an object. This should be a big speed-up over MonoCaps, which require CAS on first access to
   each word (and this shows up in profiles).
@@ -24,6 +25,9 @@ replacement for the current Fil-C MonoCap model. The goal of InvisiCap is that i
     -> There's nothing in the algorithm that requires 64-bit systems; this approach would work fine on
        32-bit systems (you'd get the illusion that ptrs are 32-bit, as you'd expect on such a system).
 - Does not sacrifice memory safety at all.
+- Gives a path to ABI compatibility with Yolo-C.
+- Gives a path to removing the need for a GC (if we're willing to have a weaker guarantees for use-
+  after-free; those weaker guarantees are still technically memory safe).
 
 InvisiCap introduces a different space trade-off than MonoCap. MonoCaps require 1 byte for every 16
 bytes and a 32 byte object header. InvisiCaps require 8 bytes for every 8 bytes in any object that has
@@ -35,7 +39,7 @@ The capability object precedes the allocation, always. It's:
 
     struct filc_object {
         size_t size;
-        uintptr_t aux; /* High 16 bits hold flags, low 48 bits holds the aux ptr. */
+        uintptr_t aux; /* 16 bits hold flags, 48 bits holds the aux ptr. */
     };
 
 Newly allocated memory always gets a filc_object header, the aux starts out zero, the size is the
@@ -109,7 +113,7 @@ We rely on the following helpers:
     filc_ptr filc_atomic_box_load_atomic(filc_atomic_box*); /* 128-bit atomic load. */
     void filc_atomic_box_store_atomic(filc_atomic_box*, filc_ptr); /* 128-bit atomic store. */
 
-An nonatomic integer read looks like:
+An integer read (atomic or not) looks like:
 
     if (misaligned)
         fail;
@@ -119,7 +123,7 @@ An nonatomic integer read looks like:
         fail;
     return *(uintptr_t*)filc_ptr_ptr(ptr);
 
-An nonatomic integer write looks like:
+An integer write (atomic or not) looks like:
 
     if (misaligned)
         fail;
@@ -131,38 +135,6 @@ An nonatomic integer write looks like:
         fail;
     *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
 
-An atomic integer read looks like:
-
-    if (misaligned)
-        fail;
-    if (!filc_ptr_lower(ptr))
-        fail;
-    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
-        fail;
-    if (filc_object_aux_ptr(filc_ptr_object(ptr)) {
-        uintptr_t lower_or_box = *(uintptr_t*)(
-            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
-        if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
-            return (uintptr_t)((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT)box)->raw_ptr;
-    }
-    return *(uintptr_t*)filc_ptr_ptr(ptr);
-
-An atomic integer write looks like:
-
-    if (misaligned)
-        fail;
-    if (!filc_ptr_lower(ptr))
-        fail;
-    if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
-        fail;
-    if (filc_object_aux_ptr(filc_ptr_object(ptr))) {
-        uintptr_t lower_or_box = *(uintptr_t*)(
-            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
-        if ((lower_or_box & FILC_ATOMIC_BOX_BIT))
-            ((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT))->raw_ptr = (void*)new_value;
-    }
-    *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
-
 An atomic integer CAS looks like:
 
     if (misaligned)
@@ -171,18 +143,6 @@ An atomic integer CAS looks like:
         fail;
     if (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr) >= filc_ptr_object(ptr)->size)
         fail;
-    if (filc_object_aux_ptr(filc_ptr_object(ptr))) {
-        uintptr_t lower_or_box = *(uintptr_t*)(
-            filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
-        if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
-            if (CAS(&((filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT))->raw_ptr,
-                    (void*)expected_value, (void*)new_value)) {
-                *(uintptr_t*)filc_ptr_ptr(ptr) = new_value;
-                return true;
-            } else
-                return false;
-        }
-    }
     return CAS((uintptr_t*)filc_ptr_ptr(ptr), expected_value, new_value);
 
 A pointer read (atomic or not) looks like:
@@ -241,7 +201,6 @@ An atomic pointer write looks like:
             (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT), new_value);
     } else {
         *lower_or_box_ptr = (uintptr_t)filc_atomic_box_create(new_value) | FILC_ATOMIC_BOX_BIT;
-    *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
 
 An atomic pointer CAS looks like:
 
@@ -260,47 +219,58 @@ An atomic pointer CAS looks like:
         filc_object_aux_ptr(filc_ptr_object(ptr)) + (filc_ptr_ptr(ptr) - filc_ptr_lower(ptr)));
     for (;;) {
         uintptr_t lower_or_box = *lower_or_box_ptr;
-        bool cas_successful;
         if ((lower_or_box & FILC_ATOMIC_BOX_BIT)) {
-            cas_successful = filc_atomic_box_cas_atomic(
+            return filc_atomic_box_cas_atomic(
                 (filc_atomic_box*)(lower_or_box & ~FILC_ATOMIC_BOX_BIT), expected_value, new_value);
-        } else if ((void*)lower_or_box == filc_ptr_lower(expected_value) &&
-                   *(void**)filc_ptr_ptr(ptr) == filc_ptr_ptr(expected_value)) {
+        }
+        if ((void*)lower_or_box == filc_ptr_lower(expected_value) &&
+            *(void**)filc_ptr_ptr(ptr) == filc_ptr_ptr(expected_value)) {
             if (!CAS(lower_or_box_ptr, lower_or_box,
                      (uintptr_t)filc_atomic_box_create(new_value) | FILC_ATOMIC_BOX_BIT))
                 continue;
-            cas_successful = true;
-        } else
-            cas_successful = false;
-        if (cas_successful)
-            *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
-        return cas_successful;
+            return true;
+        }
+        return false;
     }
 
-Note that the CAS algorithms are guaranteed to linearize if certain conditions are met:
+Note that the CAS algorithms are guaranteed to linearize (be atomic and have semantics that make
+sense) if certain conditions are met:
 
-- There's no int-ptr type confusion. Int-ptr type confusion could cause CAS to not be linear, so you
-  might get time travel and races.
+- There's no int-ptr type confusion.
 - Ptr fields are marked volatile, _Atomic, or std::atomic.
 
-Integer CAS linearizes even if the field is not marked volatile, _Atomic, or std::atomic, but isn't
-guaranteed to linearize if the same field is also used for pointer CAS. That said, integer CAS does
-linearize even for pointer fields provided that the field was used for a pointer atomic access before
-any integer atomic access. But if there's a race between an integer CAS on a field and the first ever
-pointer CAS on that field, then the CASes fail to be atomic.
+Pointer accesses are guaranteed to linearize if the last store to the location was either an atomic
+pointer store or an atomic pointer CAS. Pointer accesses are also guaranteed to linearize in the
+following corner case: the last store was either an integer store or a nonatomic pointer store, but
+it happened without any racing. The initialization of an object upon allocation satisfies that
+requirement. The moment that a nonatomic pointer store race happens, then it's possible for the race
+outcome to be that the pointer has the capability from one store and the raw ptr value from the other
+store. It's also possible that if those stores race with a CAS, then the CAS might appear to fail or
+succeed even though it shouldn't have.
 
-Pointer CAS is guaranteed to linearize if the field has only ever been used with pointer atomic
-accesses. But there are exceptions where it'll still linearize even if that's not the case:
+A more succinct way to think about it is: a memory location is either in atomic box mode, or not. It
+goes into atomic box mode once there is an atomic ptr store or ptr CAS. Atomic box mode is cancelled
+as soon as there is a nonatomic ptr store.
 
-- As soon as a ptr field is used for an atomic store or atomic CAS, all subsequent integer atomic
-  accesses and all subsequent pointer accesses (atomic or not) will linearize. So it's valid to, for
-  example, make a ptr field atomic by doing an atomic store of NULL right after allocation and then
-  have all subsequent loads/stores not be atomic.
-- If a field is initialized using non-atomic stores (or is left in its initial NULL state after
-  allocaction) but all subsequent stores and CASes are atomic, then accesses to the field linearize.
+Integer accesses are atomic no matter what. But: if the integer access aliases a pointer access, then
+the outcome of that aliasing is different depending on whether the location is in atomic box mode. If
+the location is not in atomic box mode, then the integer accesses alias the raw ptr portion of the
+whatever pointer is there. For example, you could do:
+
+    *(void**)X = some_pointer;
+    *(intptr_t)X = 666;
+    borked_ptr = *(void**)X;
+
+And then borked_ptr will have the value 666, but the capability from some_pointer. But if the memory
+location is in atomic box mode, then the outcome will be different: borked_ptr will be exactly
+some_pointer, and subsequent integer reads from X will see 666.
 
 To summarize, atomics really are atomic - for both integers and pointers - so long as there's no
 int-ptr type confusion and atomically accessed ptr fields are marked volatile, _Atomic, or
-std::atomic. If there is int-ptr type confusion or atomic loads/stores to ptrs not marked atomic, then
-those accesses might still be atomic provided that a more subtle set of rules is followed.
+std::atomic. If there are atomic loads to ptrs not marked atomic, then those accesses will still be
+atomic provided that the location is in atomic box mode (the last store was an atomic ptr store or ptr
+CAS) or the last store didn't race. If there is int-ptr type confusion, then the memory location
+carries totally separate values for the integer accesses and the atomic ptr accesses, as opposed to
+aliasing the raw ptr to the integer value of that location.
+
 
