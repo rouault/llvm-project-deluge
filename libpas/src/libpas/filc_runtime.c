@@ -1978,11 +1978,18 @@ static PAS_ALWAYS_INLINE filc_object* finish_allocate_small(
     void* allocation, size_t size, size_t num_words,
     size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
 {
+    static const bool verbose = false;
+    
     filc_object* result = (filc_object*)allocation;
 
     PAS_TESTING_ASSERT(size == num_words * FILC_WORD_SIZE);
 
-    if (!object_flags) {
+    if (verbose)
+        pas_log("allocation = %p, base = %p, object_flags = %u, initial_word_type = %u\n", allocation, (char*)allocation + offset_to_payload, object_flags, initial_word_type);
+
+    if (!object_flags && !initial_word_type) {
+        if (verbose)
+            pas_log("Going down the fast path.\n");
         initialize_object_bounds(result, size, offset_to_payload);
         pas_uint128* dst_ptr = (pas_uint128*)&result->flags;
         PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)dst_ptr, FILC_WORD_SIZE));
