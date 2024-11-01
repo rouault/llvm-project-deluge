@@ -75,11 +75,11 @@ which exposes all of the API that musl needs (low-level
 [syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#2901),
 which themselves perform comprehensive safety checking).
 
-On the other hand, Fil-C is quite slow. It's ~10x slower than legacy C right now (ranging from 3x
-slower in the best case, xz decompress, to 20x in the worst case, CPython). So far I have only
-implemented a handful of optimizations since I have mostly focused on correctness and ergonomics and
-converting as much code to it as I personally can in my spare time. It's important for Fil-C to be
-fast eventually.
+Fil-C is currently 1.5x slower than normal C in good cases, and about 5x slower in the worst cases.
+I'm actively working on performance optimizations for Fil-C, so that 5x number will go down. I expect
+perf to be below 2x worst case soon, with best cases around 1.2x. In the current implementation,
+initializing newly allocated objects is particularly costly and that leads to the 5x number for some
+programs. But, I'm fixing that deficiency.
 
 Note that the very first prototype of Fil-C used isoheaps instead of GC. The isoheap version is obsolete,
 since it's slower and requires more changes to C code. If you want to read about it,
@@ -173,30 +173,26 @@ and OpenSSH to get them to work.
 
 ## Making Fil-C Fast
 
-The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 10x slower
-than legacy C on average, though in some cases it's only 3x slower.
+The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 1.5x-5x slower
+than legacy C.
 
-Why is it so slow?
+Why is it slow right now?
 
 - The current calling convention and dynamic linking implementation is different from C, but relies
   on the C linker and C calling convention under the hood, resulting in doubling of both call and
   linking overheads.
 
-- Inlining - and many other compiler optimizations - currently happen *after* Fil-C injects its
-  instrumentation, including call/link instrumentation. This effectively makes inlining ineffective.
-
-- The runtime still has a lot of "reference implementation" style code that hasn't been optimized at
-  all. Allocation and memmove are two examples of functions that could be made faster, but simply
-  haven't been, yet.
-
-- The `llvm::FilPizlonatorPass` inserts checks blindly, without doing any analysis to remove
-  redundancies. Also, it instruments code without making any smart use of LLVM metadata like TBAA,
-  which thwarts subsequent LLVM passes ability to remove redundant checks.
+- MonoCaps - the current capability model - require complex checks that induce high register pressure.
+  Worse, they require the first store to any 16-byte word to do an atomic compare-and-swap.
+  *I'm working on changing the capability model right now; see
+  [invisicaps.txt](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/invisicap.txt) for
+  a write-up.*
 
 - Likely other issues that I don't know about.
 
 The plan to make Fil-C fast is to fix these issues. I believe that fixing these issues can get Fil-C
-to be only 2x slower than legacy C, or maybe even only 1.5x slower if I get lucky.
+to be only 1.5x slower than C *in the worst cases*, with lots of programs being only 1.2x slower. But
+it'll take some focused compiler/runtime/GC hacking to get there.
 
 ## MonoCap
 

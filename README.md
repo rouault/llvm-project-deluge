@@ -10,10 +10,6 @@ bits and have of those bits are under strict GC control). Every fundamental C
 operation (as seen in LLVM IR) is checked against the capability. Fil-C has no
 `unsafe` escape hatch of any kind.
 
-What is it not? It's not production-tested. There are probably things I've
-missed. It's slow (I haven't done any optimizations yet). And, it has no ABI
-compatibility with classic C or C++.
-
 ## Requirements
 
 Fil-C only works on Linux/X86_64.
@@ -85,8 +81,8 @@ Fil-C is not a complete product. Lots of stuff isn't done!
 - Fil-C doesn't do anything about UB not related to memory, yet. For example,
   dividing by zero may take the compiler down a weird path.
 
-- I haven't even done the most obvious performance optimizations. Fil-C is
-  super slow right now!
+- I'm still working on performance. In good cases, it's 1.5x slower than normal
+  C. In bad cases, it's 5x slower. Lots of work remains to fix those bad cases.
 
 - Probably other stuff, too!
 
