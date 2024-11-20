@@ -5,18 +5,19 @@ Fil-C.
 
 What is it? It's a totally memory-safe version of C and C++. All memory safety
 errors are caught as Fil-C panics. Fil-C achieves this using a combination of
-real-time garbage collection and monotonic capabilities (all pointers are 128
-bits and have of those bits are under strict GC control). Every fundamental C
-operation (as seen in LLVM IR) is checked against the capability. Fil-C has no
-`unsafe` escape hatch of any kind.
+real-time garbage collection and invisible capabilities (each pointer in memory
+has a corresponding capability, not visible to the C address space). Every
+fundamental C operation (as seen in LLVM IR) is checked against the capability.
+Fil-C has no `unsafe` escape hatch of any kind.
 
 ## Requirements
 
 Fil-C only works on Linux/X86_64.
 
-Previous versions worked on Darwin and FreeBSD, but now I'm focusing just on
-Linux/X86_64 because it allows me to do a more faithful job of implementing
-libc.
+Previous versions worked on Darwin/ARM64 and FreeBSD, but now I'm focusing just
+on Linux/X86_64 because it allows me to do a more faithful job of implementing
+libc. There's nothing fundamentally stopping Fil-C from working on ARM or OSes
+other than Linux.
 
 ## Getting Started
 
@@ -74,9 +75,6 @@ and C++ exceptions.
 ## Things That Don't Work
 
 Fil-C is not a complete product. Lots of stuff isn't done!
-
-- Fil-C doesn't catch stack exhaustion (i.e. recursing until you run out of
-  stack).
 
 - Fil-C doesn't do anything about UB not related to memory, yet. For example,
   dividing by zero may take the compiler down a weird path.

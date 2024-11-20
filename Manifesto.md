@@ -12,11 +12,15 @@ to make my own memory-safe C and C++. This is a personal project and an expressi
 Fil-C introduces memory safety at the core of C and C++:
  
 - All pointers carry a *capability*, which tracks the bounds and type of the pointed-to memory. Fil-C
-  use a novel pointer encoding called *MonoCap*, which is a 16-byte atomic tuple of object pointer
-  and raw pointer. The *object* contains the lower and upper bounds and dynamic type information for
-  each 16 byte word in the payload. Accessing memory causes a bounds check and a type check. Type
-  checks do dynamic type inference but disallow ping-ponging (once a word becomes an integer, it cannot
-  become pointer, or vice-versa).
+  use a novel pointer encoding called *InvisiCap*, where each 64-bit pointer in memory has a
+  corresponding capability, stored in an invisible part of the address space. The InvisiCap algorithm
+  allows Fil-C to find the capability quickly whenever a pointer is loaded, and to replace the
+  capability efficiently (and atomically if needed) when a pointer is stored. Pointers in flight (i.e.
+  pointers being passed around in registers) utilize two registers; one for the pointer and one for
+  the capability. The capability contains the lower and upper bounds, type information for special
+  objects like functions, and everything needed to locate the invisible capabilities for any pointers
+  stored in that object. Accessing memory causes a bounds check, and for pointer accesses, additional
+  logic to access the capability.
 
 - All allocations are *garbage collected* using
   [FUGC](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/fugc.c) (Fil's
@@ -27,11 +31,12 @@ Fil-C introduces memory safety at the core of C and C++:
   Accessing a freed object before or after the next GC is guaranted to trap. Also, freeing objects is
   optional.
 
-- The combination of MonoCaps and FUGC means that it's not necessary to instrument or change `malloc`
-  and `free` calls; the semantics are compatible with C. It's also not necessary to change unions and
-  the active union member rule only results in traps if it results in int-pointer confusion.
+- The combination of InvisiCaps and FUGC means that it's not necessary to instrument or change
+  `malloc` and `free` calls; the semantics are compatible with C. It's also not necessary to change
+  unions. It's even possible to have int-ptr unions and to ping-pong between using the int and ptr
+  members.
 
-- The combination of MonoCaps and FUGC means that pointer capabilities cannot be forged. Your
+- The combination of InvisiCapsCaps and FUGC means that pointer capabilities cannot be forged. Your
   program may have logic errors (bad casts, bogus pointer arithmetic, races, bad frees, use-after-free,
   whatever)
   but every pointer will remember the bounds and type of the thing it originated from. If you break
@@ -39,8 +44,9 @@ Fil-C introduces memory safety at the core of C and C++:
   access a freed object, Fil-C will thwart your program's further execution.
 
 - Fil-C supports tricky features like pthreads, signal handlers, mmap, C++ exceptions (which implies
-  libunwind), and setjmp/longjmp. All of these features are memory-safe. Because Fil-C pointers are
-  atomic, lock-free algorithms using pointers work just fine. It's even possible to allocate memory
+  libunwind), and setjmp/longjmp. All of these features are memory-safe. Because Fil-C pointers
+  support atomics, lock-free algorithms using pointers work just fine. Pointer races on pointers not
+  marked `_Atomic` or `volatile` lead to Fil-C panics, at worst. It's even possible to allocate memory
   using `malloc` from within a signal handler (which is necessary because Fil-C heap-allocates stack
   allocations).
 
@@ -60,8 +66,12 @@ on top of a [memory-safe OpenSSL](https://github.com/pizlonator/deluded-openssl-
 and even [found a bug](https://github.com/python/cpython/issues/118534)),
 [memory-safe SQLite](https://github.com/pizlonator/pizlonated-sqlite),
 [memory-safe libcxx and libcxxabi](https://github.com/pizlonator/llvm-project-deluge/tree/deluge), and
-[memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc). This works for
-me on my Linux X86_64 box:
+[memory-safe musl](https://github.com/pizlonator/deluded-musl) (Fil-C's current libc).
+
+Thanks to the flexibility of InvisiCaps, most programs compile and run with zero changes. Even
+sophisticated programs like Lua and OpenSSH require zero code changes to work!
+
+This works for me on my Linux X86_64 box:
 
     pizfix/bin/curl https://www.google.com/
 
@@ -75,19 +85,16 @@ which exposes all of the API that musl needs (low-level
 [syscall and thread primitives](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/libpas/src/libpas/filc_runtime.c#2901),
 which themselves perform comprehensive safety checking).
 
-Fil-C is currently 1.5x slower than normal C in good cases, and about 5x slower in the worst cases.
-I'm actively working on performance optimizations for Fil-C, so that 5x number will go down. I expect
-perf to be below 2x worst case soon, with best cases around 1.2x. In the current implementation,
-initializing newly allocated objects is particularly costly and that leads to the 5x number for some
-programs. But, I'm fixing that deficiency.
+Fil-C is currently 1.5x slower than normal C in good cases, and about 4x slower in the worst cases.
+I'm actively working on performance optimizations for Fil-C, so that 4x number will go down.
 
-Note that the very first prototype of Fil-C used isoheaps instead of GC. The isoheap version is obsolete,
-since it's slower and requires more changes to C code. If you want to read about it,
-[see here](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto-isoheaps-old.md).
+Note that Fil-C has previously used a two different capability models (MonoCaps and SideCaps), and a
+different memory management model (isoheaps instead of FUGC). Those versions are obsolete, because
+they had worse performance and worse compatibility (they required more code changes).
 
 This document goes into the details of Fil-C and is organized as follows. First, I show you how to
 use Fil-C. Then, I describe the remaining work to make Fil-C even faster. Then I conclude with a
-description of the FUGC and MonoCap algorithms.
+description of the FUGC and InvisiCap algorithms.
 
 ## Using Fil-C
 
@@ -145,12 +152,17 @@ Here's what happens when we compile and run this:
 
     $ build/bin/clang -o bad bad.c -O -g
     $ ./bad
-    filc safety error: cannot access pointer with ptr >= upper (ptr = 0x7fcf1700c348,0x7fcf1700c320,0x7fcf1700c330,_).
+    filc safety error: cannot read pointer with ptr >= upper.
+        pointer: 0x72816c104278,0x72816c104250,0x72816c104260
+        expected 4 bytes with ptr aligned to 4 bytes.
+    semantic origin:
+        bad.c:5:33: main
+    check scheduled at:
         bad.c:5:33: main
         src/env/__libc_start_main.c:79:7: __libc_start_main
         <runtime>: start_program
-    [32553] filc panic: thwarted a futile attempt to violate memory safety.
-    Trace/breakpoint trap
+    [3570029] filc panic: thwarted a futile attempt to violate memory safety.
+    Trace/breakpoint trap (core dumped)
 
 Fil-C thwarted this program's attempt to do something bad. Hooray!
 
@@ -168,12 +180,11 @@ that your linker will understand. Some caveats:
   build_all.sh script does this).
 
 Fil-C requires almost no changes to C or C++ code. Inline assembly is currently disallowed. Some configure
-script jank has to change. Other than that, I only had to make a couple one-line changes in OpenSSL
-and OpenSSH to get them to work.
+script jank has to change. Other than that, most code just compiles and works with zero changes!
 
 ## Making Fil-C Fast
 
-The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 1.5x-5x slower
+The biggest impediment to using Fil-C in production is speed. Fil-C is currently about 1.5x-4x slower
 than legacy C.
 
 Why is it slow right now?
@@ -182,11 +193,8 @@ Why is it slow right now?
   on the C linker and C calling convention under the hood, resulting in doubling of both call and
   linking overheads.
 
-- MonoCaps - the current capability model - require complex checks that induce high register pressure.
-  Worse, they require the first store to any 16-byte word to do an atomic compare-and-swap.
-  *I'm working on changing the capability model right now; see
-  [invisicaps.txt](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/invisicap.txt) for
-  a write-up.*
+- I'm still tuning how I implement InvisiCaps. It's a brand new capability model, and I haven't
+  fully explored how to make it super fast.
 
 - Likely other issues that I don't know about.
 
@@ -194,54 +202,50 @@ The plan to make Fil-C fast is to fix these issues. I believe that fixing these 
 to be only 1.5x slower than C *in the worst cases*, with lots of programs being only 1.2x slower. But
 it'll take some focused compiler/runtime/GC hacking to get there.
 
-## MonoCap
+## InvisiCap
 
-Fil-C uses a pointer representation that is a 16-byte atomic tuple of `filc_object*` and `void*`.
-The raw pointer component can point anywhere as a result of pointer arithmetic. The object component
-points to the base of a GC-allocated *monotonic capability* object (hence the MonoCap name).
+Fil-C uses a pointer representation where the pointer as seen by C code is the same size and
+representation as in Yolo-C (i.e. normal, legacy C). Since Fil-C is focusing on 64-bit systems right
+now, that means that pointers are 64-bit.
 
-It so happens that for most allocations, the payload (where the raw pointer can perform accesses
-without trapping) is the same allocation as the capability object. The payload is right after the
-capability object within that allocation. MonoCaps also support `mmap`. In that case, the capability
-object is a separate allocation from the payload, since the payload comes directly from `mmap`.
-MonoCaps also support `munmap`, by first invalidating the capability and then unmapping the payload.
+But there is an *invisible capability* associated with every pointer.
 
-The object format contains:
+Pointers that are passed around in local data flow have an associated capability pointer passed around
+(either in a separate register or a separate spill slot). That capability pointer points to the base
+of the object, and at a negative address from base, there's a 16 byte `filc_object` struct that tells
+the object's upper bounds and has an `aux` field that contains flags (for special cases like function
+pointers) and may point to an *auxiliary allocation* that contains the capabilities associated with
+pointers inside that object. Hence, the capability pointer is the lower bounds of the object, the
+upper bounds can be retrieved from a negative offset from the capability pointer, and an auxiliary
+allocation containing capabilities for pointers in that object can also be retrieved from a negative
+offset from the capability pointer.
 
-- 64-bit lower bounds.
+So, any pointer stored in the heap has its capability pointer stored in the auxiliary allocation
+associated with the object that it was stored to.
 
-- 64-bit upper bounds.
+This representation allows for:
 
-- 16-bit flags. This is used for supporting unusual situations, like globally allocated objects,
-  special runtime-internal objects (like threads and signal handlers), as well as the free object
-  state. Function pointers also leverage the flags.
+- The illusion that pointers have their native size and representation.
 
-- 8-bit word type per 16-byte word in the object payload. This forms an array that is 1/16th the size
-  of the allocation payload and allows inferring the types of the words in the allocation on the fly.
-  Each word type forms a lattice that starts
-  with *unset* at the bottom, *int* and *ptr* in the middle, and *free* at the top. Accessing an
-  *unset* word using an int access makes it *int*. Accessing an *unset* word using a ptr access makes
-  it a *ptr*. Once the word type is not *unset*, it can never become *unset* again, so future accesses
-  must conform to the type you first picked. Once you `free()` the object, all word types become
-  *free*, and then all accesses trap. There are additional word types for special objects that used
-  by the runtime as well as function pointers.
+- The ability to store an integer where you previously stored a pointer, and vice versa.
 
-The monotonicity of word types is what enables MonoCap to support automatic inference of type for
-unions, `malloc` calls, and unusual things Real C Programmers (TM) do (like using a `char buf[100]`
-as the object payload by casting the `char*` to whatever).
+- The ability to load the integer bits of a pointer (in that case, you get the pointer's address but
+  it's a capability-less integer so you cannot access it).
 
-When Fil-C dumps pointers in error messages, the word types are printed as follows:
+- The ability to load integers as pointers (in that case, you get a pointer that has no capability,
+  and cannot be dereferenced).
 
-- `_` means *unset*.
+- Super cheap non-pointer accesses, which only require a lower and upper bounds check. The lower
+  bounds are indicated by the capability pointer itself, and the upper bounds are stored at a negative
+  offset from the capability pointer.
 
-- `i` means *int*.
+Additional tricks are employed for atomic pointer accesses. Atomic pointer accesses result in the
+auxiliary allocation having an *atomic box* for the atomically accessed pointer. Atomic boxes store
+a 16-byte atomic tuple of capability and pointer.
 
-- `P` means *ptr*.
-
-- `/` means *free*.
-
-If you include [`<stdfil.h>`](https://github.com/pizlonator/llvm-project-deluge/blob/deluge/filc/include/stdfil.h),
-you can `zprintf()` with the `%P` format specifier to print the full Fil-C view of a pointer.
+Objects only get auxiliary allocations for capabilities if any field in the object has a capability.
+So, for example, strings and frame buffers won't have auxiliary allocations. This means that the
+space overhead of InvisiCaps is nowhere near 2x.
 
 ## Fil's Unbelievable Garbage Collector
 
@@ -288,12 +292,12 @@ Let's break that down:
   nothing less. `llvm::FilPizlonator` ensures that the runtime always knows where the root pointers are
   on the stack and in globals. The Fil-C runtime has a clever API and Ruby code generator for tracking
   pointers in low-level code that interacts with pizlonated code. All objects know where their outgoing
-  pointers are thanks to the word type array in MonoCaps.
+  pointers are - they can only be in the InvisiCap auxiliary allocation.
 
 - Non-moving: the GC doesn't move objects. This makes concurrency easy to implement and avoids
   a lot of synchronization between mutator and collector. However, FUGC will "move" pointers to free
-  objects (it will repoint the `filc_object*` component of the MonoCap to the free singleton so it
-  doesn't have to mark the freed allocation).
+  objects (it will repoint the capability pointer to the free singleton so it doesn't have to mark the
+  freed allocation).
 
 This makes FUGC an *advancing wavefront* garbage collector. Advancing wavefront means that the
 mutator cannot create new work for the collector by modifying the heap. Once an
