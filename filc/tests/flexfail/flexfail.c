@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdfil.h>
 
 struct foo {
     struct bar* x;
@@ -29,7 +30,11 @@ int main(int argc, char** argv)
     char* buf = (char*)b;
     for (index = size; index--;)
         buf[index] = 'f';
-    printf("FAIL\n");
+
+    ZASSERT(!zinbounds(b->y));
+    for (index = 666; index--;)
+        ZASSERT(!zinbounds(b->z[index].x));
+    
     return 0;
 }
 

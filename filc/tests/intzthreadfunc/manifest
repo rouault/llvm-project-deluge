@@ -1,7 +1,6 @@
 return:
-  failure
-output-includes:
-  - "filc safety error"
-  - "return type mismatch"
+  success
 output-excludes:
+  - "filc safety error"
+output-includes:
   - "wtf"

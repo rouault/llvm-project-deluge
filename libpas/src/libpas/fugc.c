@@ -181,43 +181,44 @@ static void after_marking_pollcheck_callback(filc_thread* thread, void* arg)
 static void mark_outgoing_signal_handler_ptrs(filc_object_array* stack, filc_signal_handler* signal_handler)
 {
     /* I guess that instead, we could just assert that this thing is global. But, like, whatever. */
-    fugc_mark_or_free(stack, &signal_handler->function_ptr);
+    fugc_mark_or_free_flight(stack, &signal_handler->function_ptr);
 }
 
 static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* object)
 {
-    PAS_TESTING_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
-    filc_word_type word_type = object->word_types[0];
-    switch (word_type) {
-    case FILC_WORD_TYPE_FUNCTION:
-    case FILC_WORD_TYPE_DL_HANDLE:
+    PAS_TESTING_ASSERT(filc_object_is_special(object));
+    filc_special_type special_type = filc_object_special_type(object);
+    switch (special_type) {
+    case FILC_SPECIAL_TYPE_FUNCTION:
+    case FILC_SPECIAL_TYPE_DL_HANDLE:
         break;
-    case FILC_WORD_TYPE_SIGNAL_HANDLER:
+    case FILC_SPECIAL_TYPE_SIGNAL_HANDLER:
         mark_outgoing_signal_handler_ptrs(
-            stack, (filc_signal_handler*)filc_object_special_payload(object));
+            stack, (filc_signal_handler*)filc_object_special_payload_with_manual_tracking(object));
         break;
-    case FILC_WORD_TYPE_THREAD:
-        filc_thread_mark_outgoing_ptrs((filc_thread*)filc_object_special_payload(object), stack);
+    case FILC_SPECIAL_TYPE_THREAD:
+        filc_thread_mark_outgoing_ptrs(
+            (filc_thread*)filc_object_special_payload_with_manual_tracking(object), stack);
         break;
-    case FILC_WORD_TYPE_PTR_TABLE:
+    case FILC_SPECIAL_TYPE_PTR_TABLE:
         filc_ptr_table_mark_outgoing_ptrs(
-            (filc_ptr_table*)filc_object_special_payload(object), stack);
+            (filc_ptr_table*)filc_object_special_payload_with_manual_tracking(object), stack);
         break;
-    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
+    case FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY:
         filc_ptr_table_array_mark_outgoing_ptrs(
-            (filc_ptr_table_array*)filc_object_special_payload(object), stack);
+            (filc_ptr_table_array*)filc_object_special_payload_with_manual_tracking(object), stack);
         break;
-    case FILC_WORD_TYPE_JMP_BUF:
+    case FILC_SPECIAL_TYPE_JMP_BUF:
         filc_jmp_buf_mark_outgoing_ptrs(
-            (filc_jmp_buf*)filc_object_special_payload(object), stack);
+            (filc_jmp_buf*)filc_object_special_payload_with_manual_tracking(object), stack);
         break;
-    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+    case FILC_SPECIAL_TYPE_EXACT_PTR_TABLE:
         filc_exact_ptr_table_mark_outgoing_ptrs(
-            (filc_exact_ptr_table*)filc_object_special_payload(object), stack);
+            (filc_exact_ptr_table*)filc_object_special_payload_with_manual_tracking(object), stack);
         break;
     default:
         pas_log("Got a bad special ptr type: ");
-        filc_word_type_dump(word_type, &pas_log_stream.base);
+        filc_special_type_dump(special_type, &pas_log_stream.base);
         pas_log("\n");
         pas_log("Object: ");
         filc_object_dump(object, &pas_log_stream.base);
@@ -232,34 +233,60 @@ static void mark_outgoing_ptrs(filc_object_array* stack, filc_object* object)
     static const bool verbose = false;
     if (verbose)
         pas_log("Marking outgoing objects from %p\n", object);
-    if ((object->flags & FILC_OBJECT_FLAG_SPECIAL)) {
+    if (filc_object_is_special(object)) {
         mark_outgoing_special_ptrs(stack, object);
         return;
     }
 
-    filc_ptr* payload = (filc_ptr*)object->lower;
-    size_t index;
-    for (index = filc_object_num_words(object); index--;) {
-        if (filc_object_get_word_type(object, index) == FILC_WORD_TYPE_PTR)
-            fugc_mark_or_free(stack, payload + index);
+    /* It's unusual for an object without an aux ptr to be placed on the mark stack, but we forgive
+       cases like this anyway, since it might happen for globals. */
+    char* aux_ptr = filc_object_aux_ptr(object);
+    if (PAS_UNLIKELY(!aux_ptr))
+        return;
+    if (!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_GLOBAL_AUX))
+        verse_heap_set_is_marked_relaxed(aux_ptr, true);
+    /* The only way for the aux to already be marked is if it's black, but then that means that all of
+       the things it points to are already marked (either black-allocated atomic boxes or things
+       marked with the store barrier).
+    
+       So, a possible optimization would be to skip this loop if the aux is already marked. */
+    size_t size = filc_object_size_not_null(object);
+    size_t offset;
+    PAS_ASSERT(sizeof(filc_lower_or_box) == FILC_WORD_SIZE);
+    PAS_ASSERT(sizeof(filc_lower_or_box) == sizeof(void*));
+    for (offset = 0; offset < size; offset += sizeof(filc_lower_or_box)) {
+        filc_lower_or_box* lower_or_box_ptr = (filc_lower_or_box*)(aux_ptr + offset);
+        fugc_mark_or_free_lower_or_box(stack, lower_or_box_ptr);
     }
 }
 
-static void destruct_object_callback(void* raw_object, void* arg)
+static void destruct_object_callback(void* allocation, void* arg)
 {
+    static const bool verbose = false;
     PAS_ASSERT(!arg);
-    filc_object* object = (filc_object*)raw_object;
-    PAS_ASSERT(object->flags & FILC_OBJECT_FLAG_SPECIAL);
-    PAS_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE);
-    switch (object->word_types[0]) {
-    case FILC_WORD_TYPE_THREAD:
-        filc_thread_destruct((filc_thread*)filc_object_special_payload(object));
+    if (verbose)
+        pas_log("allocation = %p, starts with = %p\n", allocation, *(void**)allocation);
+    filc_object* object = filc_allocation_get_object(allocation);
+    if (filc_object_get_flags(object) & FILC_OBJECT_FLAG_MMAP) {
+        if (filc_object_get_flags(object) & FILC_OBJECT_FLAG_FREE)
+            return;
+        filc_unmap(filc_object_lower(object), filc_object_size(object));
+        return;
+    }
+    if (verbose)
+        pas_log("object = %p\n", object);
+    PAS_ASSERT(filc_object_is_special(object));
+    switch (filc_object_special_type(object)) {
+    case FILC_SPECIAL_TYPE_THREAD:
+        filc_thread_destruct((filc_thread*)filc_object_special_payload_with_manual_tracking(object));
         break;
-    case FILC_WORD_TYPE_PTR_TABLE:
-        filc_ptr_table_destruct((filc_ptr_table*)filc_object_special_payload(object));
+    case FILC_SPECIAL_TYPE_PTR_TABLE:
+        filc_ptr_table_destruct(
+            (filc_ptr_table*)filc_object_special_payload_with_manual_tracking(object));
         break;
-    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
-        filc_exact_ptr_table_destruct((filc_exact_ptr_table*)filc_object_special_payload(object));
+    case FILC_SPECIAL_TYPE_EXACT_PTR_TABLE:
+        filc_exact_ptr_table_destruct(
+            (filc_exact_ptr_table*)filc_object_special_payload_with_manual_tracking(object));
         break;
     default:
         PAS_ASSERT(!"Encountered object in destructor space that should not have destructor.");
@@ -658,7 +685,7 @@ void fugc_dump_setup(void)
 {
     pas_log("    fugc minimum threshold: %zu\n", minimum_threshold);
     pas_log("    fugc verbose level: %u\n", verbose);
-    pas_log("    fugc should stop the world: %s\n", should_stop_the_world ? "yes" : "no");
+    pas_log("    fugc stop the world: %s\n", should_stop_the_world ? "yes" : "no");
 }
 
 #endif /* PAS_ENABLE_FILC */

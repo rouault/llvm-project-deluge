@@ -152,10 +152,9 @@ AArch64TargetInfo::AArch64TargetInfo(const llvm::Triple &Triple,
   else
     LongWidth = LongAlign = PointerWidth = PointerAlign = 32;
 
+  // FIXME: Kill these constexpr sizes; they're no longer needed.
   ConstexprPointerWidth = PointerWidth;
   ConstexprPointerAlign = PointerAlign;
-  PointerWidth *= 2; // YOLO
-  PointerAlign *= 2; // LOLO
 
   MaxVectorAlign = 128;
   MaxAtomicInlineWidth = 128;
@@ -1382,7 +1381,7 @@ void AArch64leTargetInfo::setDataLayout() {
     if(getTriple().isArch32Bit())
       resetDataLayout("e-m:o-p:32:32-i64:64-i128:128-n32:64-S128", "_");
     else {
-      resetDataLayout("e-m:o-p:128:128:128:64:64-ni:0-i64:64-i128:128-n32:64-S128",
+      resetDataLayout("e-m:o-p:64:64:64:64:64-ni:0-i64:64-i128:128-n32:64-S128",
                       "e-m:o-i64:64-i128:128-n32:64-S128",
                       "_");
     }

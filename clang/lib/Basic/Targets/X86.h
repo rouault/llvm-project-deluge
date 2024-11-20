@@ -706,10 +706,9 @@ public:
     bool IsWinCOFF =
         getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
     LongWidth = LongAlign = PointerWidth = PointerAlign = IsX32 ? 32 : 64;
+    // FIXME: Kill these constexpr sizes; they're no longer needed.
     ConstexprPointerWidth = PointerWidth;
     ConstexprPointerAlign = PointerAlign;
-    PointerWidth *= 2;
-    PointerAlign *= 2;
     LongDoubleWidth = 128;
     LongDoubleAlign = 128;
     LargeArrayMinWidth = 128;
@@ -730,10 +729,10 @@ public:
       resetDataLayout("e-m:w-p270:32:32-p271:32:32-p272:64:"
                       "64-i64:64-f80:128-n8:16:32:64-S128");
     else
-      resetDataLayout("e-m:e-p:128:128:128:64:64-ni:0-p270:32:32-p271:32:32-p272:64:"
-                      "64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+      resetDataLayout("e-m:e-p:64:64:64:64:64-ni:0-p270:32:32-p271:32:32-p272:64:"
+                      "64-i64:64-f80:128-n8:16:32:64-S128",
                       "e-m:e-p270:32:32-p271:32:32-p272:64:"
-                      "64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+                      "64-i64:64-f80:128-n8:16:32:64-S128",
                       "");
 
     // Use fpret only for long double.

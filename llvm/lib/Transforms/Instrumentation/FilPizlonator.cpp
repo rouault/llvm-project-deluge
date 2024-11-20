@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file is a part of Fil-C, a Phil Pizlo Special (TM).
+// This file is a part of Fil-C.
 //
 // See here:
 // https://github.com/pizlonator/llvm-project-deluge/blob/deluge/Manifesto.md
@@ -33,32 +33,6 @@
 
 using namespace llvm;
 
-// This is some crazy code. I believe that it's sound (assuming assertions are on LMFAO). I did
-// it the right way for getting an experiment running quickly, but definitely the wrong way for
-// long-term maintenance.
-//
-// Some shit to look out for, I'm not even kidding:
-//
-// - I have no idea how to use IRBuilder correctly and I don't even care, so get used to direct
-//   Instruction construction.
-//
-// - I'm RAUW'ing to a different type, so I had to comment out asserts throughout the rest of
-//   llvm to make this pass work. I think that llvm wants me to do this by creating new IR based
-//   on the existing IR, but I ain't got time for that shit.
-//
-// - This pass is meant to issue compiler errors, like clang would. There are probably smart ways
-//   to do that! This doesn't do any of them! Make sure to compile llvm with asserts enabled
-//   (i.e. -DLLVM_ENABLE_ASSERTIONS=ON) or this pass won't actually catch any errors.
-//
-// - Look out for the use of dummy instructions to perform RAUW hacks, those are the best.
-//
-// - Bunch of other stuff. Look, I know how to architect compilers, and I have exquisite tastes
-//   when I put that hat on. I did not put that hat on when writing this pass. I wrote this pass
-//   to check if my programming language design - a memory safe C, no less! - actually works.
-//
-// Think of this as prototype code. If you put that hat on, you'll get it, and you'll be hella
-// amused, I promise.
-
 namespace {
 
 static cl::opt<bool> verbose(
@@ -83,24 +57,31 @@ static cl::opt<bool> useAsmForOffsets(
 // This has to match the FilC runtime.
 
 static constexpr size_t GCMinAlign = 16;
-static constexpr size_t WordSize = 16;
-static constexpr size_t WordSizeShift = 4;
+static constexpr size_t FlightPtrAlign = 16;
+static constexpr size_t WordSize = 8;
+static constexpr size_t WordSizeShift = 3;
 
-typedef uint8_t WordType;
+static constexpr uintptr_t ObjectAuxPtrMask = 0xfffffffffffflu;
+static constexpr uintptr_t ObjectAuxFlagsShift = 48;
 
-static constexpr WordType WordTypeUnset = 0;
-static constexpr WordType WordTypeInt = 1;
-static constexpr WordType WordTypePtr = 2;
-static constexpr WordType WordTypeFunction = 4;
+static constexpr size_t ObjectSize = 16;
 
-static constexpr uint16_t ObjectFlagFree = 1;
-static constexpr uint16_t ObjectFlagSpecial = 2;
-static constexpr uint16_t ObjectFlagGlobal = 4;
-static constexpr uint16_t ObjectFlagReadonly = 16;
+static constexpr uint16_t SpecialTypeFunction = 1;
+static constexpr uint16_t SpecialTypeMask = 15;
+
+static constexpr uint16_t ObjectFlagGlobal = 1;
+static constexpr uint16_t ObjectFlagReadonly = 2;
+static constexpr uint16_t ObjectFlagFree = 4;
+static constexpr uint16_t ObjectFlagGlobalAux = 16;
+static constexpr uint16_t ObjectFlagsSpecialShift = 5;
+static constexpr uint16_t ObjectFlagsAlignShift = 9;
+
+static constexpr uintptr_t AtomicBoxBit = 1;
 
 static constexpr unsigned NumUnwindRegisters = 2;
 
-static constexpr size_t SpecialObjectSize = 32;
+static constexpr size_t CCAlignment = 64;
+static constexpr size_t CCInlineSize = 256;
 
 static constexpr uint8_t ThreadStateCheckRequested = 2;
 static constexpr uint8_t ThreadStateStopRequested = 4;
@@ -110,22 +91,6 @@ enum class AccessKind {
   Read,
   Write
 };
-
-static inline const char* wordTypeString(WordType WT) {
-  switch (WT) {
-  case WordTypeUnset:
-    return "UNSET";
-  case WordTypeInt:
-    return "INT";
-  case WordTypePtr:
-    return "PTR";
-  case WordTypeFunction:
-    return "FUNCTION";
-  default:
-    llvm_unreachable("Bad word type");
-    return nullptr;
-  }
-}
 
 static inline const char* accessKindString(AccessKind AK) {
   switch (AK) {
@@ -183,6 +148,7 @@ enum class ConstexprOpcode {
 
 enum class MemoryKind {
   CC,
+  GlobalInit,
   Heap
 };
 
@@ -497,15 +463,8 @@ enum class CheckKind {
   // Check if the CanonicalPtr + Offset is aligned to Size.
   Alignment,
 
-  // Check if the CanonicalPtr + Offset is aligned to Size. This indicates that it's a reduced-Size
-  // alignment check based on merging.
-  MergedAlignment,
-
   // Check if the object is not readonly.
   CanWrite,
-
-  // Check that CanonicalPtr + Offset is lessequal object->upper.
-  UpperBound,
 
   // Indicates that we already know that CanonicalPtr + Offset is greaterequal object->lower, and
   // there's no need to check, but we can rely on it. This kind should only appear in the final
@@ -515,11 +474,25 @@ enum class CheckKind {
   // Check that CanonicalPtr + Offset is greaterequal object->lower.
   LowerBound,
 
-  // Check that starting at CanonicalPtr + Offset there is a span of Size bytes of integers.
-  TypeIsInt,
+  // Check that CanonicalPtr + Offset is lessequal object->upper.
+  UpperBound,
 
-  // Check that starting at CanonicalPtr + Offset there is a pointer. Size must be WordSize.
-  TypeIsPtr,
+  // Get the aux ptr. If it's null, just return the null.
+  //
+  // FIXME: It would be great if stuff like this was tracked on something broader than the canonical
+  // ptr. We should identify the "root ptr", i.e. the common one ignoring all arithmetic. The trick is
+  // how to then canonicalize those.
+  //
+  // And the same thing can be said for ValidObject, EnsureAuxPtr, and maybe even Alignment (though
+  // that one is harder).
+  //
+  // FIXME #2: If we've previously ensured aux ptr, then loads don't have to null check the aux.
+  GetAuxPtr,
+
+  // Ensure the aux ptr. If it's null, create one. This doesn't load the aux ptr at all; it assumes
+  // that already happened with a GetAuxPtr. It just checks if that ptr is null, and if it is, it does
+  // the ensure. However, doing the ensure does reload it first to make sure it didn't become nonnull.
+  EnsureAuxPtr,
 
   // Check that the object isn't free. Checking any TypeIsInt or TypeIsPtr automatically checks that
   // the object isn't free.
@@ -534,12 +507,11 @@ bool IsKnownCheckKind(CheckKind CK) {
   case CheckKind::ValidObject:
   case CheckKind::CanWrite:
   case CheckKind::Alignment:
-  case CheckKind::MergedAlignment:
   case CheckKind::UpperBound:
   case CheckKind::LowerBound:
-  case CheckKind::TypeIsInt:
-  case CheckKind::TypeIsPtr:
   case CheckKind::NotFree:
+  case CheckKind::GetAuxPtr:
+  case CheckKind::EnsureAuxPtr:
     return false;
   }
   llvm_unreachable("Bad CheckKind.");
@@ -549,7 +521,6 @@ bool IsKnownCheckKind(CheckKind CK) {
 CheckKind FundamentalCheckKind(CheckKind CK) {
   switch (CK) {
   case CheckKind::KnownAlignment:
-  case CheckKind::MergedAlignment:
     return CheckKind::Alignment;
   case CheckKind::KnownLowerBound:
     return CheckKind::LowerBound;
@@ -558,9 +529,9 @@ CheckKind FundamentalCheckKind(CheckKind CK) {
   case CheckKind::Alignment:
   case CheckKind::UpperBound:
   case CheckKind::LowerBound:
-  case CheckKind::TypeIsInt:
-  case CheckKind::TypeIsPtr:
   case CheckKind::NotFree:
+  case CheckKind::GetAuxPtr:
+  case CheckKind::EnsureAuxPtr:
     return CK;
   }
   llvm_unreachable("Bad CheckKind.");
@@ -578,9 +549,6 @@ raw_ostream& operator<<(raw_ostream& OS, CheckKind CK) {
   case CheckKind::Alignment:
     OS << "Alignment";
     return OS;
-  case CheckKind::MergedAlignment:
-    OS << "MergedAlignment";
-    return OS;
   case CheckKind::CanWrite:
     OS << "CanWrite";
     return OS;
@@ -593,11 +561,11 @@ raw_ostream& operator<<(raw_ostream& OS, CheckKind CK) {
   case CheckKind::LowerBound:
     OS << "LowerBound";
     return OS;
-  case CheckKind::TypeIsInt:
-    OS << "TypeIsInt";
+  case CheckKind::GetAuxPtr:
+    OS << "GetAuxPtr";
     return OS;
-  case CheckKind::TypeIsPtr:
-    OS << "TypeIsPtr";
+  case CheckKind::EnsureAuxPtr:
+    OS << "EnsureAuxPtr";
     return OS;
   case CheckKind::NotFree:
     OS << "NotFree";
@@ -606,6 +574,11 @@ raw_ostream& operator<<(raw_ostream& OS, CheckKind CK) {
   llvm_unreachable("Bad CheckKind");
   return OS;
 }
+
+enum class AIDirection {
+  Forward,
+  Backward
+};
 
 struct CombinedDI {
   std::unordered_set<DILocation*> Locations; // This set may contain null.
@@ -670,12 +643,13 @@ struct AccessCheck {
     case CheckKind::ValidObject:
     case CheckKind::CanWrite:
     case CheckKind::NotFree:
+    case CheckKind::GetAuxPtr:
+    case CheckKind::EnsureAuxPtr:
       assert(!Size);
       assert(!Offset);
       return;
     case CheckKind::Alignment:
     case CheckKind::KnownAlignment:
-    case CheckKind::MergedAlignment:
       assert(Size >= 1);
       assert(Size <= static_cast<int64_t>(WordSize));
       assert(!((Size - 1) & Size));
@@ -686,14 +660,6 @@ struct AccessCheck {
     case CheckKind::LowerBound:
     case CheckKind::KnownLowerBound:
       assert(!Size);
-      return;
-    case CheckKind::TypeIsInt:
-      assert(Size >= 1);
-      assert(Size <= static_cast<int64_t>(WordSize));
-      assert(!((Size - 1) & Size));
-      return;
-    case CheckKind::TypeIsPtr:
-      assert(Size == WordSize);
       return;
     }
     llvm_unreachable("Bad CheckKind.");
@@ -746,12 +712,11 @@ struct AccessCheck {
     case CheckKind::ValidObject:
     case CheckKind::CanWrite:
     case CheckKind::NotFree:
+    case CheckKind::GetAuxPtr:
+    case CheckKind::EnsureAuxPtr:
       break;
     case CheckKind::Alignment:
     case CheckKind::KnownAlignment:
-    case CheckKind::MergedAlignment:
-    case CheckKind::TypeIsInt:
-    case CheckKind::TypeIsPtr:
       OS << ", Size = " << Size << ", Offset = " << Offset;
       break;
     case CheckKind::LowerBound:
@@ -860,7 +825,6 @@ struct OptimizedAccessCheckOriginKey {
   uint32_t Size { 0 };
   uint8_t Alignment { 0 };
   uint8_t AlignmentOffset { 0 };
-  WordType Type { WordTypeUnset };
   bool NeedsWrite { false };
   DILocation* ScheduledDI { nullptr };
   const CombinedDI* SemanticDI { nullptr };
@@ -868,22 +832,22 @@ struct OptimizedAccessCheckOriginKey {
   OptimizedAccessCheckOriginKey() = default;
 
   OptimizedAccessCheckOriginKey(
-    uint32_t Size, uint8_t Alignment, uint8_t AlignmentOffset, WordType Type, bool NeedsWrite,
+    uint32_t Size, uint8_t Alignment, uint8_t AlignmentOffset, bool NeedsWrite,
     DILocation* ScheduledDI, const CombinedDI* SemanticDI):
-    Size(Size), Alignment(Alignment), AlignmentOffset(AlignmentOffset), Type(Type),
+    Size(Size), Alignment(Alignment), AlignmentOffset(AlignmentOffset),
     NeedsWrite(NeedsWrite), ScheduledDI(ScheduledDI), SemanticDI(SemanticDI) {
   }
 
   bool operator==(const OptimizedAccessCheckOriginKey& Other) const {
     return Size == Other.Size && Alignment == Other.Alignment
-      && AlignmentOffset == Other.AlignmentOffset && Type == Other.Type
+      && AlignmentOffset == Other.AlignmentOffset
       && NeedsWrite == Other.NeedsWrite && ScheduledDI == Other.ScheduledDI
       && SemanticDI == Other.SemanticDI;
   }
 
   size_t hash() const {
     return static_cast<size_t>(Size) + static_cast<size_t>(Alignment)
-      + static_cast<size_t>(AlignmentOffset) + static_cast<size_t>(Type)
+      + static_cast<size_t>(AlignmentOffset)
       + static_cast<size_t>(NeedsWrite) + std::hash<DILocation*>()(ScheduledDI)
       + std::hash<const CombinedDI*>()(SemanticDI);
   }
@@ -935,53 +899,6 @@ struct OptimizedAlignmentContradictionOriginKey {
   }
 };
 
-struct TypeCheckAndOffset {
-  int32_t Offset { 0 };
-  int8_t Size { 0 };
-  WordType Type { WordTypeUnset };
-
-  TypeCheckAndOffset() = default;
-
-  TypeCheckAndOffset(int32_t Offset, int8_t Size, WordType Type):
-    Offset(Offset), Size(Size), Type(Type) {
-  }
-
-  bool operator==(const TypeCheckAndOffset& Other) const {
-    return Offset == Other.Offset && Size == Other.Size && Type == Other.Type;
-  }
-
-  size_t hash() const {
-    return std::hash<int32_t>()(Offset) + Size + Type;
-  }
-};
-
-struct OptimizedTypeContradictionOriginKey {
-  std::vector<TypeCheckAndOffset> Checks;
-  DILocation* ScheduledDI { nullptr };
-  const CombinedDI* SemanticDI { nullptr };
-
-  OptimizedTypeContradictionOriginKey() = default;
-
-  OptimizedTypeContradictionOriginKey(const std::vector<TypeCheckAndOffset>& Checks,
-                                      DILocation* ScheduledDI, const CombinedDI* SemanticDI):
-    Checks(Checks), ScheduledDI(ScheduledDI), SemanticDI(SemanticDI) {
-  }
-
-  bool operator==(const OptimizedTypeContradictionOriginKey& Other) const {
-    return Checks == Other.Checks && ScheduledDI == Other.ScheduledDI
-      && SemanticDI == Other.SemanticDI;
-  }
-
-  size_t hash() const {
-    size_t Result = Checks.size();
-    for (TypeCheckAndOffset Check : Checks)
-      Result += Check.hash();
-    Result += std::hash<DILocation*>()(ScheduledDI);
-    Result += std::hash<const CombinedDI*>()(SemanticDI);
-    return Result;
-  }
-};
-
 } // anonymous namespace
 
 template<> struct std::hash<GEPKey> {
@@ -1002,50 +919,7 @@ template<> struct std::hash<OptimizedAlignmentContradictionOriginKey> {
   }
 };
 
-template<> struct std::hash<OptimizedTypeContradictionOriginKey> {
-  size_t operator()(const OptimizedTypeContradictionOriginKey& Key) const {
-    return Key.hash();
-  }
-};
-
 namespace {
-
-struct TypeCheckUnit {
-  int64_t Offset { 0 };
-  WordType Type { WordTypeUnset };
-  const CombinedDI* DI { nullptr };
-
-  TypeCheckUnit() = default;
-
-  TypeCheckUnit(int64_t Offset, WordType Type, const CombinedDI* DI):
-    Offset(Offset), Type(Type), DI(DI) {
-    assert(Type == WordTypeInt || Type == WordTypePtr);
-  }
-
-  explicit operator bool() const {
-    return Type != WordTypeUnset;
-  }
-
-  bool operator<(const TypeCheckUnit& Other) const {
-    if (Offset != Other.Offset)
-      return Offset < Other.Offset;
-
-    return Type < Other.Type;
-  }
-
-  void print(raw_ostream& OS) const {
-    OS << Offset << ":" << wordTypeString(Type);
-  }
-};
-
-raw_ostream& operator<<(raw_ostream& OS, const TypeCheckUnit& TCU) {
-  TCU.print(OS);
-  return OS;
-}
-
-raw_ostream& operator<<(raw_ostream& OS, const std::vector<TypeCheckUnit>& TCUs) {
-  return PrintVector(OS, TCUs);
-}
 
 template<typename VectorT, typename FuncT>
 void EraseIf(VectorT& V, const FuncT& F) {
@@ -1058,6 +932,14 @@ void EraseIf(VectorT& V, const FuncT& F) {
   }
   V.resize(DstIndex);
 }
+
+struct AuxBaseAndPtr {
+  Value* BaseP { nullptr };
+  Value* P { nullptr };
+
+  AuxBaseAndPtr() = default;
+  AuxBaseAndPtr(Value* BaseP, Value* P): BaseP(BaseP), P(P) {}
+};
 
 class Pizlonator {
   static constexpr unsigned TargetAS = 0;
@@ -1077,55 +959,42 @@ class Pizlonator {
   IntegerType* Int128Ty;
   Type* FloatTy;
   Type* DoubleTy;
-  PointerType* LowRawPtrTy;
-  StructType* LowWidePtrTy;
+  PointerType* RawPtrTy;
+  StructType* FlightPtrTy;
   StructType* OriginNodeTy;
   StructType* FunctionOriginTy;
   StructType* OriginTy;
   StructType* InlineFrameTy;
   StructType* OriginWithEHTy;
   StructType* ObjectTy;
-  StructType* CCTypeTy;
-  StructType* CCPtrTy;
   StructType* FrameTy;
   StructType* ThreadTy;
   StructType* ConstantRelocationTy;
   StructType* ConstexprNodeTy;
   StructType* AlignmentAndOffsetTy;
-  StructType* TypeCheckAndOffsetTy;
+  StructType* PizlonatedReturnValueTy;
+  StructType* PtrPairTy;
   FunctionType* PizlonatedFuncTy;
   FunctionType* GlobalGetterTy;
   FunctionType* CtorDtorTy;
   FunctionType* SetjmpTy;
   FunctionType* SigsetjmpTy;
-  Constant* LowRawNull;
-  Constant* LowWideNull;
+  Constant* RawNull;
+  Constant* FlightNull;
   BitCastInst* Dummy;
 
   // Low-level functions used by codegen.
   FunctionCallee PollcheckSlow;
-  FunctionCallee StoreBarrierSlow;
-  FunctionCallee GetNextBytesForVAArg;
+  FunctionCallee StoreBarrierForLowerSlow;
+  FunctionCallee StorePtrAtomicWithPtrPairOutline;
+  FunctionCallee ObjectEnsureAuxPtrOutline;
+  FunctionCallee ThreadEnsureCCOutlineBufferSlow;
+  FunctionCallee StrongCasPtr;
+  FunctionCallee XchgPtr;
+  FunctionCallee GetNextPtrBytesForVAArg;
   FunctionCallee Allocate;
   FunctionCallee AllocateWithAlignment;
-  FunctionCallee CheckReadInt;
-  FunctionCallee CheckReadAlignedInt;
-  FunctionCallee CheckReadInt8Fail;
-  FunctionCallee CheckReadInt16Fail;
-  FunctionCallee CheckReadInt32Fail;
-  FunctionCallee CheckReadInt64Fail;
-  FunctionCallee CheckReadInt128Fail;
-  FunctionCallee CheckReadPtrFail;
-  FunctionCallee CheckWriteInt;
-  FunctionCallee CheckWriteAlignedInt;
-  FunctionCallee CheckWriteInt8Fail;
-  FunctionCallee CheckWriteInt16Fail;
-  FunctionCallee CheckWriteInt32Fail;
-  FunctionCallee CheckWriteInt64Fail;
-  FunctionCallee CheckWriteInt128Fail;
-  FunctionCallee CheckWritePtrFail;
   FunctionCallee OptimizedAlignmentContradiction;
-  FunctionCallee OptimizedTypeContradiction;
   FunctionCallee OptimizedAccessCheckFail;
   FunctionCallee CheckFunctionCallFail;
   FunctionCallee Memset;
@@ -1138,20 +1007,20 @@ class Pizlonator {
   FunctionCallee RunGlobalDtor;
   FunctionCallee Error;
   FunctionCallee RealMemset;
+  FunctionCallee RealMemcpy;
   FunctionCallee LandingPad;
   FunctionCallee ResumeUnwind;
   FunctionCallee JmpBufCreate;
   FunctionCallee PromoteArgsToHeap;
+  FunctionCallee PrepareToReturnWithData;
   FunctionCallee CCArgsCheckFailure;
   FunctionCallee CCRetsCheckFailure;
   FunctionCallee _Setjmp;
   FunctionCallee ExpectI1;
+  FunctionCallee LifetimeStart;
+  FunctionCallee LifetimeEnd;
   FunctionCallee StackCheckAsm;
 
-  Constant* EmptyCCType;
-  Constant* VoidCCType;
-  Constant* IntCCType;
-  Constant* PtrCCType;
   Constant* IsMarking;
 
   std::unordered_set<CombinedDI> CombinedDIs;
@@ -1172,16 +1041,14 @@ class Pizlonator {
   std::unordered_map<OptimizedAccessCheckOriginKey, GlobalVariable*> OptimizedAccessCheckOrigins;
   std::unordered_map<OptimizedAlignmentContradictionOriginKey,
                      GlobalVariable*> OptimizedAlignmentContradictionOrigins;
-  std::unordered_map<OptimizedTypeContradictionOriginKey,
-                     GlobalVariable*> OptimizedTypeContradictionOrigins;
+  std::unordered_map<Value*, AllocaInst*> CanonicalPtrAuxBaseVars;
+  std::unordered_map<Instruction*, std::vector<AllocaInst*>> AuxBaseVarOperands;
 
   std::vector<GlobalVariable*> Globals;
   std::vector<Function*> Functions;
   std::vector<GlobalAlias*> Aliases;
-  std::unordered_map<GlobalValue*, Type*> GlobalLowTypes;
-  std::unordered_map<GlobalValue*, Type*> GlobalHighTypes;
 
-  std::unordered_map<Type*, Type*> LoweredTypes;
+  std::unordered_map<Type*, Type*> FlightedTypes;
 
   std::unordered_map<GlobalValue*, Function*> GlobalToGetter;
   std::unordered_map<GlobalValue*, GlobalVariable*> GlobalToGlobal;
@@ -1192,24 +1059,17 @@ class Pizlonator {
   Function* OldF;
   Function* NewF;
 
-  std::unordered_map<Instruction*, Type*> InstLowTypes;
-  std::unordered_map<Instruction*, std::vector<Type*>> InstLowTypeVectors;
+  std::unordered_map<Instruction*, Type*> InstTypes;
+  std::unordered_map<Instruction*, std::vector<Type*>> InstTypeVectors;
   std::unordered_map<InvokeInst*, LandingPadInst*> LPIs;
   
   BasicBlock* FirstRealBlock;
 
-  BitCastInst* FutureArgBuffer;
-  BitCastInst* FutureReturnBuffer;
-
   BasicBlock* ReturnB;
   PHINode* ReturnPhi;
   BasicBlock* ResumeB;
+  PHINode* RetSizePhi;
   BasicBlock* ReallyReturnB;
-
-  size_t ArgBufferSize;
-  size_t ArgBufferAlignment;
-  size_t ReturnBufferSize;
-  size_t ReturnBufferAlignment;
 
   bool UsesVastartOrZargs;
   size_t SnapshottedArgsFrameIndex;
@@ -1264,7 +1124,7 @@ class Pizlonator {
     if (iter != FunctionOrigins.end())
       return iter->second;
 
-    Constant* Personality = LowRawNull;
+    Constant* Personality = RawNull;
     if (CanCatch && OldF->hasPersonalityFn()) {
       assert(GlobalToGetter.count(cast<Function>(OldF->getPersonalityFn())));
       Personality = GlobalToGetter[cast<Function>(OldF->getPersonalityFn())];
@@ -1280,7 +1140,7 @@ class Pizlonator {
       { ConstantStruct::get(
           OriginNodeTy,
           { getString(getFunctionName(OldF)),
-            OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : LowRawNull,
+            OldF->getSubprogram() ? getString(OldF->getSubprogram()->getFilename()) : RawNull,
             ConstantInt::get(Int32Ty, FrameSize) }),
         Personality, ConstantInt::get(Int8Ty, CanThrow), ConstantInt::get(Int8Ty, CanCatch),
         ConstantInt::get(Int32Ty, NumSetjmps) });
@@ -1292,7 +1152,7 @@ class Pizlonator {
 
   Constant* getEHData(LandingPadInst* LPI) {
     if (!LPI)
-      return LowRawNull;
+      return RawNull;
     assert(EHDatas.count(LPI));
     assert(GlobalToGetter.count(EHDatas[LPI]));
     return GlobalToGetter[EHDatas[LPI]];
@@ -1380,8 +1240,8 @@ class Pizlonator {
     return getOrigin(Loc, true, LPI);
   }
 
-  Type* lowerTypeImpl(Type* T) {
-    assert(T != LowWidePtrTy);
+  Type* toFlightTypeImpl(Type* T) {
+    assert(T != FlightPtrTy);
     
     if (isa<FunctionType>(T))
       return PizlonatedFuncTy;
@@ -1393,8 +1253,8 @@ class Pizlonator {
 
     if (isa<PointerType>(T)) {
       if (T->getPointerAddressSpace() == TargetAS) {
-        assert(T == LowRawPtrTy);
-        return LowWidePtrTy;
+        assert(T == RawPtrTy);
+        return FlightPtrTy;
       }
       return T;
     }
@@ -1404,7 +1264,7 @@ class Pizlonator {
         return ST;
       std::vector<Type*> Elements;
       for (Type* InnerT : ST->elements())
-        Elements.push_back(lowerType(InnerT));
+        Elements.push_back(toFlightType(InnerT));
       if (ST->isLiteral())
         return StructType::get(C, Elements, ST->isPacked());
       std::string NewName = ("pizlonated_" + ST->getName()).str();
@@ -1412,10 +1272,12 @@ class Pizlonator {
     }
       
     if (ArrayType* AT = dyn_cast<ArrayType>(T))
-      return ArrayType::get(lowerType(AT->getElementType()), AT->getNumElements());
+      return ArrayType::get(toFlightType(AT->getElementType()), AT->getNumElements());
       
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
-      return FixedVectorType::get(lowerType(VT->getElementType()), VT->getElementCount().getFixedValue());
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
+      return FixedVectorType::get(
+        toFlightType(VT->getElementType()), VT->getElementCount().getFixedValue());
+    }
 
     if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't see scalable vector types");
@@ -1425,29 +1287,21 @@ class Pizlonator {
     return T;
   }
 
-  Type* lowerType(Type* T) {
-    auto iter = LoweredTypes.find(T);
-    if (iter != LoweredTypes.end())
+  Type* toFlightType(Type* T) {
+    auto iter = FlightedTypes.find(T);
+    if (iter != FlightedTypes.end())
       return iter->second;
 
-    Type* LowT = lowerTypeImpl(T);
-    assert(T->isSized() == LowT->isSized());
-    if (T->isSized()) {
-      if (DLBefore.getTypeStoreSize(T) != DL.getTypeStoreSize(LowT)) {
-        errs() << "Error lowering type: " << *T << "\n"
-               << "Type after lowering: " << *LowT << "\n"
-               << "Predicted lowered size: " << DLBefore.getTypeStoreSize(T) << "\n"
-               << "Actual lowered size: " << DL.getTypeStoreSize(LowT) << "\n";
-      }
-      assert(DLBefore.getTypeStoreSize(T) == DL.getTypeStoreSize(LowT));
-    }
-    LoweredTypes[T] = LowT;
-    return LowT;
+    Type* FlightT = toFlightTypeImpl(T);
+    assert(T->isSized() == FlightT->isSized());
+    FlightedTypes[T] = FlightT;
+    return FlightT;
   }
 
   Value* expectBool(Value* Predicate, bool Expected, Instruction* InsertBefore) {
     CallInst* Result = CallInst::Create(
-      ExpectI1, { Predicate, ConstantInt::getBool(Int1Ty, Expected) }, "filc_expect_true",
+      ExpectI1, { Predicate, ConstantInt::getBool(Int1Ty, Expected) },
+      Expected ? "filc_expect_true" : "filc_expect_false",
       InsertBefore);
     Result->setDebugLoc(InsertBefore->getDebugLoc());
     return Result;
@@ -1461,432 +1315,380 @@ class Pizlonator {
     return expectBool(Predicate, false, InsertBefore);
   }
 
-  void inlineCheckAccess(Value* P, size_t SizeAndAlignment, AccessKind AK, WordType ExpectedType,
-                         FunctionCallee AccessFailure, Instruction* InsertBefore, DebugLoc DI) {
-    assert(SizeAndAlignment >= 1);
-    assert(SizeAndAlignment <= WordSize);
-    assert(!(SizeAndAlignment & (SizeAndAlignment - 1)));
-    assert(ExpectedType == WordTypeInt || ExpectedType == WordTypePtr);
-    assert(!(WordTypeInt & WordTypePtr));
-    assert(!WordTypeUnset);
-    DebugLoc DL = InsertBefore->getDebugLoc();
-    Value* Object = ptrObject(P, InsertBefore);
-    Value* Ptr = ptrPtr(P, InsertBefore);
-    ICmpInst* NullObject = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_null_access_object");
-    NullObject->setDebugLoc(DL);
-    Instruction* FailBlockTerm = SplitBlockAndInsertIfThen(
-      expectFalse(NullObject, InsertBefore), InsertBefore, true);
-    BasicBlock* FailBlock = FailBlockTerm->getParent();
-    CallInst::Create(AccessFailure, { P, getOrigin(DI) }, "", FailBlockTerm)->setDebugLoc(DL);
-    Instruction* PtrInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertBefore);
-    PtrInt->setDebugLoc(DL);
-    if (SizeAndAlignment > 1) {
-      Instruction* Masked = BinaryOperator::Create(
-        Instruction::And, PtrInt, ConstantInt::get(IntPtrTy, SizeAndAlignment - 1),
-        "filc_ptr_alignment_masked", InsertBefore);
-      Masked->setDebugLoc(DL);
-      ICmpInst* IsAligned = new ICmpInst(
-        InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
-        "filc_ptr_is_aligned");
-      IsAligned->setDebugLoc(DL);
-      SplitBlockAndInsertIfElse(
-        expectTrue(IsAligned, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
-        FailBlock);
-    }
-    if (AK == AccessKind::Write) {
-      BinaryOperator* Masked = BinaryOperator::Create(
-        Instruction::And, objectFlags(Object, InsertBefore),
-        ConstantInt::get(Int16Ty, ObjectFlagReadonly), "filc_flags_masked", InsertBefore);
-      Masked->setDebugLoc(DL);
-      ICmpInst* IsNotReadOnly = new ICmpInst(
-        InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0),
-        "filc_object_is_not_read_only");
-      IsNotReadOnly->setDebugLoc(DL);
-      SplitBlockAndInsertIfElse(
-        expectTrue(IsNotReadOnly, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
-        FailBlock);
-    }
-    Instruction* IsBelowUpper = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_ULT, Ptr, objectUpper(Object, InsertBefore),
-      "filc_ptr_below_upper");
-    IsBelowUpper->setDebugLoc(DL);
-    SplitBlockAndInsertIfElse(
-      expectTrue(IsBelowUpper, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
-      FailBlock);
-    Value* Lower = objectLower(Object, InsertBefore);
-    Instruction* IsBelowLower = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_ULT, Ptr, Lower, "filc_ptr_below_lower");
-    IsBelowLower->setDebugLoc(DL);
-    SplitBlockAndInsertIfThen(
-      expectFalse(IsBelowLower, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr,
-      FailBlock);
-    Instruction* LowerInt = new PtrToIntInst(Lower, IntPtrTy, "filc_lower_as_int", InsertBefore);
-    LowerInt->setDebugLoc(DL);
-    Instruction* Offset = BinaryOperator::Create(
-      Instruction::Sub, PtrInt, LowerInt, "filc_ptr_offset", InsertBefore);
-    Offset->setDebugLoc(DL);
-    Instruction* WordTypeIndex = BinaryOperator::Create(
-      Instruction::LShr, Offset, ConstantInt::get(IntPtrTy, WordSizeShift), "filc_word_type_index",
-      InsertBefore);
-    WordTypeIndex->setDebugLoc(DL);
-    Instruction* WordTypePtr = GetElementPtrInst::Create(
-      Int8Ty, objectWordTypesPtr(Object, InsertBefore), { WordTypeIndex }, "filc_word_type_ptr",
-      InsertBefore);
-    WordTypePtr->setDebugLoc(DL);
-    Instruction* WordType = new LoadInst(Int8Ty, WordTypePtr, "filc_word_type", InsertBefore);
-    WordType->setDebugLoc(DL);
-    ICmpInst* GoodType = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, ExpectedType),
-      "filc_good_type");
-    GoodType->setDebugLoc(DL);
-    Instruction* MaybeBadTypeTerm = SplitBlockAndInsertIfElse(
-      expectTrue(GoodType, InsertBefore), InsertBefore, false);
-    ICmpInst* UnsetType = new ICmpInst(
-      MaybeBadTypeTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeUnset),
-      "filc_unset_type");
-    UnsetType->setDebugLoc(DL);
-    SplitBlockAndInsertIfElse(
-      expectTrue(UnsetType, MaybeBadTypeTerm), MaybeBadTypeTerm, false, nullptr, nullptr, nullptr,
-      FailBlock);
-    Instruction* CAS = new AtomicCmpXchgInst(
-      WordTypePtr, ConstantInt::get(Int8Ty, WordTypeUnset), ConstantInt::get(Int8Ty, ExpectedType),
-      Align(1), AtomicOrdering::SequentiallyConsistent, AtomicOrdering::SequentiallyConsistent,
-      SyncScope::System, MaybeBadTypeTerm);
-    CAS->setDebugLoc(DL);
-    Instruction* OldWordType = ExtractValueInst::Create(
-      Int8Ty, CAS, { 0 }, "filc_old_word_type", MaybeBadTypeTerm);
-    OldWordType->setDebugLoc(DL);
-    Instruction* Masked = BinaryOperator::Create(
-      Instruction::And, OldWordType, ConstantInt::get(Int8Ty, ~ExpectedType), "filc_masked_old_type",
-      MaybeBadTypeTerm);
-    Masked->setDebugLoc(DL);
-    Instruction* GoodOldType = new ICmpInst(
-      MaybeBadTypeTerm, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
-      "filc_good_old_type");
-    GoodOldType->setDebugLoc(DL);
-    assert(cast<BranchInst>(MaybeBadTypeTerm)->getSuccessor(0) == InsertBefore->getParent());
-    BranchInst::Create(InsertBefore->getParent(), FailBlock,
-                       expectTrue(GoodOldType, MaybeBadTypeTerm), MaybeBadTypeTerm)
-      ->setDebugLoc(DL);
-    MaybeBadTypeTerm->eraseFromParent();
-  }
-
-  void checkReadInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore, DebugLoc DI) {
-    if (Size == 1) {
-      inlineCheckAccess(P, 1, AccessKind::Read, WordTypeInt, CheckReadInt8Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 2 && Alignment >= 2) {
-      inlineCheckAccess(P, 2, AccessKind::Read, WordTypeInt, CheckReadInt16Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 4 && Alignment >= 4) {
-      inlineCheckAccess(P, 4, AccessKind::Read, WordTypeInt, CheckReadInt32Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 8 && Alignment >= 8) {
-      inlineCheckAccess(P, 8, AccessKind::Read, WordTypeInt, CheckReadInt64Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 16 && Alignment >= 16) {
-      inlineCheckAccess(P, 16, AccessKind::Read, WordTypeInt, CheckReadInt128Fail, InsertBefore, DI);
-      return;
-    }
-    if (Alignment == 1) {
-      CallInst::Create(
-        CheckReadInt,
-        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(DI) }, "", InsertBefore)
-        ->setDebugLoc(InsertBefore->getDebugLoc());
-      return;
-    }
-    CallInst::Create(
-      CheckReadAlignedInt,
-      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment), getOrigin(DI) },
-      "", InsertBefore)
-      ->setDebugLoc(InsertBefore->getDebugLoc());
-  }
-
-  void checkWriteInt(Value *P, size_t Size, size_t Alignment, Instruction *InsertBefore,
-                     DebugLoc DI) {
-    if (Size == 1) {
-      inlineCheckAccess(P, 1, AccessKind::Write, WordTypeInt, CheckWriteInt8Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 2 && Alignment >= 2) {
-      inlineCheckAccess(P, 2, AccessKind::Write, WordTypeInt, CheckWriteInt16Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 4 && Alignment >= 4) {
-      inlineCheckAccess(P, 4, AccessKind::Write, WordTypeInt, CheckWriteInt32Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 8 && Alignment >= 8) {
-      inlineCheckAccess(P, 8, AccessKind::Write, WordTypeInt, CheckWriteInt64Fail, InsertBefore, DI);
-      return;
-    }
-    if (Size == 16 && Alignment >= 16) {
-      inlineCheckAccess(P, 16, AccessKind::Write, WordTypeInt, CheckWriteInt128Fail, InsertBefore,
-                        DI);
-      return;
-    }
-    if (Alignment == 1) {
-      CallInst::Create(
-        CheckWriteInt,
-        { P, ConstantInt::get(IntPtrTy, Size), getOrigin(DI) }, "", InsertBefore)
-        ->setDebugLoc(InsertBefore->getDebugLoc());
-    }
-    CallInst::Create(
-      CheckWriteAlignedInt,
-      { P, ConstantInt::get(IntPtrTy, Size), ConstantInt::get(IntPtrTy, Alignment), getOrigin(DI) },
-      "", InsertBefore)
-      ->setDebugLoc(InsertBefore->getDebugLoc());
-  }
-
-  void checkInt(Value* P, size_t Size, size_t Alignment, AccessKind AK, Instruction *InsertBefore,
-                DebugLoc DI) {
-    switch (AK) {
-    case AccessKind::Read:
-      checkReadInt(P, Size, Alignment, InsertBefore, DI);
-      return;
-    case AccessKind::Write:
-      checkWriteInt(P, Size, Alignment, InsertBefore, DI);
-      return;
-    }
-    llvm_unreachable("Bad access kind");
-  }
-
-  void checkReadPtr(Value *P, Instruction *InsertBefore, DebugLoc DI) {
-    inlineCheckAccess(P, WordSize, AccessKind::Read, WordTypePtr, CheckReadPtrFail, InsertBefore, DI);
-  }
-
-  void checkWritePtr(Value *P, Instruction *InsertBefore, DebugLoc DI) {
-    inlineCheckAccess(
-      P, WordSize, AccessKind::Write, WordTypePtr, CheckWritePtrFail, InsertBefore, DI);
-  }
-
-  void checkPtr(Value *P, AccessKind AK, Instruction *InsertBefore, DebugLoc DI) {
-    switch (AK) {
-    case AccessKind::Read:
-      checkReadPtr(P, InsertBefore, DI);
-      return;
-    case AccessKind::Write:
-      checkWritePtr(P, InsertBefore, DI);
-      return;
-    }
-    llvm_unreachable("Bad access kind");
-  }
-
-  Value* objectForSpecialPayload(Value* Payload, Instruction* InsertBefore) {
-    Instruction* Result = GetElementPtrInst::Create(
-      Int8Ty, Payload, { ConstantInt::get(IntPtrTy, -SpecialObjectSize) },
-      "filc_object_for_special_payload", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* ccPtrType(Value* P, Instruction* InsertBefore) {
-    Instruction* Result = ExtractValueInst::Create(
-      LowRawPtrTy, P, { 0 }, "filc_cc_ptr_type", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* ccPtrBase(Value* P, Instruction* InsertBefore) {
-    Instruction* Result = ExtractValueInst::Create(
-      LowRawPtrTy, P, { 1 }, "filc_cc_ptr_base", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* createCCPtr(Value* ccType, Value* ccBase, Instruction* InsertBefore) {
-    Instruction* Result = InsertValueInst::Create(
-      UndefValue::get(CCPtrTy), ccType, { 0 }, "filc_cc_insert_type", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    Result = InsertValueInst::Create(Result, ccBase, { 1 }, "filc_cc_insert_base", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* ptrWord(Value* P, Instruction* InsertBefore) {
-    if (isa<ConstantAggregateZero>(P))
-      return ConstantInt::get(Int128Ty, 0);
-    Instruction* Result = ExtractValueInst::Create(Int128Ty, P, { 0 }, "filc_ptr_word", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* ptrPtr(Value* P, Instruction* InsertBefore) {
-    Instruction* IntResult = new TruncInst(ptrWord(P, InsertBefore), IntPtrTy, "filc_ptr_ptr_as_int",
-                                           InsertBefore);
-    IntResult->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_ptr", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* ptrObject(Value* P, Instruction* InsertBefore) {
-    Instruction* Shifted = BinaryOperator::Create(
-      Instruction::LShr, ptrWord(P, InsertBefore), ConstantInt::get(Int128Ty, 64), "filc_ptr_object_shift",
-      InsertBefore);
-    Shifted->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* IntResult = new TruncInst(Shifted, IntPtrTy, "filc_ptr_object_trunc_as_int", InsertBefore);
-    IntResult->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* Result = new IntToPtrInst(IntResult, LowRawPtrTy, "filc_ptr_object", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* wordToPtr(Value* Word, Instruction* InsertBefore) {
-    Instruction* Result = InsertValueInst::Create(
-      UndefValue::get(LowWidePtrTy), Word, { 0 }, "filc_word_to_ptr", InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return Result;
-  }
-
-  Value* createPtr(Value* Object, Value* Ptr, Instruction* InsertBefore) {
-    Instruction* PtrAsInt = new PtrToIntInst(Ptr, IntPtrTy, "filc_ptr_as_int", InsertBefore);
-    PtrAsInt->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* ObjectAsInt = new PtrToIntInst(Object, IntPtrTy, "filc_object_as_int", InsertBefore);
-    ObjectAsInt->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* CastedPtr = new ZExtInst(PtrAsInt, Int128Ty, "filc_ptr_zext", InsertBefore);
-    CastedPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* CastedObject = new ZExtInst(ObjectAsInt, Int128Ty, "filc_object_zext", InsertBefore);
-    CastedObject->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* ShiftedObject = BinaryOperator::Create(
-      Instruction::Shl, CastedObject, ConstantInt::get(Int128Ty, 64), "filc_object_shifted", InsertBefore);
-    ShiftedObject->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* Word = BinaryOperator::Create(
-      Instruction::Or, CastedPtr, ShiftedObject, "filc_ptr_word", InsertBefore);
-    Word->setDebugLoc(InsertBefore->getDebugLoc());
-    return wordToPtr(Word, InsertBefore);
-  }
-
-  Value* ptrForSpecialPayload(Value* Payload, Instruction* InsertBefore) {
-    return createPtr(objectForSpecialPayload(Payload, InsertBefore), Payload, InsertBefore);
-  }
-
-  Value* ptrWithPtr(Value* LowWidePtr, Value* NewLowRawPtr, Instruction* InsertBefore) {
-    return createPtr(ptrObject(LowWidePtr, InsertBefore), NewLowRawPtr, InsertBefore);
-  }
-
-  Value* ptrWithOffset(Value* LowWidePtr, Value* Offset, Instruction* InsertBefore) {
-    Instruction* GEP = GetElementPtrInst::Create(
-      Int8Ty, ptrPtr(LowWidePtr, InsertBefore), { Offset }, "filc_ptr_with_offset", InsertBefore);
+  Value* threadFieldPtr(Value* Thread, unsigned FieldIndex, const char* Name,
+                        Instruction* InsertBefore) {
+    GetElementPtrInst* GEP = GetElementPtrInst::Create(
+      ThreadTy, Thread, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(Int32Ty, FieldIndex) },
+      Name, InsertBefore);
     GEP->setDebugLoc(InsertBefore->getDebugLoc());
-    return ptrWithPtr(LowWidePtr, GEP, InsertBefore);
+    return GEP;
   }
 
-  Value* objectLowerPtr(Value* Object, Instruction* InsertBefore) {
-    Instruction* LowerPtr = GetElementPtrInst::Create(
-      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
-      "filc_object_lower_ptr", InsertBefore);
-    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return LowerPtr;
+  Value* threadStackLimitPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 0, "filc_thread_stack_limit_ptr", InsertBefore);
   }
 
-  Value* objectUpperPtr(Value* Object, Instruction* InsertBefore) {
+  Value* threadStatePtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 1, "filc_thread_state_ptr", InsertBefore);
+  }
+
+  Value* threadTIDPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 2, "filc_thread_tid_ptr", InsertBefore);
+  }
+
+  Value* threadTopFramePtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 3, "filc_thread_top_frame_ptr", InsertBefore);
+  }
+
+  Value* threadUnwindRegistersPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 5, "filc_thread_unwind_registers_ptr", InsertBefore);
+  }
+
+  Value* threadUnwindRegisterPtr(Value* Thread, unsigned RegisterIndex, Instruction* InsertBefore) {
+    assert(RegisterIndex < NumUnwindRegisters);
+    GetElementPtrInst* GEP = GetElementPtrInst::Create(
+      FlightPtrTy, threadUnwindRegistersPtr(Thread, InsertBefore),
+      { ConstantInt::get(IntPtrTy, RegisterIndex) }, "filc_unwind_register_ptr", InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return GEP;
+  }
+
+  Value* threadCookiePtrPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 6, "filc_thread_cookie_ptr_ptr", InsertBefore);
+  }
+
+  Value* threadCCInlineBufferPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 8, "filc_thread_cc_inline_buffer_ptr", InsertBefore);
+  }
+
+  Value* threadCCInlineAuxBufferPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 9, "filc_thread_cc_inline_aux_buffer_ptr", InsertBefore);
+  }
+
+  Value* threadCCOutlineBufferPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 10, "filc_thread_cc_outline_buffer_ptr", InsertBefore);
+  }
+
+  Value* threadCCOutlineAuxBufferPtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 11, "filc_thread_cc_outline_aux_buffer_ptr", InsertBefore);
+  }
+
+  Value* threadCCOutlineSizePtr(Value* Thread, Instruction* InsertBefore) {
+    return threadFieldPtr(Thread, 12, "filc_thread_cc_outline_size_ptr", InsertBefore);
+  }
+
+  Value* flightPtrPtr(Value* P, Instruction* InsertBefore) {
+    if (isa<ConstantAggregateZero>(P))
+      return RawNull;
+    Instruction* Result = ExtractValueInst::Create(RawPtrTy, P, { 0 }, "filc_ptr_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* flightPtrLower(Value* P, Instruction* InsertBefore) {
+    if (isa<ConstantAggregateZero>(P))
+      return RawNull;
+    Instruction* Result = ExtractValueInst::Create(RawPtrTy, P, { 1 }, "filc_ptr_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* flightPtrPtrAsInt(Value* P, Instruction* InsertBefore) {
+    Instruction* PtrAsInt = new PtrToIntInst(
+      flightPtrPtr(P, InsertBefore), IntPtrTy, "filc_ptr_ptr_as_int", InsertBefore);
+    PtrAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    return PtrAsInt;
+  }
+
+  Value* flightPtrOffset(Value* P, Instruction* InsertBefore) {
+    Instruction* LowerAsInt = new PtrToIntInst(
+      flightPtrLower(P, InsertBefore), IntPtrTy, "filc_ptr_lower_as_int", InsertBefore);
+    LowerAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Result = BinaryOperator::Create(
+      Instruction::Sub, flightPtrPtrAsInt(P, InsertBefore), LowerAsInt, "filc_ptr_offset",
+      InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* createFlightPtr(Value* Lower, Value* Ptr, Instruction* InsertBefore) {
+    Instruction* Result = InsertValueInst::Create(
+      UndefValue::get(FlightPtrTy), Ptr, { 0 }, "filc_insert_ptr", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    Result = InsertValueInst::Create(Result, Lower, { 1 }, "filc_insert_lower", InsertBefore);
+    Result->setDebugLoc(InsertBefore->getDebugLoc());
+    return Result;
+  }
+
+  Value* flightPtrForPayload(Value* Payload, Instruction* InsertBefore) {
+    return createFlightPtr(Payload, Payload, InsertBefore);
+  }
+
+  Value* lowerForObject(Value* Object, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      ObjectTy, Object, { ConstantInt::get(IntPtrTy, 1) }, "filc_lower_for_object", InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return GEP;
+  }
+
+  Value* objectForLower(Value* Lower, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      ObjectTy, Lower, { ConstantInt::get(IntPtrTy, -(intptr_t)1) }, "filc_object_for_lower",
+      InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return GEP;
+  }
+
+  Value* flightPtrForObject(Value* Object, Instruction* InsertBefore) {
+    return flightPtrForPayload(lowerForObject(Object, InsertBefore), InsertBefore);
+  }
+
+  Value* flightPtrWithPtr(Value* FlightPtr, Value* NewRawPtr, Instruction* InsertBefore) {
+    return createFlightPtr(flightPtrLower(FlightPtr, InsertBefore), NewRawPtr, InsertBefore);
+  }
+
+  Value* flightPtrWithOffset(Value* FlightPtr, Value* Offset, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      Int8Ty, flightPtrPtr(FlightPtr, InsertBefore), { Offset }, "filc_ptr_with_offset",
+      InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return flightPtrWithPtr(FlightPtr, GEP, InsertBefore);
+  }
+
+  Value* ptrToUpperForLower(Value* Lower, Instruction* InsertBefore) {
     Instruction* UpperPtr = GetElementPtrInst::Create(
-      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-      "filc_object_upper_ptr", InsertBefore);
+      ObjectTy, Lower,
+      { ConstantInt::get(IntPtrTy, -(intptr_t)1), ConstantInt::get(Int32Ty, 0) },
+      "filc_object_upper_ptr", InsertBefore); 
     UpperPtr->setDebugLoc(InsertBefore->getDebugLoc());
     return UpperPtr;
   }
 
-  Value* objectFlagsPtr(Value* Object, Instruction* InsertBefore) {
-    Instruction* FlagsPtr = GetElementPtrInst::Create(
-      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
-      "filc_object_flags_ptr", InsertBefore);
-    FlagsPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return FlagsPtr;
+  Value* ptrToAuxForLower(Value* Lower, Instruction* InsertBefore)
+  {
+    Instruction* AuxPtr = GetElementPtrInst::Create(
+      ObjectTy, Lower,
+      { ConstantInt::get(IntPtrTy, -(intptr_t)1), ConstantInt::get(Int32Ty, 1) },
+      "filc_object_aux_ptr", InsertBefore);
+    AuxPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return AuxPtr;
   }
 
-  Value* objectWordTypesPtr(Value* Object, Instruction* InsertBefore) {
-    Instruction* WordTypesPtr = GetElementPtrInst::Create(
-      ObjectTy, Object, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
-      "filc_object_flags_ptr", InsertBefore);
-    WordTypesPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return WordTypesPtr;
-  }
-
-  Value* objectLower(Value* Object, Instruction* InsertBefore) {
-    Instruction* Lower = new LoadInst(
-      LowRawPtrTy, objectLowerPtr(Object, InsertBefore), "filc_object_lower_load", InsertBefore);
-    Lower->setDebugLoc(InsertBefore->getDebugLoc());
-    return Lower;
-  }
-
-  Value* objectUpper(Value* Object, Instruction* InsertBefore) {
+  Value* upperForLower(Value* Lower, Instruction* InsertBefore) {
     Instruction* Upper = new LoadInst(
-      LowRawPtrTy, objectUpperPtr(Object, InsertBefore), "filc_object_upper_load", InsertBefore);
+      RawPtrTy, ptrToUpperForLower(Lower, InsertBefore), "filc_object_upper_load", InsertBefore);
     Upper->setDebugLoc(InsertBefore->getDebugLoc());
     return Upper;
   }
 
-  Value* objectFlags(Value* Object, Instruction* InsertBefore) {
-    Instruction* Flags = new LoadInst(
-      Int16Ty, objectFlagsPtr(Object, InsertBefore), "filc_object_flags_load", InsertBefore);
+  Value* auxForLower(Value* Lower, Instruction* InsertBefore) {
+    Instruction* Aux = new LoadInst(
+      IntPtrTy, ptrToAuxForLower(Lower, InsertBefore), "filc_object_aux_load", InsertBefore);
+    Aux->setDebugLoc(InsertBefore->getDebugLoc());
+    return Aux;
+  }
+
+  Value* flagsForLower(Value* Lower, Instruction* InsertBefore) {
+    Value* Aux = auxForLower(Lower, InsertBefore);
+    Instruction* Flags = BinaryOperator::Create(
+      Instruction::LShr, Aux, ConstantInt::get(IntPtrTy, ObjectAuxFlagsShift), "filc_object_flags",
+      InsertBefore);
     Flags->setDebugLoc(InsertBefore->getDebugLoc());
     return Flags;
   }
 
-  Value* ptrWithObject(Value* Object, Instruction* InsertBefore) {
-    return createPtr(Object, objectLower(Object, InsertBefore), InsertBefore);
+  Value* auxPtrForLower(Value* Lower, Instruction* InsertBefore) {
+    Value* Aux = auxForLower(Lower, InsertBefore);
+    Instruction* AuxPtrAsInt = BinaryOperator::Create(
+      Instruction::And, Aux, ConstantInt::get(IntPtrTy, ObjectAuxPtrMask), "filc_aux_ptr_as_int",
+      InsertBefore);
+    AuxPtrAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* AuxPtr = new IntToPtrInst(AuxPtrAsInt, RawPtrTy, "filc_aux_ptr", InsertBefore);
+    AuxPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return AuxPtr;
   }
 
-  Value* badPtr(Value* P, Instruction* InsertBefore) {
-    return createPtr(LowRawNull, P, InsertBefore);
+  Value* badFlightPtr(Value* P, Instruction* InsertBefore) {
+    return createFlightPtr(RawNull, P, InsertBefore);
   }
 
-  Value* ptrPtrPtr(Value* P, Instruction* InsertBefore) {
-    (void)InsertBefore;
-    return P;
+  Value* flightPtrPtrPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      FlightPtrTy, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(Int32Ty, 0) },
+      "filc_flight_ptr_ptr", InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return GEP;
   }
 
-  Value* ptrObjectPtr(Value* P, Instruction* InsertBefore) {
-    Instruction* ObjectPtr = GetElementPtrInst::Create(
-      LowRawPtrTy, P, { ConstantInt::get(IntPtrTy, 1) }, "filc_object_ptr", InsertBefore);
-    ObjectPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    return ObjectPtr;
+  Value* flightPtrLowerPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* GEP = GetElementPtrInst::Create(
+      FlightPtrTy, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(Int32Ty, 1) },
+      "filc_flight_ptr_ptr", InsertBefore);
+    GEP->setDebugLoc(InsertBefore->getDebugLoc());
+    return GEP;
+  }
+
+  Value* flightPtrForWord(Value* Word, Instruction* InsertBefore) {
+    if (isa<ConstantAggregateZero>(Word))
+      return FlightNull;
+    Instruction* IntRawPtr = new TruncInst(
+      Word, IntPtrTy, "filc_flight_word_raw_ptr_int", InsertBefore);
+    IntRawPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* RawPtr = new IntToPtrInst(IntRawPtr, RawPtrTy, "filc_flight_ptr_ptr", InsertBefore);
+    RawPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Shifted = BinaryOperator::Create(
+      Instruction::LShr, Word, ConstantInt::get(Int128Ty, 64), "filc_flight_word_lower_shift",
+      InsertBefore);
+    Shifted->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* IntLower = new TruncInst(Shifted, IntPtrTy, "filc_flight_word_lower_int",
+                                          InsertBefore);
+    IntLower->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Lower = new IntToPtrInst(IntLower, RawPtrTy, "filc_flight_ptr_lower", InsertBefore);
+    Lower->setDebugLoc(InsertBefore->getDebugLoc());
+    return createFlightPtr(Lower, RawPtr, InsertBefore);
+  }
+
+  Value* wordForFlightPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* PtrAsInt = new PtrToIntInst(
+      flightPtrPtr(P, InsertBefore), IntPtrTy, "filc_ptr_as_int", InsertBefore);
+    PtrAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* LowerAsInt = new PtrToIntInst(
+      flightPtrLower(P, InsertBefore), IntPtrTy, "filc_object_as_int", InsertBefore);
+    LowerAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* CastedPtr = new ZExtInst(PtrAsInt, Int128Ty, "filc_ptr_zext", InsertBefore);
+    CastedPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* CastedLower = new ZExtInst(LowerAsInt, Int128Ty, "filc_lower_zext", InsertBefore);
+    CastedLower->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* ShiftedLower = BinaryOperator::Create(
+      Instruction::Shl, CastedLower, ConstantInt::get(Int128Ty, 64), "filc_lower_shifted",
+      InsertBefore);
+    ShiftedLower->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* Word = BinaryOperator::Create(
+      Instruction::Or, CastedPtr, ShiftedLower, "filc_ptr_word", InsertBefore);
+    Word->setDebugLoc(InsertBefore->getDebugLoc());
+    return Word;
+  }
+
+  Value* loadFlightPtr(Value* P, Instruction* InsertBefore) {
+    Instruction* Lower = new LoadInst(
+      RawPtrTy, flightPtrLowerPtr(P, InsertBefore), "filc_flight_load_lower", false, Align(8),
+      AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
+    Lower->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* RawPtr = new LoadInst(
+      RawPtrTy, flightPtrPtrPtr(P, InsertBefore), "filc_flight_load_raw_ptr", false, Align(8),
+      AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
+    RawPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    return createFlightPtr(Lower, RawPtr, InsertBefore);
   }
 
   Value* loadPtr(
-    Value* P, bool isVolatile, Align A, AtomicOrdering AO, MemoryKind MK, Instruction* InsertBefore) {
-    if (MK == MemoryKind::CC) {
+    Value* P, Value* BaseAuxP, Value* AuxP, bool isVolatile, Align A, AtomicOrdering AO,
+    MemoryKind MK, Instruction* InsertBefore) {
+    if (MK != MemoryKind::Heap) {
       assert(!isVolatile);
       assert(AO == AtomicOrdering::NotAtomic);
     }
-    // FIXME: There's a ~1% speed-up on ARM64 from disabling this and just using atomic loads.
-    if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
-      Instruction* Object = new LoadInst(
-        LowRawPtrTy, ptrObjectPtr(P, InsertBefore), "filc_load_object", false, Align(8),
-        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
-      Object->setDebugLoc(InsertBefore->getDebugLoc());
-      Instruction* RawPtr = new LoadInst(
-        LowRawPtrTy, ptrPtrPtr(P, InsertBefore), "filc_load_raw_ptr", false, Align(8),
-        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore);
-      RawPtr->setDebugLoc(InsertBefore->getDebugLoc());
-      return createPtr(Object, RawPtr, InsertBefore);
-    }
-    Instruction* Result = new LoadInst(
-      Int128Ty, P, "filc_load_ptr", isVolatile,
-      std::max(A, Align(WordSize)),
+    Value* BaseAuxPIsNull;
+    BasicBlock* OriginalB = InsertBefore->getParent();
+    if (MK == MemoryKind::Heap) {
+      Instruction* BaseAuxPIsNullInst = new ICmpInst(
+        InsertBefore, ICmpInst::ICMP_EQ, BaseAuxP, RawNull, "filc_base_aux_ptr_is_null");
+      BaseAuxPIsNullInst->setDebugLoc(InsertBefore->getDebugLoc());
+      BaseAuxPIsNull = BaseAuxPIsNullInst;
+    } else
+      BaseAuxPIsNull = ConstantInt::getBool(Int1Ty, false);
+    Instruction* NotNullCase = SplitBlockAndInsertIfElse(BaseAuxPIsNull, InsertBefore, false);
+    Instruction* LowerAsIntLoad = new LoadInst(
+      IntPtrTy, AuxP, "filc_load_lower", isVolatile, Align(WordSize),
       MK == MemoryKind::Heap ? getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO) : AO,
-      SyncScope::System, InsertBefore);
-    Result->setDebugLoc(InsertBefore->getDebugLoc());
-    return wordToPtr(Result, InsertBefore);
+      SyncScope::System, NotNullCase);
+    LowerAsIntLoad->setDebugLoc(InsertBefore->getDebugLoc());
+    PHINode* LowerAsInt = PHINode::Create(IntPtrTy, 2, "filc_lower_as_int_phi", InsertBefore);
+    LowerAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+    LowerAsInt->addIncoming(ConstantInt::get(IntPtrTy, 0), OriginalB);
+    LowerAsInt->addIncoming(LowerAsIntLoad, LowerAsIntLoad->getParent());
+
+    auto FinishCreatingFlight = [&] (Instruction* Where) {
+      Instruction* LowerToPtr = new IntToPtrInst(
+        LowerAsInt, RawPtrTy, "filc_lower_as_ptr", Where);
+      LowerToPtr->setDebugLoc(InsertBefore->getDebugLoc());
+      Instruction* RawPtrLoad = new LoadInst(
+        RawPtrTy, P, "filc_atomic_case_load_raw_ptr", isVolatile, std::max(A, Align(WordSize)), AO,
+        SyncScope::System, Where);
+      RawPtrLoad->setDebugLoc(InsertBefore->getDebugLoc());
+      return createFlightPtr(LowerToPtr, RawPtrLoad, Where);
+    };
+    
+    if (MK == MemoryKind::Heap) {
+      Instruction* Masked = BinaryOperator::Create(
+        Instruction::And, LowerAsInt, ConstantInt::get(IntPtrTy, AtomicBoxBit),
+        "filc_lower_atomic_box_bit", InsertBefore);
+      Masked->setDebugLoc(InsertBefore->getDebugLoc());
+      Instruction* IsNotBox = new ICmpInst(
+        InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
+        "filc_lower_is_not_box");
+      IsNotBox->setDebugLoc(InsertBefore->getDebugLoc());
+      Instruction* ThenTerm;
+      Instruction* ElseTerm;
+      SplitBlockAndInsertIfThenElse(expectTrue(IsNotBox, InsertBefore), InsertBefore,
+                                    &ThenTerm, &ElseTerm);
+      Value* AtomicCaseNotBoxPtr = nullptr;
+      if (isVolatile || AO != AtomicOrdering::NotAtomic)
+        AtomicCaseNotBoxPtr = FinishCreatingFlight(ThenTerm);
+      Instruction* BoxAsInt = BinaryOperator::Create(
+        Instruction::And, LowerAsInt, ConstantInt::get(IntPtrTy, ~AtomicBoxBit),
+        "filc_box_as_int", ElseTerm);
+      BoxAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+      Instruction* Box = new IntToPtrInst(BoxAsInt, RawPtrTy, "filc_box", ElseTerm);
+      Box->setDebugLoc(InsertBefore->getDebugLoc());
+      if (isVolatile || AO != AtomicOrdering::NotAtomic) {
+        // FIXME: Maybe it would be better if this was a function call.
+        Instruction* PtrWord = new LoadInst(
+          Int128Ty, Box, "filc_ptr_word_from_box", isVolatile, std::max(A, Align(FlightPtrAlign)),
+          getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO), SyncScope::System, ElseTerm);
+        PtrWord->setDebugLoc(InsertBefore->getDebugLoc());
+        Value* AtomicCaseBoxPtr = flightPtrForWord(PtrWord, ElseTerm);
+        PHINode* Result = PHINode::Create(FlightPtrTy, 2, "filc_ptr_load_phi", InsertBefore);
+        Result->setDebugLoc(InsertBefore->getDebugLoc());
+        Result->addIncoming(AtomicCaseNotBoxPtr, ThenTerm->getParent());
+        Result->addIncoming(AtomicCaseBoxPtr, ElseTerm->getParent());
+        return Result;
+      }
+      Instruction* LowerFromBoxLoadInt = new LoadInst(
+        IntPtrTy, flightPtrLowerPtr(Box, ElseTerm), "filc_lower_from_box", isVolatile,
+        std::max(A, Align(WordSize)), getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO),
+        SyncScope::System, ElseTerm);
+      LowerFromBoxLoadInt->setDebugLoc(InsertBefore->getDebugLoc());
+      PHINode* NewLowerAsInt = PHINode::Create(IntPtrTy, 2, "filc_lower_as_int_phi2", InsertBefore);
+      NewLowerAsInt->setDebugLoc(InsertBefore->getDebugLoc());
+      NewLowerAsInt->addIncoming(LowerAsInt, ThenTerm->getParent());
+      NewLowerAsInt->addIncoming(LowerFromBoxLoadInt, ElseTerm->getParent());
+      LowerAsInt = NewLowerAsInt;
+    }
+    return FinishCreatingFlight(InsertBefore);
   }
 
-  Value* loadPtr(Value* P, Instruction* InsertBefore) {
+  Value* loadPtr(
+    Value* P, AuxBaseAndPtr Aux, bool isVolatile, Align A, AtomicOrdering AO, MemoryKind MK,
+    Instruction* InsertBefore) {
+    return loadPtr(P, Aux.BaseP, Aux.P, isVolatile, A, AO, MK, InsertBefore);
+  }
+
+  Value* loadPtr(Value* P, Value* BaseAuxP, Value* AuxP, Instruction* InsertBefore) {
     return loadPtr(
-      P, false, Align(WordSize), AtomicOrdering::NotAtomic, MemoryKind::Heap, InsertBefore);
+      P, BaseAuxP, AuxP, false, Align(WordSize), AtomicOrdering::NotAtomic, MemoryKind::Heap,
+      InsertBefore);
   }
 
-  void storeBarrierForObject(Value* Object, Instruction* InsertBefore) {
+  Value* loadPtr(Value* P, AuxBaseAndPtr Aux, Instruction* InsertBefore) {
+    return loadPtr(P, Aux.BaseP, Aux.P, InsertBefore);
+  }
+
+  void storeBarrierForLower(Value* Lower, Instruction* InsertBefore) {
     assert(MyThread);
     DebugLoc DL = InsertBefore->getDebugLoc();
     ICmpInst* NullObject = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_barrier_null_object");
+      InsertBefore, ICmpInst::ICMP_EQ, Lower, RawNull, "filc_barrier_null_object");
     NullObject->setDebugLoc(DL);
     Instruction* NotNullTerm = SplitBlockAndInsertIfElse(NullObject, InsertBefore, false);
     LoadInst* IsMarkingByte = new LoadInst(Int8Ty, IsMarking, "filc_is_marking_byte", NotNullTerm);
@@ -1897,49 +1699,49 @@ class Pizlonator {
     IsNotMarking->setDebugLoc(DL);
     Instruction* IsMarkingTerm = SplitBlockAndInsertIfElse(
       expectTrue(IsNotMarking, NotNullTerm), NotNullTerm, false);
-    CallInst::Create(StoreBarrierSlow, { MyThread, Object }, "", IsMarkingTerm)->setDebugLoc(DL);
+    CallInst::Create(StoreBarrierForLowerSlow, { MyThread, Lower }, "", IsMarkingTerm)
+      ->setDebugLoc(DL);
   }
   
   void storeBarrierForValue(Value* V, Instruction* InsertBefore) {
-    storeBarrierForObject(ptrObject(V, InsertBefore), InsertBefore);
+    storeBarrierForLower(flightPtrLower(V, InsertBefore), InsertBefore);
   }
   
   void storePtr(
-    Value* V, Value* P, bool isVolatile, Align A, AtomicOrdering AO, MemoryKind MK,
+    Value* V, Value* P, Value* AuxP, bool isVolatile, Align A, AtomicOrdering AO, MemoryKind MK,
     Instruction* InsertBefore) {
-    if (MK == MemoryKind::Heap)
-      storeBarrierForValue(V, InsertBefore);
-    if (MK == MemoryKind::CC) {
+    if (MK != MemoryKind::Heap) {
       assert(!isVolatile);
       assert(AO == AtomicOrdering::NotAtomic);
     }
-    // FIXME: There's a ~1% speed-up on ARM64 from disabling this and just using atomic stores.
-    if (!isVolatile && AO == AtomicOrdering::NotAtomic && MK == MemoryKind::Heap) {
-      (new StoreInst(
-        ptrObject(V, InsertBefore), ptrObjectPtr(P, InsertBefore), false, Align(8),
-        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore))
-        ->setDebugLoc(InsertBefore->getDebugLoc());
-      (new StoreInst(
-        ptrPtr(V, InsertBefore), ptrPtrPtr(P, InsertBefore), false, Align(8),
-        AtomicOrdering::Monotonic, SyncScope::System, InsertBefore))
+
+    if (MK == MemoryKind::Heap && (AO != AtomicOrdering::NotAtomic || isVolatile)) {
+      CallInst::Create(StorePtrAtomicWithPtrPairOutline, { MyThread, P, AuxP, V }, "", InsertBefore)
         ->setDebugLoc(InsertBefore->getDebugLoc());
       return;
     }
+    
+    if (MK == MemoryKind::Heap)
+      storeBarrierForValue(V, InsertBefore);
+
     (new StoreInst(
-      ptrWord(V, InsertBefore), P, isVolatile, std::max(A, Align(WordSize)),
+      flightPtrLower(V, InsertBefore), AuxP, isVolatile, std::max(A, Align(WordSize)),
       MK == MemoryKind::Heap ? getMergedAtomicOrdering(AtomicOrdering::Monotonic, AO) : AO,
-      SyncScope::System, InsertBefore))
-      ->setDebugLoc(InsertBefore->getDebugLoc());
+      SyncScope::System, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
+    (new StoreInst(
+      flightPtrPtr(V, InsertBefore), P, isVolatile, std::max(A, Align(WordSize)), AO,
+      SyncScope::System, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void storePtr(Value* V, Value* P, Instruction* InsertBefore) {
-    storePtr(V, P, false, Align(WordSize), AtomicOrdering::NotAtomic, MemoryKind::Heap, InsertBefore);
+  void storePtr(Value* V, Value* P, Value* AuxP, Instruction* InsertBefore) {
+    storePtr(V, P, AuxP, false, Align(WordSize), AtomicOrdering::NotAtomic, MemoryKind::Heap,
+             InsertBefore);
   }
 
-  // This happens to work just as well for high types and low types, and that's important.
-  bool hasPtrsForCheck(Type *T) {
+  // This happens to work just as well for raw types and flight types, and that's important.
+  bool hasPtrs(Type *T) {
     if (isa<FunctionType>(T)) {
-      llvm_unreachable("shouldn't see function types in hasPtrsForCheck");
+      llvm_unreachable("shouldn't see function types in hasPtrs");
       return false;
     }
 
@@ -1953,168 +1755,110 @@ class Pizlonator {
       return true;
     }
 
-    if (T == LowWidePtrTy)
+    if (T == FlightPtrTy)
       return true;
 
     if (StructType* ST = dyn_cast<StructType>(T)) {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
-        if (hasPtrsForCheck(InnerT))
+        if (hasPtrs(InnerT))
           return true;
       }
       return false;
     }
       
     if (ArrayType* AT = dyn_cast<ArrayType>(T))
-      return hasPtrsForCheck(AT->getElementType());
+      return hasPtrs(AT->getElementType());
 
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
-      return hasPtrsForCheck(VT->getElementType());
+      return hasPtrs(VT->getElementType());
 
     if (isa<ScalableVectorType>(T)) {
-      llvm_unreachable("Shouldn't ever see scalable vectors in hasPtrsForCheck");
+      llvm_unreachable("Shouldn't ever see scalable vectors in hasPtrs");
       return false;
     }
     
     return false;
   }
 
-  void checkRecurse(Type *LowT, Value* HighP, Value *P, size_t Alignment, AccessKind AK,
-                    Instruction *InsertBefore) {
-    if (!hasPtrsForCheck(LowT)) {
-      checkInt(ptrWithPtr(HighP, P, InsertBefore), DL.getTypeStoreSize(LowT),
-               MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), AK, InsertBefore,
-               InsertBefore->getDebugLoc());
-      return;
-    }
-    
-    if (isa<FunctionType>(LowT)) {
-      llvm_unreachable("shouldn't see function types in checkRecurse");
-      return;
-    }
-
-    if (isa<TypedPointerType>(LowT)) {
-      llvm_unreachable("Shouldn't ever see typed pointers");
-      return;
-    }
-
-    assert(LowT != LowRawPtrTy);
-
-    if (LowT == LowWidePtrTy) {
-      checkPtr(ptrWithPtr(HighP, P, InsertBefore), AK, InsertBefore, InsertBefore->getDebugLoc());
-      return;
-    }
-
-    assert(!isa<PointerType>(LowT));
-
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      for (unsigned Index = ST->getNumElements(); Index--;) {
-        Type* InnerT = ST->getElementType(Index);
-        Value *InnerP = GetElementPtrInst::Create(
-          ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
-          "filc_InnerP_struct", InsertBefore);
-        checkRecurse(InnerT, HighP, InnerP, Alignment, AK, InsertBefore);
-      }
-      return;
-    }
-      
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      for (uint64_t Index = AT->getNumElements(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_array", InsertBefore);
-        checkRecurse(AT->getElementType(), HighP, InnerP, Alignment, AK, InsertBefore);
-      }
-      return;
-    }
-      
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
-        Value *InnerP = GetElementPtrInst::Create(
-          VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
-          "filc_InnerP_vector", InsertBefore);
-        checkRecurse(VT->getElementType(), HighP, InnerP, Alignment, AK, InsertBefore);
-      }
-      return;
-    }
-
-    if (isa<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in checkRecurse");
-      return;
-    }
-
-    llvm_unreachable("Should not get here.");
-  }
-
   Value* loadValueRecurseAfterCheck(
-    Type* LowT, Value* P,
+    Type* T, Value* P, Value* BaseAuxP, Value* AuxP,
     bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, MemoryKind MK,
     Instruction* InsertBefore) {
-    A = std::min(DL.getABITypeAlign(LowT), A);
+    A = std::min(DL.getABITypeAlign(T), A);
     
-    if (!hasPtrsForCheck(LowT))
-      return new LoadInst(LowT, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
+    if (!hasPtrs(T))
+      return new LoadInst(T, P, "filc_load", isVolatile, A, AO, SS, InsertBefore);
     
-    if (isa<FunctionType>(LowT)) {
+    if (isa<FunctionType>(T)) {
       llvm_unreachable("shouldn't see function types in loadValueRecurseAfterCheck");
       return nullptr;
     }
 
-    if (isa<TypedPointerType>(LowT)) {
+    if (isa<TypedPointerType>(T)) {
       llvm_unreachable("Shouldn't ever see typed pointers");
       return nullptr;
     }
 
-    assert(LowT != LowRawPtrTy);
+    assert(T != FlightPtrTy);
 
-    if (LowT == LowWidePtrTy)
-      return loadPtr(P, isVolatile, A, AO, MK, InsertBefore);
+    if (T == RawPtrTy)
+      return loadPtr(P, BaseAuxP, AuxP, isVolatile, A, AO, MK, InsertBefore);
 
-    assert(!isa<PointerType>(LowT));
+    assert(!isa<PointerType>(T));
 
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      Value* Result = UndefValue::get(ST);
+    if (StructType* ST = dyn_cast<StructType>(T)) {
+      Value* Result = UndefValue::get(toFlightType(T));
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
+        Value* InnerAuxP = GetElementPtrInst::Create(
+          ST, AuxP, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
+          "filc_InnerAuxP_struct", InsertBefore);
         Value* V = loadValueRecurseAfterCheck(
-          InnerT, InnerP, isVolatile, A, AO, SS, MK, InsertBefore);
+          InnerT, InnerP, BaseAuxP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
         Result = InsertValueInst::Create(Result, V, Index, "filc_insert_struct", InsertBefore);
       }
       return Result;
     }
       
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      Value* Result = UndefValue::get(AT);
+    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
+      Value* Result = UndefValue::get(toFlightType(AT));
       assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
       for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
+        Value *InnerAuxP = GetElementPtrInst::Create(
+          AT, AuxP, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "filc_InnerAuxP_array", InsertBefore);
         Value* V = loadValueRecurseAfterCheck(
-          AT->getElementType(), InnerP, isVolatile, A, AO, SS, MK, InsertBefore);
+          AT->getElementType(), InnerP, BaseAuxP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
         Result = InsertValueInst::Create(Result, V, Index, "filc_insert_array", InsertBefore);
       }
       return Result;
     }
       
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      Value* Result = UndefValue::get(VT);
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
+      Value* Result = UndefValue::get(toFlightType(VT));
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
+        Value *InnerAuxP = GetElementPtrInst::Create(
+          VT, AuxP, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "filc_InnerAuxP_vector", InsertBefore);
         Value* V = loadValueRecurseAfterCheck(
-          VT->getElementType(), InnerP, isVolatile, A, AO, SS, MK, InsertBefore);
+          VT->getElementType(), InnerP, BaseAuxP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
         Result = InsertElementInst::Create(
           Result, V, ConstantInt::get(IntPtrTy, Index), "filc_insert_vector", InsertBefore);
       }
       return Result;
     }
 
-    if (isa<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't see scalable vector types in loadValueRecurseAfterCheck");
       return nullptr;
     }
@@ -2123,101 +1867,100 @@ class Pizlonator {
     return nullptr;
   }
 
-  Value* loadValueRecurse(Type* LowT, Value* HighP, Value* P,
-                          bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
-                          Instruction* InsertBefore) {
-    // In the future, checks will exit or pollcheck, so we need to ensure that we do all of them before
-    // we do the actual load.
-    checkRecurse(LowT, HighP, P, A.value(), AccessKind::Read, InsertBefore);
-    return loadValueRecurseAfterCheck(LowT, P, isVolatile, A, AO, SS, MemoryKind::Heap, InsertBefore);
-  }
-
-  void storeValueRecurseAfterCheck(
-    Type* LowT, Value* V, Value* P,
+  Value* loadValueRecurseAfterCheck(
+    Type* T, Value* P, AuxBaseAndPtr Aux,
     bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, MemoryKind MK,
     Instruction* InsertBefore) {
-    A = std::min(DL.getABITypeAlign(LowT), A);
+    return loadValueRecurseAfterCheck(
+      T, P, Aux.BaseP, Aux.P, isVolatile, A, AO, SS, MK, InsertBefore);
+  }
+  
+  void storeValueRecurseAfterCheck(
+    Type* T, Value* V, Value* P, Value* AuxP,
+    bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS, MemoryKind MK,
+    Instruction* InsertBefore) {
+    A = std::min(DL.getABITypeAlign(T), A);
     
-    if (!hasPtrsForCheck(LowT)) {
+    if (!hasPtrs(T)) {
       new StoreInst(V, P, isVolatile, A, AO, SS, InsertBefore);
       return;
     }
     
-    if (isa<FunctionType>(LowT)) {
+    if (isa<FunctionType>(T)) {
       llvm_unreachable("shouldn't see function types in storeValueRecurseAfterCheck");
       return;
     }
 
-    if (isa<TypedPointerType>(LowT)) {
+    if (isa<TypedPointerType>(T)) {
       llvm_unreachable("Shouldn't ever see typed pointers");
       return;
     }
 
-    assert(LowT != LowRawPtrTy);
+    assert(T != FlightPtrTy);
 
-    if (LowT == LowWidePtrTy) {
-      storePtr(V, P, isVolatile, A, AO, MK, InsertBefore);
+    if (T == RawPtrTy) {
+      storePtr(V, P, AuxP, isVolatile, A, AO, MK, InsertBefore);
       return;
     }
 
-    assert(!isa<PointerType>(LowT));
+    assert(!isa<PointerType>(T));
 
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+    if (StructType* ST = dyn_cast<StructType>(T)) {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value *InnerP = GetElementPtrInst::Create(
           ST, P, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
           "filc_InnerP_struct", InsertBefore);
+        Value *InnerAuxP = GetElementPtrInst::Create(
+          ST, AuxP, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, Index) },
+          "filc_InnerAuxP_struct", InsertBefore);
         Value* InnerV = ExtractValueInst::Create(
-          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
+          toFlightType(InnerT), V, { Index }, "filc_extract_struct", InsertBefore);
         storeValueRecurseAfterCheck(
-            InnerT, InnerV, InnerP, isVolatile, A, AO, SS, MK, InsertBefore);
+          InnerT, InnerV, InnerP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
       }
       return;
     }
       
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
       assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
       for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           AT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_array", InsertBefore);
+        Value *InnerAuxP = GetElementPtrInst::Create(
+          AT, AuxP, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "filc_InnerAuxP_array", InsertBefore);
         Value* InnerV = ExtractValueInst::Create(
-          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
+          toFlightType(AT->getElementType()), V, { Index }, "filc_extract_array", InsertBefore);
         storeValueRecurseAfterCheck(
-            AT->getElementType(), InnerV, InnerP, isVolatile, A, AO, SS, MK,
-            InsertBefore);
+          AT->getElementType(), InnerV, InnerP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
       }
       return;
     }
       
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
         Value *InnerP = GetElementPtrInst::Create(
           VT, P, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
           "filc_InnerP_vector", InsertBefore);
+        Value *InnerAuxP = GetElementPtrInst::Create(
+          VT, AuxP, { ConstantInt::get(IntPtrTy, 0), ConstantInt::get(IntPtrTy, Index) },
+          "filc_InnerAuxP_vector", InsertBefore);
         Value* InnerV = ExtractElementInst::Create(
           V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
         storeValueRecurseAfterCheck(
-            VT->getElementType(), InnerV, InnerP, isVolatile, A, AO, SS, MK,
-            InsertBefore);
+          VT->getElementType(), InnerV, InnerP, InnerAuxP, isVolatile, A, AO, SS, MK, InsertBefore);
       }
       return;
     }
 
-    if (isa<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't see scalable vector types in storeValueRecurseAfterCheck");
       return;
     }
 
     llvm_unreachable("Should not get here.");
-  }
-
-  void storeValueRecurse(Type* LowT, Value* HighP, Value* V, Value* P,
-                         bool isVolatile, Align A, AtomicOrdering AO, SyncScope::ID SS,
-                         Instruction* InsertBefore) {
-    checkRecurse(LowT, HighP, P, A.value(), AccessKind::Write, InsertBefore);
-    storeValueRecurseAfterCheck(LowT, V, P, isVolatile, A, AO, SS, MemoryKind::Heap, InsertBefore);
   }
 
   Value* allocateObject(Value* Size, size_t Alignment, Instruction* InsertBefore) {
@@ -2236,13 +1979,13 @@ class Pizlonator {
   }
 
   Value* allocate(Value* Size, size_t Alignment, Instruction* InsertBefore) {
-    return ptrWithObject(allocateObject(Size, Alignment, InsertBefore), InsertBefore);
+    return flightPtrForObject(allocateObject(Size, Alignment, InsertBefore), InsertBefore);
   }
 
   size_t countPtrs(Type* T) {
     assert(!isa<FunctionType>(T));
     assert(!isa<TypedPointerType>(T));
-    assert(T != LowWidePtrTy);
+    assert(T != FlightPtrTy);
     assert(!isa<ScalableVectorType>(T));
 
     if (isa<PointerType>(T))
@@ -2261,7 +2004,7 @@ class Pizlonator {
     if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T))
       return VT->getElementCount().getFixedValue() * countPtrs(VT->getElementType());
 
-    assert(!hasPtrsForCheck(T));
+    assert(!hasPtrs(T));
     return 0;
   }
 
@@ -2445,109 +2188,114 @@ class Pizlonator {
     }
   }
 
-  void recordObjectAtIndex(Value* Object, size_t FrameIndex, Instruction* InsertBefore) {
+  void recordLowerAtIndex(Value* Lower, size_t FrameIndex, Instruction* InsertBefore) {
     assert(FrameIndex < FrameSize);
-    Instruction* ObjectsPtr = GetElementPtrInst::Create(
+    Instruction* LowersPtr = GetElementPtrInst::Create(
       FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
-      "filc_frame_objects", InsertBefore);
-    ObjectsPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    Instruction* ObjectPtr = GetElementPtrInst::Create(
-      LowRawPtrTy, ObjectsPtr, { ConstantInt::get(IntPtrTy, FrameIndex) }, "filc_frame_object",
+      "filc_frame_lowers", InsertBefore);
+    LowersPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* LowerPtr = GetElementPtrInst::Create(
+      RawPtrTy, LowersPtr, { ConstantInt::get(IntPtrTy, FrameIndex) }, "filc_frame_lower",
       InsertBefore);
-    ObjectPtr->setDebugLoc(InsertBefore->getDebugLoc());
-    (new StoreInst(Object, ObjectPtr, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
+    LowerPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    (new StoreInst(Lower, LowerPtr, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
   }
 
-  void recordObjectsRecurse(
-    Value* ValueKey, Type* LowT, Value* V, size_t& PtrIndex, Instruction* InsertBefore) {
-    assert(!isa<FunctionType>(LowT));
-    assert(!isa<TypedPointerType>(LowT));
-    assert(!isa<ScalableVectorType>(LowT));
-    assert(!isa<PointerType>(LowT));
+  void recordLowersRecurse(
+    Value* ValueKey, Type* T, Value* V, size_t& PtrIndex, Instruction* InsertBefore) {
+    assert(!isa<FunctionType>(T));
+    assert(!isa<TypedPointerType>(T));
+    assert(!isa<ScalableVectorType>(T));
+    assert(T != FlightPtrTy);
 
-    if (LowT == LowWidePtrTy) {
+    if (T == RawPtrTy) {
       assert(FrameIndexMap.count(ValuePtr(ValueKey, PtrIndex)));
       size_t FrameIndex = FrameIndexMap[ValuePtr(ValueKey, PtrIndex)];
       assert(FrameIndex >= NumSpecialFrameObjects);
-      recordObjectAtIndex(ptrObject(V, InsertBefore), FrameIndex, InsertBefore);
+      recordLowerAtIndex(flightPtrLower(V, InsertBefore), FrameIndex, InsertBefore);
       PtrIndex++;
       return;
     }
 
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+    if (StructType* ST = dyn_cast<StructType>(T)) {
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
         Value* InnerV = ExtractValueInst::Create(
-          InnerT, V, { Index }, "filc_extract_struct", InsertBefore);
-        recordObjectsRecurse(ValueKey, InnerT, InnerV, PtrIndex, InsertBefore);
+          toFlightType(InnerT), V, { Index }, "filc_extract_struct", InsertBefore);
+        recordLowersRecurse(ValueKey, InnerT, InnerV, PtrIndex, InsertBefore);
       }
       return;
     }
       
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
       assert(static_cast<unsigned>(AT->getNumElements()) == AT->getNumElements());
       for (unsigned Index = static_cast<unsigned>(AT->getNumElements()); Index--;) {
         Value* InnerV = ExtractValueInst::Create(
-          AT->getElementType(), V, { Index }, "filc_extract_array", InsertBefore);
-        recordObjectsRecurse(ValueKey, AT->getElementType(), InnerV, PtrIndex, InsertBefore);
+          toFlightType(AT->getElementType()), V, { Index }, "filc_extract_array", InsertBefore);
+        recordLowersRecurse(ValueKey, AT->getElementType(), InnerV, PtrIndex, InsertBefore);
       }
       return;
     }
       
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
       for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;) {
         Value* InnerV = ExtractElementInst::Create(
           V, ConstantInt::get(IntPtrTy, Index), "filc_extract_vector", InsertBefore);
-        recordObjectsRecurse(ValueKey, VT->getElementType(), InnerV, PtrIndex, InsertBefore);
+        recordLowersRecurse(ValueKey, VT->getElementType(), InnerV, PtrIndex, InsertBefore);
       }
       return;
     }
 
-    assert(!hasPtrsForCheck(LowT));
+    assert(!hasPtrs(T));
   }
 
-  void recordObjects(Value* ValueKey, Type* LowT, Value* V, Instruction* InsertBefore) {
+  void recordLowers(Value* ValueKey, Type* T, Value* V, Instruction* InsertBefore) {
     if (verbose) {
-      errs() << "Recording objects for " << *ValueKey << ", LowT = " << *LowT << ", V = " << *V
+      errs() << "Recording objects for " << *ValueKey << ", T = " << *T << ", V = " << *V
              << "\n";
     }
     size_t PtrIndex = 0;
-    recordObjectsRecurse(ValueKey, LowT, V, PtrIndex, InsertBefore);
+    recordLowersRecurse(ValueKey, T, V, PtrIndex, InsertBefore);
     assert(PtrIndex == countPtrs(ValueKey->getType()));
   }
 
-  void recordObjects(Value* V, Instruction* InsertBefore) {
-    recordObjects(V, lowerType(V->getType()), V, InsertBefore);
+  void recordLowers(Value* V, Instruction* InsertBefore) {
+    recordLowers(V, V->getType(), V, InsertBefore);
   }
 
   Constant* optimizedAccessCheckOrigin(
-    int64_t Size, int64_t Alignment, int64_t AlignmentOffset, WordType WordType, bool NeedsWrite,
-    DebugLoc ScheduledDI, const CombinedDI* SemanticDI) {
+    int64_t Size, int64_t Alignment, int64_t AlignmentOffset, bool NeedsWrite, DebugLoc ScheduledDI,
+    const CombinedDI* SemanticDI) {
+    if (verbose) {
+      errs() << "Creating access check origin with size = " << Size << ", alignment = " << Alignment
+             << ", alignment offset = " << AlignmentOffset << ", needs write = " << NeedsWrite
+             << "\n";
+    }
+    
     assert(static_cast<uint32_t>(Size) == Size);
     assert(static_cast<uint8_t>(Alignment) == Alignment);
     assert(static_cast<uint8_t>(AlignmentOffset) == AlignmentOffset);
 
     OptimizedAccessCheckOriginKey OACOK(
       static_cast<uint32_t>(Size), static_cast<uint8_t>(Alignment),
-      static_cast<uint8_t>(AlignmentOffset), WordType, NeedsWrite, ScheduledDI, SemanticDI);
+      static_cast<uint8_t>(AlignmentOffset), NeedsWrite, ScheduledDI, SemanticDI);
     auto Iter = OptimizedAccessCheckOrigins.find(OACOK);
     if (Iter != OptimizedAccessCheckOrigins.end())
       return Iter->second;
 
     size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
-    ArrayType* AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
-    StructType* ST = StructType::get(
-      C, { Int32Ty, Int8Ty, Int8Ty, Int8Ty, Int8Ty, LowRawPtrTy, AT });
+    ArrayType* AT = ArrayType::get(RawPtrTy, SemanticDILength + 1);
+    StructType* ST = StructType::get(C, { Int32Ty, Int8Ty, Int8Ty, Int8Ty, RawPtrTy, AT });
     std::vector<Constant*> SemanticDICs;
     if (SemanticDI) {
       for (DILocation* DI : SemanticDI->Locations)
         SemanticDICs.push_back(getOrigin(DI));
     }
-    SemanticDICs.push_back(LowRawNull);
+    SemanticDICs.push_back(RawNull);
     Constant* CS = ConstantStruct::get(
       ST,
       { ConstantInt::get(Int32Ty, Size), ConstantInt::get(Int8Ty, Alignment),
-        ConstantInt::get(Int8Ty, AlignmentOffset), ConstantInt::get(Int8Ty, WordType),
+        ConstantInt::get(Int8Ty, AlignmentOffset),
         ConstantInt::get(Int8Ty, static_cast<int>(NeedsWrite)), getOrigin(ScheduledDI),
         ConstantArray::get(AT, SemanticDICs) });
     GlobalVariable* Result = new GlobalVariable(
@@ -2583,68 +2331,20 @@ class Pizlonator {
       "filc_alignments_and_offsets");
 
     size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
-    AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
-    StructType* ST = StructType::get(C, { LowRawPtrTy, LowRawPtrTy, AT });
+    AT = ArrayType::get(RawPtrTy, SemanticDILength + 1);
+    StructType* ST = StructType::get(C, { RawPtrTy, RawPtrTy, AT });
     std::vector<Constant*> SemanticDICs;
     if (SemanticDI) {
       for (DILocation* DI : SemanticDI->Locations)
         SemanticDICs.push_back(getOrigin(DI));
     }
-    SemanticDICs.push_back(LowRawNull);
+    SemanticDICs.push_back(RawNull);
     Constant* CS = ConstantStruct::get(
       ST, { AlignmentsG, getOrigin(ScheduledDI), ConstantArray::get(AT, SemanticDICs) });
     GlobalVariable* Result = new GlobalVariable(
       M, ST, true, GlobalVariable::PrivateLinkage, CS,
       "filc_optimized_alignment_contradiction_origin");
     OptimizedAlignmentContradictionOrigins[OACOK] = Result;
-    return Result;
-  }
-
-  Constant* optimizedTypeContradictionOrigin(
-    const std::vector<TypeCheckAndOffset>& Checks, DebugLoc ScheduledDI,
-    const CombinedDI* SemanticDI) {
-    assert(Checks.size() >= 2);
-
-    OptimizedTypeContradictionOriginKey OTCOK(Checks, ScheduledDI, SemanticDI);
-    auto Iter = OptimizedTypeContradictionOrigins.find(OTCOK);
-    if (Iter != OptimizedTypeContradictionOrigins.end())
-      return Iter->second;
-
-    std::vector<Constant*> CheckConsts;
-    for (TypeCheckAndOffset Check : Checks) {
-      CheckConsts.push_back(
-        ConstantStruct::get(
-          TypeCheckAndOffsetTy,
-          { ConstantInt::get(Int32Ty, Check.Offset),
-            ConstantInt::get(Int8Ty, Check.Size),
-            ConstantInt::get(Int8Ty, static_cast<uint8_t>(Check.Type)) }));
-    }
-    CheckConsts.push_back(
-      ConstantStruct::get(
-        TypeCheckAndOffsetTy,
-        { ConstantInt::get(Int32Ty, 0),
-          ConstantInt::get(Int8Ty, 0),
-          ConstantInt::get(Int8Ty, static_cast<uint8_t>(WordTypeUnset)) }));
-    ArrayType* AT = ArrayType::get(TypeCheckAndOffsetTy, CheckConsts.size());
-    GlobalVariable* ChecksG = new GlobalVariable(
-      M, AT, true, GlobalVariable::PrivateLinkage, ConstantArray::get(AT, CheckConsts),
-      "filc_type_checks_and_offsets");
-
-    size_t SemanticDILength = SemanticDI ? SemanticDI->Locations.size() : 0;
-    AT = ArrayType::get(LowRawPtrTy, SemanticDILength + 1);
-    StructType* ST = StructType::get(C, { LowRawPtrTy, LowRawPtrTy, AT });
-    std::vector<Constant*> SemanticDICs;
-    if (SemanticDI) {
-      for (DILocation* DI : SemanticDI->Locations)
-        SemanticDICs.push_back(getOrigin(DI));
-    }
-    SemanticDICs.push_back(LowRawNull);
-    Constant* CS = ConstantStruct::get(
-      ST, { ChecksG, getOrigin(ScheduledDI), ConstantArray::get(AT, SemanticDICs) });
-    GlobalVariable* Result = new GlobalVariable(
-      M, ST, true, GlobalVariable::PrivateLinkage, CS,
-      "filc_optimized_type_contradiction_origin");
-    OptimizedTypeContradictionOrigins[OTCOK] = Result;
     return Result;
   }
 
@@ -2667,10 +2367,7 @@ class Pizlonator {
     
       int64_t Alignment = 0;
       int64_t AlignmentOffset = 0;
-      bool AlignmentContradiction = false;
-      int64_t LowerBoundOffset = 0;
       bool HasLowerBound = false;
-      int64_t UpperBoundOffset = 0;
       bool HasUpperBound = false;
       
       size_t BeginIndex = Index;
@@ -2682,11 +2379,9 @@ class Pizlonator {
         switch (AC.CK) {
         case CheckKind::Alignment:
         case CheckKind::KnownAlignment:
-        case CheckKind::MergedAlignment:
-          if (Alignment) {
+          if (Alignment)
             acAssert((AlignmentOffset % AC.Size) != AC.Offset);
-            AlignmentContradiction = true;
-          } else {
+          else {
             Alignment = AC.Size;
             AlignmentOffset = AC.Offset;
             acAssert(AlignmentOffset >= 0);
@@ -2696,22 +2391,9 @@ class Pizlonator {
         case CheckKind::KnownLowerBound:
         case CheckKind::LowerBound:
           HasLowerBound = true;
-          LowerBoundOffset = AC.Offset;
           break;
         case CheckKind::UpperBound:
           HasUpperBound = true;
-          UpperBoundOffset = AC.Offset;
-          break;
-        case CheckKind::TypeIsInt:
-        case CheckKind::TypeIsPtr:
-          if (!AlignmentContradiction) {
-            acAssert(Alignment >= AC.Size);
-            acAssert(!((AC.Offset - AlignmentOffset) % AC.Size));
-          }
-          acAssert(HasLowerBound);
-          acAssert(AC.Offset >= LowerBoundOffset);
-          if (HasUpperBound)
-            acAssert(AC.Offset + AC.Size <= UpperBoundOffset);
           break;
         default:
           break;
@@ -2725,13 +2407,46 @@ class Pizlonator {
     }
   }
 
-  void emitChecksForInst(Instruction* Inst) {
-    if (verbose)
-      errs() << "Emitting checks for " << *Inst << "\n";
-    auto Iter = ChecksForInst.find(Inst);
-    if (Iter == ChecksForInst.end())
-      return;
-    std::vector<AccessCheckWithDI> Checks = Iter->second;
+  AllocaInst* canonicalPtrAuxBaseVar(Value* P) {
+    auto Iter = CanonicalPtrAuxBaseVars.find(P);
+    if (Iter != CanonicalPtrAuxBaseVars.end())
+      return Iter->second;
+
+    Instruction* InsertBefore = &NewF->getEntryBlock().front();
+    AllocaInst* Result = new AllocaInst(RawPtrTy, 0, nullptr, "filc_aux_base_var", InsertBefore);
+    new StoreInst(RawNull, Result, InsertBefore);
+    
+    CanonicalPtrAuxBaseVars[P] = Result;
+    return Result;
+  }
+
+  void storeOrigin(Value* Origin, Instruction* InsertBefore) {
+    Instruction* OriginPtr = GetElementPtrInst::Create(
+      FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
+      "filc_frame_origin_ptr", InsertBefore);
+    OriginPtr->setDebugLoc(InsertBefore->getDebugLoc());
+    (new StoreInst(Origin, OriginPtr, InsertBefore))->setDebugLoc(InsertBefore->getDebugLoc());
+  }
+
+  AuxBaseAndPtr auxPtrForOperand(Value* P, Instruction* I, unsigned OperandIdx,
+                                 Instruction* InsertBefore) {
+    assert(AuxBaseVarOperands.count(I));
+    assert(OperandIdx < AuxBaseVarOperands[I].size());
+    AllocaInst* AuxBaseVar = AuxBaseVarOperands[I][OperandIdx];
+    assert(AuxBaseVar);
+    if (verbose) {
+      errs() << "For " << *I << " and operand index " << OperandIdx << " got AuxBaseVar = "
+             << *AuxBaseVar << "\n";
+    }
+    Instruction* AuxBaseP = new LoadInst(RawPtrTy, AuxBaseVar, "filc_aux_base_ptr", InsertBefore);
+    AuxBaseP->setDebugLoc(InsertBefore->getDebugLoc());
+    Instruction* AuxP = GetElementPtrInst::Create(
+      Int8Ty, AuxBaseP, flightPtrOffset(P, InsertBefore), "filc_aux_ptr", InsertBefore);
+    AuxP->setDebugLoc(InsertBefore->getDebugLoc());
+    return AuxBaseAndPtr(AuxBaseP, AuxP);
+  }
+
+  void emitChecks(std::vector<AccessCheckWithDI> Checks, Instruction* Inst) {
     if (verbose)
       errs() << "Raw checks: " << Checks << "\n";
     canonicalizeAccessChecks(Checks);
@@ -2740,25 +2455,25 @@ class Pizlonator {
 
     for (size_t Index = 0; Index < Checks.size();) {
       Value* CanonicalPtr = Checks[Index].CanonicalPtr;
-      Value* LoweredPtr = lowerConstantValue(CanonicalPtr, Inst, LowRawNull);
+      Value* FlightPtr = lowerConstantValue(CanonicalPtr, Inst, RawNull);
 
-      auto loweredPtrWithOffset = [&] (int64_t Offset, Instruction* InsertBefore) {
+      auto ptrWithOffset = [&] (int64_t Offset, Instruction* InsertBefore) {
         assert((int32_t)Offset == Offset);
-        assert(LoweredPtr);
+        assert(FlightPtr);
         
         if (!useAsmForOffsets)
-          return ptrWithOffset(LoweredPtr, ConstantInt::get(IntPtrTy, Offset), InsertBefore);
+          return flightPtrWithOffset(FlightPtr, ConstantInt::get(IntPtrTy, Offset), InsertBefore);
         
-        Value* LowP = ptrPtr(LoweredPtr, InsertBefore);
+        Value* FlightP = flightPtrPtr(FlightPtr, InsertBefore);
         std::ostringstream buf;
         buf << "leaq " << Offset << "($1), $0";
         FunctionCallee Asm = InlineAsm::get(
-          FunctionType::get(LowRawPtrTy, { LowRawPtrTy }, false),
+          FunctionType::get(RawPtrTy, { RawPtrTy }, false),
           buf.str(), "=r,r,~{dirflag},~{fpsr},~{flags}",
           /*hasSideEffects=*/false);
-        Instruction* OffsetP = CallInst::Create(Asm, { LowP }, "filc_lea", InsertBefore);
+        Instruction* OffsetP = CallInst::Create(Asm, { FlightP }, "filc_lea", InsertBefore);
         OffsetP->setDebugLoc(Inst->getDebugLoc());
-        return ptrWithPtr(LoweredPtr, OffsetP, InsertBefore);
+        return flightPtrWithPtr(FlightPtr, OffsetP, InsertBefore);
       };
       
       int64_t Alignment = 0;
@@ -2769,11 +2484,9 @@ class Pizlonator {
       bool HasLowerBound = false;
       int64_t UpperBoundOffset = 0;
       bool HasUpperBound = false;
-      bool HasTypeCheck = false;
-      bool HasRangeCheck = false; // We use "Range" to mean everything that isn't a type check.
+      bool HasRangeCheck = false;
       const CombinedDI* RangeDI = nullptr;
       bool HasFreeCheck = false;
-      bool HasPtrCheck = false;
 
       size_t BeginIndex = Index;
       size_t EndIndex;
@@ -2788,7 +2501,6 @@ class Pizlonator {
           break;
         case CheckKind::Alignment:
         case CheckKind::KnownAlignment:
-        case CheckKind::MergedAlignment:
           if (Alignment)
             AlignmentContradiction = true;
           Alignment = AC.Size;
@@ -2814,17 +2526,13 @@ class Pizlonator {
           HasRangeCheck = true;
           RangeDI = combineDI(RangeDI, AC.DI);
           break;
-        case CheckKind::TypeIsInt:
-          HasTypeCheck = true;
-          break;
-        case CheckKind::TypeIsPtr:
-          HasTypeCheck = true;
-          HasPtrCheck = true;
-          break;
         case CheckKind::NotFree:
           HasRangeCheck = true;
           HasFreeCheck = true;
           RangeDI = combineDI(RangeDI, AC.DI);
+          break;
+        case CheckKind::GetAuxPtr:
+        case CheckKind::EnsureAuxPtr:
           break;
         }
       }
@@ -2840,7 +2548,6 @@ class Pizlonator {
           switch (AC.CK) {
           case CheckKind::Alignment:
           case CheckKind::KnownAlignment:
-          case CheckKind::MergedAlignment:
             assert(static_cast<uint8_t>(AC.Offset) == AC.Offset);
             assert(static_cast<uint8_t>(AC.Size) == AC.Size);
             Alignments.push_back(AlignmentAndOffset(AC.Size, AC.Offset));
@@ -2853,19 +2560,17 @@ class Pizlonator {
 
         CallInst::Create(
           OptimizedAlignmentContradiction, {
-            LoweredPtr,
+            FlightPtr,
             optimizedAlignmentContradictionOrigin(Alignments, Inst->getDebugLoc(), RangeDI) }, "",
           Inst)->setDebugLoc(Inst->getDebugLoc());
         continue;
       }
 
-      if (HasTypeCheck)
-        assert(Alignment);
-      else if (!Alignment) {
+      if (!Alignment) {
         assert(!AlignmentOffset);
         Alignment = 1;
       }
-      assert(Alignment == 1 || Alignment == 2 || Alignment == 4 || Alignment == 8 || Alignment == 16);
+      assert(Alignment == 1 || Alignment == 2 || Alignment == 4 || Alignment == 8);
       assert(AlignmentOffset < Alignment);
 
       if (HasUpperBound) {
@@ -2888,22 +2593,20 @@ class Pizlonator {
         Instruction* RangeFailTerm = new UnreachableInst(C, RangeFailB);
         CallInst::Create(
           OptimizedAccessCheckFail,
-          { loweredPtrWithOffset(LowerBoundOffset, RangeFailTerm),
+          { ptrWithOffset(LowerBoundOffset, RangeFailTerm),
             optimizedAccessCheckOrigin(
               HasUpperBound ? UpperBoundOffset - LowerBoundOffset : 0, Alignment,
-              PositiveModulo(AlignmentOffset - LowerBoundOffset, Alignment), WordTypeUnset,
+              PositiveModulo(AlignmentOffset - LowerBoundOffset, Alignment),
               NeedsWritable, Inst->getDebugLoc(), RangeDI) },
           "", RangeFailTerm)->setDebugLoc(Inst->getDebugLoc());
       }
 
-      std::vector<TypeCheckUnit> TypeCheckUnits;
-      
       for (size_t SubIndex = BeginIndex; SubIndex < EndIndex; ++SubIndex) {
         AccessCheckWithDI AC = Checks[SubIndex];
         switch (AC.CK) {
         case CheckKind::ValidObject: {
           ICmpInst* NullObject = new ICmpInst(
-            Inst, ICmpInst::ICMP_EQ, ptrObject(LoweredPtr, Inst), LowRawNull,
+            Inst, ICmpInst::ICMP_EQ, flightPtrLower(FlightPtr, Inst), RawNull,
             "filc_null_access_object");
           NullObject->setDebugLoc(Inst->getDebugLoc());
           SplitBlockAndInsertIfThen(
@@ -2914,13 +2617,12 @@ class Pizlonator {
         case CheckKind::KnownAlignment:
           break;
 
-        case CheckKind::Alignment:
-        case CheckKind::MergedAlignment: {
+        case CheckKind::Alignment: {
           assert(AC.Size == 1 || AC.Size == 2 || AC.Size == 4 || AC.Size == 8 || AC.Size == 16);
           if (AC.Size == 1)
             break;
           Instruction* PtrInt = new PtrToIntInst(
-            ptrPtr(loweredPtrWithOffset(AC.Offset, Inst), Inst), IntPtrTy, "filc_ptr_as_int", Inst);
+            flightPtrPtr(ptrWithOffset(AC.Offset, Inst), Inst), IntPtrTy, "filc_ptr_as_int", Inst);
           PtrInt->setDebugLoc(Inst->getDebugLoc());
           Instruction* Masked = BinaryOperator::Create(
             Instruction::And, PtrInt, ConstantInt::get(IntPtrTy, AC.Size - 1),
@@ -2938,12 +2640,12 @@ class Pizlonator {
         case CheckKind::CanWrite: {
           assert(NeedsWritable);
           BinaryOperator* Masked = BinaryOperator::Create(
-            Instruction::And, objectFlags(ptrObject(LoweredPtr, Inst), Inst),
-            ConstantInt::get(Int16Ty, ObjectFlagReadonly | (HasFreeCheck ? ObjectFlagFree : 0)),
+            Instruction::And, flagsForLower(flightPtrLower(FlightPtr, Inst), Inst),
+            ConstantInt::get(IntPtrTy, ObjectFlagReadonly | (HasFreeCheck ? ObjectFlagFree : 0)),
             "filc_flags_masked", Inst);
           Masked->setDebugLoc(Inst->getDebugLoc());
           ICmpInst* IsNotReadOnly = new ICmpInst(
-            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0),
+            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
             "filc_object_is_not_read_only");
           IsNotReadOnly->setDebugLoc(Inst->getDebugLoc());
           SplitBlockAndInsertIfElse(
@@ -2953,14 +2655,14 @@ class Pizlonator {
 
         case CheckKind::NotFree: {
           assert(HasFreeCheck);
-          if (HasTypeCheck || NeedsWritable)
+          if ((HasLowerBound && HasUpperBound) || NeedsWritable)
             break;
           BinaryOperator* Masked = BinaryOperator::Create(
-            Instruction::And, objectFlags(ptrObject(LoweredPtr, Inst), Inst),
-            ConstantInt::get(Int16Ty, ObjectFlagFree), "filc_flags_masked", Inst);
+            Instruction::And, flagsForLower(flightPtrLower(FlightPtr, Inst), Inst),
+            ConstantInt::get(IntPtrTy, ObjectFlagFree), "filc_flags_masked", Inst);
           Masked->setDebugLoc(Inst->getDebugLoc());
           ICmpInst* IsNotFree = new ICmpInst(
-            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0),
+            Inst, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(IntPtrTy, 0),
             "filc_object_is_not_free");
           IsNotFree->setDebugLoc(Inst->getDebugLoc());
           SplitBlockAndInsertIfElse(
@@ -2972,8 +2674,8 @@ class Pizlonator {
           assert(HasLowerBound);
           assert(HasUpperBound);
           assert(UpperBoundOffset > LowerBoundOffset);
-          Value* Upper = objectUpper(ptrObject(LoweredPtr, Inst), Inst);
-          Value* Ptr = ptrPtr(loweredPtrWithOffset(LowerBoundOffset, Inst), Inst);
+          Value* Upper = upperForLower(flightPtrLower(FlightPtr, Inst), Inst);
+          Value* Ptr = flightPtrPtr(ptrWithOffset(LowerBoundOffset, Inst), Inst);
           Instruction* IsBelowUpper;
           if (UpperBoundOffset - LowerBoundOffset == Alignment
               && !AlignmentContradiction
@@ -3005,339 +2707,59 @@ class Pizlonator {
         case CheckKind::LowerBound: {
           assert(HasLowerBound);
           Instruction* IsBelowLower = new ICmpInst(
-            Inst, ICmpInst::ICMP_ULT, ptrPtr(loweredPtrWithOffset(LowerBoundOffset, Inst), Inst),
-            objectLower(ptrObject(LoweredPtr, Inst), Inst), "filc_ptr_below_lower");
+            Inst, ICmpInst::ICMP_ULT, flightPtrPtr(ptrWithOffset(LowerBoundOffset, Inst), Inst),
+            flightPtrLower(FlightPtr, Inst), "filc_ptr_below_lower");
           IsBelowLower->setDebugLoc(Inst->getDebugLoc());
           SplitBlockAndInsertIfThen(
             expectFalse(IsBelowLower, Inst), Inst, false, nullptr, nullptr, nullptr, RangeFailB);
           break;
         }
 
-        case CheckKind::TypeIsInt: {
-          assert(!((AC.Offset - AlignmentOffset) % AC.Size));
-          assert(AC.Size <= Alignment);
-          assert(Alignment == 1 || Alignment == 2 || Alignment == 4 || Alignment == 8 ||
-                 Alignment == 16);
-          // Note that it's super important to use masking to round to alignment, rather than
-          // doing /Alignment*Alignment, because we want to round down to negative infinity.
-          TypeCheckUnits.push_back(
-            TypeCheckUnit(((AC.Offset - AlignmentOffset) & -Alignment) + AlignmentOffset,
-                          WordTypeInt, AC.DI));
+        case CheckKind::GetAuxPtr: {
+          AllocaInst* AuxBaseVar = canonicalPtrAuxBaseVar(CanonicalPtr);
+          (new StoreInst(auxPtrForLower(flightPtrLower(FlightPtr, Inst), Inst), AuxBaseVar,
+                         Inst))->setDebugLoc(Inst->getDebugLoc());
           break;
         }
 
-        case CheckKind::TypeIsPtr: {
-          assert(AC.Size == WordSize);
-          assert(Alignment == WordSize);
-          assert(!((AC.Offset - AlignmentOffset) % WordSize));
-          assert(HasPtrCheck);
-          TypeCheckUnits.push_back(TypeCheckUnit(AC.Offset, WordTypePtr, AC.DI));
+        case CheckKind::EnsureAuxPtr: {
+          AllocaInst* AuxBaseVar = canonicalPtrAuxBaseVar(CanonicalPtr);
+          Instruction* AuxBase = new LoadInst(RawPtrTy, AuxBaseVar, "filc_get_aux_ptr", Inst);
+          AuxBase->setDebugLoc(Inst->getDebugLoc());
+          Instruction* AuxBaseIsNull = new ICmpInst(
+            Inst, ICmpInst::ICMP_EQ, AuxBase, RawNull, "filc_aux_ptr_is_null");
+          AuxBaseIsNull->setDebugLoc(Inst->getDebugLoc());
+          Instruction* ThenTerm =
+            SplitBlockAndInsertIfThen(expectFalse(AuxBaseIsNull, Inst), Inst, false);
+          // FIXME: Is this the right origin? I think it is, because we aren't hoisting these.
+          storeOrigin(getOrigin(Inst->getDebugLoc()), ThenTerm);
+          Instruction* CreatedAuxBase = CallInst::Create(
+            ObjectEnsureAuxPtrOutline,
+            { MyThread, objectForLower(flightPtrLower(FlightPtr, ThenTerm), ThenTerm) },
+            "filc_object_ensure_aux_ptr_outline", ThenTerm);
+          CreatedAuxBase->setDebugLoc(Inst->getDebugLoc());
+          (new StoreInst(CreatedAuxBase, AuxBaseVar, ThenTerm))->setDebugLoc(Inst->getDebugLoc());
           break;
         } }
-      }
-
-      // NOTE: This is only really needed if HasPtrCheck, but it's harmless.
-      std::sort(TypeCheckUnits.begin(), TypeCheckUnits.end());
-
-      if (verbose)
-        errs() << "Type check units: " << TypeCheckUnits << "\n";
-      
-      TypeCheckUnit LastTCU;
-      size_t SrcIndex = 0;
-      size_t DstIndex = 0;
-      bool HasContradiction = false;
-      while (SrcIndex < TypeCheckUnits.size()) {
-        TypeCheckUnit TCU = TypeCheckUnits[SrcIndex++];
-        assert(!((TCU.Offset - AlignmentOffset) % Alignment));
-        if (LastTCU) {
-          assert(TCU.Offset >= LastTCU.Offset);
-          if (LastTCU.Offset == TCU.Offset) {
-            if (LastTCU.Type == TCU.Type) {
-              assert(DstIndex > 0);
-              assert(TCU.Type == WordTypeInt); // ptr checks should have already been coalesced.
-              TypeCheckUnits[DstIndex - 1].DI = combineDI(LastTCU.DI, TCU.DI);
-              continue;
-            }
-            HasContradiction = true;
-          }
-        }
-        TypeCheckUnits[DstIndex++] = TCU;
-        LastTCU = TCU;
-      }
-      TypeCheckUnits.resize(DstIndex);
-      
-      if (verbose)
-        errs() << "Type check units after redundancy removal: " << TypeCheckUnits << "\n";
-      
-      if (HasContradiction) {
-        assert(TypeCheckUnits.size() >= 2);
-        assert(HasPtrCheck);
-        const CombinedDI* TypeDI = nullptr;
-        std::vector<TypeCheckAndOffset> ContradictoryChecks;
-        for (size_t SubIndex = BeginIndex; SubIndex < EndIndex; ++SubIndex) {
-          AccessCheckWithDI AC = Checks[SubIndex];
-          switch (AC.CK) {
-          case CheckKind::TypeIsInt:
-            ContradictoryChecks.push_back(TypeCheckAndOffset(AC.Offset, AC.Size, WordTypeInt));
-            TypeDI = combineDI(TypeDI, AC.DI);
-            break;
-          case CheckKind::TypeIsPtr:
-            ContradictoryChecks.push_back(TypeCheckAndOffset(AC.Offset, WordSize, WordTypePtr));
-            TypeDI = combineDI(TypeDI, AC.DI);
-            break;
-          default:
-            break;
-          }
-        }
-        CallInst::Create(
-          OptimizedTypeContradiction, {
-            LoweredPtr,
-            optimizedTypeContradictionOrigin(ContradictoryChecks, Inst->getDebugLoc(), TypeDI) }, "",
-          Inst)->setDebugLoc(Inst->getDebugLoc());
-        continue;
-      }
-
-      if (Alignment < static_cast<int64_t>(WordSize)) {
-        assert(!HasPtrCheck);
-
-        // Some guidelines.
-        //
-        // First of all, it's worth noting that the pass we do here is optional from a semantics
-        // standpoint. Things should work correctly even if we don't do this. Worst case, we'll have
-        // DIs that don't tell you all of the accesses that contributed to the check.
-        //
-        // Assuming Alignment==4:
-        // - Say we have a 12 byte range starting at Offset==Foo. Then we would have a TCU with
-        //   Offset=Foo and another TCU with Offset=Foo+8.
-        // - Say we have a 16 byte range starting at Offset==Foo. Then we would have a TCU with
-        //   Offset=Foo and another TCU with Offset=Foo+12.
-        // - Say we have a 20 byte range starting at Offset==Foo. Then we would have a TCU with
-        //   Offset=Foo and another TCU with Offset=Foo+16. And that would get coalesced, as expected.
-        //
-        // The TCUs that come out of this pass need to be careful about DIs. Say we have a 32 byte
-        // range with 8 4-byte accesses. In that case, we'd start with:
-        //
-        //  TCU0  TCU1  TCU2  TCU3  TCU4  TCU5  TCU6  TCU7
-        //
-        // And we end up with:
-        //
-        // cTCU0                   cTCU1             cTCU2
-        //
-        // So, DIs are:
-        //
-        // cTCU0.DI = combineDI(TCU0, TCU1, TCU2, TCU3)
-        // cTCU1.DI = combineDI(TCU1, TCU2, TCU3, TCU4, TCU5, TCU6, TCU7)
-        // cTCU2.DI = combineDI(TCU5, TCU6, TCU7)
-        //
-        // Let's consider another example. 20 bytes with 5 4-byte accesses. In that case:
-        //
-        //  TCU0  TCU1  TCU2  TCU3  TCU4
-        //
-        // And we convert to:
-        //
-        // cTCU0                   cTCU1
-        //
-        // And the DIs are:
-        //
-        // cTCU0.DI = combineDI(TCU0, TCU1, TCU2, TCU3)
-        // cTCU1.DI = combineDI(TCU1, TCU2, TCU3, TCU4)
-        //
-        // In other words, for each cTCU, we combine DIs from all TCU's that are included in every
-        // possible WordSize-span that includes the cTCU, which for 4-byte alignment might mean seven
-        // TCUs for a total of 28 bytes. But, if scanning TCUs left of the cTCU's offset hits an
-        // offset already covered by a cTCU, then we don't include that DI (and this case can only
-        // happen for the last cTCU).
-
-        std::vector<TypeCheckUnit> NewTypeCheckUnits;
-        
-        for (size_t Index = 0; Index < TypeCheckUnits.size(); ++Index) {
-          TypeCheckUnit TCU = TypeCheckUnits[Index];
-
-          // Always add the very first TCU no matter what.
-          if (!Index ||
-              // This ensures that:
-              // - For a contiguous span, we emit a TCU once per WordSize.
-              // - If there's a WordSize or bigger gap between TCUs, then emit a TCU for the beginning
-              //   of the next span.
-              TCU.Offset - NewTypeCheckUnits.back().Offset >= static_cast<int64_t>(WordSize) ||
-              // This ensures that we emit a TCU for the last entry in a contiguous span, by detecting
-              // if the next TCU has a WordSize gap from the one we emitted. Note that:
-              //
-              //     TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset > WordSize
-              //
-              // Is just like saying:
-              //
-              //     TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset + Alignment
-              //         >= WordSize
-              (Index + 1 < TypeCheckUnits.size() &&
-               (TypeCheckUnits[Index + 1].Offset - NewTypeCheckUnits.back().Offset
-                > static_cast<int64_t>(WordSize))) ||
-              // Always add the very last TCU no matter what.
-              Index == TypeCheckUnits.size() - 1) {
-            size_t BeginIndex = Index;
-            while (BeginIndex > 0 &&
-                   (TCU.Offset - TypeCheckUnits[BeginIndex - 1].Offset
-                    < static_cast<int64_t>(WordSize)) &&
-                   (NewTypeCheckUnits.empty() ||
-                    TypeCheckUnits[BeginIndex - 1].Offset > NewTypeCheckUnits.back().Offset)) {
-              BeginIndex--;
-              TCU.DI = combineDI(TCU.DI, TypeCheckUnits[BeginIndex].DI);
-            }
-            size_t EndIndex = Index + 2;
-            while (EndIndex <= TypeCheckUnits.size() &&
-                   (TypeCheckUnits[EndIndex - 1].Offset - TCU.Offset
-                    < static_cast<int64_t>(WordSize))) {
-              TCU.DI = combineDI(TCU.DI, TypeCheckUnits[EndIndex - 1].DI);
-              EndIndex++;
-            }
-            NewTypeCheckUnits.push_back(TCU);
-          }
-        }
-
-        TypeCheckUnits = std::move(NewTypeCheckUnits);
-
-        if (verbose)
-          errs() << "Type check units after int optimization: " << TypeCheckUnits << "\n";
-      }
-
-      for (size_t TCUIndex = 0; TCUIndex < TypeCheckUnits.size();) {
-        size_t TCUBeginIndex = TCUIndex;
-        size_t TCUEndIndex;
-
-        // As a matter of policy, we only allow ourselves to do whole-word checks that don't require
-        // masking stuff off. But we could coalesce entire 8-word-type regions even if they have
-        // holes, or we could coalesce not-power-of-2-word-type regions. It's just that if we did
-        // that, then we'd lose ILP, since the check would involve a masking instruction.
-        //
-        // But that's something that should be revisited! Maybe it's faster to be more agro with
-        // coalescing and then just have the mask.
-          
-        for (TCUEndIndex = TCUBeginIndex + 1;
-             TCUEndIndex < TypeCheckUnits.size() &&
-               TypeCheckUnits[TCUEndIndex - 1].Offset + static_cast<int64_t>(WordSize)
-               == TypeCheckUnits[TCUEndIndex].Offset;
-             ++TCUEndIndex);
-
-        if (TCUEndIndex - TCUBeginIndex >= 8)
-          TCUEndIndex = TCUBeginIndex + 8;
-        else if (TCUEndIndex - TCUBeginIndex >= 4)
-          TCUEndIndex = TCUBeginIndex + 4;
-        else if (TCUEndIndex - TCUBeginIndex >= 2)
-          TCUEndIndex = TCUBeginIndex + 2;
-          
-        TCUIndex = TCUEndIndex;
-
-        size_t NumWordTypes = TCUEndIndex - TCUBeginIndex;
-        assert(NumWordTypes == 1 || NumWordTypes == 2 || NumWordTypes == 4 || NumWordTypes == 8);
-
-        Instruction* PtrInt = new PtrToIntInst(
-          ptrPtr(loweredPtrWithOffset(TypeCheckUnits[TCUBeginIndex].Offset, Inst), Inst), IntPtrTy,
-          "filc_ptr_as_int", Inst);
-        PtrInt->setDebugLoc(Inst->getDebugLoc());
-        Instruction* LowerInt = new PtrToIntInst(
-          objectLower(ptrObject(LoweredPtr, Inst), Inst), IntPtrTy, "filc_lower_as_int", Inst);
-        LowerInt->setDebugLoc(Inst->getDebugLoc());
-        Instruction* Offset = BinaryOperator::Create(
-          Instruction::Sub, PtrInt, LowerInt, "filc_ptr_offset", Inst);
-        Offset->setDebugLoc(Inst->getDebugLoc()); 
-        Instruction* WordTypeIndex = BinaryOperator::Create(
-          Instruction::LShr, Offset, ConstantInt::get(IntPtrTy, WordSizeShift),
-          "filc_word_type_index", Inst);
-        WordTypeIndex->setDebugLoc(Inst->getDebugLoc());
-        Instruction* WordTypeComboPtr = GetElementPtrInst::Create(
-          Int8Ty, objectWordTypesPtr(ptrObject(LoweredPtr, Inst), Inst), { WordTypeIndex },
-          "filc_word_type_combo_ptr", Inst);
-        WordTypeComboPtr->setDebugLoc(Inst->getDebugLoc());
-
-        Type* WordTypeComboTy = Type::getIntNTy(C, NumWordTypes * 8);
-        Instruction* WordTypeCombo = new LoadInst(
-          WordTypeComboTy, WordTypeComboPtr, "filc_combo_word_type", Inst);
-        WordTypeCombo->setDebugLoc(Inst->getDebugLoc());
-
-        uint64_t ExpectedCombo = 0;
-        for (size_t TCUSubIndex = TCUBeginIndex; TCUSubIndex < TCUEndIndex; ++TCUSubIndex) {
-          ExpectedCombo |=
-            static_cast<uint64_t>(TypeCheckUnits[TCUSubIndex].Type)
-            << ((TCUSubIndex - TCUBeginIndex) * 8);
-        }
-
-        Instruction* GoodCombo = new ICmpInst(
-          Inst, ICmpInst::ICMP_EQ, WordTypeCombo, ConstantInt::get(WordTypeComboTy, ExpectedCombo),
-          "filc_good_type_combo");
-        GoodCombo->setDebugLoc(Inst->getDebugLoc());
-        Instruction* MaybeBadComboTerm =
-          SplitBlockAndInsertIfElse(expectTrue(GoodCombo, Inst), Inst, false);
-          
-        for (size_t TCUSubIndex = TCUBeginIndex; TCUSubIndex < TCUEndIndex; ++TCUSubIndex) {
-          TypeCheckUnit TCU = TypeCheckUnits[TCUSubIndex];
-          Instruction* WordType;
-          if (WordTypeComboTy == Int8Ty)
-            WordType = WordTypeCombo;
-          else {
-            WordType = new TruncInst(
-              WordTypeCombo, Int8Ty, "filc_extract_word_type", MaybeBadComboTerm);
-            WordType->setDebugLoc(Inst->getDebugLoc());
-          }
-          Instruction* GoodType = new ICmpInst(
-            MaybeBadComboTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, TCU.Type),
-            "filc_good_type");
-          GoodType->setDebugLoc(Inst->getDebugLoc());
-          Instruction* MaybeBadTerm = SplitBlockAndInsertIfElse(GoodType, MaybeBadComboTerm, false);
-
-          Instruction* UnsetType = new ICmpInst(
-            MaybeBadTerm, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeUnset),
-            "filc_unset_type");
-          Instruction* DefinitelyBadTerm = SplitBlockAndInsertIfElse(
-            expectTrue(UnsetType, MaybeBadTerm), MaybeBadTerm, true);
-          CallInst::Create(
-            OptimizedAccessCheckFail,
-            { loweredPtrWithOffset(TCU.Offset, DefinitelyBadTerm),
-              optimizedAccessCheckOrigin(
-                Alignment, Alignment, 0, TCU.Type, NeedsWritable, Inst->getDebugLoc(), TCU.DI) },
-            "", DefinitelyBadTerm)->setDebugLoc(Inst->getDebugLoc());
-
-          Instruction* WordTypePtr = GetElementPtrInst::Create(
-            Int8Ty, WordTypeComboPtr, { ConstantInt::get(IntPtrTy, TCUSubIndex - TCUBeginIndex) },
-            "filc_word_type_ptr", MaybeBadTerm);
-          WordTypePtr->setDebugLoc(Inst->getDebugLoc());
-          Instruction* CAS = new AtomicCmpXchgInst(
-            WordTypePtr, ConstantInt::get(Int8Ty, WordTypeUnset),
-            ConstantInt::get(Int8Ty, TCU.Type), Align(1), AtomicOrdering::SequentiallyConsistent,
-            AtomicOrdering::SequentiallyConsistent, SyncScope::System, MaybeBadTerm);
-          CAS->setDebugLoc(Inst->getDebugLoc());
-          Instruction* OldWordType = ExtractValueInst::Create(
-            Int8Ty, CAS, { 0 }, "filc_old_word_type", MaybeBadTerm);
-          OldWordType->setDebugLoc(Inst->getDebugLoc());
-          Instruction* Masked = BinaryOperator::Create(
-            Instruction::And, OldWordType, ConstantInt::get(Int8Ty, ~TCU.Type),
-            "filc_masked_old_type", MaybeBadTerm);
-          Masked->setDebugLoc(Inst->getDebugLoc());
-          Instruction* GoodOldType = new ICmpInst(
-            MaybeBadTerm, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
-            "filc_good_old_type");
-          GoodOldType->setDebugLoc(Inst->getDebugLoc());
-          assert(cast<BranchInst>(MaybeBadTerm)->getSuccessor(0) == MaybeBadComboTerm->getParent());
-          BranchInst::Create(MaybeBadComboTerm->getParent(), DefinitelyBadTerm->getParent(),
-                             expectTrue(GoodOldType, MaybeBadTerm), MaybeBadTerm)
-            ->setDebugLoc(Inst->getDebugLoc());
-          MaybeBadTerm->eraseFromParent();
-            
-          WordTypeCombo = BinaryOperator::Create(
-            Instruction::LShr, WordTypeCombo, ConstantInt::get(WordTypeComboTy, 8),
-            "filc_shift_word_type_combo", MaybeBadComboTerm);
-          WordTypeCombo->setDebugLoc(Inst->getDebugLoc());
-        }
       }
     }
   }
 
-  void buildCheck(int64_t Size, int64_t Alignment, Value* CanonicalPtr, int64_t Offset, WordType WT,
+  void emitChecksForInst(Instruction* Inst) {
+    if (verbose)
+      errs() << "Emitting checks for " << *Inst << "\n";
+    auto Iter = ChecksForInst.find(Inst);
+    if (Iter == ChecksForInst.end())
+      return;
+    emitChecks(Iter->second, Inst);
+  }
+
+  void buildCheck(int64_t Size, int64_t Alignment, Value* CanonicalPtr, int64_t Offset,
                   AccessKind AK, const CombinedDI* DI, std::vector<AccessCheckWithDI>& Checks) {
     if (verbose) {
       errs() << "Building check: Size = " << Size << ", Alignment = " << Alignment
              << ", CanonicalPtr = " << CanonicalPtr->getName() << ", Offset = " << Offset
-             << ", WT = " << wordTypeString(WT) << ", AK = " << accessKindString(AK)
-             << ", DI = " << DI << "\n";
+             << ", AK = " << accessKindString(AK) << ", DI = " << DI << "\n";
     }
     assert(Size);
     assert(Alignment);
@@ -3359,56 +2781,42 @@ class Pizlonator {
     assert(Offset + Size > Offset);
     Checks.push_back(
       AccessCheckWithDI(CanonicalPtr, Offset + Size, 0, CheckKind::UpperBound, DI));
-    switch (WT) {
-    case WordTypeInt:
-      for (int64_t SubOffset = 0; SubOffset < Size; SubOffset += Alignment) {
-        Checks.push_back(
-          AccessCheckWithDI(CanonicalPtr, Offset + SubOffset, Alignment, CheckKind::TypeIsInt, DI));
-      }
-      break;
-    case WordTypePtr:
-      assert(Size == WordSize);
-      assert(Alignment == WordSize);
-      Checks.push_back(
-        AccessCheckWithDI(CanonicalPtr, Offset, WordSize, CheckKind::TypeIsPtr, DI));
-      break;
-    default:
-      llvm_unreachable("Bad word type");
-      break;
-    }
     Checks.push_back(
       AccessCheckWithDI(CanonicalPtr, 0, 0, CheckKind::NotFree, DI));
   }
 
-  void buildChecksRecurse(Type* LowT, Value* HighP, int64_t Offset, size_t Alignment, AccessKind AK,
+  void buildChecksRecurse(Type* T, Value* HighP, int64_t Offset, size_t Alignment, AccessKind AK,
                           const CombinedDI* DI, std::vector<AccessCheckWithDI>& Checks) {
-    if (!hasPtrsForCheck(LowT)) {
+    if (!hasPtrs(T)) {
       buildCheck(
-        DL.getTypeAllocSize(LowT), MinAlign(DL.getABITypeAlign(LowT).value(), Alignment), HighP,
-        Offset, WordTypeInt, AK, DI, Checks);
+        DL.getTypeAllocSize(T), MinAlign(DL.getABITypeAlign(T).value(), Alignment), HighP,
+        Offset, AK, DI, Checks);
       return;
     }
     
-    if (isa<FunctionType>(LowT)) {
+    if (isa<FunctionType>(T)) {
       llvm_unreachable("shouldn't see function types in buildChecksRecurse");
       return;
     }
 
-    if (isa<TypedPointerType>(LowT)) {
+    if (isa<TypedPointerType>(T)) {
       llvm_unreachable("Shouldn't ever see typed pointers");
       return;
     }
 
-    assert(LowT != LowRawPtrTy);
+    assert(T != FlightPtrTy);
 
-    if (LowT == LowWidePtrTy) {
-      buildCheck(WordSize, WordSize, HighP, Offset, WordTypePtr, AK, DI, Checks);
+    if (T == RawPtrTy) {
+      buildCheck(WordSize, WordSize, HighP, Offset, AK, DI, Checks);
+      Checks.push_back(AccessCheckWithDI(HighP, 0, 0, CheckKind::GetAuxPtr, DI));
+      if (AK == AccessKind::Write)
+        Checks.push_back(AccessCheckWithDI(HighP, 0, 0, CheckKind::EnsureAuxPtr, DI));
       return;
     }
 
-    assert(!isa<PointerType>(LowT));
+    assert(!isa<PointerType>(T));
 
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
+    if (StructType* ST = dyn_cast<StructType>(T)) {
       const StructLayout* SL = DL.getStructLayout(ST);
       for (unsigned Index = ST->getNumElements(); Index--;) {
         Type* InnerT = ST->getElementType(Index);
@@ -3418,7 +2826,7 @@ class Pizlonator {
       return;
     }
       
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
+    if (ArrayType* AT = dyn_cast<ArrayType>(T)) {
       Type* ET = AT->getElementType();
       size_t ESize = DL.getTypeAllocSize(ET);
       for (int64_t Index = AT->getNumElements(); Index--;)
@@ -3426,7 +2834,7 @@ class Pizlonator {
       return;
     }
       
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
+    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(T)) {
       Type* ET = VT->getElementType();
       size_t ESize = DL.getTypeAllocSize(ET);
       for (int64_t Index = VT->getElementCount().getFixedValue(); Index--;)
@@ -3434,7 +2842,7 @@ class Pizlonator {
       return;
     }
 
-    if (isa<ScalableVectorType>(LowT)) {
+    if (isa<ScalableVectorType>(T)) {
       llvm_unreachable("Shouldn't see scalable vector types in buildChecksRecurse");
       return;
     }
@@ -3476,63 +2884,94 @@ class Pizlonator {
     return PtrAndOffset(OriginalHighP, 0);
   }
 
-  void buildChecks(Instruction* I, Type* LowT, Value* HighP, Align Alignment, AccessKind AK,
+  void buildChecks(Instruction* I, Type* T, Value* HighP, Align Alignment, AccessKind AK,
                    std::vector<AccessCheckWithDI>& Checks) {
     if (verbose) {
-      errs() << "Building checks for " << *I << " with LowT = " << *LowT << ", HighP = " << *HighP
+      errs() << "Building checks for " << *I << " with T = " << *T << ", HighP = " << *HighP
              << ", Alignment = " << Alignment.value() << ", AK = " << accessKindString(AK) << "\n";
     }
 
     PtrAndOffset PAO = canonicalizePtr(HighP);
-    buildChecksRecurse(LowT, PAO.HighP, PAO.Offset, Alignment.value(), AK, basicDI(I->getDebugLoc()),
+    if (verbose)
+      errs() << "PAO = " << *PAO.HighP << ", offset = " << PAO.Offset << "\n";
+    buildChecksRecurse(T, PAO.HighP, PAO.Offset, Alignment.value(), AK, basicDI(I->getDebugLoc()),
                        Checks);
     canonicalizeAccessChecks(Checks);
   }
 
-  void buildChecks(Instruction* I, std::vector<AccessCheckWithDI>& Checks) {
+  template<typename FuncT>
+  void forEachCheck(Instruction* I, const FuncT& Func) {
     if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
-      Type* LowT = lowerType(LI->getType());
+      Type* T = LI->getType();
       Value* HighP = LI->getPointerOperand();
-      buildChecks(LI, LowT, HighP, LI->getAlign(), AccessKind::Read, Checks);
+      Func(LI, T, HighP, LI->getAlign(), AccessKind::Read);
       return;
     }
     
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
-      Type* LowT = lowerType(SI->getValueOperand()->getType());
+      Type* T = SI->getValueOperand()->getType();
       Value* HighP = SI->getPointerOperand();
-      buildChecks(SI, LowT, HighP, SI->getAlign(), AccessKind::Write, Checks);
+      Func(SI, T, HighP, SI->getAlign(), AccessKind::Write);
       return;
     }
     
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      Type* LowT = lowerType(AI->getNewValOperand()->getType());
+      Type* T = AI->getNewValOperand()->getType();
       Value* HighP = AI->getPointerOperand();
-      buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write, Checks);
+      Func(AI, T, HighP, AI->getAlign(), AccessKind::Write);
       return;
     }
     
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      Type* LowT = lowerType(AI->getValOperand()->getType());
+      Type* T = AI->getValOperand()->getType();
       Value* HighP = AI->getPointerOperand();
-      buildChecks(AI, LowT, HighP, AI->getAlign(), AccessKind::Write, Checks);
+      Func(AI, T, HighP, AI->getAlign(), AccessKind::Write);
       return;
+    }
+
+    if (IntrinsicInst* II = dyn_cast<IntrinsicInst>(I)) {
+      switch (II->getIntrinsicID()) {
+      case Intrinsic::vastart:
+        Func(II, RawPtrTy, II->getArgOperand(0), Align(WordSize), AccessKind::Write);
+        return;
+      case Intrinsic::vacopy:
+        Func(II, RawPtrTy, II->getArgOperand(0), Align(WordSize), AccessKind::Write);
+        Func(II, RawPtrTy, II->getArgOperand(1), Align(WordSize), AccessKind::Read);
+        return;
+      default:
+        return;
+      }
+    }
+
+    if (CallBase* CI = dyn_cast<CallBase>(I)) {
+      if (Function* F = dyn_cast<Function>(CI->getCalledOperand())) {
+        if (isSetjmp(F)) {
+          Func(CI, RawPtrTy, CI->getArgOperand(0), Align(WordSize), AccessKind::Write);
+          return;
+        }
+      }
     }
   }
 
-  PtrAndOffset canonicalPtrOperand(Instruction* I) {
-    if (LoadInst* LI = dyn_cast<LoadInst>(I))
-      return canonicalizePtr(LI->getPointerOperand());
-    
-    if (StoreInst* SI = dyn_cast<StoreInst>(I))
-      return canonicalizePtr(SI->getPointerOperand());
-    
-    if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I))
-      return canonicalizePtr(AI->getPointerOperand());
-    
-    if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I))
-      return canonicalizePtr(AI->getPointerOperand());
+  void buildChecks(Instruction* I, std::vector<AccessCheckWithDI>& Checks) {
+    forEachCheck(I, [&] (Instruction* I, Type* T, Value* HighP, Align Alignment, AccessKind AK) {
+      buildChecks(I, T, HighP, Alignment, AK, Checks);
+    });
+  }
 
-    return PtrAndOffset();
+  template<typename FuncT>
+  void forEachCanonicalPtrOperand(Instruction* I, const FuncT& Func) {
+    forEachCheck(I, [&] (Instruction*, Type*, Value* HighP, Align, AccessKind) {
+      Func(canonicalizePtr(HighP));
+    });
+  }
+
+  void captureAuxBaseVars(const std::vector<Instruction*>& Instructions) {
+    for (Instruction* I : Instructions) {
+      forEachCanonicalPtrOperand(I, [&] (PtrAndOffset PAO) {
+        AuxBaseVarOperands[I].push_back(canonicalPtrAuxBaseVar(PAO.HighP));
+      });
+    }
   }
 
   const CombinedDI* hashConsDI(const CombinedDI& DI) {
@@ -3709,23 +3148,14 @@ class Pizlonator {
     bool AlignmentContradiction = false;
     while (SrcIndex < Checks.size()) {
       CheckT AC = Checks[SrcIndex++];
-      if (!AlignmentContradiction) {
-        switch (AC.CK) {
-        case CheckKind::TypeIsPtr:
-        case CheckKind::TypeIsInt:
-          assert(Alignment >= AC.Size);
-          assert(!((AC.Offset - AlignmentOffset) % AC.Size));
-          break;
-        default:
-          break;
-        }
-      }
       if (AC.CanonicalPtr == LastAC.CanonicalPtr &&
           FundamentalCheckKind(AC.CK) == FundamentalCheckKind(LastAC.CK)) {
         switch (AC.CK) {
         case CheckKind::ValidObject:
         case CheckKind::CanWrite:
         case CheckKind::NotFree:
+        case CheckKind::GetAuxPtr:
+        case CheckKind::EnsureAuxPtr:
           // For these, we really only need one of these for each CanonicalPtr.
           updateLastDI(Checks[DstIndex - 1], AC);
           continue;
@@ -3744,16 +3174,8 @@ class Pizlonator {
           updateLastDI(Checks[DstIndex - 1], AC);
           continue;
   
-        case CheckKind::TypeIsPtr:
-          if (AC.Offset == LastAC.Offset) {
-            updateLastDI(Checks[DstIndex - 1], AC);
-            continue;
-          }
-          break;
-  
         case CheckKind::KnownAlignment:
         case CheckKind::Alignment:
-        case CheckKind::MergedAlignment:
           assert(Alignment);
           assert(AlignmentOffset < Alignment);
           assert(AC.Size <= LastAC.Size);
@@ -3764,22 +3186,6 @@ class Pizlonator {
             continue;
           }
           AlignmentContradiction = true;
-          break;
-  
-        case CheckKind::TypeIsInt:
-          assert(AC.Offset >= LastAC.Offset);
-          // We are intentionally weak about combining TypeIsInts, because that would only create
-          // problems when merging. Consider that we have one path that accesses two adjacent int32s
-          // and another path that accesses only one of them. In that case, we want the merge (or
-          // subtraction) to see that one of the int32's is a subset of both of them. If we merged the
-          // int32's into a int64, then merging would be more complex, and would get even more complex
-          // if we had more complex combinations. So, all we do is let TypeIsInts swallow up other ones
-          // that are obviously completely redundant.
-          if (AC.Offset + AC.Size <= LastAC.Offset + LastAC.Size) {
-            if (AC.Size == LastAC.Size)
-              updateLastDI(Checks[DstIndex - 1], AC);
-            continue;
-          }
           break;
         }
       }
@@ -3825,11 +3231,13 @@ class Pizlonator {
   // Returns true if ToChecks is changed.
   template<typename CheckT>
   bool mergeAccessChecks(std::vector<CheckT>& ToChecks,
-                         const std::vector<CheckT>& FromChecks) {
+                         const std::vector<CheckT>& FromChecks,
+                         AIDirection Direction) {
     size_t DstToIndex = 0;
     size_t SrcToIndex = 0;
     size_t FromIndex = 0;
     bool Result = false;
+    Value* LastLowerBoundPtr = nullptr;
     while (SrcToIndex < ToChecks.size() && FromIndex < FromChecks.size()) {
       CheckT ToAC = ToChecks[SrcToIndex];
       CheckT FromAC = FromChecks[FromIndex];
@@ -3839,68 +3247,84 @@ class Pizlonator {
       
       if (ToAC.CanonicalPtr == FromAC.CanonicalPtr &&
           FundamentalCheckKind(ToAC.CK) == FundamentalCheckKind(FromAC.CK)) {
-        switch (ToAC.CK) {
-        case CheckKind::ValidObject:
-        case CheckKind::CanWrite:
-        case CheckKind::NotFree: {
+
+        auto mergeToAC = [&] () {
           CheckT NewAC = ToAC;
           mergeCheckDI(NewAC, ToAC, FromAC);
           ToChecks[DstToIndex++] = NewAC;
           SrcToIndex++;
           FromIndex++;
-          continue;
-        }
-        case CheckKind::LowerBound:
-        case CheckKind::UpperBound: {
+        };
+        
+        auto mergeMaxAC = [&] () {
           CheckT NewAC = std::max(ToAC, FromAC);
           mergeCheckDI(NewAC, ToAC, FromAC);
           Result |= NewAC != ToAC;
           ToChecks[DstToIndex++] = NewAC;
           SrcToIndex++;
           FromIndex++;
+        };
+        
+        switch (ToAC.CK) {
+        case CheckKind::ValidObject:
+        case CheckKind::CanWrite:
+        case CheckKind::NotFree:
+        case CheckKind::GetAuxPtr:
+        case CheckKind::EnsureAuxPtr: {
+          mergeToAC();
           continue;
         }
-        case CheckKind::Alignment:
-        case CheckKind::MergedAlignment: {
-          int64_t Size = std::min(ToAC.Size, FromAC.Size);
-          if ((ToAC.Offset % Size) == (FromAC.Offset % Size)) {
-            CheckT NewAC = ToAC;
-            if (Size < ToAC.Size || Size < FromAC.Size)
-              NewAC.CK = CheckKind::MergedAlignment;
-            NewAC.Size = Size;
-            NewAC.Offset = NewAC.Offset % Size;
-            mergeCheckDI(NewAC, ToAC, FromAC);
-            Result |= NewAC != ToAC;
-            ToChecks[DstToIndex++] = NewAC;
-            SrcToIndex++;
-            FromIndex++;
+        case CheckKind::LowerBound:
+        case CheckKind::UpperBound: {
+          switch (Direction) {
+          case AIDirection::Forward: {
+            mergeMaxAC();
             continue;
           }
+          case AIDirection::Backward: {
+            // If we kept the lower bound check, then we can keep the upper bound check. We don't
+            // keep either check if they're not exactly the same.
+            if (ToAC.Offset != FromAC.Offset)
+              break;
+            if (ToAC.CK == CheckKind::LowerBound)
+              LastLowerBoundPtr = ToAC.CanonicalPtr;
+            else {
+              assert(ToAC.CK == CheckKind::UpperBound);
+              if (ToAC.CanonicalPtr != LastLowerBoundPtr)
+                break;
+            }
+            mergeToAC();
+            continue;
+          } }
           break;
         }
-        case CheckKind::TypeIsPtr:
-          if (ToAC.Offset == FromAC.Offset) {
-            CheckT NewAC = ToAC;
-            mergeCheckDI(NewAC, ToAC, FromAC);
-            ToChecks[DstToIndex++] = NewAC;
-            SrcToIndex++;
-            FromIndex++;
-            continue;
+        case CheckKind::Alignment: {
+          switch (Direction) {
+          case AIDirection::Forward: {
+            int64_t Size = std::min(ToAC.Size, FromAC.Size);
+            if ((ToAC.Offset % Size) == (FromAC.Offset % Size)) {
+              CheckT NewAC = ToAC;
+              NewAC.Size = Size;
+              NewAC.Offset = NewAC.Offset % Size;
+              mergeCheckDI(NewAC, ToAC, FromAC);
+              Result |= NewAC != ToAC;
+              ToChecks[DstToIndex++] = NewAC;
+              SrcToIndex++;
+              FromIndex++;
+              continue;
+            }
+            break;
           }
+          case AIDirection::Backward: {
+            if (ToAC.Size == FromAC.Size &&
+                ToAC.Offset == FromAC.Offset) {
+              mergeToAC();
+              continue;
+            }
+            break;
+          } }
           break;
-        case CheckKind::TypeIsInt:
-          assert(ToAC.Size);
-          assert(FromAC.Size);
-          // We only merge if the TypeIsInts match exactly.
-          if (ToAC.Offset == FromAC.Offset && ToAC.Size == FromAC.Size) {
-            CheckT NewAC = ToAC;
-            mergeCheckDI(NewAC, ToAC, FromAC);
-            ToChecks[DstToIndex++] = NewAC;
-            SrcToIndex++;
-            FromIndex++;
-            continue;
-          }
-          break;
+        }
         case CheckKind::KnownAlignment:
         case CheckKind::KnownLowerBound:
           llvm_unreachable("Should never see Known kinds in merging");
@@ -3920,48 +3344,6 @@ class Pizlonator {
     return Result;
   }
 
-  template<typename CheckT>
-  void removeUnprofitableChecks(std::vector<CheckT>& Checks) {
-    Value* CurrentCanonicalPtr = nullptr;
-    bool HadTypeCheck = false;
-    for (size_t Index = Checks.size(); Index--;) {
-      CheckT AC = Checks[Index];
-      if (AC.CanonicalPtr != CurrentCanonicalPtr) {
-        CurrentCanonicalPtr = AC.CanonicalPtr;
-        HadTypeCheck = false;
-      }
-      switch (AC.CK) {
-      case CheckKind::ValidObject:
-      case CheckKind::KnownAlignment:
-      case CheckKind::Alignment:
-      case CheckKind::CanWrite:
-      case CheckKind::KnownLowerBound:
-      case CheckKind::NotFree:
-        break;
-      case CheckKind::MergedAlignment:
-      case CheckKind::LowerBound:
-      case CheckKind::UpperBound:
-        if (!HadTypeCheck)
-          Checks[Index] = AccessCheck();
-        break;
-      case CheckKind::TypeIsInt:
-      case CheckKind::TypeIsPtr:
-        HadTypeCheck = true;
-        break;
-      }
-    }
-  
-    size_t DstIndex = 0;
-    size_t SrcIndex = 0;
-    while (SrcIndex < Checks.size()) {
-      CheckT AC = Checks[SrcIndex++];
-      if (AC)
-        Checks[DstIndex++] = AC;
-    }
-    Checks.resize(DstIndex);
-    checkCanonicalizedAccessChecks(Checks);
-  }
-  
   // Removes checks in ToChecks that are subsumed by FromChecks. Conservatively keeps ToChecks.
   template<typename ToCheckT, typename FromCheckT>
   void subtractChecks(std::vector<ToCheckT>& ToChecks,
@@ -3983,6 +3365,8 @@ class Pizlonator {
         case CheckKind::ValidObject:
         case CheckKind::CanWrite:
         case CheckKind::NotFree:
+        case CheckKind::GetAuxPtr:
+        case CheckKind::EnsureAuxPtr:
           SrcToIndex++;
           FromIndex++;
           continue;
@@ -4006,7 +3390,6 @@ class Pizlonator {
           continue;
   
         case CheckKind::Alignment:
-        case CheckKind::MergedAlignment:
           if (CreateKnowns && FromAC.Size >= ToAC.Size
               && (FromAC.Offset % ToAC.Size) == ToAC.Offset) {
             FromAC.CK = CheckKind::KnownAlignment;
@@ -4016,24 +3399,6 @@ class Pizlonator {
           SrcToIndex++;
           FromIndex++;
           continue;
-  
-        case CheckKind::TypeIsPtr:
-          assert(ToAC.Size == WordSize);
-          assert(FromAC.Size == WordSize);
-          if (ToAC.Offset == FromAC.Offset) {
-            SrcToIndex++;
-            FromIndex++;
-            continue;
-          }
-          break;
-  
-        case CheckKind::TypeIsInt:
-          if (ToAC.Offset == FromAC.Offset && ToAC.Size == FromAC.Size) {
-            SrcToIndex++;
-            FromIndex++;
-            continue;
-          }
-          break;
           
         case CheckKind::KnownAlignment:
         case CheckKind::KnownLowerBound:
@@ -4092,7 +3457,7 @@ class Pizlonator {
         for (Instruction& I : *BB) {
           auto HandleEffects = [&] () {
             EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
-              return AC.CK == CheckKind::NotFree;
+              return AC.CK == CheckKind::NotFree || AC.CK == CheckKind::GetAuxPtr;
             });
           };
 
@@ -4108,6 +3473,11 @@ class Pizlonator {
           // For now, just conservatively assume that all calls may free stuff.
           if (isa<CallBase>(&I))
             HandleEffects();
+          else if (isa<StoreInst>(&I) || isa<AtomicCmpXchgInst>(&I) || isa<AtomicRMWInst>(&I)) {
+            EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+              return AC.CK == CheckKind::GetAuxPtr;
+            });
+          }
 
           if (verbose)
             errs() << "Checks after " << I << ":\n    " << Checks << "\n";
@@ -4132,7 +3502,7 @@ class Pizlonator {
             SCOB.Checks = Checks;
             Changed = true;
           } else
-            Changed |= mergeAccessChecks(SCOB.Checks, Checks);
+            Changed |= mergeAccessChecks(SCOB.Checks, Checks, AIDirection::Forward);
         }
       }
     }
@@ -4160,7 +3530,7 @@ class Pizlonator {
       for (Instruction& I : *BB) {
         auto HandleEffects = [&] () {
           EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
-            return AC.CK == CheckKind::NotFree;
+            return AC.CK == CheckKind::NotFree || AC.CK == CheckKind::GetAuxPtr;
           });
         };
         
@@ -4199,6 +3569,11 @@ class Pizlonator {
         // For now, just conservatively assume that all calls may free stuff.
         if (isa<CallBase>(&I))
           HandleEffects();
+        else if (isa<StoreInst>(&I) || isa<AtomicCmpXchgInst>(&I) || isa<AtomicRMWInst>(&I)) {
+          EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
+            return AC.CK == CheckKind::GetAuxPtr;
+          });
+        }
         
         if (verbose)
           errs() << "Checks after " << I << ":\n    " << Checks << "\n";
@@ -4254,10 +3629,11 @@ class Pizlonator {
         for (auto It = BB->rbegin(); It != BB->rend(); ++It) {
           Instruction* I = &*It;
           Live.erase(I);
-          if (Value* P = canonicalPtrOperand(I).HighP) {
+          forEachCanonicalPtrOperand(I, [&] (PtrAndOffset PAO) {
+            Value* P = PAO.HighP;
             assert(isa<Instruction>(P) || isa<Argument>(P) || isa<Constant>(P));
             Live.insert(P);
-          }
+          });
         }
 
         if (!BlockIndex) {
@@ -4364,8 +3740,13 @@ class Pizlonator {
           }
 
           auto Iter = ChecksForInst.find(I);
-          if (Iter != ChecksForInst.end())
-            Checks.insert(Checks.end(), Iter->second.begin(), Iter->second.end());
+          if (Iter != ChecksForInst.end()) {
+            std::vector<AccessCheckWithDI> ChecksForThisInst = Iter->second;
+            EraseIf(ChecksForThisInst, [&] (const AccessCheckWithDI& AC) ->bool {
+              return AC.CK == CheckKind::GetAuxPtr || AC.CK == CheckKind::EnsureAuxPtr;
+            });
+            Checks.insert(Checks.end(), ChecksForThisInst.begin(), ChecksForThisInst.end());
+          }
 
           if (I == BB->getTerminator() && BackEdgePreds.count(BB)) {
             EraseIf(Checks, [&] (const AccessCheck& AC) -> bool {
@@ -4399,31 +3780,13 @@ class Pizlonator {
             addAccessChecks(ChecksAtTail, ForwardChecksAtTail[PBB]);
             if (verbose)
               errs() << "    Combined checks at tail: " << ChecksAtTail << "\n";
-            mergeAccessChecks(Checks, ChecksAtTail);
+            mergeAccessChecks(Checks, ChecksAtTail, AIDirection::Forward);
             if (verbose)
               errs() << "    Merged checks: " << Checks << "\n";
           }
         }
         if (verbose)
           errs() << "Checks at head after merging with predecessors: " << Checks << "\n";
-        // Make sure we never hoist checks that are unprofitable. Note, it's tempting to say that we
-        // remove unprofitable checks right before emitting checks - but that would be wrong, since it
-        // could mean that we *moved* a check backward (i.e. it used to be at some later point, now
-        // it's somewhere earlier) and then removed it. For example:
-        //
-        //     if (p)
-        //         o->f
-        //     else
-        //         o->g
-        //
-        // Say that &o->f < &o->g. In that case, if we didn't do removeUnprofitableChedcks here, the
-        // merge of the checks would have g's lower bound and f's upper bound. So, g's lower bound
-        // would stop being executed on the else branch, and f's upper bound would stop being executed
-        // on the then branch. And then - if we called removeUnprofitableChecks just before emitting -
-        // we'd simply drop those checks entirely.
-        removeUnprofitableChecks(Checks);
-        if (verbose)
-          errs() << "Checks at head after removing unprofitable: " << Checks << "\n";
         BackwardChecksAtHead[BB] = Checks;
         for (BasicBlock* PBB : predecessors(BB)) {
           ChecksWithDIOrBottom& PCOB = BackwardChecksAtTail[PBB];
@@ -4432,7 +3795,7 @@ class Pizlonator {
             PCOB.Checks = Checks;
             Changed = true;
           } else
-            Changed |= mergeAccessChecks(PCOB.Checks, Checks);
+            Changed |= mergeAccessChecks(PCOB.Checks, Checks, AIDirection::Backward);
         }
       }
     }
@@ -4472,8 +3835,13 @@ class Pizlonator {
         }
         
         auto Iter = ChecksForInst.find(I);
-        if (Iter != ChecksForInst.end())
-          Checks.insert(Checks.end(), Iter->second.begin(), Iter->second.end());
+        if (Iter != ChecksForInst.end()) {
+          std::vector<AccessCheckWithDI> ChecksForThisInst = Iter->second;
+          EraseIf(ChecksForThisInst, [&] (const AccessCheckWithDI& AC) -> bool {
+            return AC.CK == CheckKind::GetAuxPtr || AC.CK == CheckKind::EnsureAuxPtr;
+          });
+          Checks.insert(Checks.end(), ChecksForThisInst.begin(), ChecksForThisInst.end());
+        }
 
         if (isa<PHINode>(I))
           SawPhi = true;
@@ -4524,6 +3892,18 @@ class Pizlonator {
       }
     }
 
+    for (auto& Pair : ChecksForInst) {
+      std::vector<AccessCheckWithDI>* Checks = nullptr;
+      for (const AccessCheckWithDI& AC : Pair.second) {
+        if (AC.CK == CheckKind::GetAuxPtr || AC.CK == CheckKind::EnsureAuxPtr) {
+          if (!Checks)
+            Checks = &NewChecksForInst[Pair.first];
+          Checks->push_back(AC);
+        }
+      }
+      if (Checks)
+        canonicalizeAccessChecks(*Checks);
+    }
     ChecksForInst = std::move(NewChecksForInst);
 
     if (verbose)
@@ -4534,75 +3914,6 @@ class Pizlonator {
 
     removeRedundantChecksUsingForwardAI(
       Blocks, BackEdgePreds, CanonicalPtrLiveAtTail, ForwardChecksAtHead, ForwardChecksAtTail);
-  }
-
-  void buildWordTypesRecurse(
-    Type* OuterLowT, Type* LowT, size_t& Size, std::vector<WordType>& WordTypes) {
-    if (verbose)
-      errs() << "Dealing with LowT = " << *LowT << ", Size = " << Size << "\n";
-    
-    assert((Size + WordSize - 1) / WordSize == WordTypes.size());
-    if (Size % WordSize) {
-      assert(!WordTypes.empty());
-      assert(WordTypes.back() == WordTypeInt);
-    }
-
-    auto Fill = [&] () {
-      while ((Size + WordSize - 1) / WordSize > WordTypes.size())
-        WordTypes.push_back(WordTypeInt);
-    };
-
-    assert(LowT != LowRawPtrTy);
-    
-    if (LowT == LowWidePtrTy) {
-      if ((Size % WordSize)) {
-        errs() << "Trouble with offset of pointer in " << *OuterLowT
-               << ", current LowT = " << *LowT << ", Size = " << Size << "\n";
-      }
-      assert(!(Size % WordSize));
-      Size += WordSize;
-      WordTypes.push_back(WordTypePtr);
-      return;
-    }
-
-    if (StructType* ST = dyn_cast<StructType>(LowT)) {
-      size_t SizeBefore = Size;
-      const StructLayout* SL = DL.getStructLayout(ST);
-      for (unsigned Index = 0; Index < ST->getNumElements(); ++Index) {
-        Type* InnerT = ST->getElementType(Index);
-        size_t ProposedSize = SizeBefore + SL->getElementOffset(Index);
-        assert(ProposedSize >= Size);
-        Size = ProposedSize;
-        Fill();
-        buildWordTypesRecurse(OuterLowT, InnerT, Size, WordTypes);
-      }
-      size_t ProposedSize = SizeBefore + SL->getSizeInBytes();
-      assert(ProposedSize >= Size);
-      Size = ProposedSize;
-      Fill();
-      return;
-    }
-    
-    if (ArrayType* AT = dyn_cast<ArrayType>(LowT)) {
-      for (uint64_t Index = AT->getNumElements(); Index--;)
-        buildWordTypesRecurse(OuterLowT, AT->getElementType(), Size, WordTypes);
-      return;
-    }
-      
-    if (FixedVectorType* VT = dyn_cast<FixedVectorType>(LowT)) {
-      for (unsigned Index = VT->getElementCount().getFixedValue(); Index--;)
-        buildWordTypesRecurse(OuterLowT, VT->getElementType(), Size, WordTypes);
-      return;
-    }
-
-    if (isa<ScalableVectorType>(LowT)) {
-      llvm_unreachable("Shouldn't see scalable vector types in buildWordTypesRecurse");
-      return;
-    }
-
-    Size += DL.getTypeAllocSize(LowT);
-    while ((Size + WordSize - 1) / WordSize > WordTypes.size())
-      WordTypes.push_back(WordTypeInt);
   }
 
   Type* argType(Type* T) {
@@ -4661,148 +3972,217 @@ class Pizlonator {
     return FPTrunc;
   }
 
-  std::vector<WordType> wordTypesForLowType(Type* LowT) {
-    std::vector<WordType> WordTypes;
-    size_t Size = 0;
-    buildWordTypesRecurse(LowT, LowT, Size, WordTypes);
-    return WordTypes;
-  }
-  
-  Constant* ccTypeForLowType(Type* LowT) {
-    auto iter = CCTypes.find(LowT);
-    if (iter != CCTypes.end())
-      return iter->second;
-
-    std::vector<WordType> WordTypes = wordTypesForLowType(LowT);
-    Constant* GV;
-    if (WordTypes.empty())
-      GV = EmptyCCType;
-    else if (WordTypes.size() == 1) {
-      if (WordTypes[0] == WordTypeInt)
-        GV = IntCCType;
-      else {
-        assert(WordTypes[0] == WordTypePtr);
-        GV = PtrCCType;
-      }
-    } else {
-      StructType* CCType = StructType::get(C, { IntPtrTy, ArrayType::get(Int8Ty, WordTypes.size()) });
-      Constant* CS = ConstantStruct::get(
-        CCType, { ConstantInt::get(IntPtrTy, WordTypes.size()), ConstantDataArray::get(C, WordTypes) });
-      GV = new GlobalVariable(
-        M, CCType, true, GlobalValue::PrivateLinkage, CS, "filc_cc_type_const");
-    }
-    CCTypes[LowT] = GV;
-    return GV;
-  }
-
-  void checkCCType(Type* LowT, Value* CCPtr, FunctionCallee CCCheckFailure, Instruction* InsertBefore) {
-    BasicBlock* FailB = BasicBlock::Create(C, "filc_cc_fail_block", NewF);
+  Value* loadCC(Type* T, Value* PassedSize, FunctionCallee CCCheckFailure, Instruction* InsertBefore,
+                DebugLoc DI) {
+    size_t TypeSize = (DL.getTypeStoreSize(T) + WordSize - 1) / WordSize * WordSize;
+    assert(TypeSize);
+    Instruction* PassedEnough = new ICmpInst(
+      InsertBefore, ICmpInst::ICMP_ULE, ConstantInt::get(IntPtrTy, TypeSize), PassedSize,
+      "filc_cc_passed_enough");
+    PassedEnough->setDebugLoc(DI);
+    Instruction* FailTerm = SplitBlockAndInsertIfElse(
+      expectTrue(PassedEnough, InsertBefore), InsertBefore, true);
     CallInst::Create(
-      CCCheckFailure, { CCPtr, ccTypeForLowType(LowT), getOrigin(DebugLoc()) }, "",
-      FailB);
-    new UnreachableInst(C, FailB);
-
-    Value* CCType = ccPtrType(CCPtr, InsertBefore);
-    std::vector<WordType> WordTypes = wordTypesForLowType(LowT);
-    GetElementPtrInst* NumWordsPtr = GetElementPtrInst::Create(
-      CCTypeTy, CCType, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
-      "filc_cc_type_num_words_ptr", InsertBefore);
-    LoadInst* NumWords = new LoadInst(IntPtrTy, NumWordsPtr, "filc_cc_type_num_words", InsertBefore);
-    ICmpInst* InBounds = new ICmpInst(
-      InsertBefore, ICmpInst::ICMP_ULE, ConstantInt::get(IntPtrTy, WordTypes.size()), NumWords,
-      "filc_cc_type_big_enough");
-    SplitBlockAndInsertIfElse(
-      expectTrue(InBounds, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr, FailB);
-    GetElementPtrInst* WordTypesPtr = GetElementPtrInst::Create(
-      CCTypeTy, CCType, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-      "filc_cc_type_word_types_ptr", InsertBefore);
-    for (size_t Index = WordTypes.size(); Index--;) {
-      GetElementPtrInst* WordTypeGEP = GetElementPtrInst::Create(
-        Int8Ty, WordTypesPtr, { ConstantInt::get(IntPtrTy, Index) }, "filc_cc_word_type_ptr",
-        InsertBefore);
-      LoadInst* WordType = new LoadInst(Int8Ty, WordTypeGEP, "filc_cc_word_type", InsertBefore);
-      assert(WordTypes[Index] == WordTypeInt || WordTypes[Index] == WordTypePtr);
-      BinaryOperator* Masked = BinaryOperator::Create(
-        Instruction::And, WordType,
-        ConstantInt::get(Int8Ty, WordTypes[Index] ^ (WordTypeInt | WordTypePtr)),
-        "filc_cc_masked_word_type", InsertBefore);
-      ICmpInst* GoodType = new ICmpInst(
-        InsertBefore, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int8Ty, 0),
-        "filc_cc_good_type");
-      SplitBlockAndInsertIfElse(
-        expectTrue(GoodType, InsertBefore), InsertBefore, false, nullptr, nullptr, nullptr, FailB);
+      CCCheckFailure, { PassedSize, ConstantInt::get(IntPtrTy, TypeSize), getOrigin(DI) }, "",
+      FailTerm)->setDebugLoc(DI);
+    AllocaInst* PayloadAlloca = new AllocaInst(
+      Int8Ty, 0, ConstantInt::get(IntPtrTy, TypeSize), DL.getABITypeAlign(T), "filc_payload_alloca",
+      &NewF->getEntryBlock().front());
+    AllocaInst* AuxAlloca = new AllocaInst(
+      Int8Ty, 0, ConstantInt::get(IntPtrTy, TypeSize), Align(WordSize),
+      "filc_payload_alloca", &NewF->getEntryBlock().front());
+    PayloadAlloca->setDebugLoc(DI);
+    AuxAlloca->setDebugLoc(DI);
+    CallInst::Create(LifetimeStart, { ConstantInt::get(IntPtrTy, TypeSize), PayloadAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    CallInst::Create(LifetimeStart, { ConstantInt::get(IntPtrTy, TypeSize), AuxAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    Value* InlineBuffer = threadCCInlineBufferPtr(MyThread, InsertBefore);
+    CallInst* Call = CallInst::Create(
+      RealMemcpy,
+      { PayloadAlloca, InlineBuffer, ConstantInt::get(IntPtrTy, std::min(TypeSize, CCInlineSize)),
+        ConstantInt::getBool(Int1Ty, false) },
+      "", InsertBefore);
+    Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(WordSize)));
+    Call->addParamAttr(
+      1, Attribute::getWithAlignment(C, Align(MinAlign(CCAlignment, DL.getABITypeAlign(T).value()))));
+    Call->setDebugLoc(DI);
+    Value* InlineAuxBuffer = threadCCInlineAuxBufferPtr(MyThread, InsertBefore);
+    Call = CallInst::Create(
+      RealMemcpy,
+      { AuxAlloca, InlineAuxBuffer, ConstantInt::get(IntPtrTy, std::min(TypeSize, CCInlineSize)),
+        ConstantInt::getBool(Int1Ty, false) },
+      "", InsertBefore);
+    Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(WordSize)));
+    Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(CCAlignment)));
+    Call->setDebugLoc(DI);
+    if (TypeSize > CCInlineSize) {
+      Instruction* PayloadAtOutlineOffset = GetElementPtrInst::Create(
+        Int8Ty, PayloadAlloca, { ConstantInt::get(IntPtrTy, CCInlineSize) },
+        "filc_payload_at_outline_offset", InsertBefore);
+      PayloadAtOutlineOffset->setDebugLoc(DI);
+      Value* OutlineBufferPtr = threadCCOutlineBufferPtr(MyThread, InsertBefore);
+      Instruction* OutlineBuffer = new LoadInst(
+        RawPtrTy, OutlineBufferPtr, "filc_cc_outline_buffer", InsertBefore);
+      OutlineBuffer->setDebugLoc(DI);
+      Call = CallInst::Create(
+        RealMemcpy,
+        { PayloadAtOutlineOffset, OutlineBuffer, ConstantInt::get(IntPtrTy, TypeSize - CCInlineSize),
+          ConstantInt::getBool(Int1Ty, false) },
+        "", InsertBefore);
+      Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(WordSize)));
+      Call->addParamAttr(
+        1, Attribute::getWithAlignment(
+          C, Align(MinAlign(CCAlignment, DL.getABITypeAlign(T).value()))));
+      Call->setDebugLoc(DI);
+      Instruction* AuxAtOutlineOffset = GetElementPtrInst::Create(
+        Int8Ty, AuxAlloca, { ConstantInt::get(IntPtrTy, CCInlineSize) },
+        "filc_aux_at_outline_offset", InsertBefore);
+      AuxAtOutlineOffset->setDebugLoc(DI);
+      Value* OutlineAuxBufferPtr = threadCCOutlineAuxBufferPtr(MyThread, InsertBefore);
+      Instruction* OutlineAuxBuffer = new LoadInst(
+        RawPtrTy, OutlineAuxBufferPtr, "filc_cc_outline_aux_buffer", InsertBefore);
+      OutlineAuxBuffer->setDebugLoc(DI);
+      Call = CallInst::Create(
+        RealMemcpy,
+        { AuxAtOutlineOffset, OutlineAuxBuffer, ConstantInt::get(IntPtrTy, TypeSize - CCInlineSize),
+          ConstantInt::getBool(Int1Ty, false) },
+        "", InsertBefore);
+      Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(WordSize)));
+      Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(CCAlignment)));
+      Call->setDebugLoc(DI);
     }
+    Value* Result = loadValueRecurseAfterCheck(
+      T, PayloadAlloca, AuxAlloca, AuxAlloca, false, DL.getABITypeAlign(T), AtomicOrdering::NotAtomic,
+      SyncScope::System, MemoryKind::CC, InsertBefore);
+    CallInst::Create(LifetimeEnd, { ConstantInt::get(IntPtrTy, TypeSize), PayloadAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    CallInst::Create(LifetimeEnd, { ConstantInt::get(IntPtrTy, TypeSize), AuxAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    return Result;
   }
 
-  Constant* objectConstant(Constant* Lower, Constant* Upper, uint16_t ObjectFlags,
-                           const std::vector<WordType>& WordTypes) {
-    StructType* ObjectTy = StructType::get(
-      C, { LowRawPtrTy, LowRawPtrTy, Int16Ty, ArrayType::get(Int8Ty, WordTypes.size()) });
-    return ConstantStruct::get(
-      ObjectTy,
-      { Lower, Upper, ConstantInt::get(Int16Ty, ObjectFlags), ConstantDataArray::get(C, WordTypes) });
+  // Returns the passed CC size. That's just for convenience, since you could calculate it yourself
+  // from the type.
+  Value* storeCC(Type* T, Value* V, Instruction* InsertBefore, DebugLoc DI) {
+    size_t TypeSize = (DL.getTypeStoreSize(T) + WordSize - 1) / WordSize * WordSize;
+    assert(TypeSize);
+    if (TypeSize > CCInlineSize) {
+      size_t DesiredOutlineSize = TypeSize - CCInlineSize;
+      Instruction* ActualOutlineSize = new LoadInst(
+        IntPtrTy, threadCCOutlineSizePtr(MyThread, InsertBefore), "filc_thread_cc_outline_size",
+        InsertBefore);
+      ActualOutlineSize->setDebugLoc(DI);
+      Instruction* OutlineBigEnough = new ICmpInst(
+        InsertBefore, ICmpInst::ICMP_ULE, ConstantInt::get(IntPtrTy, DesiredOutlineSize),
+        ActualOutlineSize, "filc_cc_passed_enough");
+      OutlineBigEnough->setDebugLoc(DI);
+      Instruction* SlowTerm = SplitBlockAndInsertIfElse(
+        expectTrue(OutlineBigEnough, InsertBefore), InsertBefore, false);
+      CallInst::Create(
+        ThreadEnsureCCOutlineBufferSlow,
+        { MyThread, ConstantInt::get(IntPtrTy, DesiredOutlineSize) }, "", SlowTerm)->setDebugLoc(DI);
+    }
+    AllocaInst* PayloadAlloca = new AllocaInst(
+      Int8Ty, 0, ConstantInt::get(IntPtrTy, TypeSize), DL.getABITypeAlign(T), "filc_payload_alloca",
+      &NewF->getEntryBlock().front());
+    AllocaInst* AuxAlloca = new AllocaInst(
+      Int8Ty, 0, ConstantInt::get(IntPtrTy, TypeSize), Align(WordSize),
+      "filc_payload_alloca", &NewF->getEntryBlock().front());
+    PayloadAlloca->setDebugLoc(DI);
+    AuxAlloca->setDebugLoc(DI);
+    CallInst::Create(LifetimeStart, { ConstantInt::get(IntPtrTy, TypeSize), PayloadAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    CallInst::Create(LifetimeStart, { ConstantInt::get(IntPtrTy, TypeSize), AuxAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    CallInst* Call = CallInst::Create(
+      RealMemset,
+      { PayloadAlloca, ConstantInt::get(Int8Ty, 0), ConstantInt::get(IntPtrTy, TypeSize),
+        ConstantInt::getBool(Int1Ty, false) }, "", InsertBefore);
+    Call->addParamAttr(0, Attribute::getWithAlignment(C, DL.getABITypeAlign(T)));
+    Call->setDebugLoc(DI);
+    Call = CallInst::Create(
+      RealMemset,
+      { AuxAlloca, ConstantInt::get(Int8Ty, 0), ConstantInt::get(IntPtrTy, TypeSize),
+        ConstantInt::getBool(Int1Ty, false) }, "", InsertBefore);
+    Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(WordSize)));
+    Call->setDebugLoc(DI);
+    storeValueRecurseAfterCheck(
+      T, V, PayloadAlloca, AuxAlloca, false, DL.getABITypeAlign(T), AtomicOrdering::NotAtomic,
+      SyncScope::System, MemoryKind::CC, InsertBefore);
+    Call = CallInst::Create(
+      RealMemcpy,
+      { threadCCInlineBufferPtr(MyThread, InsertBefore), PayloadAlloca,
+        ConstantInt::get(IntPtrTy, std::min(TypeSize, CCInlineSize)),
+        ConstantInt::getBool(Int1Ty, false) },
+      "", InsertBefore);
+    Call->addParamAttr(
+      0, Attribute::getWithAlignment(C, Align(MinAlign(CCAlignment, DL.getABITypeAlign(T).value()))));
+    Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(WordSize)));
+    Call->setDebugLoc(DI);
+    Call = CallInst::Create(
+      RealMemcpy,
+      { threadCCInlineAuxBufferPtr(MyThread, InsertBefore), AuxAlloca,
+        ConstantInt::get(IntPtrTy, std::min(TypeSize, CCInlineSize)),
+        ConstantInt::getBool(Int1Ty, false) },
+      "", InsertBefore);
+    Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(CCAlignment)));
+    Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(WordSize)));
+    Call->setDebugLoc(DI);
+    if (TypeSize > CCInlineSize) {
+      Instruction* PayloadAtOutlineOffset = GetElementPtrInst::Create(
+        Int8Ty, PayloadAlloca, { ConstantInt::get(IntPtrTy, CCInlineSize) },
+        "filc_payload_at_outline_offset", InsertBefore);
+      PayloadAtOutlineOffset->setDebugLoc(DI);
+      Value* OutlineBufferPtr = threadCCOutlineBufferPtr(MyThread, InsertBefore);
+      Instruction* OutlineBuffer = new LoadInst(
+        RawPtrTy, OutlineBufferPtr, "filc_cc_outline_buffer", InsertBefore);
+      OutlineBuffer->setDebugLoc(DI);
+      Call = CallInst::Create(
+        RealMemcpy,
+        { OutlineBuffer, PayloadAtOutlineOffset, ConstantInt::get(IntPtrTy, TypeSize - CCInlineSize),
+          ConstantInt::getBool(Int1Ty, false) },
+        "", InsertBefore);
+      Call->addParamAttr(
+        0, Attribute::getWithAlignment(
+          C, Align(MinAlign(CCAlignment, DL.getABITypeAlign(T).value()))));
+      Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(WordSize)));
+      Call->setDebugLoc(DI);
+      Instruction* AuxAtOutlineOffset = GetElementPtrInst::Create(
+        Int8Ty, AuxAlloca, { ConstantInt::get(IntPtrTy, CCInlineSize) },
+        "filc_aux_at_outline_offset", InsertBefore);
+      AuxAtOutlineOffset->setDebugLoc(DI);
+      Value* OutlineAuxBufferPtr = threadCCOutlineAuxBufferPtr(MyThread, InsertBefore);
+      Instruction* OutlineAuxBuffer = new LoadInst(
+        RawPtrTy, OutlineAuxBufferPtr, "filc_cc_outline_aux_buffer", InsertBefore);
+      OutlineAuxBuffer->setDebugLoc(DI);
+      Call = CallInst::Create(
+        RealMemcpy,
+        { OutlineAuxBuffer, AuxAtOutlineOffset, ConstantInt::get(IntPtrTy, TypeSize - CCInlineSize),
+          ConstantInt::getBool(Int1Ty, false) },
+        "", InsertBefore);
+      Call->addParamAttr(0, Attribute::getWithAlignment(C, Align(CCAlignment)));
+      Call->addParamAttr(1, Attribute::getWithAlignment(C, Align(WordSize)));
+      Call->setDebugLoc(DI);
+    }
+    CallInst::Create(LifetimeEnd, { ConstantInt::get(IntPtrTy, TypeSize), PayloadAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    CallInst::Create(LifetimeEnd, { ConstantInt::get(IntPtrTy, TypeSize), AuxAlloca }, "",
+                     InsertBefore)->setDebugLoc(DI);
+    return ConstantInt::get(IntPtrTy, TypeSize);
   }
 
-  bool isConstantZero(Constant* C) {
-    if (isa<ConstantAggregateZero>(C))
-      return true;
-    if (ConstantInt* CI = dyn_cast<ConstantInt>(C))
-      return CI->isZero();
-    if (ConstantFP* CF = dyn_cast<ConstantFP>(C))
-      return CF->isZero();
+  bool hasNonNullPtrs(Constant* C) {
+    if (isa<ConstantData>(C))
+      return false;
     if (ConstantAggregate* CA = dyn_cast<ConstantAggregate>(C)) {
       for (size_t Index = CA->getNumOperands(); Index--;) {
-        if (!isConstantZero(CA->getOperand(Index)))
-          return false;
+        if (hasNonNullPtrs(CA->getOperand(Index)))
+          return true;
       }
-      return true;
+      return false;
     }
-    return false;
-  }
-
-  GlobalVariable* objectGlobalForGlobal(GlobalValue* G, GlobalValue* OriginalG) {
-    if (verbose)
-      errs() << "Creating object constant for global = " << *G << "\n";
-    std::vector<WordType> WordTypes;
-    size_t ObjectSize;
-    int16_t ObjectFlags = ObjectFlagGlobal;
-    bool ObjectIsConstant = true;
-    if (isa<Function>(G)) {
-      WordTypes.push_back(WordTypeFunction);
-      ObjectSize = WordSize;
-      ObjectFlags |= ObjectFlagSpecial;
-    } else {
-      size_t Size = 0;
-      Type* LowT = G->getValueType();
-      buildWordTypesRecurse(LowT, LowT, Size, WordTypes);
-      if (Size != DL.getTypeAllocSize(LowT)) {
-        errs() << "Size mismatch for global type: " << *OriginalG->getValueType() << "\n"
-               << "Type after lowering: " << *LowT << "\n"
-               << "Size according to word type builder: " << Size << "\n"
-               << "Size according to DataLayout: " << DL.getTypeAllocSize(LowT) << "\n";
-      }
-      assert(Size == DL.getTypeAllocSize(LowT));
-      assert(!(Size % WordSize));
-      ObjectSize = Size;
-      GlobalVariable* OriginalGV = cast<GlobalVariable>(OriginalG);
-      if (OriginalGV->isConstant())
-        ObjectFlags |= ObjectFlagReadonly;
-      else if (isConstantZero(OriginalGV->getInitializer())) {
-        // Read-write globals that have a zero initializer get to have unset type. This allows for
-        // the C++ idiom where you allocate storage of char type to hold room for a class in order
-        // to avoid the class's constructor or destructor from running.
-        ObjectIsConstant = false;
-        for (size_t Index = WordTypes.size(); Index--;)
-          WordTypes[Index] = WordTypeUnset;
-      }
-    }
-    assert(!(ObjectSize % WordSize));
-    Constant* NewObjectC = objectConstant(
-      G, ConstantExpr::getGetElementPtr(Int8Ty, G, ConstantInt::get(IntPtrTy, ObjectSize)),
-      ObjectFlags, WordTypes);
-    return new GlobalVariable(
-      M, NewObjectC->getType(), ObjectIsConstant, GlobalValue::InternalLinkage, NewObjectC,
-      "Jo_" + OriginalG->getName());
+    return hasPtrs(C->getType());
   }
 
   Constant* paddedConstant(Constant* C) {
@@ -4818,36 +4198,43 @@ class Pizlonator {
     return ConstantStruct::get(PaddedTy, { C, ConstantAggregateZero::get(PaddingTy) });
   }
 
-  enum class ResultMode {
-    NeedFullConstant,
-    NeedConstantWithPtrPlaceholders
+  enum class TryLowerConstantImplMode {
+    NeedFullFlightConstant,
+    NeedRestConstantWithPtrPlaceholders
   };
-  Constant* tryLowerConstantToConstant(Constant* C, ResultMode RM = ResultMode::NeedFullConstant) {
-    assert(C->getType() != LowWidePtrTy);
+  Constant* tryLowerConstantImpl(Constant* C, TryLowerConstantImplMode LM) {
+    assert(C->getType() != FlightPtrTy);
+
+    bool needsFlight = LM == TryLowerConstantImplMode::NeedFullFlightConstant;
+    Type* ResultT;
+    if (needsFlight)
+      ResultT = toFlightType(C->getType());
+    else
+      ResultT = C->getType();
     
     if (isa<UndefValue>(C)) {
       if (isa<IntegerType>(C->getType()))
         return ConstantInt::get(C->getType(), 0);
       if (C->getType()->isFloatingPointTy())
         return ConstantFP::get(C->getType(), 0.);
-      if (C->getType() == LowRawPtrTy)
-        return LowWideNull;
-      return ConstantAggregateZero::get(lowerType(C->getType()));
+      if (C->getType() == RawPtrTy)
+        return needsFlight ? FlightNull : RawNull;
+      return ConstantAggregateZero::get(ResultT);
     }
     
     if (isa<ConstantPointerNull>(C))
-      return LowWideNull;
+      return needsFlight ? FlightNull : RawNull;
 
     if (isa<ConstantAggregateZero>(C))
-      return ConstantAggregateZero::get(lowerType(C->getType()));
+      return ConstantAggregateZero::get(ResultT);
 
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
-      switch (RM) {
-      case ResultMode::NeedFullConstant:
+      switch (LM) {
+      case TryLowerConstantImplMode::NeedFullFlightConstant:
         return nullptr;
-      case ResultMode::NeedConstantWithPtrPlaceholders:
-        return LowWideNull;
+      case TryLowerConstantImplMode::NeedRestConstantWithPtrPlaceholders:
+        return RawNull;
       }
       llvm_unreachable("should not get here");
     }
@@ -4858,31 +4245,31 @@ class Pizlonator {
     if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CA->getOperand(Index), RM);
+        Constant* LowC = tryLowerConstantImpl(CA->getOperand(Index), LM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
       }
-      return ConstantArray::get(cast<ArrayType>(lowerType(CA->getType())), Args);
+      return ConstantArray::get(cast<ArrayType>(ResultT), Args);
     }
     if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
       if (verbose)
         errs() << "Dealing with CS = " << *CS << "\n";
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CS->getOperand(Index), RM);
+        Constant* LowC = tryLowerConstantImpl(CS->getOperand(Index), LM);
         if (!LowC)
           return nullptr;
         if (verbose)
           errs() << "Index = " << Index << ", LowC = " << *LowC << "\n";
         Args.push_back(LowC);
       }
-      return ConstantStruct::get(cast<StructType>(lowerType(CS->getType())), Args);
+      return ConstantStruct::get(cast<StructType>(ResultT), Args);
     }
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
-        Constant* LowC = tryLowerConstantToConstant(CV->getOperand(Index), RM);
+        Constant* LowC = tryLowerConstantImpl(CV->getOperand(Index), LM);
         if (!LowC)
           return nullptr;
         Args.push_back(LowC);
@@ -4895,14 +4282,14 @@ class Pizlonator {
 
     if (verbose)
       errs() << "Lowering CE = " << *CE << "\n";
-    switch (RM) {
-    case ResultMode::NeedFullConstant:
+    switch (LM) {
+    case TryLowerConstantImplMode::NeedFullFlightConstant:
       return nullptr;
-    case ResultMode::NeedConstantWithPtrPlaceholders:
+    case TryLowerConstantImplMode::NeedRestConstantWithPtrPlaceholders:
       if (isa<IntegerType>(CE->getType()))
         return ConstantInt::get(CE->getType(), 0);
-      if (CE->getType() == LowRawPtrTy)
-        return LowWideNull;
+      if (CE->getType() == RawPtrTy)
+        return RawNull;
       
       llvm_unreachable("wtf kind of CE is that");
       return nullptr;
@@ -4910,8 +4297,16 @@ class Pizlonator {
     llvm_unreachable("bad RM");
   }
 
+  Constant* constantToRestConstantWithPtrPlaceholders(Constant* C) {
+    return tryLowerConstantImpl(C, TryLowerConstantImplMode::NeedRestConstantWithPtrPlaceholders);
+  }
+
+  Constant* tryConstantToFlightConstant(Constant* C) {
+    return tryLowerConstantImpl(C, TryLowerConstantImplMode::NeedFullFlightConstant);
+  }
+
   ConstantTarget constexprRecurse(Constant* C) {
-    assert(C->getType() != LowWidePtrTy);
+    assert(C->getType() != FlightPtrTy);
     
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
       assert(!shouldPassThrough(G));
@@ -4927,8 +4322,6 @@ class Pizlonator {
         ConstantTarget Target = constexprRecurse(CE->getOperand(0));
         APInt OffsetAP(64, 0, false);
         GetElementPtrInst* GEP = cast<GetElementPtrInst>(CE->getAsInstruction());
-        GEP->setSourceElementType(lowerType(GEP->getSourceElementType()));
-        GEP->setResultElementType(lowerType(GEP->getResultElementType()));
         bool result = GEP->accumulateConstantOffset(DL, OffsetAP);
         GEP->deleteValue();
         if (!result)
@@ -4953,7 +4346,7 @@ class Pizlonator {
   }
 
   bool computeConstantRelocations(Constant* C, std::vector<ConstantRelocation>& Result, size_t Offset = 0) {
-    assert(C->getType() != LowWidePtrTy);
+    assert(C->getType() != FlightPtrTy);
 
     if (ConstantTarget CT = constexprRecurse(C)) {
       assert(!(Offset % WordSize));
@@ -4976,7 +4369,7 @@ class Pizlonator {
       return true;
 
     if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
-      size_t ElementSize = DL.getTypeAllocSize(cast<ArrayType>(lowerType(CA->getType()))->getElementType());
+      size_t ElementSize = DL.getTypeAllocSize(CA->getType()->getElementType());
       for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(CA->getOperand(Index), Result, Offset + Index * ElementSize))
           return false;
@@ -4986,7 +4379,7 @@ class Pizlonator {
     if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
       if (verbose)
         errs() << "Dealing with CS = " << *CS << "\n";
-      const StructLayout* SL = DL.getStructLayout(cast<StructType>(lowerType(CS->getType())));
+      const StructLayout* SL = DL.getStructLayout(CS->getType());
       for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(
               CS->getOperand(Index), Result, Offset + SL->getElementOffset(Index)))
@@ -4995,8 +4388,7 @@ class Pizlonator {
       return true;
     }
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
-      size_t ElementSize = DL.getTypeAllocSize(
-        cast<VectorType>(lowerType(CV->getType()))->getElementType());
+      size_t ElementSize = DL.getTypeAllocSize(CV->getType()->getElementType());
       for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
         if (!computeConstantRelocations(CV->getOperand(Index), Result, Offset + Index * ElementSize))
           return false;
@@ -5010,12 +4402,12 @@ class Pizlonator {
     return false;
   }
 
-  Value* lowerConstant(Constant* C, Instruction* InsertBefore, Value* InitializationContext) {
+  Value* constantToFlightValue(Constant* C, Instruction* InsertBefore, Value* InitializationContext) {
     if (ultraVerbose)
-      errs() << "lowerConstant(" << *C << ", ..., " << *InitializationContext << ")\n";
-    assert(C->getType() != LowWidePtrTy);
+      errs() << "constantToFlightValue(" << *C << ", ..., " << *InitializationContext << ")\n";
+    assert(C->getType() != FlightPtrTy);
 
-    if (Constant* LowC = tryLowerConstantToConstant(C))
+    if (Constant* LowC = tryConstantToFlightConstant(C))
       return LowC;
     
     if (GlobalValue* G = dyn_cast<GlobalValue>(C)) {
@@ -5036,10 +4428,10 @@ class Pizlonator {
       return C;
 
     if (ConstantArray* CA = dyn_cast<ConstantArray>(C)) {
-      Value* Result = UndefValue::get(lowerType(CA->getType()));
+      Value* Result = UndefValue::get(toFlightType(CA->getType()));
       for (size_t Index = 0; Index < CA->getNumOperands(); ++Index) {
         Instruction* Insert = InsertValueInst::Create(
-          Result, lowerConstant(CA->getOperand(Index), InsertBefore, InitializationContext),
+          Result, constantToFlightValue(CA->getOperand(Index), InsertBefore, InitializationContext),
           static_cast<unsigned>(Index), "filc_insert_array", InsertBefore);
         Insert->setDebugLoc(InsertBefore->getDebugLoc());
         Result = Insert;
@@ -5049,9 +4441,10 @@ class Pizlonator {
     if (ConstantStruct* CS = dyn_cast<ConstantStruct>(C)) {
       if (verbose)
         errs() << "Dealing with CS = " << *CS << "\n";
-      Value* Result = UndefValue::get(lowerType(CS->getType()));
+      Value* Result = UndefValue::get(toFlightType(CS->getType()));
       for (size_t Index = 0; Index < CS->getNumOperands(); ++Index) {
-        Value* LowC = lowerConstant(CS->getOperand(Index), InsertBefore, InitializationContext);
+        Value* LowC = constantToFlightValue(
+          CS->getOperand(Index), InsertBefore, InitializationContext);
         if (verbose)
           errs() << "Index = " << Index << ", LowC = " << *LowC << "\n";
         Instruction* Insert = InsertValueInst::Create(
@@ -5062,10 +4455,10 @@ class Pizlonator {
       return Result;
     }
     if (ConstantVector* CV = dyn_cast<ConstantVector>(C)) {
-      Value* Result = UndefValue::get(lowerType(CV->getType()));
+      Value* Result = UndefValue::get(toFlightType(CV->getType()));
       for (size_t Index = 0; Index < CV->getNumOperands(); ++Index) {
         Instruction* Insert = InsertElementInst::Create(
-          Result, lowerConstant(CV->getOperand(Index), InsertBefore, InitializationContext),
+          Result, constantToFlightValue(CV->getOperand(Index), InsertBefore, InitializationContext),
           ConstantInt::get(IntPtrTy, Index), "filc_insert_vector", InsertBefore);
         Insert->setDebugLoc(InsertBefore->getDebugLoc());
         Result = Insert;
@@ -5084,7 +4477,7 @@ class Pizlonator {
 
     // I am the worst compiler programmer.
     StoreInst* DummyUser = new StoreInst(
-      CEInst, LowRawNull, false, Align(), AtomicOrdering::NotAtomic, SyncScope::System);
+      CEInst, RawNull, false, Align(), AtomicOrdering::NotAtomic, SyncScope::System);
     lowerInstruction(CEInst, InitializationContext);
     Value* Result = DummyUser->getOperand(0);
     DummyUser->deleteValue();
@@ -5113,25 +4506,25 @@ class Pizlonator {
 
   void captureTypesIfNecessary(Instruction* I) {
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
-      InstLowTypes[I] = lowerType(SI->getValueOperand()->getType());
+      InstTypes[I] = SI->getValueOperand()->getType();
       return;
     }
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      InstLowTypes[I] = lowerType(AI->getNewValOperand()->getType());
+      InstTypes[I] = AI->getNewValOperand()->getType();
       return;
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      InstLowTypes[I] = lowerType(AI->getValOperand()->getType());
+      InstTypes[I] = AI->getValOperand()->getType();
       return;
     }
 
     if (CallBase* CI = dyn_cast<CallBase>(I)) {
       std::vector<Type*> Types;
       for (size_t Index = 0; Index < CI->arg_size(); ++Index)
-        Types.push_back(lowerType(CI->getArgOperand(Index)->getType()));
-      InstLowTypeVectors[I] = std::move(Types);
+        Types.push_back(CI->getArgOperand(Index)->getType());
+      InstTypeVectors[I] = std::move(Types);
       if (InvokeInst* II = dyn_cast<InvokeInst>(I))
         LPIs[II] = II->getLandingPadInst();
       return;
@@ -5143,7 +4536,7 @@ class Pizlonator {
     if (Constant* C = dyn_cast<Constant>(V)) {
       if (ultraVerbose)
         errs() << "Got V = " << *V << ", C = " << *C << "\n";
-      Value* NewC = lowerConstant(C, I, InitializationContext);
+      Value* NewC = constantToFlightValue(C, I, InitializationContext);
       if (ultraVerbose)
         errs() << "Got NewC = " << *NewC <<"\n";
       return NewC;
@@ -5187,33 +4580,30 @@ class Pizlonator {
         errs() << "It's an intrinsic.\n";
       switch (II->getIntrinsicID()) {
       case Intrinsic::memset:
-      case Intrinsic::memset_inline:
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          Instruction* CI = CallInst::Create(
-            Memset,
-            { MyThread, II->getArgOperand(0), castInt(II->getArgOperand(1), Int32Ty, II),
-              makeIntPtr(II->getArgOperand(2), II), getOrigin(II->getDebugLoc()) });
-          ReplaceInstWithInst(II, CI);
-        }
+      case Intrinsic::memset_inline: {
+        lowerConstantOperand(II->getArgOperandUse(0), I, RawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, RawNull);
+        lowerConstantOperand(II->getArgOperandUse(2), I, RawNull);
+        Instruction* CI = CallInst::Create(
+          Memset,
+          { MyThread, II->getArgOperand(0), castInt(II->getArgOperand(1), Int32Ty, II),
+            makeIntPtr(II->getArgOperand(2), II), getOrigin(II->getDebugLoc()) });
+        ReplaceInstWithInst(II, CI);
         return true;
+      }
       case Intrinsic::memcpy:
       case Intrinsic::memcpy_inline:
-      case Intrinsic::memmove:
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(2), I, LowRawNull);
-        if (hasPtrsForCheck(II->getArgOperand(0)->getType())) {
-          assert(hasPtrsForCheck(II->getArgOperand(1)->getType()));
-          Instruction* CI = CallInst::Create(
-            Memmove,
-            { MyThread, II->getArgOperand(0), II->getArgOperand(1), makeIntPtr(II->getArgOperand(2), II),
-              getOrigin(II->getDebugLoc()) });
-          ReplaceInstWithInst(II, CI);
-        }
+      case Intrinsic::memmove: {
+        lowerConstantOperand(II->getArgOperandUse(0), I, RawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, RawNull);
+        lowerConstantOperand(II->getArgOperandUse(2), I, RawNull);
+        Instruction* CI = CallInst::Create(
+          Memmove,
+          { MyThread, II->getArgOperand(0), II->getArgOperand(1),
+            makeIntPtr(II->getArgOperand(2), II), getOrigin(II->getDebugLoc()) });
+        ReplaceInstWithInst(II, CI);
         return true;
+      }
 
       case Intrinsic::lifetime_start:
       case Intrinsic::lifetime_end:
@@ -5235,19 +4625,19 @@ class Pizlonator {
 
       case Intrinsic::vastart:
         assert(UsesVastartOrZargs);
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        checkWritePtr(II->getArgOperand(0), II, II->getDebugLoc());
-        storePtr(SnapshottedArgsPtrForVastart, ptrPtr(II->getArgOperand(0), II), II);
+        lowerConstantOperand(II->getArgOperandUse(0), I, RawNull);
+        storePtr(SnapshottedArgsPtrForVastart, flightPtrPtr(II->getArgOperand(0), II),
+                 auxPtrForOperand(II->getArgOperand(0), II, 0, II).P, II);
         II->eraseFromParent();
         return true;
         
       case Intrinsic::vacopy: {
-        lowerConstantOperand(II->getArgOperandUse(0), I, LowRawNull);
-        lowerConstantOperand(II->getArgOperandUse(1), I, LowRawNull);
-        checkWritePtr(II->getArgOperand(0), II, II->getDebugLoc());
-        checkReadPtr(II->getArgOperand(1), II, II->getDebugLoc());
-        Value* Load = loadPtr(ptrPtr(II->getArgOperand(1), II), II);
-        storePtr(Load, ptrPtr(II->getArgOperand(0), II), II);
+        lowerConstantOperand(II->getArgOperandUse(0), I, RawNull);
+        lowerConstantOperand(II->getArgOperandUse(1), I, RawNull);
+        Value* Load = loadPtr(flightPtrPtr(II->getArgOperand(1), II),
+                              auxPtrForOperand(II->getArgOperand(1), II, 1, II), II);
+        storePtr(Load, flightPtrPtr(II->getArgOperand(0), II),
+                 auxPtrForOperand(II->getArgOperand(0), II, 0, II).P, II);
         II->eraseFromParent();
         return true;
       }
@@ -5283,12 +4673,12 @@ class Pizlonator {
             ->setDebugLoc(II->getDebugLoc());
         }
         for (Use& U : II->data_ops()) {
-          lowerConstantOperand(U, I, LowRawNull);
-          if (hasPtrsForCheck(U->getType()))
-            U = ptrPtr(U, II);
+          lowerConstantOperand(U, I, RawNull);
+          if (hasPtrs(U->getType()))
+            U = flightPtrPtr(U, II);
         }
-        if (hasPtrsForCheck(II->getType()))
-          hackRAUW(II, [&] () { return badPtr(II, II->getNextNode()); });
+        if (hasPtrs(II->getType()))
+          hackRAUW(II, [&] () { return badFlightPtr(II, II->getNextNode()); });
         return true;
       }
     }
@@ -5320,7 +4710,7 @@ class Pizlonator {
           if (verbose)
             errs() << "Lowering some kind of setjmp\n";
           for (Use& Arg : CI->args())
-            lowerConstantOperand(Arg, CI, LowRawNull);
+            lowerConstantOperand(Arg, CI, RawNull);
           assert(FT == F->getFunctionType());
           assert(CI->hasFnAttr(Attribute::ReturnsTwice));
           assert(Setjmps.count(CI));
@@ -5340,9 +4730,9 @@ class Pizlonator {
             "filc_jmp_buf_create", CI);
           Create->setDebugLoc(CI->getDebugLoc());
           Value* UserJmpBuf = CI->getArgOperand(0);
-          checkWritePtr(UserJmpBuf, CI, CI->getDebugLoc());
-          storePtr(ptrForSpecialPayload(Create, CI), ptrPtr(UserJmpBuf, CI), CI);
-          recordObjectAtIndex(objectForSpecialPayload(Create, CI), FrameIndex, CI);
+          storePtr(flightPtrForPayload(Create, CI), flightPtrPtr(UserJmpBuf, CI),
+                   auxPtrForOperand(UserJmpBuf, CI, 0, CI).P, CI);
+          recordLowerAtIndex(Create, FrameIndex, CI);
           CallInst* NewCI = CallInst::Create(_Setjmp, { Create }, "filc_setjmp", CI);
           CI->replaceAllUsesWith(NewCI);
           NewCI->setDebugLoc(CI->getDebugLoc());
@@ -5352,9 +4742,25 @@ class Pizlonator {
 
         if (F->getName() == "zargs" &&
             !FT->getNumParams() &&
-            FT->getReturnType() == LowRawPtrTy) {
+            FT->getReturnType() == RawPtrTy) {
           assert(UsesVastartOrZargs);
           CI->replaceAllUsesWith(SnapshottedArgsPtrForZargs);
+          Erasify();
+          return true;
+        }
+
+        if (F->getName() == "zreturn" &&
+            FT->getNumParams() == 1 &&
+            FT->getReturnType() == VoidTy &&
+            FT->getParamType(0) == RawPtrTy) {
+          Instruction* Prepare = CallInst::Create(
+            PrepareToReturnWithData, { MyThread, CI->getArgOperand(0), getOrigin(CI->getDebugLoc()) },
+            "filc_prepare_to_return_with_data", CI);
+          Prepare->setDebugLoc(CI->getDebugLoc());
+          RetSizePhi->addIncoming(Prepare, Prepare->getParent());
+          BasicBlock* OriginalB = CI->getParent();
+          SplitBlock(OriginalB, CI);
+          cast<BranchInst>(OriginalB->getTerminator())->setSuccessor(0, ReallyReturnB);
           Erasify();
           return true;
         }
@@ -5362,25 +4768,25 @@ class Pizlonator {
         if ((F->getName() == "zgetlower" || F->getName() == "zgetupper") &&
             FT->getNumParams() == 1 &&
             !FT->isVarArg() &&
-            FT->getParamType(0) == LowRawPtrTy &&
-            FT->getReturnType() == LowRawPtrTy) {
-          lowerConstantOperand(CI->getArgOperandUse(0), CI, LowRawNull);
-          Value* Object = ptrObject(CI->getArgOperand(0), CI);
-          ICmpInst* NullObject = new ICmpInst(
-            CI, ICmpInst::ICMP_EQ, Object, LowRawNull, "filc_is_null_object");
-          NullObject->setDebugLoc(CI->getDebugLoc());
-          Instruction* NotNullTerm = SplitBlockAndInsertIfElse(NullObject, CI, false);
+            FT->getParamType(0) == RawPtrTy &&
+            FT->getReturnType() == RawPtrTy) {
+          lowerConstantOperand(CI->getArgOperandUse(0), CI, RawNull);
+          Value* Lower = flightPtrLower(CI->getArgOperand(0), CI);
+          ICmpInst* NullLower = new ICmpInst(
+            CI, ICmpInst::ICMP_EQ, Lower, RawNull, "filc_is_null_lower");
+          NullLower->setDebugLoc(CI->getDebugLoc());
+          Instruction* NotNullTerm = SplitBlockAndInsertIfElse(NullLower, CI, false);
           Value* LowerUpper;
           if (F->getName() == "zgetlower")
-            LowerUpper = objectLower(Object, NotNullTerm);
+            LowerUpper = Lower;
           else {
             assert(F->getName() == "zgetupper");
-            LowerUpper = objectUpper(Object, NotNullTerm);
+            LowerUpper = upperForLower(Lower, NotNullTerm);
           }
-          PHINode* Phi = PHINode::Create(LowRawPtrTy, 2, "filc_lower_upper_phi", CI);
-          Phi->addIncoming(LowRawNull, NullObject->getParent());
+          PHINode* Phi = PHINode::Create(RawPtrTy, 2, "filc_lower_upper_phi", CI);
+          Phi->addIncoming(RawNull, NullLower->getParent());
           Phi->addIncoming(LowerUpper, NotNullTerm->getParent());
-          CI->replaceAllUsesWith(ptrWithPtr(CI->getArgOperand(0), Phi, CI));
+          CI->replaceAllUsesWith(flightPtrWithPtr(CI->getArgOperand(0), Phi, CI));
           Erasify();
           return true;
         }
@@ -5389,10 +4795,7 @@ class Pizlonator {
             FT->getNumParams() == 0 &&
             !FT->isVarArg() &&
             FT->getReturnType() == Int32Ty) {
-          Instruction* TidPtr = GetElementPtrInst::Create(
-            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 2) },
-            "filc_tid_ptr", CI);
-          TidPtr->setDebugLoc(CI->getDebugLoc());
+          Value* TidPtr = threadTIDPtr(MyThread, CI);
           Instruction* Tid = new LoadInst(Int32Ty, TidPtr, "filc_tid", CI);
           Tid->setDebugLoc(CI->getDebugLoc());
           CI->replaceAllUsesWith(Tid);
@@ -5403,8 +4806,8 @@ class Pizlonator {
         if (F->getName() == "zthread_self" &&
             FT->getNumParams() == 0 &&
             !FT->isVarArg() &&
-            FT->getReturnType() == LowRawPtrTy) {
-          CI->replaceAllUsesWith(ptrForSpecialPayload(MyThread, CI));
+            FT->getReturnType() == RawPtrTy) {
+          CI->replaceAllUsesWith(flightPtrForPayload(MyThread, CI));
           Erasify();
           return true;
         }
@@ -5412,12 +4815,9 @@ class Pizlonator {
         if (F->getName() == "zthread_self_cookie" &&
             FT->getNumParams() == 0 &&
             !FT->isVarArg() &&
-            FT->getReturnType() == LowRawPtrTy) {
-          Instruction* CookiePtr = GetElementPtrInst::Create(
-            ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 5) },
-            "filc_cookie_ptr", CI);
-          CookiePtr->setDebugLoc(CI->getDebugLoc());
-          Instruction* Cookie = new LoadInst(LowWidePtrTy, CookiePtr, "filc_cookie", CI);
+            FT->getReturnType() == RawPtrTy) {
+          Value* CookiePtr = threadCookiePtrPtr(MyThread, CI);
+          Instruction* Cookie = new LoadInst(FlightPtrTy, CookiePtr, "filc_cookie", CI);
           Cookie->setDebugLoc(CI->getDebugLoc());
           CI->replaceAllUsesWith(Cookie);
           Erasify();
@@ -5426,7 +4826,7 @@ class Pizlonator {
 
         if (shouldPassThrough(F)) {
           for (Use& Arg : CI->args())
-            lowerConstantOperand(Arg, CI, LowRawNull);
+            lowerConstantOperand(Arg, CI, RawNull);
           return true;
         }
       }
@@ -5439,24 +4839,20 @@ class Pizlonator {
       StructType* ST = cast<StructType>(I->getType());
       assert(!ST->isOpaque());
       assert(ST->getNumElements() <= NumUnwindRegisters);
-      Value* Result = UndefValue::get(lowerType(ST));
+      Value* Result = UndefValue::get(toFlightType(ST));
       for (unsigned Idx = ST->getNumElements(); Idx--;) {
-        Instruction* UnwindRegisterPtr = GetElementPtrInst::Create(
-          ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 4),
-            ConstantInt::get(Int32Ty, Idx) },
-          "filc_unwind_register_ptr", I);
-        UnwindRegisterPtr->setDebugLoc(I->getDebugLoc());
+        Value* UnwindRegisterPtr = threadUnwindRegisterPtr(MyThread, Idx, I);
         LoadInst* RawUnwindRegister = new LoadInst(
-          LowWidePtrTy, UnwindRegisterPtr, "filc_load_unwind_register", I);
-        (new StoreInst(LowWideNull, UnwindRegisterPtr, I))->setDebugLoc(I->getDebugLoc());
+          FlightPtrTy, UnwindRegisterPtr, "filc_load_unwind_register", I);
+        (new StoreInst(FlightNull, UnwindRegisterPtr, I))->setDebugLoc(I->getDebugLoc());
         Value* UnwindRegister;
-        if (ST->getElementType(Idx) == LowRawPtrTy)
+        if (ST->getElementType(Idx) == RawPtrTy)
           UnwindRegister = RawUnwindRegister;
         else {
           assert(isa<IntegerType>(ST->getElementType(Idx)));
           Instruction* Trunc = new TruncInst(
-            ptrWord(RawUnwindRegister, I), ST->getElementType(Idx), "filc_trunc_unwind_register", I);
+            flightPtrPtrAsInt(RawUnwindRegister, I), ST->getElementType(Idx),
+            "filc_trunc_unwind_register", I);
           Trunc->setDebugLoc(I->getDebugLoc());
           UnwindRegister = Trunc;
         }
@@ -5480,12 +4876,12 @@ class Pizlonator {
       errs() << "Lowering: " << *I << "\n";
 
     if (PHINode* P = dyn_cast<PHINode>(I)) {
-      assert(InitializationContext == LowRawNull);
+      assert(InitializationContext == RawNull);
       for (unsigned Index = P->getNumIncomingValues(); Index--;) {
         lowerConstantOperand(
-          P->getOperandUse(Index), P->getIncomingBlock(Index)->getTerminator(), LowRawNull);
+          P->getOperandUse(Index), P->getIncomingBlock(Index)->getTerminator(), RawNull);
       }
-      P->mutateType(lowerType(P->getType()));
+      P->mutateType(toFlightType(P->getType()));
       return;
     }
 
@@ -5498,7 +4894,7 @@ class Pizlonator {
         return;
       }
       
-      Type* LowT = lowerType(AI->getAllocatedType());
+      Type* T = AI->getAllocatedType();
       Value* Length = AI->getArraySize();
       if (Length->getType() != IntPtrTy) {
         Instruction* ZExt = new ZExtInst(Length, IntPtrTy, "filc_alloca_length_zext", AI);
@@ -5506,20 +4902,20 @@ class Pizlonator {
         Length = ZExt;
       }
       Instruction* Size = BinaryOperator::Create(
-        Instruction::Mul, Length, ConstantInt::get(IntPtrTy, DL.getTypeAllocSize(LowT)),
+        Instruction::Mul, Length, ConstantInt::get(IntPtrTy, DL.getTypeAllocSize(T)),
         "filc_alloca_size", AI);
       Size->setDebugLoc(AI->getDebugLoc());
-      AI->replaceAllUsesWith(allocate(Size, DL.getABITypeAlign(LowT).value(), AI));
+      AI->replaceAllUsesWith(allocate(Size, DL.getABITypeAlign(T).value(), AI));
       AI->eraseFromParent();
       return;
     }
 
     if (LoadInst* LI = dyn_cast<LoadInst>(I)) {
-      Type *LowT = lowerType(LI->getType());
+      Type *T = LI->getType();
       Value* HighP = LI->getPointerOperand();
       Value* Result = loadValueRecurseAfterCheck(
-        LowT, ptrPtr(HighP, LI), LI->isVolatile(), LI->getAlign(), LI->getOrdering(),
-        LI->getSyncScopeID(), MemoryKind::Heap, LI);
+        T, flightPtrPtr(HighP, LI), auxPtrForOperand(HighP, LI, 0, LI), LI->isVolatile(),
+        LI->getAlign(), LI->getOrdering(), LI->getSyncScopeID(), MemoryKind::Heap, LI);
       LI->replaceAllUsesWith(Result);
       LI->eraseFromParent();
       return;
@@ -5528,7 +4924,8 @@ class Pizlonator {
     if (StoreInst* SI = dyn_cast<StoreInst>(I)) {
       Value* HighP = SI->getPointerOperand();
       storeValueRecurseAfterCheck(
-        InstLowTypes[SI], SI->getValueOperand(), ptrPtr(HighP, SI), SI->isVolatile(), SI->getAlign(),
+        InstTypes[SI], SI->getValueOperand(), flightPtrPtr(HighP, SI),
+        auxPtrForOperand(HighP, SI, 0, SI).P, SI->isVolatile(), SI->getAlign(),
         SI->getOrdering(), SI->getSyncScopeID(), MemoryKind::Heap, SI);
       SI->eraseFromParent();
       return;
@@ -5540,66 +4937,62 @@ class Pizlonator {
     }
 
     if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(I)) {
-      Value* LowP = ptrPtr(AI->getPointerOperand(), AI);
-      if (InstLowTypes[AI] == LowWidePtrTy) {
-        storeBarrierForValue(AI->getNewValOperand(), AI);
-        Value* ExpectedWord = ptrWord(AI->getCompareOperand(), AI);
-        Value* NewValueWord = ptrWord(AI->getNewValOperand(), AI);
-        Instruction* NewAI = new AtomicCmpXchgInst(
-          LowP, ExpectedWord, NewValueWord, AI->getAlign(), AI->getSuccessOrdering(),
-          AI->getFailureOrdering(), AI->getSyncScopeID(), AI);
-        NewAI->setDebugLoc(AI->getDebugLoc());
-        Instruction* ResultWord = ExtractValueInst::Create(
-          Int128Ty, NewAI, { 0 }, "filc_cas_result_word", AI);
-        ResultWord->setDebugLoc(AI->getDebugLoc());
-        Instruction* ResultBit = ExtractValueInst::Create(
-          Int1Ty, NewAI, { 1 }, "filc_cas_result_bit", AI);
-        ResultBit->setDebugLoc(AI->getDebugLoc());
-        StructType* ResultTy = StructType::get(C, { LowWidePtrTy, Int1Ty });
+      if (InstTypes[AI] == RawPtrTy) {
+        storeOrigin(getOrigin(AI->getDebugLoc()), AI);
+        Instruction* CAS = CallInst::Create(
+          StrongCasPtr,
+          { MyThread, AI->getPointerOperand(), ConstantInt::get(IntPtrTy, 0), AI->getCompareOperand(),
+            AI->getNewValOperand() }, "filc_strong_cas_ptr", AI);
+        StructType* ResultTy = StructType::get(C, { FlightPtrTy, Int1Ty });
         Instruction* Result = InsertValueInst::Create(
-          UndefValue::get(ResultTy), wordToPtr(ResultWord, AI), { 0 }, "filc_cas_create_result_word", AI);
+          UndefValue::get(ResultTy), CAS, { 0 }, "filc_cas_create_result_word", AI);
         Result->setDebugLoc(AI->getDebugLoc());
-        Result = InsertValueInst::Create(Result, ResultBit, { 1 }, "filc_cas_create_result_bit", AI);
+        Instruction* Equal = new ICmpInst(
+          AI, ICmpInst::ICMP_EQ, flightPtrPtr(CAS, AI), flightPtrPtr(AI->getCompareOperand(), AI),
+          "filc_cas_succeeded");
+        Equal->setDebugLoc(AI->getDebugLoc());
+        Result = InsertValueInst::Create(Result, Equal, { 1 }, "filc_cas_create_result_bit", AI);
         Result->setDebugLoc(AI->getDebugLoc());
         AI->replaceAllUsesWith(Result);
         AI->eraseFromParent();
         return;
       }
-      assert(!hasPtrsForCheck(InstLowTypes[AI]));
-      AI->getOperandUse(AtomicCmpXchgInst::getPointerOperandIndex()) = LowP;
+      assert(!hasPtrs(InstTypes[AI]));
+      AI->getOperandUse(AtomicCmpXchgInst::getPointerOperandIndex()) =
+        flightPtrPtr(AI->getPointerOperand(), AI);
       return;
     }
 
     if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(I)) {
-      Value* LowP = ptrPtr(AI->getPointerOperand(), AI);
-      if (InstLowTypes[AI] == LowWidePtrTy) {
-        storeBarrierForValue(AI->getValOperand(), AI);
-        Instruction* NewAI = new AtomicRMWInst(
-          AI->getOperation(), LowP, ptrWord(AI->getValOperand(), AI), AI->getAlign(), AI->getOrdering(),
-          AI->getSyncScopeID(), AI);
-        NewAI->setDebugLoc(AI->getDebugLoc());
-        AI->replaceAllUsesWith(wordToPtr(NewAI, AI));
+      if (InstTypes[AI] == RawPtrTy) {
+        assert(AI->getOperation() == AtomicRMWInst::Xchg);
+        storeOrigin(getOrigin(AI->getDebugLoc()), AI);
+        Instruction* Xchg = CallInst::Create(
+          XchgPtr,
+          { MyThread, AI->getPointerOperand(), ConstantInt::get(IntPtrTy, 0), AI->getValOperand() },
+          "filc_xchg_ptr", AI);
+        Xchg->setDebugLoc(AI->getDebugLoc());
+        AI->replaceAllUsesWith(Xchg);
         AI->eraseFromParent();
         return;
       }
-      AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) = LowP;
-      assert(!hasPtrsForCheck(InstLowTypes[AI]));
+      AI->getOperandUse(AtomicRMWInst::getPointerOperandIndex()) =
+        flightPtrPtr(AI->getPointerOperand(), AI);
+      assert(!hasPtrs(InstTypes[AI]));
       return;
     }
 
     if (GetElementPtrInst* GI = dyn_cast<GetElementPtrInst>(I)) {
-      GI->setSourceElementType(lowerType(GI->getSourceElementType()));
-      GI->setResultElementType(lowerType(GI->getResultElementType()));
       Value* HighP = GI->getOperand(0);
-      GI->getOperandUse(0) = ptrPtr(HighP, GI);
-      hackRAUW(GI, [&] () { return ptrWithPtr(HighP, GI, GI->getNextNode()); });
+      GI->getOperandUse(0) = flightPtrPtr(HighP, GI);
+      hackRAUW(GI, [&] () { return flightPtrWithPtr(HighP, GI, GI->getNextNode()); });
       return;
     }
 
     if (ICmpInst* CI = dyn_cast<ICmpInst>(I)) {
-      if (hasPtrsForCheck(CI->getOperand(0)->getType())) {
-        CI->getOperandUse(0) = ptrPtr(CI->getOperand(0), CI);
-        CI->getOperandUse(1) = ptrPtr(CI->getOperand(1), CI);
+      if (hasPtrs(CI->getOperand(0)->getType())) {
+        CI->getOperandUse(0) = flightPtrPtr(CI->getOperand(0), CI);
+        CI->getOperandUse(1) = flightPtrPtr(CI->getOperand(1), CI);
       }
       return;
     }
@@ -5676,8 +5069,8 @@ class Pizlonator {
         if (I->getType() != VoidTy) {
           // We need to produce something to RAUW the call with, but it cannot be a constant, since
           // that would upset lowerConstant.
-          Type* LowT = lowerType(I->getType());
-          LoadInst* LI = new LoadInst(LowT, LowRawNull, "filc_fake_load", I);
+          Type* LowT = toFlightType(I->getType());
+          LoadInst* LI = new LoadInst(LowT, RawNull, "filc_fake_load", I);
           LI->setDebugLoc(I->getDebugLoc());
           CI->replaceAllUsesWith(LI);
         }
@@ -5692,61 +5085,25 @@ class Pizlonator {
         assert(!shouldPassThrough(F));
 
       FunctionType *FT = CI->getFunctionType();
-      Value* Args;
+      Value* ArgSize;
       if (CI->arg_size()) {
-        assert(InstLowTypeVectors.count(CI));
-        std::vector<Type*> ArgTypes = InstLowTypeVectors[CI];
+        assert(InstTypeVectors.count(CI));
+        std::vector<Type*> ArgTypes = InstTypeVectors[CI];
         StructType* ArgsType = argsType(ArgTypes);
-        Constant* CCType = ccTypeForLowType(ArgsType);
-        size_t ArgsSize = (DL.getTypeAllocSize(ArgsType) + WordSize - 1) / WordSize * WordSize;
-        Instruction* ClearArgBuffer = CallInst::Create(
-          RealMemset,
-          { FutureArgBuffer, ConstantInt::get(Int8Ty, 0), ConstantInt::get(IntPtrTy, ArgsSize),
-            ConstantInt::get(Int1Ty, false) }, "", CI);
-        ClearArgBuffer->setDebugLoc(CI->getDebugLoc());
-        ArgBufferSize = std::max(ArgBufferSize, ArgsSize);
-        ArgBufferAlignment = std::max(
-          ArgBufferAlignment, static_cast<size_t>(DL.getABITypeAlign(ArgsType).value()));
-        assert(CI->arg_size() == ArgsType->getNumElements());
-        assert(CI->arg_size() == ArgTypes.size());
-        const StructLayout* SL = DL.getStructLayout(ArgsType);
+        Value* Args = UndefValue::get(toFlightType(ArgsType));
         for (size_t Index = CI->arg_size(); Index--;) {
-          Instruction* ArgSlotPtr = GetElementPtrInst::Create(
-            Int8Ty, FutureArgBuffer, { ConstantInt::get(IntPtrTy, SL->getElementOffset(Index)) },
-            "filc_arg_slot", CI);
-          ArgSlotPtr->setDebugLoc(CI->getDebugLoc());
-          Type* OriginalLowT = ArgTypes[Index];
-          Type* CanonicalLowT = ArgsType->getElementType(Index);
-          storeValueRecurseAfterCheck(
-            CanonicalLowT, castToArg(CI->getArgOperand(Index), OriginalLowT, CanonicalLowT, CI),
-            ArgSlotPtr, false, DL.getABITypeAlign(CanonicalLowT), AtomicOrdering::NotAtomic,
-            SyncScope::System, MemoryKind::CC, CI);
+          Type* OriginalT = ArgTypes[Index];
+          Type* CanonicalT = ArgsType->getElementType(Index);
+          Instruction* Insert = InsertValueInst::Create(
+            Args, castToArg(CI->getArgOperand(Index), toFlightType(OriginalT),
+                            toFlightType(CanonicalT), CI),
+            static_cast<unsigned>(Index), "filc_insert_arg", CI);
+          Insert->setDebugLoc(CI->getDebugLoc());
+          Args = Insert;
         }
-        Args = createCCPtr(CCType, FutureArgBuffer, CI);
+        ArgSize = storeCC(ArgsType, Args, CI, CI->getDebugLoc());
       } else
-        Args = createCCPtr(EmptyCCType, LowRawNull, CI);
-
-      Type* LowRetT = lowerType(FT->getReturnType());
-      Value* CCRetType;
-      size_t RetSize;
-      size_t RetAlignment;
-      if (LowRetT == VoidTy) {
-        CCRetType = VoidCCType;
-        RetSize = WordSize;
-        RetAlignment = 1;
-      } else {
-        CCRetType = ccTypeForLowType(LowRetT);
-        RetSize = (DL.getTypeAllocSize(LowRetT) + WordSize - 1) / WordSize * WordSize;
-        RetAlignment = DL.getABITypeAlign(LowRetT).value();
-      }
-      ReturnBufferSize = std::max(ReturnBufferSize, RetSize);
-      ReturnBufferAlignment = std::max(ReturnBufferAlignment, RetAlignment);
-      Value* Rets = createCCPtr(CCRetType, FutureReturnBuffer, CI);
-      Instruction* ClearRetBuffer = CallInst::Create(
-        RealMemset,
-        { FutureReturnBuffer, ConstantInt::get(Int8Ty, 0), ConstantInt::get(IntPtrTy, RetSize),
-          ConstantInt::get(Int1Ty, false) }, "", CI);
-      ClearRetBuffer->setDebugLoc(CI->getDebugLoc());
+        ArgSize = ConstantInt::get(IntPtrTy, 0);
 
       bool CanCatch;
       LandingPadInst* LPI;
@@ -5758,58 +5115,57 @@ class Pizlonator {
         assert(LPIs.count(cast<InvokeInst>(CI)));
         LPI = LPIs[cast<InvokeInst>(CI)];
       }
-      
-      Instruction* OriginPtr = GetElementPtrInst::Create(
-        FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-        "filc_frame_origin_ptr", CI);
-      OriginPtr->setDebugLoc(CI->getDebugLoc());
-      (new StoreInst(getOrigin(CI->getDebugLoc(), CanCatch, LPI), OriginPtr, CI))
-        ->setDebugLoc(CI->getDebugLoc());
 
-      Value* CalledObject = ptrObject(CI->getCalledOperand(), CI);
-      ICmpInst* NullObject = new ICmpInst(
-        CI, ICmpInst::ICMP_EQ, CalledObject, LowRawNull, "filc_null_called_object");
-      NullObject->setDebugLoc(CI->getDebugLoc());
-      Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(expectFalse(NullObject, CI), CI, true);
+      storeOrigin(getOrigin(CI->getDebugLoc(), CanCatch, LPI), CI);
+
+      Value* CalledLower = flightPtrLower(CI->getCalledOperand(), CI);
+      ICmpInst* NullLower = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, CalledLower, RawNull, "filc_null_called_lower");
+      NullLower->setDebugLoc(CI->getDebugLoc());
+      Instruction* NewBlockTerm = SplitBlockAndInsertIfThen(expectFalse(NullLower, CI), CI, true);
       BasicBlock* NewBlock = NewBlockTerm->getParent();
       CallInst::Create(
         CheckFunctionCallFail, { CI->getCalledOperand() }, "", NewBlockTerm)
         ->setDebugLoc(CI->getDebugLoc());
-      ICmpInst* AtLower = new ICmpInst(
-        CI, ICmpInst::ICMP_EQ, ptrPtr(CI->getCalledOperand(), CI), objectLower(CalledObject, CI),
-        "filc_call_at_lower");
-      AtLower->setDebugLoc(CI->getDebugLoc());
+      ICmpInst* AtAuxPtr = new ICmpInst(
+        CI, ICmpInst::ICMP_EQ, flightPtrPtr(CI->getCalledOperand(), CI),
+        auxPtrForLower(CalledLower, CI), "filc_call_at_lower");
+      AtAuxPtr->setDebugLoc(CI->getDebugLoc());
       SplitBlockAndInsertIfElse(
-        expectTrue(AtLower, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
+        expectTrue(AtAuxPtr, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
       BinaryOperator* Masked = BinaryOperator::Create(
-        Instruction::And, objectFlags(CalledObject, CI), ConstantInt::get(Int16Ty, ObjectFlagSpecial),
-        "filc_call_mask_special", CI);
+        Instruction::And, flagsForLower(CalledLower, CI),
+        ConstantInt::get(IntPtrTy, SpecialTypeMask << ObjectFlagsSpecialShift),
+        "filc_call_mask_special_type", CI);
       Masked->setDebugLoc(CI->getDebugLoc());
-      ICmpInst* NotSpecial = new ICmpInst(
-        CI, ICmpInst::ICMP_EQ, Masked, ConstantInt::get(Int16Ty, 0), "filc_call_not_special");
-      NotSpecial->setDebugLoc(CI->getDebugLoc());
-      SplitBlockAndInsertIfThen(
-        expectFalse(NotSpecial, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
-      LoadInst* WordType = new LoadInst(
-        Int8Ty, objectWordTypesPtr(CalledObject, CI), "filc_call_word_type", CI);
-      WordType->setDebugLoc(CI->getDebugLoc());
       ICmpInst* IsFunction = new ICmpInst(
-        CI, ICmpInst::ICMP_EQ, WordType, ConstantInt::get(Int8Ty, WordTypeFunction),
-        "filc_call_is_fuction");
+        CI, ICmpInst::ICMP_EQ, Masked,
+        ConstantInt::get(IntPtrTy, SpecialTypeFunction << ObjectFlagsSpecialShift),
+        "filc_call_is_function");
       IsFunction->setDebugLoc(CI->getDebugLoc());
       SplitBlockAndInsertIfElse(
         expectTrue(IsFunction, CI), CI, false, nullptr, nullptr, nullptr, NewBlock);
 
       assert(!CI->hasOperandBundles());
       CallInst* TheCall = CallInst::Create(
-        PizlonatedFuncTy, ptrPtr(CI->getCalledOperand(), CI), { MyThread, Args, Rets }, "filc_call",
-        CI);
+        PizlonatedFuncTy, flightPtrPtr(CI->getCalledOperand(), CI), { MyThread, ArgSize },
+        "filc_call", CI);
+      TheCall->setDebugLoc(CI->getDebugLoc());
+      Instruction* HasException = ExtractValueInst::Create(
+        Int1Ty, TheCall, { 0 }, "filc_has_exception", CI);
+      HasException->setDebugLoc(CI->getDebugLoc());
+      Instruction* RetSize = ExtractValueInst::Create(
+        IntPtrTy, TheCall, { 1 }, "filc_ret_size", CI);
+      RetSize->setDebugLoc(CI->getDebugLoc());
 
       if (isa<CallInst>(CI) && CanCatch) {
         SplitBlockAndInsertIfThen(
-          expectFalse(TheCall, CI), CI, false, nullptr, nullptr, nullptr, ResumeB);
-      } else if (InvokeInst* II = dyn_cast<InvokeInst>(CI))
-        BranchInst::Create(II->getUnwindDest(), II->getNormalDest(), expectFalse(TheCall, II), II);
+          expectFalse(HasException, CI), CI, false, nullptr, nullptr, nullptr, ResumeB);
+      } else if (InvokeInst* II = dyn_cast<InvokeInst>(CI)) {
+        BranchInst::Create(
+          II->getUnwindDest(), II->getNormalDest(), expectFalse(HasException, II), II)
+          ->setDebugLoc(II->getDebugLoc());
+      }
       
       Instruction* PostInsertionPt;
       if (isa<CallInst>(CI))
@@ -5817,11 +5173,10 @@ class Pizlonator {
       else
         PostInsertionPt = &*cast<InvokeInst>(CI)->getNormalDest()->getFirstInsertionPt();
 
-      if (LowRetT != VoidTy) {
+      if (FT->getReturnType() != VoidTy) {
         CI->replaceAllUsesWith(
-          loadValueRecurseAfterCheck(
-            LowRetT, FutureReturnBuffer, false, DL.getABITypeAlign(LowRetT),
-            AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::CC, PostInsertionPt));
+          loadCC(FT->getReturnType(), RetSize, CCRetsCheckFailure, PostInsertionPt,
+                 CI->getDebugLoc()));
       }
 
       CI->eraseFromParent();
@@ -5830,20 +5185,27 @@ class Pizlonator {
 
     if (VAArgInst* VI = dyn_cast<VAArgInst>(I)) {
       Type* T = VI->getType();
-      Type* LowT = lowerType(T);
-      Type* CanonicalLowT = argType(LowT);
-      size_t Size = DL.getTypeAllocSize(CanonicalLowT);
-      size_t Alignment = DL.getABITypeAlign(CanonicalLowT).value();
+      Type* CanonicalT = argType(T);
+      size_t Size = DL.getTypeAllocSize(CanonicalT);
+      size_t Alignment = DL.getABITypeAlign(CanonicalT).value();
+      storeOrigin(getOrigin(VI->getDebugLoc()), VI);
+      // FIXME: We could optimize this by calling GetNextBytesForVAArg (sans the Ptr part) in cases
+      // where we're loading a non-ptr type.
       CallInst* Call = CallInst::Create(
-        GetNextBytesForVAArg,
-        { MyThread, VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size),
-          ConstantInt::get(IntPtrTy, Alignment), getOrigin(VI->getDebugLoc()) },
+        GetNextPtrBytesForVAArg,
+        { VI->getPointerOperand(), ConstantInt::get(IntPtrTy, Size),
+          ConstantInt::get(IntPtrTy, Alignment) },
         "filc_va_arg", VI);
       Call->setDebugLoc(VI->getDebugLoc());
-      Value* Load = loadValueRecurse(
-        CanonicalLowT, Call, ptrPtr(Call, VI), false, DL.getABITypeAlign(CanonicalLowT),
-        AtomicOrdering::NotAtomic, SyncScope::System, VI);
-      VI->replaceAllUsesWith(castFromArg(Load, LowT, VI));
+      Instruction* P = ExtractValueInst::Create(RawPtrTy, Call, { 0 }, "filc_ptr_pair_raw_ptr", VI);
+      P->setDebugLoc(VI->getDebugLoc());
+      Instruction* AuxP = ExtractValueInst::Create(
+        RawPtrTy, Call, { 1 }, "filc_ptr_pair_aux_ptr", VI);
+      P->setDebugLoc(VI->getDebugLoc());
+      Value* Load = loadValueRecurseAfterCheck(
+        CanonicalT, P, AuxP, AuxP, false, DL.getABITypeAlign(CanonicalT),
+        AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::Heap, VI);
+      VI->replaceAllUsesWith(castFromArg(Load, toFlightType(T), VI));
       VI->eraseFromParent();
       return;
     }
@@ -5855,7 +5217,7 @@ class Pizlonator {
         isa<InsertValueInst>(I) ||
         isa<SelectInst>(I) ||
         isa<FreezeInst>(I)) {
-      I->mutateType(lowerType(I->getType()));
+      I->mutateType(toFlightType(I->getType()));
       return;
     }
 
@@ -5913,37 +5275,37 @@ class Pizlonator {
     }
 
     if (isa<IntToPtrInst>(I)) {
-      hackRAUW(I, [&] () { return badPtr(I, I->getNextNode()); });
+      hackRAUW(I, [&] () { return badFlightPtr(I, I->getNextNode()); });
       return;
     }
 
     if (isa<PtrToIntInst>(I)) {
-      I->getOperandUse(0) = ptrPtr(I->getOperand(0), I);
+      I->getOperandUse(0) = flightPtrPtr(I->getOperand(0), I);
       return;
     }
 
     if (isa<BitCastInst>(I)) {
-      if (hasPtrsForCheck(I->getType())) {
-        assert(hasPtrsForCheck(I->getOperand(0)->getType()));
-        assert(I->getType() == LowRawPtrTy || I->getType() == LowWidePtrTy);
-        assert(I->getOperand(0)->getType() == LowRawPtrTy ||
-               I->getOperand(0)->getType() == LowWidePtrTy);
+      if (hasPtrs(I->getType())) {
+        assert(hasPtrs(I->getOperand(0)->getType()));
+        assert(I->getType() == RawPtrTy || I->getType() == FlightPtrTy);
+        assert(I->getOperand(0)->getType() == RawPtrTy ||
+               I->getOperand(0)->getType() == FlightPtrTy);
         I->replaceAllUsesWith(I->getOperand(0));
         I->eraseFromParent();
       } else
-        assert(!hasPtrsForCheck(I->getOperand(0)->getType()));
+        assert(!hasPtrs(I->getOperand(0)->getType()));
       return;
     }
 
     if (isa<AddrSpaceCastInst>(I)) {
-      if (hasPtrsForCheck(I->getType())) {
-        if (hasPtrsForCheck(I->getOperand(0)->getType())) {
+      if (hasPtrs(I->getType())) {
+        if (hasPtrs(I->getOperand(0)->getType())) {
           I->replaceAllUsesWith(I->getOperand(0));
           I->eraseFromParent();
         } else
-          hackRAUW(I, [&] () { return badPtr(I, I->getNextNode()); });
-      } else if (hasPtrsForCheck(I->getOperand(0)->getType()))
-        I->getOperandUse(0) = ptrPtr(I->getOperand(0), I);
+          hackRAUW(I, [&] () { return badFlightPtr(I, I->getNextNode()); });
+      } else if (hasPtrs(I->getOperand(0)->getType()))
+        I->getOperandUse(0) = flightPtrPtr(I->getOperand(0), I);
       return;
     }
 
@@ -5994,11 +5356,9 @@ class Pizlonator {
 
   void stackOverflowCheck(Instruction* InsertBefore) {
     assert(MyThread);
-    Instruction* GEP = GetElementPtrInst::Create(
-      ThreadTy, MyThread, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
-      "filc_stack_limit_ptr", InsertBefore);
+    Value* GEP = threadStackLimitPtr(MyThread, InsertBefore);
     CallInst* CI = CallInst::Create(StackCheckAsm, { GEP }, "", InsertBefore);
-    CI->addParamAttr(0, Attribute::get(C, Attribute::ElementType, LowRawPtrTy));
+    CI->addParamAttr(0, Attribute::get(C, Attribute::ElementType, RawPtrTy));
   }
 
   void lowerThreadLocals() {
@@ -6037,10 +5397,10 @@ class Pizlonator {
     std::unordered_map<GlobalVariable*, GlobalVariable*> ThreadLocalKeyMap;
     std::unordered_map<GlobalVariable*, Function*> ThreadLocalInitializerMap;
 
-    FunctionType* InitializerTy = FunctionType::get(LowRawPtrTy, false);
-    FunctionCallee Malloc = M.getOrInsertFunction("malloc", LowRawPtrTy, IntPtrTy);
-    FunctionCallee PthreadKeyCreate = M.getOrInsertFunction("pthread_key_create", Int32Ty, LowRawPtrTy, LowRawPtrTy);
-    FunctionCallee PthreadGetspecificWithDefaultNP = M.getOrInsertFunction("pthread_getspecific_with_default_np", LowRawPtrTy, Int32Ty, LowRawPtrTy);
+    FunctionType* InitializerTy = FunctionType::get(RawPtrTy, false);
+    FunctionCallee Malloc = M.getOrInsertFunction("malloc", RawPtrTy, IntPtrTy);
+    FunctionCallee PthreadKeyCreate = M.getOrInsertFunction("pthread_key_create", Int32Ty, RawPtrTy, RawPtrTy);
+    FunctionCallee PthreadGetspecificWithDefaultNP = M.getOrInsertFunction("pthread_getspecific_with_default_np", RawPtrTy, Int32Ty, RawPtrTy);
 
     for (GlobalVariable* G : ThreadLocals) {
       GlobalVariable* Key = new GlobalVariable(
@@ -6070,10 +5430,10 @@ class Pizlonator {
     for (GlobalVariable* G : ThreadLocals) {
       GlobalVariable* Key = ThreadLocalKeyMap[G];
       assert(Key);
-      CallInst::Create(PthreadKeyCreate, { Key, LowRawNull }, "", RootBB);
+      CallInst::Create(PthreadKeyCreate, { Key, RawNull }, "", RootBB);
     }
     ReturnInst::Create(C, RootBB);
-    appendToGlobalCtors(M, Ctor, 0, LowRawNull);
+    appendToGlobalCtors(M, Ctor, 0, RawNull);
 
     // FIXME: We aren't currently registering anything to clean up the threadlocals. Oh well?
 
@@ -6109,7 +5469,7 @@ class Pizlonator {
     }
 
     for (GlobalVariable* G : ThreadLocals) {
-      G->replaceAllUsesWith(LowRawNull);
+      G->replaceAllUsesWith(RawNull);
       G->eraseFromParent();
     }
   }
@@ -6177,9 +5537,9 @@ class Pizlonator {
 
     Constant* TypeTableC;
     if (LowTypesAndFilters.empty())
-      TypeTableC = LowRawNull;
+      TypeTableC = RawNull;
     else {
-      ArrayType* TypeTableArrayTy = ArrayType::get(LowRawPtrTy, LowTypesAndFilters.size());
+      ArrayType* TypeTableArrayTy = ArrayType::get(RawPtrTy, LowTypesAndFilters.size());
       StructType* TypeTableTy = StructType::get(C, { Int32Ty, TypeTableArrayTy });
       Constant* TypeTableCS = ConstantStruct::get(
         TypeTableTy,
@@ -6204,7 +5564,7 @@ class Pizlonator {
         Actions.push_back(0);
 
       StructType* EHDataTy = StructType::get(
-        C, { LowRawPtrTy, Int32Ty, ArrayType::get(Int32Ty, Actions.size()) });
+        C, { RawPtrTy, Int32Ty, ArrayType::get(Int32Ty, Actions.size()) });
       Constant* EHDataCS = ConstantStruct::get(
         EHDataTy,
         { TypeTableC, ConstantInt::get(Int32Ty, Actions.size()), ConstantDataArray::get(C, Actions) });
@@ -6341,7 +5701,7 @@ class Pizlonator {
             ShouldErase = true;
             break;
           case Intrinsic::stacksave:
-            CI->replaceAllUsesWith(LowRawNull);
+            CI->replaceAllUsesWith(RawNull);
             ShouldErase = true;
             break;
           default:
@@ -6425,9 +5785,9 @@ class Pizlonator {
     std::unordered_map<AllocaInst*, AllocaInst*> ToLazyAlloca;
     std::vector<AllocaInst*> LazyAllocas;
     for (AllocaInst* AI : Allocas) {
-      AllocaInst* LazyAI = new AllocaInst(LowRawPtrTy, 0, nullptr, "filc_lazy_alloca", AI);
+      AllocaInst* LazyAI = new AllocaInst(RawPtrTy, 0, nullptr, "filc_lazy_alloca", AI);
       LazyAI->setDebugLoc(AI->getDebugLoc());
-      (new StoreInst(LowRawNull, LazyAI, AI))->setDebugLoc(AI->getDebugLoc());
+      (new StoreInst(RawNull, LazyAI, AI))->setDebugLoc(AI->getDebugLoc());
       ToLazyAlloca[AI] = LazyAI;
       LazyAllocas.push_back(LazyAI);
     }
@@ -6471,10 +5831,10 @@ class Pizlonator {
       assert(!isa<PHINode>(I));
       AllocaInst* LazyAI = ToLazyAlloca[AI];
       assert(LazyAI);
-      LoadInst* LI = new LoadInst(LowRawPtrTy, LazyAI, "filc_load_lazy_alloca_for_check", I);
+      LoadInst* LI = new LoadInst(RawPtrTy, LazyAI, "filc_load_lazy_alloca_for_check", I);
       LI->setDebugLoc(I->getDebugLoc());
       ICmpInst* NotInitialized =
-        new ICmpInst(I, ICmpInst::ICMP_EQ, LI, LowRawNull, "filc_lazy_alloca_not_initialized");
+        new ICmpInst(I, ICmpInst::ICMP_EQ, LI, RawNull, "filc_lazy_alloca_not_initialized");
       NotInitialized->setDebugLoc(I->getDebugLoc());
       Instruction* InitializeTerm = SplitBlockAndInsertIfThen(NotInitialized, I, false);
       (new StoreInst(CloneAI(AI, InitializeTerm), LazyAI, InitializeTerm))
@@ -6498,7 +5858,7 @@ class Pizlonator {
       assert(!isa<PHINode>(I));
       AllocaInst* LazyAI = ToLazyAlloca[AI];
       assert(LazyAI);
-      LoadInst* LI = new LoadInst(LowRawPtrTy, LazyAI, "filc_load_lazy_alloca", I);
+      LoadInst* LI = new LoadInst(RawPtrTy, LazyAI, "filc_load_lazy_alloca", I);
       LI->setDebugLoc(I->getDebugLoc());
       *U = LI;
     }
@@ -6705,8 +6065,8 @@ public:
     if (verbose)
       errs() << "Going to town on module:\n" << M << "\n";
 
-    assert(DLBefore.getPointerSizeInBits(TargetAS) == 128);
-    assert(DLBefore.getPointerABIAlignment(TargetAS) == 16);
+    assert(DLBefore.getPointerSizeInBits(TargetAS) == 64);
+    assert(DLBefore.getPointerABIAlignment(TargetAS) == 8);
     assert(DLBefore.isNonIntegralAddressSpace(TargetAS));
     assert(DL.getPointerSizeInBits(TargetAS) == 64);
     assert(DL.getPointerABIAlignment(TargetAS) == 8);
@@ -6723,11 +6083,11 @@ public:
     Int128Ty = Type::getInt128Ty(C);
     FloatTy = Type::getFloatTy(C);
     DoubleTy = Type::getDoubleTy(C);
-    LowRawPtrTy = PointerType::get(C, TargetAS);
+    RawPtrTy = PointerType::get(C, TargetAS);
     CtorDtorTy = FunctionType::get(VoidTy, false);
-    SetjmpTy = FunctionType::get(Int32Ty, LowRawPtrTy, false);
-    SigsetjmpTy = FunctionType::get(Int32Ty, { LowRawPtrTy, Int32Ty }, false);
-    LowRawNull = ConstantPointerNull::get(LowRawPtrTy);
+    SetjmpTy = FunctionType::get(Int32Ty, RawPtrTy, false);
+    SigsetjmpTy = FunctionType::get(Int32Ty, { RawPtrTy, Int32Ty }, false);
+    RawNull = ConstantPointerNull::get(RawPtrTy);
 
     Dummy = makeDummy(Int32Ty);
     
@@ -6745,8 +6105,8 @@ public:
 
     prepare();
 
-    // Super important that we do this *before* emitting code, because otherwise, llvm will assume
-    // that the alignment of any lowered ptr loads/stores we emit is 16 bytes.
+    // FIXME: We could probably do this anywhere in the pass, and really all we're doing is turning
+    // off the non-integralness of address space 0.
     M.setDataLayout(M.getDataLayoutAfterFilC());
     
     if (verbose)
@@ -6754,52 +6114,67 @@ public:
 
     FunctionName = "<internal>";
     
-    LowWidePtrTy = StructType::create({ Int128Ty }, "filc_wide_ptr");
-    OriginNodeTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, Int32Ty }, "filc_origin_node");
+    FlightPtrTy = StructType::create({ RawPtrTy, RawPtrTy }, "filc_flight_ptr");
+    OriginNodeTy = StructType::create({ RawPtrTy, RawPtrTy, Int32Ty }, "filc_origin_node");
     FunctionOriginTy = StructType::create(
-      { OriginNodeTy, LowRawPtrTy, Int8Ty, Int8Ty, Int32Ty }, "filc_function_origin");
-    OriginTy = StructType::create({ LowRawPtrTy, Int32Ty, Int32Ty }, "filc_origin");
+      { OriginNodeTy, RawPtrTy, Int8Ty, Int8Ty, Int32Ty }, "filc_function_origin");
+    OriginTy = StructType::create({ RawPtrTy, Int32Ty, Int32Ty }, "filc_origin");
     InlineFrameTy = StructType::create({ OriginNodeTy, OriginTy }, "filc_inline_frame");
     OriginWithEHTy = StructType::create(
-      { LowRawPtrTy, Int32Ty, Int32Ty, LowRawPtrTy }, "filc_origin_with_eh");
-    ObjectTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, Int16Ty, Int8Ty }, "filc_object");
-    CCTypeTy = StructType::create({ IntPtrTy, Int8Ty }, "filc_cc_type");
-    CCPtrTy = StructType::create({ LowRawPtrTy, LowRawPtrTy }, "filc_cc_ptr");
-    FrameTy = StructType::create({ LowRawPtrTy, LowRawPtrTy, LowRawPtrTy }, "filc_frame");
-    ThreadTy = StructType::create(
-      { IntPtrTy, Int8Ty, Int32Ty, LowRawPtrTy, ArrayType::get(LowWidePtrTy, NumUnwindRegisters),
-        LowWidePtrTy },
-      "filc_thread_ish");
-    ConstantRelocationTy = StructType::create(
-      { IntPtrTy, Int32Ty, LowRawPtrTy }, "filc_constant_relocation");
-    ConstexprNodeTy = StructType::create(
-      { Int32Ty, Int32Ty, LowRawPtrTy, IntPtrTy }, "filc_constexpr_node");
-    AlignmentAndOffsetTy = StructType::create({ Int8Ty, Int8Ty }, "filc_alignment_and_offset");
-    TypeCheckAndOffsetTy = StructType::create(
-      { Int32Ty, Int8Ty, Int8Ty }, "filc_type_check_and_offset");
-    // See PIZLONATED_SIGNATURE in filc_runtime.h.
-    PizlonatedFuncTy = FunctionType::get(
-      Int1Ty, { LowRawPtrTy, CCPtrTy, CCPtrTy }, false);
-    GlobalGetterTy = FunctionType::get(LowWidePtrTy, { LowRawPtrTy }, false);
+      { RawPtrTy, Int32Ty, Int32Ty, RawPtrTy }, "filc_origin_with_eh");
+    ObjectTy = StructType::create({ RawPtrTy, RawPtrTy }, "filc_object");
+    FrameTy = StructType::create({ RawPtrTy, RawPtrTy, RawPtrTy }, "filc_frame");
 
-    // Fugc the DSO!
+    std::vector<Type*> ThreadMembers;
+    ThreadMembers.push_back(IntPtrTy); // stack_limit, index 0
+    ThreadMembers.push_back(Int8Ty); // state, index 1
+    ThreadMembers.push_back(Int32Ty); // tid, index 2
+    ThreadMembers.push_back(RawPtrTy); // top_frame, index 3
+    ThreadMembers.push_back(RawPtrTy); // alignment word, index 4
+    ThreadMembers.push_back(
+      ArrayType::get(FlightPtrTy, NumUnwindRegisters)); // unwind_registers, index 5
+    ThreadMembers.push_back(FlightPtrTy); // cookie_ptr, index 6
+    ThreadMembers.push_back(Int8Ty); // alignment point, index 7
+    ThreadTy = StructType::create(ThreadMembers, "filc_thread_ish_base2");
+    const StructLayout* ThreadLayout = DL.getStructLayout(ThreadTy);
+    size_t AlignmentPoint = ThreadLayout->getElementOffset(7);
+    ThreadMembers.pop_back();
+    // Create an alignment buffer at index 7.
+    ThreadMembers.push_back(
+      ArrayType::get(
+        Int8Ty, ((AlignmentPoint + CCAlignment) & -CCAlignment) - AlignmentPoint));
+    ThreadMembers.push_back(ArrayType::get(Int8Ty, CCInlineSize)); // cc_inline_buffer, index 8
+    ThreadMembers.push_back(ArrayType::get(Int8Ty, CCInlineSize)); // cc_inline_aux_buffer, index 9
+    ThreadMembers.push_back(RawPtrTy); // cc_outline_buffer, index 10
+    ThreadMembers.push_back(RawPtrTy); // cc_outline_aux_buffer, index 11
+    ThreadMembers.push_back(IntPtrTy); // cc_outline_size, index 12
+    ThreadTy = StructType::create(ThreadMembers, "filc_thread_ish");
+    ThreadLayout = DL.getStructLayout(ThreadTy);
+    assert(!(ThreadLayout->getElementOffset(8) & (CCAlignment - 1)));
+    
+    ConstantRelocationTy = StructType::create(
+      { IntPtrTy, Int32Ty, RawPtrTy }, "filc_constant_relocation");
+    ConstexprNodeTy = StructType::create(
+      { Int32Ty, Int32Ty, RawPtrTy, IntPtrTy }, "filc_constexpr_node");
+    AlignmentAndOffsetTy = StructType::create({ Int8Ty, Int8Ty }, "filc_alignment_and_offset");
+    PizlonatedReturnValueTy = StructType::create({ Int1Ty, IntPtrTy }, "pizlonated_return_value");
+    PtrPairTy = StructType::create({ RawPtrTy, RawPtrTy }, "filc_ptr_pair");
+    PizlonatedFuncTy = FunctionType::get(
+      PizlonatedReturnValueTy, { RawPtrTy, IntPtrTy }, false);
+    GlobalGetterTy = FunctionType::get(FlightPtrTy, { RawPtrTy }, false);
+
+    // FIXME: Eventually, we'll want to do something with the DSO handle. But for now it doesn't
+    // matter because we don't support dlclose.
     if (GlobalVariable* DSO = M.getGlobalVariable("__dso_handle")) {
       assert(DSO->isDeclaration());
-      DSO->replaceAllUsesWith(LowRawNull);
+      DSO->replaceAllUsesWith(RawNull);
       DSO->eraseFromParent();
     }
     
-    // Capture the set of things that need conversion, before we start adding functions and globals.
-    auto CaptureType = [&] (GlobalValue* G) {
-      GlobalHighTypes[G] = G->getValueType();
-      GlobalLowTypes[G] = lowerType(G->getValueType());
-    };
-
     for (GlobalVariable &G : M.globals()) {
       if (shouldPassThrough(&G))
         continue;
       Globals.push_back(&G);
-      CaptureType(&G);
     }
     for (Function &F : M.functions()) {
       if (shouldPassThrough(&F)) {
@@ -6827,141 +6202,98 @@ public:
         continue;
       }
       Functions.push_back(&F);
-      CaptureType(&F);
     }
-    for (GlobalAlias &G : M.aliases()) {
+    for (GlobalAlias &G : M.aliases())
       Aliases.push_back(&G);
-      CaptureType(&G);
-    }
     if (!M.ifunc_empty())
       llvm_unreachable("Don't handle ifuncs yet.");
 
-    LowWideNull = ConstantStruct::get(LowWidePtrTy, { ConstantInt::get(Int128Ty, 0) });
+    FlightNull = ConstantAggregateZero::get(FlightPtrTy);
     if (verbose)
-      errs() << "LowWideNull = " << *LowWideNull << "\n";
-
-    FutureArgBuffer = makeDummy(LowRawPtrTy);
-    FutureReturnBuffer = makeDummy(LowRawPtrTy);
+      errs() << "FlightNull = " << *FlightNull << "\n";
 
     PollcheckSlow = M.getOrInsertFunction(
-      "filc_pollcheck_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    StoreBarrierSlow = M.getOrInsertFunction(
-      "filc_store_barrier_slow", VoidTy, LowRawPtrTy, LowRawPtrTy);
-    GetNextBytesForVAArg = M.getOrInsertFunction(
-      "filc_get_next_bytes_for_va_arg", LowWidePtrTy, LowRawPtrTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
+      "filc_pollcheck_slow", VoidTy, RawPtrTy, RawPtrTy);
+    StoreBarrierForLowerSlow = M.getOrInsertFunction(
+      "filc_store_barrier_for_lower_slow", VoidTy, RawPtrTy, RawPtrTy);
+    StorePtrAtomicWithPtrPairOutline = M.getOrInsertFunction(
+      "filc_store_ptr_atomic_with_ptr_pair_outline",
+      VoidTy, RawPtrTy, RawPtrTy, RawPtrTy, FlightPtrTy);
+    ObjectEnsureAuxPtrOutline = M.getOrInsertFunction(
+      "filc_object_ensure_aux_ptr_outline", RawPtrTy, RawPtrTy, RawPtrTy);
+    ThreadEnsureCCOutlineBufferSlow = M.getOrInsertFunction(
+      "filc_thread_ensure_cc_outline_buffer_slow", VoidTy, RawPtrTy, IntPtrTy);
+    StrongCasPtr = M.getOrInsertFunction(
+      "filc_strong_cas_ptr_with_manual_tracking",
+      FlightPtrTy, RawPtrTy, FlightPtrTy, IntPtrTy, FlightPtrTy, FlightPtrTy);
+    XchgPtr = M.getOrInsertFunction(
+      "filc_xchg_ptr_with_manual_tracking",
+      FlightPtrTy, RawPtrTy, FlightPtrTy, IntPtrTy, FlightPtrTy);
+    GetNextPtrBytesForVAArg = M.getOrInsertFunction(
+      "filc_get_next_ptr_bytes_for_va_arg", PtrPairTy, FlightPtrTy, IntPtrTy, IntPtrTy);
     Allocate = M.getOrInsertFunction(
-      "filc_allocate", LowRawPtrTy, LowRawPtrTy, IntPtrTy);
+      "filc_allocate", RawPtrTy, RawPtrTy, IntPtrTy);
     AllocateWithAlignment = M.getOrInsertFunction(
-      "filc_allocate_with_alignment", LowRawPtrTy, LowRawPtrTy, IntPtrTy, IntPtrTy);
-    CheckReadInt = M.getOrInsertFunction(
-      "filc_check_read_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckReadAlignedInt = M.getOrInsertFunction(
-      "filc_check_read_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    CheckReadInt8Fail = M.getOrInsertFunction(
-      "filc_check_read_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt16Fail = M.getOrInsertFunction(
-      "filc_check_read_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt32Fail = M.getOrInsertFunction(
-      "filc_check_read_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt64Fail = M.getOrInsertFunction(
-      "filc_check_read_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadInt128Fail = M.getOrInsertFunction(
-      "filc_check_read_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckReadPtrFail = M.getOrInsertFunction(
-      "filc_check_read_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt = M.getOrInsertFunction(
-      "filc_check_write_int", VoidTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
-    CheckWriteAlignedInt = M.getOrInsertFunction(
-      "filc_check_write_aligned_int", VoidTy, LowWidePtrTy, IntPtrTy, IntPtrTy, LowRawPtrTy);
-    CheckWriteInt8Fail = M.getOrInsertFunction(
-      "filc_check_write_int8_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt16Fail = M.getOrInsertFunction(
-      "filc_check_write_int16_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt32Fail = M.getOrInsertFunction(
-      "filc_check_write_int32_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt64Fail = M.getOrInsertFunction(
-      "filc_check_write_int64_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWriteInt128Fail = M.getOrInsertFunction(
-      "filc_check_write_int128_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    CheckWritePtrFail = M.getOrInsertFunction(
-      "filc_check_write_ptr_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+      "filc_allocate_with_alignment", RawPtrTy, RawPtrTy, IntPtrTy, IntPtrTy);
     CheckFunctionCallFail = M.getOrInsertFunction(
-      "filc_check_function_call_fail", VoidTy, LowWidePtrTy);
+      "filc_check_function_call_fail", VoidTy, FlightPtrTy);
     OptimizedAlignmentContradiction = M.getOrInsertFunction(
-      "filc_optimized_alignment_contradiction", VoidTy, LowWidePtrTy, LowRawPtrTy);
-    OptimizedTypeContradiction = M.getOrInsertFunction(
-      "filc_optimized_type_contradiction", VoidTy, LowWidePtrTy, LowRawPtrTy);
+      "filc_optimized_alignment_contradiction", VoidTy, FlightPtrTy, RawPtrTy);
     OptimizedAccessCheckFail = M.getOrInsertFunction(
-      "filc_optimized_access_check_fail", VoidTy, LowWidePtrTy, LowRawPtrTy);
+      "filc_optimized_access_check_fail", VoidTy, FlightPtrTy, RawPtrTy);
     Memset = M.getOrInsertFunction(
-      "filc_memset", VoidTy, LowRawPtrTy, LowWidePtrTy, Int32Ty, IntPtrTy, LowRawPtrTy);
+      "filc_memset", VoidTy, RawPtrTy, FlightPtrTy, Int32Ty, IntPtrTy, RawPtrTy);
     Memmove = M.getOrInsertFunction(
-      "filc_memmove", VoidTy, LowRawPtrTy, LowWidePtrTy, LowWidePtrTy, IntPtrTy, LowRawPtrTy);
+      "filc_memmove", VoidTy, RawPtrTy, FlightPtrTy, FlightPtrTy, IntPtrTy, RawPtrTy);
     GlobalInitializationContextCreate = M.getOrInsertFunction(
-      "filc_global_initialization_context_create", LowRawPtrTy, LowRawPtrTy);
+      "filc_global_initialization_context_create", RawPtrTy, RawPtrTy);
     GlobalInitializationContextAdd = M.getOrInsertFunction(
-      "filc_global_initialization_context_add", Int1Ty, LowRawPtrTy, LowRawPtrTy, LowRawPtrTy);
+      "filc_global_initialization_context_add", Int1Ty, RawPtrTy, RawPtrTy, RawPtrTy);
     GlobalInitializationContextDestroy = M.getOrInsertFunction(
-      "filc_global_initialization_context_destroy", VoidTy, LowRawPtrTy);
+      "filc_global_initialization_context_destroy", VoidTy, RawPtrTy);
     ExecuteConstantRelocations = M.getOrInsertFunction(
-      "filc_execute_constant_relocations", VoidTy, LowRawPtrTy, LowRawPtrTy, IntPtrTy, LowRawPtrTy);
+      "filc_execute_constant_relocations", VoidTy, RawPtrTy, RawPtrTy, IntPtrTy, RawPtrTy);
     DeferOrRunGlobalCtor = M.getOrInsertFunction(
-      "filc_defer_or_run_global_ctor", VoidTy, LowRawPtrTy);
+      "filc_defer_or_run_global_ctor", VoidTy, RawPtrTy);
     RunGlobalDtor = M.getOrInsertFunction(
-      "filc_run_global_dtor", VoidTy, LowRawPtrTy);
+      "filc_run_global_dtor", VoidTy, RawPtrTy);
     Error = M.getOrInsertFunction(
-      "filc_error", VoidTy, LowRawPtrTy, LowRawPtrTy);
+      "filc_error", VoidTy, RawPtrTy, RawPtrTy);
     RealMemset = M.getOrInsertFunction(
-      "llvm.memset.p0.i64", VoidTy, LowRawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
+      "llvm.memset.p0.i64", VoidTy, RawPtrTy, Int8Ty, IntPtrTy, Int1Ty);
+    RealMemcpy = M.getOrInsertFunction(
+      "llvm.memcpy.p0.p0.i64", VoidTy, RawPtrTy, RawPtrTy, IntPtrTy, Int1Ty);
     LandingPad = M.getOrInsertFunction(
-      "filc_landing_pad", Int1Ty, LowRawPtrTy);
+      "filc_landing_pad", Int1Ty, RawPtrTy);
     ResumeUnwind = M.getOrInsertFunction(
-      "filc_resume_unwind", VoidTy, LowRawPtrTy, LowRawPtrTy);
+      "filc_resume_unwind", VoidTy, RawPtrTy, RawPtrTy);
     JmpBufCreate = M.getOrInsertFunction(
-      "filc_jmp_buf_create", LowRawPtrTy, LowRawPtrTy, Int32Ty, Int32Ty);
+      "filc_jmp_buf_create", RawPtrTy, RawPtrTy, Int32Ty, Int32Ty);
     PromoteArgsToHeap = M.getOrInsertFunction(
-      "filc_promote_args_to_heap", LowWidePtrTy, LowRawPtrTy, CCPtrTy);
+      "filc_promote_args_to_heap", FlightPtrTy, RawPtrTy, IntPtrTy);
+    PrepareToReturnWithData = M.getOrInsertFunction(
+      "filc_prepare_to_return_with_data", IntPtrTy, RawPtrTy, FlightPtrTy, RawPtrTy);
     CCArgsCheckFailure = M.getOrInsertFunction(
-      "filc_cc_args_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
+      "filc_cc_args_check_failure", VoidTy, IntPtrTy, IntPtrTy, RawPtrTy);
     CCRetsCheckFailure = M.getOrInsertFunction(
-      "filc_cc_rets_check_failure", VoidTy, CCPtrTy, LowRawPtrTy, LowRawPtrTy);
+      "filc_cc_rets_check_failure", VoidTy, IntPtrTy, IntPtrTy, RawPtrTy);
     _Setjmp = M.getOrInsertFunction(
-      "_setjmp", Int32Ty, LowRawPtrTy);
+      "_setjmp", Int32Ty, RawPtrTy);
     cast<Function>(_Setjmp.getCallee())->addFnAttr(Attribute::ReturnsTwice);
     ExpectI1 = Intrinsic::getDeclaration(&M, Intrinsic::expect, Int1Ty);
+    LifetimeStart = Intrinsic::getDeclaration(&M, Intrinsic::lifetime_start, { RawPtrTy });
+    LifetimeEnd = Intrinsic::getDeclaration(&M, Intrinsic::lifetime_end, { RawPtrTy });
     StackCheckAsm = InlineAsm::get(
-      FunctionType::get(VoidTy, { LowRawPtrTy }, false),
+      FunctionType::get(VoidTy, { RawPtrTy }, false),
       "cmp %rsp, $0\n\t"
       "jae filc_stack_overflow_failure@PLT",
       "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
       /*hasSideEffects=*/true);
 
-    cast<Function>(CheckReadInt8Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckReadInt16Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckReadInt32Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckReadInt64Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckReadInt128Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckReadPtrFail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWriteInt8Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWriteInt16Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWriteInt32Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWriteInt64Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWriteInt128Fail.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(CheckWritePtrFail.getCallee())->addFnAttr(Attribute::NoReturn);
     cast<Function>(OptimizedAlignmentContradiction.getCallee())->addFnAttr(Attribute::NoReturn);
-    cast<Function>(OptimizedTypeContradiction.getCallee())->addFnAttr(Attribute::NoReturn);
     cast<Function>(OptimizedAccessCheckFail.getCallee())->addFnAttr(Attribute::NoReturn);
 
-    EmptyCCType = M.getOrInsertGlobal("filc_empty_cc_type", CCTypeTy);
-    VoidCCType = M.getOrInsertGlobal("filc_void_cc_type", CCTypeTy);
-    IntCCType = M.getOrInsertGlobal("filc_int_cc_type", CCTypeTy);
-    PtrCCType = M.getOrInsertGlobal("filc_ptr_cc_type", CCTypeTy);
     IsMarking = M.getOrInsertGlobal("filc_is_marking", Int8Ty);
-
-    auto FixupTypes = [&] (GlobalValue* G, GlobalValue* NewG) {
-      GlobalHighTypes[NewG] = GlobalHighTypes[G];
-      GlobalLowTypes[NewG] = GlobalLowTypes[G];
-    };
 
     std::vector<GlobalValue*> ToDelete;
     auto HandleGlobal = [&] (GlobalValue* G) {
@@ -6972,7 +6304,6 @@ public:
       NewF->setVisibility(G->getVisibility());
       GlobalToGetter[G] = NewF;
       Getters.insert(NewF);
-      FixupTypes(G, NewF);
       ToDelete.push_back(G);
     };
     for (GlobalVariable* G : Globals)
@@ -6984,9 +6315,10 @@ public:
         continue;
       HandleGlobal(F);
       if (!F->isDeclaration()) {
-        FunctionToHiddenFunction[F] = Function::Create(cast<FunctionType>(lowerType(F->getFunctionType())),
-                                                       GlobalValue::InternalLinkage, F->getAddressSpace(),
-                                                       "Jf_" + F->getName(), &M);
+        FunctionToHiddenFunction[F] = Function::Create(
+          PizlonatedFuncTy,
+          GlobalValue::InternalLinkage, F->getAddressSpace(),
+          "Jf_" + F->getName(), &M);
       }
     }
     if (verbose) {
@@ -7001,7 +6333,7 @@ public:
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
         ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
-        assert(Struct->getOperand(2) == LowRawNull);
+        assert(Struct->getOperand(2) == RawNull);
         Function* Ctor = cast<Function>(Struct->getOperand(1));
         Function* HiddenCtor = FunctionToHiddenFunction[Ctor];
         assert(HiddenCtor);
@@ -7010,19 +6342,19 @@ public:
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_ctor_forwarder_root", NewF);
         CallInst::Create(DeferOrRunGlobalCtor, { HiddenCtor }, "", RootBB);
         ReturnInst::Create(C, RootBB);
-        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
+        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, RawNull));
       }
       GlobalCtors->setInitializer(ConstantArray::get(Array->getType(), Args));
     }
 
-    // NOTE: This *might* be dead code, since modern C/C++ says that the compiler has to do __cxa_atexit
-    // from a global constructor instead of registering a global destructor.
+    // NOTE: This *might* be dead code, since modern C/C++ says that the compiler has to do
+    // __cxa_atexit from a global constructor instead of registering a global destructor.
     if (GlobalVariable* GlobalDtors = M.getGlobalVariable("llvm.global_dtors")) {
       ConstantArray* Array = cast<ConstantArray>(GlobalDtors->getInitializer());
       std::vector<Constant*> Args;
       for (size_t Index = 0; Index < Array->getNumOperands(); ++Index) {
         ConstantStruct* Struct = cast<ConstantStruct>(Array->getOperand(Index));
-        assert(Struct->getOperand(2) == LowRawNull);
+        assert(Struct->getOperand(2) == RawNull);
         Function* Dtor = cast<Function>(Struct->getOperand(1));
         Function* HiddenDtor = FunctionToHiddenFunction[Dtor];
         Function* NewF = Function::Create(
@@ -7030,7 +6362,7 @@ public:
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_dtor_forwarder_root", NewF);
         CallInst::Create(RunGlobalDtor, { HiddenDtor }, "", RootBB);
         ReturnInst::Create(C, RootBB);
-        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, LowRawNull));
+        Args.push_back(ConstantStruct::get(Struct->getType(), Struct->getOperand(0), NewF, RawNull));
       }
       GlobalDtors->setInitializer(ConstantArray::get(Array->getType(), Args));
     }
@@ -7052,7 +6384,7 @@ public:
       HandleUsed(Used);
 
     for (GlobalVariable* G : Globals) {
-      // FIXME: We can probably make this work, but who gives a fugc for now?
+      // We've already lowered thread locals by the time we get here.
       assert(G->getThreadLocalMode() == GlobalValue::NotThreadLocal);
 
       Function* NewF = GlobalToGetter[G];
@@ -7070,22 +6402,77 @@ public:
       SlowF->addFnAttr(Attribute::NoInline);
 
       Constant* NewC = paddedConstant(
-        tryLowerConstantToConstant(G->getInitializer(), ResultMode::NeedConstantWithPtrPlaceholders));
+        constantToRestConstantWithPtrPlaceholders(G->getInitializer()));
       assert(NewC);
+      size_t CSize = DL.getTypeStoreSize(NewC->getType());
+      assert(!(CSize % WordSize));
+
+      std::vector<ConstantRelocation> Relocations;
+      bool RelocationsSucceeded = computeConstantRelocations(G->getInitializer(), Relocations);
+      bool IsConstant = G->isConstant() && RelocationsSucceeded && !Relocations.size();
+
+      GlobalVariable* AuxG;
+      Constant* AuxPtr;
+      if (hasNonNullPtrs(G->getInitializer())) {
+        ArrayType* AuxTy = ArrayType::get(RawPtrTy, CSize / WordSize);
+        AuxG = new GlobalVariable(
+          M, AuxTy, IsConstant, GlobalValue::InternalLinkage, ConstantAggregateZero::get(AuxTy),
+          "Jga_" + G->getName());
+        AuxPtr = AuxG;
+      } else {
+        AuxG = nullptr;
+        AuxPtr = RawNull;
+      }
+
+      std::vector<Type*> ObjectGTyFields;
+      size_t AlignmentOffset = 0;
+      ArrayType* AlignmentTy = nullptr;
+      if (G->getAlignment() > ObjectSize) {
+        AlignmentOffset = G->getAlignment() - ObjectSize;
+        assert(AlignmentOffset);
+        AlignmentTy = ArrayType::get(Int8Ty, AlignmentOffset);
+        ObjectGTyFields.push_back(AlignmentTy);
+      }
+      ObjectGTyFields.push_back(RawPtrTy);
+      ObjectGTyFields.push_back(RawPtrTy);
+      ObjectGTyFields.push_back(NewC->getType());
+      StructType* ObjectGTy = StructType::get(C, ObjectGTyFields);
+
       GlobalVariable* NewDataG = new GlobalVariable(
-        M, NewC->getType(), false, GlobalValue::InternalLinkage, NewC,
-        "Jg_" + G->getName());
-      assert(NewDataG);
-      if (G->getAlign().valueOrOne() < WordSize)
+        M, ObjectGTy, IsConstant, GlobalValue::InternalLinkage, nullptr, "Jgo_" + G->getName());
+
+      uint16_t ObjectFlags = ObjectFlagGlobal;
+      if (AuxG)
+        ObjectFlags |= ObjectFlagGlobalAux;
+      if (G->isConstant())
+        ObjectFlags |= ObjectFlagReadonly;
+      std::vector<Constant*> NewObjCFields;
+      if (AlignmentTy)
+        NewObjCFields.push_back(ConstantAggregateZero::get(AlignmentTy));
+      NewObjCFields.push_back(
+        ConstantExpr::getGetElementPtr(ObjectGTy, NewDataG, ConstantInt::get(IntPtrTy, 1)));
+      NewObjCFields.push_back(
+        ConstantExpr::getGetElementPtr(
+          Int8Ty, AuxPtr,
+          ConstantInt::get(IntPtrTy, static_cast<uintptr_t>(ObjectFlags) << ObjectAuxFlagsShift)));
+      NewObjCFields.push_back(NewC);
+      Constant* NewObjC = ConstantStruct::get(ObjectGTy, NewObjCFields);
+      NewDataG->setInitializer(NewObjC);
+
+      if (G->getAlignment() < WordSize)
         NewDataG->setAlignment(Align(WordSize));
       else
-        NewDataG->setAlignment(G->getAlign().valueOrOne());
+        NewDataG->setAlignment(Align(G->getAlignment()));
 
-      GlobalVariable* NewObjectG = objectGlobalForGlobal(NewDataG, G);
+      Constant* NewDataPayloadC = ConstantExpr::getGetElementPtr(
+        Int8Ty, NewDataG, ConstantInt::get(IntPtrTy, ObjectSize + AlignmentOffset));
+      Constant* NewDataObjectC = ConstantExpr::getGetElementPtr(
+        Int8Ty, NewDataG, ConstantInt::get(IntPtrTy, AlignmentOffset));
       
       GlobalVariable* NewPtrG = new GlobalVariable(
-        M, LowWidePtrTy, false, GlobalValue::PrivateLinkage, LowWideNull,
+        M, FlightPtrTy, false, GlobalValue::PrivateLinkage, FlightNull,
         "filc_gptr_" + G->getName());
+      NewPtrG->setAlignment(Align(FlightPtrAlign));
       
       BasicBlock* RootBB = BasicBlock::Create(C, "filc_global_getter_root", NewF);
       BasicBlock* OtherCheckBB = BasicBlock::Create(C, "filc_global_getter_other_check", NewF);
@@ -7095,19 +6482,19 @@ public:
       BasicBlock* RecurseBB = BasicBlock::Create(C, "filc_global_getter_recurse", SlowF);
       BasicBlock* BuildBB = BasicBlock::Create(C, "filc_global_getter_build", SlowF);
 
-      // We can load the NewPtrG in two 64-bit chunks and then check if either the object or the
+      // We can load the NewPtrG in two 64-bit chunks and then check if either the lower or the
       // raw ptr as NULL. If either are NULL, then it's either not initialized yet, or we experienced
       // ptr tearing. This allows us to avoid an expensive 128-bit atomic.
       
       Instruction* Branch = BranchInst::Create(SlowBB, OtherCheckBB, UndefValue::get(Int1Ty), RootBB);
-      Value* LoadPtr = loadPtr(NewPtrG, Branch);
+      Value* LoadPtr = loadFlightPtr(NewPtrG, Branch);
       Branch->getOperandUse(0) = new ICmpInst(
-        Branch, ICmpInst::ICMP_EQ, ptrPtr(LoadPtr, Branch), LowRawNull, "filc_check_global");
+        Branch, ICmpInst::ICMP_EQ, flightPtrPtr(LoadPtr, Branch), RawNull, "filc_check_global");
 
       Instruction* OtherBranch = BranchInst::Create(
         SlowBB, FastBB, UndefValue::get(Int1Ty), OtherCheckBB);
       OtherBranch->getOperandUse(0) = new ICmpInst(
-        OtherBranch, ICmpInst::ICMP_EQ, ptrObject(LoadPtr, OtherBranch), LowRawNull,
+        OtherBranch, ICmpInst::ICMP_EQ, flightPtrLower(LoadPtr, OtherBranch), RawNull,
         "filc_check_global");
       
       ReturnInst::Create(C, LoadPtr, FastBB);
@@ -7121,13 +6508,13 @@ public:
       Instruction* MyInitializationContext = CallInst::Create(
         GlobalInitializationContextCreate, { SlowF->getArg(0) }, "filc_context_create",
         Branch);
-      Value* Ptr = createPtr(NewObjectG, NewDataG, Branch);
+      Value* Ptr = flightPtrForPayload(NewDataPayloadC, Branch);
       // NOTE: This function call is necessary even for the cases of globals with no meaningful
       // initializer or an initializer we could just optimize to pure data, since we have to tell the
       // runtime about this global so that the GC can find it.
       Instruction* Add = CallInst::Create(
         GlobalInitializationContextAdd,
-        { MyInitializationContext, NewPtrG, NewObjectG },
+        { MyInitializationContext, NewPtrG, NewDataObjectC },
         "filc_context_add", Branch);
       Branch->getOperandUse(0) = Add;
 
@@ -7138,8 +6525,7 @@ public:
       Instruction* Return = ReturnInst::Create(C, Ptr, BuildBB);
       if (verbose)
         errs() << "Lowering constant " << *G->getInitializer() << " with initialization context = " << *MyInitializationContext << "\n";
-      std::vector<ConstantRelocation> Relocations;
-      if (computeConstantRelocations(G->getInitializer(), Relocations)) {
+      if (RelocationsSucceeded) {
         if (Relocations.size()) {
           std::vector<Constant*> Constants;
           for (const ConstantRelocation& Relocation : Relocations) {
@@ -7156,12 +6542,15 @@ public:
             M, AT, true, GlobalVariable::PrivateLinkage, CA, "filc_constant_relocations");
           CallInst::Create(
             ExecuteConstantRelocations,
-            { NewDataG, RelocG, ConstantInt::get(IntPtrTy, Constants.size()), MyInitializationContext },
+            { NewDataObjectC, RelocG, ConstantInt::get(IntPtrTy, Constants.size()),
+              MyInitializationContext },
             "", Return);
         }
       } else {
-        Value* C = lowerConstant(G->getInitializer(), Return, MyInitializationContext);
-        new StoreInst(C, NewDataG, Return);
+        Value* C = constantToFlightValue(G->getInitializer(), Return, MyInitializationContext);
+        storeValueRecurseAfterCheck(
+          G->getInitializer()->getType(), C, NewDataPayloadC, AuxPtr, false, Align(G->getAlignment()),
+          AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::GlobalInit, Return);
       }
       
       CallInst::Create(GlobalInitializationContextDestroy, { MyInitializationContext }, "", Return);
@@ -7209,6 +6598,10 @@ public:
         NewF->addFnAttrs(AB);
         assert(NewF);
         OptimizedAccessCheckOrigins.clear();
+        InstTypes.clear();
+        InstTypeVectors.clear();
+        CanonicalPtrAuxBaseVars.clear();
+        AuxBaseVarOperands.clear();
 
         SmallVector<std::pair<const BasicBlock*, const BasicBlock*>> BackEdges;
         FindFunctionBackedges(*F, BackEdges);
@@ -7217,15 +6610,10 @@ public:
           BackEdgePreds.insert(Edge.first);
       
         MyThread = NewF->getArg(0);
-        FixupTypes(F, NewF);
         std::vector<BasicBlock*> Blocks;
         for (BasicBlock& BB : *F)
           Blocks.push_back(&BB);
         assert(!Blocks.empty());
-        ArgBufferSize = 0;
-        ArgBufferAlignment = 0;
-        ReturnBufferSize = 0;
-        ReturnBufferAlignment = 0;
         Args.clear();
         for (BasicBlock* BB : Blocks) {
           BB->removeFromParent();
@@ -7243,11 +6631,7 @@ public:
 
           if (BackEdgePreds.count(BB)) {
             DebugLoc DL = BB->getTerminator()->getDebugLoc();
-            GetElementPtrInst* StatePtr = GetElementPtrInst::Create(
-              ThreadTy, MyThread,
-              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 1) },
-              "filc_thread_state_ptr", BB->getTerminator());
-            StatePtr->setDebugLoc(DL);
+            Value* StatePtr = threadStatePtr(MyThread, BB->getTerminator());
             LoadInst* StateLoad = new LoadInst(
               Int8Ty, StatePtr, "filc_thread_state_load", BB->getTerminator());
             StateLoad->setDebugLoc(DL);
@@ -7270,37 +6654,51 @@ public:
           }
         }
 
+        // Make sure that when folks want to add allocas to the root block, they get a pristine block.
+        BasicBlock* RootB = Blocks[0];
+        Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
+        SplitBlock(RootB, InsertionPoint);
+        Instruction* AllocaInsertionPoint = RootB->getTerminator();
+
         ReturnB = BasicBlock::Create(C, "filc_return_block", NewF);
-        if (F->getReturnType() != VoidTy)
-          ReturnPhi = PHINode::Create(lowerType(F->getReturnType()), 1, "filc_return_value", ReturnB);
+        if (F->getReturnType() != VoidTy) {
+          ReturnPhi = PHINode::Create(
+            toFlightType(F->getReturnType()), 1, "filc_return_value", ReturnB);
+        }
 
         ReallyReturnB = BasicBlock::Create(C, "filc_really_return_block", NewF);
         BranchInst* ReturnBranch = BranchInst::Create(ReallyReturnB, ReturnB);
-        ReturnInst* Return = ReturnInst::Create(C, ConstantInt::getFalse(Int1Ty), ReallyReturnB);
+        RetSizePhi = PHINode::Create(IntPtrTy, 1, "filc_ret_size", ReallyReturnB);
+        Instruction* ReturnValue = InsertValueInst::Create(
+          UndefValue::get(PizlonatedReturnValueTy), ConstantInt::getFalse(Int1Ty), { 0 },
+          "filc_insert_has_exception", ReallyReturnB);
+        ReturnValue = InsertValueInst::Create(
+          ReturnValue, RetSizePhi, { 1 }, "filc_insert_ret_size", ReallyReturnB);
+        ReturnInst* Return = ReturnInst::Create(C, ReturnValue, ReallyReturnB);
 
         if (F->getReturnType() != VoidTy) {
-          Type* LowT = lowerType(F->getReturnType());
-          checkCCType(LowT, NewF->getArg(2), CCRetsCheckFailure, ReturnBranch);
-          storeValueRecurseAfterCheck(
-            LowT, ReturnPhi, ccPtrBase(NewF->getArg(2), ReturnBranch), false,
-            DL.getABITypeAlign(LowT), AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::CC,
-            ReturnBranch);
+          Type* T = F->getReturnType();
+          RetSizePhi->addIncoming(storeCC(T, ReturnPhi, ReturnBranch, DebugLoc()), ReturnB);
+        } else {
+          RetSizePhi->addIncoming(
+              storeCC(IntPtrTy, ConstantInt::get(IntPtrTy, 0), ReturnBranch, DebugLoc()), ReturnB);
         }
 
         ResumeB = BasicBlock::Create(C, "filc_resume_block", NewF);
-        ReturnInst* ResumeReturn = ReturnInst::Create(C, ConstantInt::getTrue(Int1Ty), ResumeB);
+        ReturnValue = InsertValueInst::Create(
+          UndefValue::get(PizlonatedReturnValueTy), ConstantInt::getTrue(Int1Ty), { 0 },
+          "filc_insert_has_exception", ResumeB);
+        ReturnValue = InsertValueInst::Create(
+          ReturnValue, ConstantInt::get(IntPtrTy, 0), { 1 }, "filc_insert_ret_size", ResumeB);
+        ReturnInst* ResumeReturn = ReturnInst::Create(C, ReturnValue, ResumeB);
 
-        Instruction* InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
         StructType* MyFrameTy = StructType::get(
-          C, { LowRawPtrTy, LowRawPtrTy, ArrayType::get(LowRawPtrTy, FrameSize) });
-        Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", InsertionPoint);
+          C, { RawPtrTy, RawPtrTy, ArrayType::get(RawPtrTy, FrameSize) });
+        Frame = new AllocaInst(MyFrameTy, 0, "filc_my_frame", AllocaInsertionPoint);
         stackOverflowCheck(InsertionPoint);
-        Value* ThreadTopFramePtr = GetElementPtrInst::Create(
-          ThreadTy, MyThread,
-          { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
-          "filc_thread_top_frame_ptr", InsertionPoint);
+        Value* ThreadTopFramePtr = threadTopFramePtr(MyThread, InsertionPoint);
         new StoreInst(
-          new LoadInst(LowRawPtrTy, ThreadTopFramePtr, "filc_thread_top_frame", InsertionPoint),
+          new LoadInst(RawPtrTy, ThreadTopFramePtr, "filc_thread_top_frame", InsertionPoint),
           GetElementPtrInst::Create(
             FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
             "filc_frame_parent_ptr", InsertionPoint),
@@ -7313,55 +6711,44 @@ public:
             "filc_frame_parent_ptr", InsertionPoint),
           InsertionPoint);
         for (size_t FrameIndex = FrameSize; FrameIndex--;)
-          recordObjectAtIndex(LowRawNull, FrameIndex, InsertionPoint);
+          recordLowerAtIndex(RawNull, FrameIndex, InsertionPoint);
 
         auto PopFrame = [&] (Instruction* Return) {
           new StoreInst(
             new LoadInst(
-              LowRawPtrTy,
+              RawPtrTy,
               GetElementPtrInst::Create(
                 FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
                 "filc_frame_parent_ptr", Return),
               "filc_frame_parent", Return),
-            GetElementPtrInst::Create(
-              ThreadTy, MyThread,
-              { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 3) },
-              "filc_thread_top_frame_ptr", Return),
+            threadTopFramePtr(MyThread, Return),
             Return);
         };
         PopFrame(Return);
         PopFrame(ResumeReturn);
 
-        Value* ArgCCPtr = NewF->getArg(1);
-
-        StructType* ArgsTy = cast<StructType>(lowerType(argsType(F->getFunctionType())));
-        checkCCType(ArgsTy, ArgCCPtr, CCArgsCheckFailure, InsertionPoint);
-
-        Value* RawDataPtr = ccPtrBase(ArgCCPtr, InsertionPoint);
-        const StructLayout* SL = DL.getStructLayout(ArgsTy);
-        assert(F->getFunctionType()->getNumParams() == ArgsTy->getNumElements());
-        size_t LastOffset;
-        for (unsigned Index = 0; Index < F->getFunctionType()->getNumParams(); ++Index) {
-          Type* CanonicalLowT = ArgsTy->getElementType(Index);
-          Type* OriginalLowT = lowerType(F->getFunctionType()->getParamType(Index));
-          size_t ArgOffset = SL->getElementOffset(Index);
-          Instruction* ArgPtr = GetElementPtrInst::Create(
-            Int8Ty, RawDataPtr, { ConstantInt::get(IntPtrTy, ArgOffset) }, "filc_arg_ptr",
-            InsertionPoint);
-          Value* V = loadValueRecurseAfterCheck(
-            CanonicalLowT, ArgPtr, false, DL.getABITypeAlign(CanonicalLowT),
-            AtomicOrdering::NotAtomic, SyncScope::System, MemoryKind::CC, InsertionPoint);
-          V = castFromArg(V, OriginalLowT, InsertionPoint);
-          Args.push_back(V);
-          LastOffset = ArgOffset + DL.getTypeAllocSize(CanonicalLowT);
+        size_t LastOffset = 0;
+        if (F->getFunctionType()->getNumParams()) {
+          StructType* ArgsTy = argsType(F->getFunctionType());
+          const StructLayout* SL = DL.getStructLayout(ArgsTy);
+          Value* ArgsV = loadCC(ArgsTy, NewF->getArg(1), CCArgsCheckFailure, InsertionPoint, DebugLoc());
+          for (unsigned Index = 0; Index < F->getFunctionType()->getNumParams(); ++Index) {
+            Type* CanonicalT = ArgsTy->getElementType(Index);
+            Type* OriginalT = F->getFunctionType()->getParamType(Index);
+            Instruction* Extract = ExtractValueInst::Create(
+              toFlightType(CanonicalT), ArgsV, Index, "filc_extract_arg", InsertionPoint);
+            Args.push_back(castFromArg(Extract, toFlightType(OriginalT), InsertionPoint));
+            LastOffset = SL->getElementOffset(Index) + DL.getTypeAllocSize(CanonicalT);
+          }
         }
         if (UsesVastartOrZargs) {
           // Do this after we have recorded all the args for GC, so it's safe to have a pollcheck.
           Value* SnapshottedArgsPtr = CallInst::Create(
-            PromoteArgsToHeap, { MyThread, ArgCCPtr }, "", InsertionPoint);
-          recordObjectAtIndex(
-            ptrObject(SnapshottedArgsPtr, InsertionPoint), SnapshottedArgsFrameIndex, InsertionPoint);
-          SnapshottedArgsPtrForVastart = ptrWithOffset(
+            PromoteArgsToHeap, { MyThread, NewF->getArg(1) }, "", InsertionPoint);
+          recordLowerAtIndex(
+            flightPtrLower(SnapshottedArgsPtr, InsertionPoint), SnapshottedArgsFrameIndex,
+            InsertionPoint);
+          SnapshottedArgsPtrForVastart = flightPtrWithOffset(
             SnapshottedArgsPtr, ConstantInt::get(IntPtrTy, LastOffset), InsertionPoint);
           SnapshottedArgsPtrForZargs = SnapshottedArgsPtr;
         }
@@ -7376,48 +6763,47 @@ public:
           }
           if (!Phis.empty()) {
             for (PHINode* Phi : Phis)
-              recordObjects(Phi, I);
+              recordLowers(Phi, I);
             Phis.clear();
           }
           if (InvokeInst* II = dyn_cast<InvokeInst>(I))
-            recordObjects(I, &*II->getNormalDest()->getFirstInsertionPt());
+            recordLowers(I, &*II->getNormalDest()->getFirstInsertionPt());
           else if (I->isTerminator())
             assert(I->getType()->isVoidTy());
           else
-            recordObjects(I, I->getNextNode());
+            recordLowers(I, I->getNextNode());
         }
         assert(Phis.empty());
+        captureAuxBaseVars(Instructions);
         for (Instruction* I : Instructions)
           emitChecksForInst(I);
         erase_if(Instructions, [&] (Instruction* I) { return earlyLowerInstruction(I); });
         for (Instruction* I : Instructions)
-          lowerInstruction(I, LowRawNull);
+          lowerInstruction(I, RawNull);
 
-        InsertionPoint = &*Blocks[0]->getFirstInsertionPt();
-        auto MakeCCBuffer = [&] (BitCastInst* FutureBuffer, size_t Size, size_t Alignment) {
-          if (FutureBuffer->hasNUsesOrMore(1)) {
-            assert(Size);
-            assert(Alignment);
-            FutureBuffer->replaceAllUsesWith(
-              new AllocaInst(
-                Int8Ty, 0, ConstantInt::get(IntPtrTy, Size), Align(Alignment),
-                "filc_cc_buffer", InsertionPoint));
-          } else {
-            assert(!Size);
-            assert(!Alignment);
-          }
-        };
-        MakeCCBuffer(FutureArgBuffer, ArgBufferSize, ArgBufferAlignment);
-        MakeCCBuffer(FutureReturnBuffer, ReturnBufferSize, ReturnBufferAlignment);
-        
-        GlobalVariable* NewObjectG = objectGlobalForGlobal(NewF, OldF);
+        GlobalVariable* NewObjectG = new GlobalVariable(
+          M, ObjectTy, true, GlobalValue::InternalLinkage, nullptr, "Jfo_" + OldF->getName());
+        Constant* LowerAndUpper =
+          ConstantExpr::getGetElementPtr(ObjectTy, NewObjectG, ConstantInt::get(IntPtrTy, 1));
+        uint16_t ObjectFlags =
+          ObjectFlagGlobal |
+          ObjectFlagReadonly |
+          (SpecialTypeFunction << ObjectFlagsSpecialShift);
+        Constant* NewObjC = ConstantStruct::get(
+          ObjectTy,
+          { LowerAndUpper,
+            ConstantExpr::getGetElementPtr(
+              Int8Ty, NewF,
+              ConstantInt::get(
+                IntPtrTy, static_cast<uintptr_t>(ObjectFlags) << ObjectAuxFlagsShift)) });
+        NewObjectG->setInitializer(NewObjC);
         
         Function* GetterF = GlobalToGetter[OldF];
         assert(GetterF);
         assert(GetterF->isDeclaration());
         BasicBlock* RootBB = BasicBlock::Create(C, "filc_function_getter_root", GetterF);
-        Return = ReturnInst::Create(C, UndefValue::get(LowWidePtrTy), RootBB);
-        Return->getOperandUse(0) = createPtr(NewObjectG, NewF, Return);
+        Return = ReturnInst::Create(C, UndefValue::get(FlightPtrTy), RootBB);
+        Return->getOperandUse(0) = createFlightPtr(LowerAndUpper, NewF, Return);
 
         if (Setjmps.size())
           assert(NewF->callsFunctionThatReturnsTwice());
@@ -7450,8 +6836,6 @@ public:
     }
 
     Dummy->deleteValue();
-    FutureArgBuffer->deleteValue();
-    FutureReturnBuffer->deleteValue();
 
     if (verbose)
       errs() << "Deleting ToErase values.\n";

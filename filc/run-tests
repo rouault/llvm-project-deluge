@@ -33,6 +33,7 @@ require 'getoptlong'
 $runTests = true
 $verbose = false
 $filter = /./
+$specificTest = nil
 
 $compilerPrefix = ""
 $bundleOpt = "-shared"
@@ -46,6 +47,7 @@ GetoptLong.new(
     [ '--no-run', '-n', GetoptLong::NO_ARGUMENT ],
     [ '--verbose', '-v', GetoptLong::NO_ARGUMENT ],
     [ '--filter', '-f', GetoptLong::REQUIRED_ARGUMENT ],
+    [ '--test', '-t', GetoptLong::REQUIRED_ARGUMENT ],
     [ '--pizfix', '-p', GetoptLong::REQUIRED_ARGUMENT ],
 ).each {
     | opt, arg |
@@ -56,12 +58,16 @@ GetoptLong.new(
         $verbose = true
     when '--filter'
         $filter = Regexp.new(arg)
+    when '--test'
+        $specificTest = arg
     when '--pizfix'
         $pizfix = arg
     else
         raise
     end
 }
+
+raise unless ARGV.empty?
 
 raise unless system("#{$compilerPrefix}clang -c -o filc/tests/legacy_utils.o filc/tests/legacy_utils.c -Ilibpas/src/libpas -g")
 raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
@@ -85,6 +91,9 @@ $testDirectory.each_entry {
     next if testName == Pathname.new(".")
     next if testName == Pathname.new("..")
     next unless testName.to_s =~ $filter
+    if $specificTest
+        next unless testName.to_s == $specificTest
+    end
     fullPath = $testDirectory + testName
     next unless fullPath.directory?
     unless (fullPath + "manifest").exist?
@@ -224,7 +233,7 @@ $testDirectory.each_entry {
             | outp |
             outp.puts "#!/bin/sh"
             outp.puts "set -e"
-            outp.print "#{$libraryPathEnv}=#{$pizfix}/pizfix/lib_test"
+            outp.print "#{$libraryPathEnv}=#{$pizfix}/lib_test"
             if manifest["extraLDPath"]
                 outp.print ":#{manifest["extraLDPath"]}"
             end
@@ -373,7 +382,7 @@ File.open("filc/tests/testmakefile", "w") {
 }
 
 if $runTests
-    raise unless system("#{$make} -f filc/tests/testmakefile -j #{Etc.nprocessors}")
+    raise unless system("#{$make} -k -f filc/tests/testmakefile -j #{Etc.nprocessors}")
     puts "SUCCESS"
 end
 

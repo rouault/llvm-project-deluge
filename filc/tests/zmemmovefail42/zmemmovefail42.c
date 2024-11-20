@@ -5,7 +5,7 @@ int main()
     zptrtable* src = zptrtable_new();
     char* dst = "hello";
 
-    zmemmove(&dst, src, 16);
+    zmemmove(&dst, src, 8);
 
     return 0;
 }

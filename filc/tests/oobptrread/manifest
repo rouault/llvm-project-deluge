@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "cannot read 16 bytes when upper - ptr = 8"
+  - "cannot read pointer with ptr >= upper"
 output-excludes:
   - "value ="

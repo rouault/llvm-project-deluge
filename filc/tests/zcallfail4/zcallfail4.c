@@ -11,7 +11,7 @@ char* stuff(int x)
 int main()
 {
     int stuff_arg = 666;
-    zcall_int(stuff, &stuff_arg);
+    ZASSERT(!strcmp(*(char**)zcall(stuff, &stuff_arg), "666"));
     
     return 0;
 }

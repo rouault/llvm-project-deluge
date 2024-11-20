@@ -1,15 +1,19 @@
 #include <stdfil.h>
+#include <inttypes.h>
 
 int main()
 {
-    __int128 dst[4];
+    int64_t dst[4];
     char* src[4];
 
     unsigned i = 0;
     for (i = 4; i--;)
         src[i] = "hello";
 
-    zmemmove((char*)dst + 5, src, 59);
+    zmemmove((char*)dst + 5, src, 27);
+
+    for (i = 4; i--;)
+        ZASSERT(!zhasvalidcap(((char**)dst)[i]));
 
     return 0;
 }

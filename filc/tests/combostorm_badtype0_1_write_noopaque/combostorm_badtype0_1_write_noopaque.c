@@ -2,28 +2,50 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = (malloc(33));
-    *(int8_t*)(buf + 0) = 42;
-    *(int8_t*)(buf + 1) = 42;
-    *(int8_t*)(buf + 2) = 42;
-    *(int8_t*)(buf + 3) = 42;
-    *(int8_t*)(buf + 4) = 42;
-    *(int8_t*)(buf + 5) = 42;
-    *(int8_t*)(buf + 6) = 42;
-    *(int8_t*)(buf + 7) = 42;
-    *(int8_t*)(buf + 8) = 42;
-    *(int8_t*)(buf + 9) = 42;
-    *(int8_t*)(buf + 10) = 42;
-    *(int8_t*)(buf + 11) = 42;
-    *(int8_t*)(buf + 12) = 42;
-    *(int8_t*)(buf + 13) = 42;
-    *(int8_t*)(buf + 14) = 42;
-    *(int8_t*)(buf + 15) = 42;
-    *(char**)(buf + 16) = "hello";
-    *(int8_t*)(buf + 32) = 42;
+    init_test();
+    char* buf = (malloc(25));
+    *(int8_t*)(buf + 0) = value;
+    *(int8_t*)(buf + 1) = value;
+    *(int8_t*)(buf + 2) = value;
+    *(int8_t*)(buf + 3) = value;
+    *(int8_t*)(buf + 4) = value;
+    *(int8_t*)(buf + 5) = value;
+    *(int8_t*)(buf + 6) = value;
+    *(int8_t*)(buf + 7) = value;
+    *(char**)(buf + 8) = hello;
+    *(int8_t*)(buf + 16) = value;
+    *(int8_t*)(buf + 17) = value;
+    *(int8_t*)(buf + 18) = value;
+    *(int8_t*)(buf + 19) = value;
+    *(int8_t*)(buf + 20) = value;
+    *(int8_t*)(buf + 21) = value;
+    *(int8_t*)(buf + 22) = value;
+    *(int8_t*)(buf + 23) = value;
+    *(int8_t*)(buf + 24) = value;
     buf = (char*)(buf) + 0;
     int8_t f0 = *(int8_t*)(buf + 0);
     int8_t f1 = *(int8_t*)(buf + 1);
@@ -50,46 +72,30 @@ int main()
     int8_t f22 = *(int8_t*)(buf + 22);
     int8_t f23 = *(int8_t*)(buf + 23);
     int8_t f24 = *(int8_t*)(buf + 24);
-    int8_t f25 = *(int8_t*)(buf + 25);
-    int8_t f26 = *(int8_t*)(buf + 26);
-    int8_t f27 = *(int8_t*)(buf + 27);
-    int8_t f28 = *(int8_t*)(buf + 28);
-    int8_t f29 = *(int8_t*)(buf + 29);
-    int8_t f30 = *(int8_t*)(buf + 30);
-    int8_t f31 = *(int8_t*)(buf + 31);
-    int8_t f32 = *(int8_t*)(buf + 32);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(f4 == 42);
-    ZASSERT(f5 == 42);
-    ZASSERT(f6 == 42);
-    ZASSERT(f7 == 42);
-    ZASSERT(f8 == 42);
-    ZASSERT(f9 == 42);
-    ZASSERT(f10 == 42);
-    ZASSERT(f11 == 42);
-    ZASSERT(f12 == 42);
-    ZASSERT(f13 == 42);
-    ZASSERT(f14 == 42);
-    ZASSERT(f15 == 42);
-    ZASSERT(f16 == 42);
-    ZASSERT(f17 == 42);
-    ZASSERT(f18 == 42);
-    ZASSERT(f19 == 42);
-    ZASSERT(f20 == 42);
-    ZASSERT(f21 == 42);
-    ZASSERT(f22 == 42);
-    ZASSERT(f23 == 42);
-    ZASSERT(f24 == 42);
-    ZASSERT(f25 == 42);
-    ZASSERT(f26 == 42);
-    ZASSERT(f27 == 42);
-    ZASSERT(f28 == 42);
-    ZASSERT(f29 == 42);
-    ZASSERT(f30 == 42);
-    ZASSERT(f31 == 42);
-    ZASSERT(f32 == 42);
+    ZASSERT(f0 == value);
+    ZASSERT(f1 == value);
+    ZASSERT(f2 == value);
+    ZASSERT(f3 == value);
+    ZASSERT(f4 == value);
+    ZASSERT(f5 == value);
+    ZASSERT(f6 == value);
+    ZASSERT(f7 == value);
+    ZASSERT(f8 == value);
+    ZASSERT(f9 == value);
+    ZASSERT(f10 == value);
+    ZASSERT(f11 == value);
+    ZASSERT(f12 == value);
+    ZASSERT(f13 == value);
+    ZASSERT(f14 == value);
+    ZASSERT(f15 == value);
+    ZASSERT(f16 == value);
+    ZASSERT(f17 == value);
+    ZASSERT(f18 == value);
+    ZASSERT(f19 == value);
+    ZASSERT(f20 == value);
+    ZASSERT(f21 == value);
+    ZASSERT(f22 == value);
+    ZASSERT(f23 == value);
+    ZASSERT(f24 == value);
     return 0;
 }

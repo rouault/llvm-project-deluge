@@ -2,27 +2,45 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = (malloc(34));
-    *(int16_t*)(buf + 0) = 42;
-    *(int16_t*)(buf + 2) = 42;
-    *(int16_t*)(buf + 4) = 42;
-    *(int16_t*)(buf + 6) = 42;
-    *(int16_t*)(buf + 8) = 42;
-    *(int16_t*)(buf + 10) = 42;
-    *(int16_t*)(buf + 12) = 42;
-    *(int16_t*)(buf + 14) = 42;
-    *(int16_t*)(buf + 16) = 42;
-    *(int16_t*)(buf + 18) = 42;
-    *(int16_t*)(buf + 20) = 42;
-    *(int16_t*)(buf + 22) = 42;
-    *(int16_t*)(buf + 24) = 42;
-    *(int16_t*)(buf + 26) = 42;
-    *(int16_t*)(buf + 28) = 42;
-    *(int16_t*)(buf + 30) = 42;
-    *(int16_t*)(buf + 32) = 42;
+    init_test();
+    char* buf = (malloc(26));
+    *(int16_t*)(buf + 0) = value;
+    *(int16_t*)(buf + 2) = value;
+    *(int16_t*)(buf + 4) = value;
+    *(int16_t*)(buf + 6) = value;
+    *(int16_t*)(buf + 8) = value;
+    *(int16_t*)(buf + 10) = value;
+    *(int16_t*)(buf + 12) = value;
+    *(int16_t*)(buf + 14) = value;
+    *(int16_t*)(buf + 16) = value;
+    *(int16_t*)(buf + 18) = value;
+    *(int16_t*)(buf + 20) = value;
+    *(int16_t*)(buf + 22) = value;
+    *(int16_t*)(buf + 24) = value;
     buf = (char*)opaque(buf) + -26208;
     int16_t f0 = *(int16_t*)(buf + 0);
     int16_t f1 = *(int16_t*)(buf + 2);
@@ -37,26 +55,18 @@ int main()
     int16_t f10 = *(int16_t*)(buf + 20);
     int16_t f11 = *(int16_t*)(buf + 22);
     int16_t f12 = *(int16_t*)(buf + 24);
-    int16_t f13 = *(int16_t*)(buf + 26);
-    int16_t f14 = *(int16_t*)(buf + 28);
-    int16_t f15 = *(int16_t*)(buf + 30);
-    int16_t f16 = *(int16_t*)(buf + 32);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(f4 == 42);
-    ZASSERT(f5 == 42);
-    ZASSERT(f6 == 42);
-    ZASSERT(f7 == 42);
-    ZASSERT(f8 == 42);
-    ZASSERT(f9 == 42);
-    ZASSERT(f10 == 42);
-    ZASSERT(f11 == 42);
-    ZASSERT(f12 == 42);
-    ZASSERT(f13 == 42);
-    ZASSERT(f14 == 42);
-    ZASSERT(f15 == 42);
-    ZASSERT(f16 == 42);
+    ZASSERT(f0 == value);
+    ZASSERT(f1 == value);
+    ZASSERT(f2 == value);
+    ZASSERT(f3 == value);
+    ZASSERT(f4 == value);
+    ZASSERT(f5 == value);
+    ZASSERT(f6 == value);
+    ZASSERT(f7 == value);
+    ZASSERT(f8 == value);
+    ZASSERT(f9 == value);
+    ZASSERT(f10 == value);
+    ZASSERT(f11 == value);
+    ZASSERT(f12 == value);
     return 0;
 }

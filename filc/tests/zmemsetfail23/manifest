@@ -1,5 +1,5 @@
 return:
-  failure
-output-includes:
+  success
+output-excludes:
   - "filc safety error"
-  - "cannot access 14 bytes as int or unset, span contains non-ints"
+

@@ -1,7 +1,7 @@
 return:
-  failure
+  success
 output-includes:
   - "tak"
-  - "filc safety error"
-output-excludes:
   - "nie"
+output-excludes:
+  - "filc safety error"

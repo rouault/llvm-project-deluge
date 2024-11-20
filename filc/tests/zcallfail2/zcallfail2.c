@@ -11,7 +11,7 @@ char* stuff(int x)
 int main()
 {
     char* thingy_arg = "666";
-    zcall_void(stuff, &thingy_arg);
+    zcall(stuff, &thingy_arg);
     
     return 0;
 }

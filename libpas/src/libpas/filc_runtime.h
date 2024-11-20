@@ -53,9 +53,11 @@ PAS_BEGIN_EXTERN_C;
 /* Internal FilC runtime header, defining how the FilC runtime maintains its state. */
 
 struct filc_alignment_and_offset;
+struct filc_alignment_header;
+struct filc_atomic_box;
 struct filc_cc_cursor;
-struct filc_cc_ptr;
-struct filc_cc_type;
+struct filc_cc_sizer;
+struct filc_cc_unit;
 struct filc_constant_relocation;
 struct filc_constexpr_node;
 struct filc_exact_ptr_table;
@@ -65,33 +67,36 @@ struct filc_function_origin;
 struct filc_global_initialization_context;
 struct filc_inline_frame;
 struct filc_jmp_buf;
+struct filc_lower_or_box;
 struct filc_native_frame;
 struct filc_object;
 struct filc_object_array;
 struct filc_optimized_access_check_origin;
 struct filc_optimized_alignment_contradiction_origin;
-struct filc_optimized_type_contradiction_origin;
 struct filc_origin;
 struct filc_origin_node;
 struct filc_origin_with_eh;
 struct filc_ptr;
 struct filc_ptr_array;
+struct filc_ptr_pair;
 struct filc_ptr_table;
 struct filc_ptr_table_array;
 struct filc_ptr_uintptr_hash_map_entry;
 struct filc_signal_handler;
 struct filc_thread;
-struct filc_type_check_and_offset;
 struct filc_uintptr_ptr_hash_map_entry;
-struct filc_user_iovec;
 struct pas_basic_heap_runtime_config;
 struct pas_local_allocator;
 struct pas_stream;
 struct pas_thread_local_cache_node;
+struct pizlonated_return_value;
 struct verse_heap_object_set;
+typedef struct filc_alignment_and_offset filc_alignment_and_offset;
+typedef struct filc_alignment_header filc_alignment_header;
+typedef struct filc_atomic_box filc_atomic_box;
 typedef struct filc_cc_cursor filc_cc_cursor;
-typedef struct filc_cc_ptr filc_cc_ptr;
-typedef struct filc_cc_type filc_cc_type;
+typedef struct filc_cc_sizer filc_cc_sizer;
+typedef struct filc_cc_unit filc_cc_unit;
 typedef struct filc_constant_relocation filc_constant_relocation;
 typedef struct filc_constexpr_node filc_constexpr_node;
 typedef struct filc_exact_ptr_table filc_exact_ptr_table;
@@ -101,106 +106,102 @@ typedef struct filc_function_origin filc_function_origin;
 typedef struct filc_global_initialization_context filc_global_initialization_context;
 typedef struct filc_inline_frame filc_inline_frame;
 typedef struct filc_jmp_buf filc_jmp_buf;
+typedef struct filc_lower_or_box filc_lower_or_box;
 typedef struct filc_native_frame filc_native_frame;
 typedef struct filc_object filc_object;
 typedef struct filc_object_array filc_object_array;
-typedef struct filc_alignment_and_offset filc_alignment_and_offset;
 typedef struct filc_optimized_access_check_origin filc_optimized_access_check_origin;
 typedef struct filc_optimized_alignment_contradiction_origin filc_optimized_alignment_contradiction_origin;
-typedef struct filc_optimized_type_contradiction_origin filc_optimized_type_contradiction_origin;
 typedef struct filc_origin filc_origin;
 typedef struct filc_origin_node filc_origin_node;
 typedef struct filc_origin_with_eh filc_origin_with_eh;
 typedef struct filc_ptr filc_ptr;
 typedef struct filc_ptr_array filc_ptr_array;
+typedef struct filc_ptr_pair filc_ptr_pair;
 typedef struct filc_ptr_table filc_ptr_table;
 typedef struct filc_ptr_table_array filc_ptr_table_array;
 typedef struct filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry;
 typedef struct filc_signal_handler filc_signal_handler;
 typedef struct filc_thread filc_thread;
-typedef struct filc_type_check_and_offset filc_type_check_and_offset;
 typedef struct filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry;
-typedef struct filc_user_iovec filc_user_iovec;
 typedef struct pas_basic_heap_runtime_config pas_basic_heap_runtime_config;
 typedef struct pas_local_allocator pas_local_allocator;
 typedef struct pas_stream pas_stream;
 typedef struct pas_thread_local_cache_node pas_thread_local_cache_node;
+typedef struct pizlonated_return_value pizlonated_return_value;
 typedef struct verse_heap_object_set verse_heap_object_set;
 
-typedef uint8_t filc_word_type;
 typedef uint16_t filc_object_flags;
+typedef uint8_t filc_special_type;
+typedef uint8_t filc_log_align;
+typedef uintptr_t filc_word;
 
-/* Each word in memory monotonically transitions type. The lattice is:
+#define FILC_MINALIGN                     (16u)
 
-   unset -> int
-   unset -> ptr
-   unset -> free
-   int -> free
-   ptr -> free
+/* Objects are either plain or special.
    
-   Note that some states (function, thread, others) have no transition from unset. These are
-   allocated with filc_allocate_special, which sets the type straight away. These special types all
-   have upper = lower + 16 even though the payload is not 16 bytes!
+   Plain objects are the kinds of things that you can load/store to using C constructs.
+   
+   Specials are things like functions, threads, signal handlers, and Fil-C objects that can't be
+   loaded from or stored to (except maybe using special operations, like ptr_table's API).
 
-   Note that some of the states have no transition to free.
+   All special objects have a special type.
 
-   Hence, some types have no edges in the lattice (if they have no transition from unset and no
-   transition to free). */
-#define FILC_WORD_TYPE_UNSET              ((filc_word_type)0)     /* 128-bit word whose type hasn't
-                                                                     been set yet. */
-#define FILC_WORD_TYPE_INT                ((filc_word_type)1)     /* 128-bit word that contains
-                                                                     ints. */
-#define FILC_WORD_TYPE_PTR                ((filc_word_type)2)     /* 128-bit word that contains a
-                                                                     ptr. This has to be a different
-                                                                     bit than INT because of how CC
-                                                                     checks work. */
-#define FILC_WORD_TYPE_FREE               ((filc_word_type)3)     /* 128-bit word that has been
+   Special objects have an aux pointer that points to the object's payload. You can only access a
+   pointer to a special object if the raw pointer also points at the payload.
+
+   The special type is stored in the flags. (See FILC_OBJECT_FLAGS_SPECIAL_SHIFT.) */
+#define FILC_SPECIAL_TYPE_NONE            ((filc_special_type)0) /* not a special object */
+#define FILC_SPECIAL_TYPE_FUNCTION        ((filc_special_type)1)
+#define FILC_SPECIAL_TYPE_THREAD          ((filc_special_type)2)
+#define FILC_SPECIAL_TYPE_SIGNAL_HANDLER  ((filc_special_type)3)
+#define FILC_SPECIAL_TYPE_PTR_TABLE       ((filc_special_type)4)
+#define FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY ((filc_special_type)5)
+#define FILC_SPECIAL_TYPE_DL_HANDLE       ((filc_special_type)6)
+#define FILC_SPECIAL_TYPE_JMP_BUF         ((filc_special_type)7)
+#define FILC_SPECIAL_TYPE_EXACT_PTR_TABLE ((filc_special_type)8)
+#define FILC_SPECIAL_TYPE_MASK            ((filc_special_type)15)
+
+#define FILC_LOG_ALIGN_MASK               ((filc_log_align)31)
+
+#define FILC_WORD_SIZE                    sizeof(filc_word)
+#define FILC_FLIGHT_PTR_ALIGNMENT         16u
+
+#define FILC_OBJECT_AUX_PTR_MASK          PAS_ADDRESS_MASK
+#define FILC_OBJECT_AUX_FLAGS_SHIFT       PAS_ADDRESS_BITS
+
+/* FIXME: Need to support special aligned objects. So, we need 4 bits for the special type and 5 bits
+   for alignment. That leaves 7 flags. */
+#define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)1)  /* Pointer to a global, so cannot be
                                                                      freed. */
-#define FILC_WORD_TYPE_FUNCTION           ((filc_word_type)4)     /* Indicates the special function
-                                                                     type. The lower points at the
-                                                                     function but the GC-allocated
-                                                                     payload is empty. */
-#define FILC_WORD_TYPE_THREAD             ((filc_word_type)5)     /* Indicates the special thread
-                                                                     type. The lower points at the
-                                                                     payload. */
-#define FILC_WORD_TYPE_SIGNAL_HANDLER     ((filc_word_type)6)     /* Indicates the special
-                                                                     signal_handler. The lower points
-                                                                     at the payload. */ 
-#define FILC_WORD_TYPE_PTR_TABLE          ((filc_word_type)7)     /* Indicates the special ptr_table.
-                                                                     The lower points at the
-                                                                     payload. */
-#define FILC_WORD_TYPE_PTR_TABLE_ARRAY    ((filc_word_type)8)     /* Indicates the special
-                                                                     ptr_table_array. The lower points
-                                                                     at the payload. */
-#define FILC_WORD_TYPE_DL_HANDLE          ((filc_word_type)9)     /* Indicates the special dlopen
-                                                                     handle type. The lower points at
-                                                                     the hanle but the GC-allocated
-                                                                     payload is empty. */
-#define FILC_WORD_TYPE_JMP_BUF            ((filc_word_type)10)    /* Indicates the special jmp_buf
-                                                                     type. The lower points at the
-                                                                     payload. */
-#define FILC_WORD_TYPE_EXACT_PTR_TABLE    ((filc_word_type)11)    /* Indicates the special
-                                                                     exact_ptr_table. The lower points
-                                                                     at the payload. */
+#define FILC_OBJECT_FLAG_READONLY         ((filc_object_flags)2)  /* Object is readonly. */
+#define FILC_OBJECT_FLAG_FREE             ((filc_object_flags)4)  /* Object is freed. Freed objects
+                                                                     also have their size set to zero,
+                                                                     but otherwise retain all of the
+                                                                     data about themselves that is
+                                                                     necessary for accesses to work, in
+                                                                     case there is a race between free
+                                                                     and access. An mmap object may be
+                                                                     marked free, if the whole object
+                                                                     was munmapped. */
+#define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)8)  /* An object intended for use with
+                                                                     mmap/munmap. Such objects need to
+                                                                     be mmapped to ANON/PRIVATE/RW
+                                                                     upon destruction, so these
+                                                                     objects are allocated from the
+                                                                     destructor space. */
+#define FILC_OBJECT_FLAG_GLOBAL_AUX       ((filc_object_flags)16) /* The allocation that the aux ptr
+                                                                     points to is allocated in global
+                                                                     memory, so it shouldn't be
+                                                                     marked. */
+#define FILC_OBJECT_FLAGS_SPECIAL_SHIFT   ((filc_object_flags)5)  /* The shift amount to get to the
+                                                                     special type. */
+#define FILC_OBJECT_FLAGS_SPECIAL_MASK    ((filc_object_flags)FILC_SPECIAL_TYPE_MASK \
+                                           << FILC_OBJECT_FLAGS_SPECIAL_SHIFT)
+#define FILC_OBJECT_FLAGS_ALIGN_SHIFT     ((filc_object_flags)9)  /* The shift amount to get the log
+                                                                     align. */
 
-#define FILC_WORD_SIZE                    sizeof(pas_uint128)
- 
-#define FILC_OBJECT_FLAG_FREE             ((filc_object_flags)1)  /* The object has been freed. */
-#define FILC_OBJECT_FLAG_SPECIAL          ((filc_object_flags)2)  /* It's a special object. If there
-                                                                     are no words, or any of them are
-                                                                     unset/int/ptr, then this cannot
-                                                                     be set. If this is set, then
-                                                                     there must be one word, and that
-                                                                     word must be one of free/
-                                                                     function/thread/signal_handler/
-                                                                     etc. */
-#define FILC_OBJECT_FLAG_GLOBAL           ((filc_object_flags)4)  /* Pointer to a global, so cannot be
-                                                                     freed. */
-#define FILC_OBJECT_FLAG_MMAP             ((filc_object_flags)8)  /* Pointer to mmap. */
-#define FILC_OBJECT_FLAG_READONLY         ((filc_object_flags)16) /* Object is readonly. */
-#define FILC_OBJECT_FLAGS_PIN_SHIFT       ((filc_object_flags)5)  /* Data is pinned by the runtime, so
-                                                                     cannot be freed. This is only
-                                                                     useful for munmap scenarios. */
+#define FILC_ATOMIC_BOX_BIT               ((uintptr_t)1)
 
 #define FILC_MAX_USER_SIGNUM              (_NSIG - 1)
                                           
@@ -223,7 +224,7 @@ typedef uint16_t filc_object_flags;
 
    Note that both the allocator offset and allocator size give breathing room for fields to be
    added. */
-#define FILC_THREAD_ALLOCATOR_OFFSET      1536u
+#define FILC_THREAD_ALLOCATOR_OFFSET      1792u
 #define FILC_THREAD_ALLOCATOR_SIZE        208u
 #define FILC_THREAD_MAX_INLINE_SIZE_CLASS 416u
 #define FILC_THREAD_NUM_ALLOCATORS \
@@ -235,30 +236,19 @@ typedef uint16_t filc_object_flags;
 
 #define FILC_NATIVE_FRAME_PTR_MASK        ((uintptr_t)3)
 #define FILC_NATIVE_FRAME_TRACKED_PTR     ((uintptr_t)1)
-#define FILC_NATIVE_FRAME_PINNED_PTR      ((uintptr_t)2)
-#define FILC_NATIVE_FRAME_BMALLOC_PTR     ((uintptr_t)3)
+#define FILC_NATIVE_FRAME_BMALLOC_PTR     ((uintptr_t)2)
 
 #define FILC_NATIVE_FRAME_INLINE_CAPACITY 5u
 
-/* Object bounds have to be at least MIN_BOUND, which is 1<<32, so that a valid way to check if
-   ptr + size <= upper is to instead say ptr <= upper - size. */
-#define FILC_MIN_BOUND                    ((void*)(uintptr_t)0x100000000llu)
+#define FILC_CC_INLINE_SIZE               256u
+#define FILC_CC_ALIGNMENT                 64u
 
-/* To make it easy to recognize free object bounds, we use this as the lower/upper of free objects.
-   Note that this is at least FILC_MIN_BOUND. */
-#define FILC_FREE_BOUND                   ((void*)(uintptr_t)0x66600000000llu)
-
-#define PIZLONATED_SIGNATURE \
-    filc_thread* my_thread, \
-    filc_cc_ptr args, \
-    filc_cc_ptr rets
-
-#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_objects) \
+#define FILC_DEFINE_RUNTIME_ORIGIN(origin_name, function_name, passed_num_lowers) \
     static const filc_function_origin function_ ## origin_name = { \
         .base = { \
             .function = (function_name), \
             .filename = "<runtime>", \
-            .num_objects_ish = (passed_num_objects) \
+            .num_lowers_ish = (passed_num_lowers) \
         }, \
         .personality_getter = NULL, \
         .can_throw = true, \
@@ -271,8 +261,59 @@ typedef uint16_t filc_object_flags;
         .column = 0 \
     }
 
-struct PAS_ALIGNED(FILC_WORD_SIZE) filc_ptr {
-    pas_uint128 word;
+struct pizlonated_return_value {
+    bool has_exception;
+    size_t return_size;
+};
+
+struct PAS_ALIGNED(FILC_FLIGHT_PTR_ALIGNMENT) filc_ptr {
+    void* ptr;
+    void* lower;
+};
+
+struct filc_ptr_pair {
+    void* raw_ptr;
+    filc_lower_or_box* lower_or_box_ptr;
+};
+
+typedef pizlonated_return_value (*pizlonated_function)(filc_thread* my_thread, size_t argument_size);
+typedef filc_ptr (*pizlonated_linker_stub)(filc_global_initialization_context* context);
+
+/* Creates a boxed int ptr, which cannot be accessed at all. */
+static inline filc_ptr filc_ptr_forge_invalid(void* ptr)
+{
+    filc_ptr result;
+    result.lower = NULL;
+    result.ptr = ptr;
+    return result;
+}
+
+static inline filc_ptr filc_ptr_forge_null(void)
+{
+    return filc_ptr_forge_invalid(NULL);
+}
+
+static inline bool filc_ptr_is_totally_equal(filc_ptr a, filc_ptr b)
+{
+    return a.lower == b.lower && a.ptr == b.ptr;
+}
+
+static inline bool filc_ptr_is_totally_null(filc_ptr ptr)
+{
+    return filc_ptr_is_totally_equal(ptr, filc_ptr_forge_null());
+}
+
+static inline unsigned filc_ptr_hash(filc_ptr ptr)
+{
+    return pas_hash_ptr(ptr.ptr) ^ (unsigned)(uintptr_t)ptr.lower;
+}
+
+struct PAS_ALIGNED(16) filc_atomic_box {
+    filc_ptr ptr;
+};
+
+struct filc_lower_or_box {
+    uintptr_t encoded_value;
 };
 
 enum filc_access_kind {
@@ -286,43 +327,47 @@ enum filc_access_kind {
 typedef enum filc_access_kind filc_access_kind;
 
 struct filc_object {
-    /* NOTE: In the interest of simplicity, we say that lower and upper have to be word-aligned for
-       non-special objects and that upper-lower (i.e. the size) has to be word-aligned no matter
-       what.
+    /* There's a debate to be had about whether this should be upper or size. There are two reasons
+       for using upper:
        
-       This means that the minimum allocation size is 16 bytes.
-       
-       This isn't a strict requirement for the system to work. It's only a requirement for things
-       that have ptrs. For now we make it a requirement (and obey it in the compiler and assert it
-       in the runtime) because it makes things more obvious. */
+       - It makes this model more similar to the previous one, MonoCaps, and so therefore when we
+         introduced this new InvisiCaps model, it was an overall more incremental change. This is to
+         permit more direct comparison of the key ideas of MonoCaps and InvisiCaps without getting
+         hung up on the confusion about whether size or upper is better.
+         
+       - Using size would mean one branch for checking lower and upper bounds of native-aligned
+         accesses, but at the cost of that branch having a data dependency. Using upper means having
+         two branches, but each branch has fewer data dependencies. It's very hard to tell which is
+         better, but experience shows that more branches with fewer dependencies is faster.
     
-    void* lower;
+       We should test if size is better than upper at some point! The hardest part of such an
+       experiment is that it substantially changes how the FilPizlonator pass works, in particular how
+       the abstract interpreter deals with check merging. */
     void* upper;
-    filc_object_flags flags;
-    filc_word_type word_types[];
+    uintptr_t aux;
 };
 
-struct filc_cc_type {
-    size_t num_words;
-    filc_word_type word_types[];
-};
-
-struct filc_cc_ptr {
-    const filc_cc_type* type;
-    void* base;
+struct filc_alignment_header {
+    /* This encodes the alignment in the high 16 bits, with the low 48 bits all zero. This is to help
+       GC's object scans, where the GC gives us the base of an allocation.
+       
+       If the object is not aligned by more than 16 bytes, then the first word will be upper, so it
+       will have zero in the high 16 bits and the low 48 bits will look like upper (i.e. they will
+       point at least as high as the lower, so at least the allocation plus 16 bytes).
+       
+       If the object is aligned, then the first word will be this thing, which will have zero in the
+       low 48 bits, and the alignment encoded logarithmically in the high 16 bits. */
+    uintptr_t encoded_alignment;
 };
 
 struct filc_cc_cursor {
-    filc_cc_ptr cc_ptr;
-    void* cursor;
+    size_t offset;
+    size_t size;
 };
 
-/* The size of filc_object if it's a special object. This is based on special objects having just one
-   word_type.
-
-   Note that the compiler pass hardcodes this constant. */
-#define FILC_SPECIAL_OBJECT_SIZE \
-    PAS_ROUND_UP_TO_POWER_OF_2(PAS_OFFSETOF(filc_object, word_types) + 1, FILC_WORD_SIZE)
+struct filc_cc_sizer {
+    size_t size;
+};
 
 struct filc_origin_node {
     const char* function;
@@ -330,10 +375,10 @@ struct filc_origin_node {
 
     /* This tells the number of objects in the frame, or indicates that this is an inline frame.
        
-       num_objects_ish < UINT_MAX   => This is a filc_function_origin object.
+       num_lowers_ish < UINT_MAX   => This is a filc_function_origin object.
        
-       num_objects_ish == UINT_MAX  => This is a filc_inline_frame object. */
-    unsigned num_objects_ish;
+       num_lowers_ish == UINT_MAX  => This is a filc_inline_frame object. */
+    unsigned num_lowers_ish;
 };
 
 /* NOTE: A function may have two different function origins - one for origins that are capable of
@@ -351,7 +396,7 @@ struct filc_function_origin {
     
        If this is not NULL, then the function can handle exceptions, which means that post-call
        pollchecks will check if the pollcheck returned FILC_POLLCHECK_EXCEPTION. */
-    filc_ptr (*personality_getter)(filc_global_initialization_context*);
+    pizlonated_linker_stub personality_getter;
 
     /* Tells whether a function can throw exceptions. Note that a function might be can_catch and have
        a personality function, but not throw, or vice-versa. */
@@ -387,7 +432,6 @@ struct filc_optimized_access_check_origin {
     uint32_t size;
     uint8_t alignment;
     uint8_t alignment_offset;
-    filc_word_type type;
     bool needs_write;
     const filc_origin* scheduled_origin;
     const filc_origin* semantic_origins[];
@@ -400,18 +444,6 @@ struct filc_alignment_and_offset {
 
 struct filc_optimized_alignment_contradiction_origin {
     filc_alignment_and_offset* alignments; /* null-terminated */
-    const filc_origin* scheduled_origin;
-    const filc_origin* semantic_origins[];
-};
-
-struct filc_type_check_and_offset {
-    int32_t offset; /* will happen to be 0 at terminator. */
-    uint8_t size; /* size == 0 serves as a terminator. */
-    filc_word_type type; /* UNSET serves as a terminator. */
-};
-
-struct filc_optimized_type_contradiction_origin {
-    filc_type_check_and_offset* checks; /* terminated by !size and type == UNSET. */
     const filc_origin* scheduled_origin;
     const filc_origin* semantic_origins[];
 };
@@ -430,16 +462,26 @@ struct filc_inline_frame {
 struct filc_origin_with_eh {
     filc_origin base;
 
-    filc_ptr (*eh_data_getter)(filc_global_initialization_context*);
+    pizlonated_linker_stub eh_data_getter;
 };
 
 #define FILC_FRAME_BODY \
     filc_frame* parent; \
     const filc_origin* origin
 
+/* Defines the following variables: origin, actual_frame, and frame. */
+#define FILC_DEFINE_FRAME(function_name) \
+    FILC_DEFINE_RUNTIME_ORIGIN(origin, (function_name), 0); \
+    struct { \
+        FILC_FRAME_BODY; \
+    } actual_frame; \
+    pas_zero_memory(&actual_frame, sizeof(actual_frame)); \
+    filc_frame* frame = (filc_frame*)&actual_frame; \
+    frame->origin = &origin
+
 struct filc_frame {
     FILC_FRAME_BODY;
-    filc_object* objects[];
+    void* lowers[];
 };
 
 struct filc_ptr_array {
@@ -470,7 +512,17 @@ struct filc_signal_handler {
     int user_signum; /* This is only needed for assertion discipline. */
 };
 
-struct filc_thread {
+/* FIXME: Using such large alignment here makes this difficult to express in LLVM IR. And, it's not
+   necessary to ensure such large alignment just to get the CC to work since FilPizlonator can work
+   around it with the memcpy hack it does. The downside of using too-small alignment here is basically
+   that passing SIMD vectors might result in suboptimal codegen.
+
+   So, maybe I just deal with it and represent this in LLVM IR by having a padding array. */
+struct PAS_ALIGNED(FILC_CC_ALIGNMENT) filc_cc_unit {
+    char contents[FILC_CC_ALIGNMENT];
+};
+
+struct PAS_ALIGNED(FILC_CC_ALIGNMENT) filc_thread {
     /* Begin fields that the compiler has to know about. */
     void* stack_limit;
 
@@ -485,6 +537,12 @@ struct filc_thread {
     filc_ptr unwind_registers[FILC_NUM_UNWIND_REGISTERS];
     
     filc_ptr cookie_ptr;
+
+    filc_cc_unit cc_inline_buffer[FILC_CC_INLINE_SIZE / FILC_CC_ALIGNMENT];
+    filc_cc_unit cc_inline_aux_buffer[FILC_CC_INLINE_SIZE / FILC_CC_ALIGNMENT];
+    char* cc_outline_buffer;
+    char* cc_outline_aux_buffer;
+    size_t cc_outline_size;
 
     /* End fields that the compiler has to know about. */
     
@@ -501,8 +559,10 @@ struct filc_thread {
     uint64_t tlc_node_version;
 
     /* Array of allocated but not constructed objects. This needs to be an array, since we could
-       get a signal in the middle of allocation and have more than one of these. */
-    filc_object_array allocation_roots;
+       get a signal in the middle of allocation and have more than one of these.
+    
+       This isn't an object array, since this might hold auxes. */
+    filc_ptr_array allocation_roots;
 
     filc_object_array mark_stack;
 
@@ -529,7 +589,7 @@ struct filc_thread {
                          
                          This is set to non-NULL the moment that the thread is fully started and
                          is set back to NULL when the thread starts stopping. */
-    bool (*thread_main)(PIZLONATED_SIGNATURE);
+    pizlonated_function thread_main;
     filc_ptr arg_ptr;
     filc_ptr result_ptr;
 
@@ -595,7 +655,7 @@ struct filc_constexpr_node {
 };
 
 struct filc_constant_relocation {
-    size_t offset;
+    size_t offset; /* Offset within the constant, so also an offset in the aux. */
     filc_constant_kind kind;
     void* target;
 };
@@ -610,7 +670,7 @@ struct filc_ptr_uintptr_hash_map_entry {
 static inline filc_ptr_uintptr_hash_map_entry filc_ptr_uintptr_hash_map_entry_create_empty(void)
 {
     filc_ptr_uintptr_hash_map_entry result;
-    result.key.word = 0;
+    result.key = filc_ptr_forge_null();
     result.value = 0;
     return result;
 }
@@ -619,7 +679,7 @@ static inline filc_ptr_uintptr_hash_map_entry
 filc_ptr_uintptr_hash_map_entry_create_deleted(void)
 {
     filc_ptr_uintptr_hash_map_entry result;
-    result.key.word = 0;
+    result.key = filc_ptr_forge_null();
     result.value = 1;
     return result;
 }
@@ -627,7 +687,7 @@ filc_ptr_uintptr_hash_map_entry_create_deleted(void)
 static inline bool filc_ptr_uintptr_hash_map_entry_is_empty_or_deleted(
     filc_ptr_uintptr_hash_map_entry entry)
 {
-    if (!entry.key.word) {
+    if (filc_ptr_is_totally_null(entry.key)) {
         PAS_ASSERT(!entry.value || entry.value == 1);
         return true;
     }
@@ -637,7 +697,7 @@ static inline bool filc_ptr_uintptr_hash_map_entry_is_empty_or_deleted(
 static inline bool
 filc_ptr_uintptr_hash_map_entry_is_empty(filc_ptr_uintptr_hash_map_entry entry)
 {
-    if (!entry.key.word) {
+    if (filc_ptr_is_totally_null(entry.key)) {
         PAS_ASSERT(!entry.value || entry.value == 1);
         return !entry.value;
     }
@@ -647,7 +707,7 @@ filc_ptr_uintptr_hash_map_entry_is_empty(filc_ptr_uintptr_hash_map_entry entry)
 static inline bool
 filc_ptr_uintptr_hash_map_entry_is_deleted(filc_ptr_uintptr_hash_map_entry entry)
 {
-    if (!entry.key.word) {
+    if (filc_ptr_is_totally_null(entry.key)) {
         PAS_ASSERT(!entry.value || entry.value == 1);
         return entry.value;
     }
@@ -662,12 +722,12 @@ filc_ptr_uintptr_hash_map_entry_get_key(filc_ptr_uintptr_hash_map_entry entry)
 
 static inline unsigned filc_ptr_uintptr_hash_map_key_get_hash(filc_ptr ptr)
 {
-    return pas_hash128(ptr.word);
+    return filc_ptr_hash(ptr);
 }
 
 static inline bool filc_ptr_uintptr_hash_map_key_is_equal(filc_ptr a, filc_ptr b)
 {
-    return a.word == b.word;
+    return filc_ptr_is_totally_equal(a, b);
 }
 
 PAS_CREATE_HASHTABLE(filc_ptr_uintptr_hash_map,
@@ -685,7 +745,7 @@ static inline filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry_cr
 {
     filc_uintptr_ptr_hash_map_entry result;
     result.key = 0;
-    result.value.word = 0;
+    result.value = filc_ptr_forge_null();
     return result;
 }
 
@@ -693,7 +753,7 @@ static inline filc_uintptr_ptr_hash_map_entry filc_uintptr_ptr_hash_map_entry_cr
 {
     filc_uintptr_ptr_hash_map_entry result;
     result.key = 0;
-    result.value.word = 1;
+    result.value = filc_ptr_forge_invalid((void*)(uintptr_t)1);
     return result;
 }
 
@@ -701,7 +761,9 @@ static inline bool filc_uintptr_ptr_hash_map_entry_is_empty_or_deleted(
     filc_uintptr_ptr_hash_map_entry entry)
 {
     if (!entry.key) {
-        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
+        PAS_ASSERT(
+            filc_ptr_is_totally_null(entry.value) ||
+            filc_ptr_is_totally_equal(entry.value, filc_ptr_forge_invalid((void*)(uintptr_t)1)));
         return true;
     }
     return false;
@@ -710,8 +772,10 @@ static inline bool filc_uintptr_ptr_hash_map_entry_is_empty_or_deleted(
 static inline bool filc_uintptr_ptr_hash_map_entry_is_empty(filc_uintptr_ptr_hash_map_entry entry)
 {
     if (!entry.key) {
-        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
-        return !entry.value.word;
+        PAS_ASSERT(
+            filc_ptr_is_totally_null(entry.value) ||
+            filc_ptr_is_totally_equal(entry.value, filc_ptr_forge_invalid((void*)(uintptr_t)1)));
+        return filc_ptr_is_totally_null(entry.value);
     }
     return false;
 }
@@ -719,8 +783,10 @@ static inline bool filc_uintptr_ptr_hash_map_entry_is_empty(filc_uintptr_ptr_has
 static inline bool filc_uintptr_ptr_hash_map_entry_is_deleted(filc_uintptr_ptr_hash_map_entry entry)
 {
     if (!entry.key) {
-        PAS_ASSERT(!entry.value.word || entry.value.word == 1);
-        return entry.value.word;
+        PAS_ASSERT(
+            filc_ptr_is_totally_null(entry.value) ||
+            filc_ptr_is_totally_equal(entry.value, filc_ptr_forge_invalid((void*)(uintptr_t)1)));
+        return !filc_ptr_is_totally_null(entry.value);
     }
     return false;
 }
@@ -793,11 +859,11 @@ struct filc_jmp_buf {
     filc_frame* saved_top_frame; /* This is only here for assertions since longjmp does a search to
                                     find the frame, and the frame knows about the jmp_buf. */
     filc_native_frame* saved_top_native_frame;
-    size_t saved_allocation_roots_num_objects;
+    size_t saved_allocation_roots_size;
     /* Need to save the GC objects referenced at that point in the stack. These must be marked so
        long as the jmp_buf is around, and they must be splatted back into place when we longjmp. */
-    size_t num_objects;
-    filc_object* objects[];
+    size_t num_lowers;
+    void* lowers[];
 };
 
 enum filc_size_mode {
@@ -806,17 +872,6 @@ enum filc_size_mode {
 };
 
 typedef enum filc_size_mode filc_size_mode;
-
-typedef struct itimerval filc_user_itimerval;
-typedef struct rlimit filc_user_rlimit;
-typedef sigset_t filc_user_sigset;
-typedef struct timespec filc_user_timespec;
-typedef struct timeval filc_user_timeval;
-
-struct filc_user_iovec {
-    filc_ptr iov_base;
-    size_t iov_len;
-};
 
 #define FILC_FOR_EACH_LOCK(macro) \
     macro(thread_list); \
@@ -854,11 +909,6 @@ PAS_API extern verse_heap_object_set* filc_destructor_set;
 PAS_API extern const filc_object filc_free_singleton;
 
 PAS_API extern filc_object_array filc_global_variable_roots;
-
-PAS_API extern const filc_cc_type filc_empty_cc_type;
-PAS_API extern const filc_cc_type filc_void_cc_type;
-PAS_API extern const filc_cc_type filc_int_cc_type;
-PAS_API extern const filc_cc_type filc_ptr_cc_type;
 
 /* Anything that takes origin for checking has the following meaning:
    
@@ -907,13 +957,10 @@ PAS_API void filc_initialize(void);
 
 PAS_API size_t filc_mul_size(size_t a, size_t b);
 
-PAS_API filc_thread* filc_thread_create(void);
+PAS_API filc_thread* filc_thread_create_with_manual_tracking(void);
 
 PAS_API void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stack);
 PAS_API void filc_thread_destruct(filc_thread* thread);
-
-/* Gives the thread's tid back. Has to be done while still entered. */
-PAS_API void filc_thread_relinquish_tid(filc_thread* thread);
 
 /* This undoes thread creation. It destroys the things that are normally destroyed by end of
    start_thread, or in the case where the thread had an error starting. */
@@ -988,12 +1035,6 @@ PAS_API void filc_enter(filc_thread* my_thread);
    You can exit and then reenter as much as you like. It'll be super cheap eventually. */
 PAS_API void filc_exit(filc_thread* my_thread);
 
-/* These have to be called entered, currently. The only thing stopping us from making them work
-   exited is that then, decrease_special_signal_deferral_depth would have to
-   handle_deferred_signals. */
-PAS_API void filc_increase_special_signal_deferral_depth(filc_thread* my_thread);
-PAS_API void filc_decrease_special_signal_deferral_depth(filc_thread* my_thread);
-
 /* It's hilarious that these are outline function calls right now. It's also hilarious that pop_frame
    takes the frame. In the future, it'll only use it for assertions. */
 static inline void filc_push_frame(filc_thread* my_thread, filc_frame* frame)
@@ -1024,6 +1065,12 @@ static inline void filc_ptr_array_destruct(filc_ptr_array* array)
 }
 
 void filc_ptr_array_add(filc_ptr_array* array, void* ptr);
+static inline void* filc_ptr_array_pop(filc_ptr_array* array)
+{
+    if (!array->size)
+        return NULL;
+    return array->array[--array->size];
+}
 
 static inline void filc_object_array_construct(filc_object_array* array)
 {
@@ -1052,27 +1099,20 @@ PAS_API void filc_object_array_push_all(filc_object_array* to, filc_object_array
 PAS_API void filc_object_array_pop_all_from_and_push_to(filc_object_array* from,
                                                         filc_object_array* to);
 
-static inline void filc_push_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+static inline void filc_push_allocation_root(filc_thread* my_thread, void* allocation_root)
 {
     PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    filc_object_array_push(&my_thread->allocation_roots, allocation_root);
+    filc_ptr_array_add(&my_thread->allocation_roots, allocation_root);
 }
 
-static inline void filc_pop_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+static inline void filc_pop_allocation_root(filc_thread* my_thread, void* allocation_root)
 {
     PAS_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    PAS_ASSERT(filc_object_array_pop(&my_thread->allocation_roots) == allocation_root);
+    PAS_ASSERT(filc_ptr_array_pop(&my_thread->allocation_roots) == allocation_root);
 }
 
-PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
-PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root);
-
-/* munmap() can free memory while we're exited. If we use memory while exited, and it might be
-   mmap memory, then we must pin it first. This will cause munmap() to fail.
-
-   For convenience, these functions forgive you for passing a NULL object. */
-PAS_API void filc_pin(filc_object* object);
-PAS_API void filc_unpin(filc_object* object);
+PAS_API void filc_enter_with_allocation_root(filc_thread* my_thread, void* allocation_root);
+PAS_API void filc_exit_with_allocation_root(filc_thread* my_thread, void* allocation_root);
 
 /* Locking the native frame prevents us from accidentally adding stuff to the top_native_frame if
    it doesn't belong to us. */
@@ -1139,11 +1179,6 @@ static PAS_ALWAYS_INLINE void filc_pop_native_frame(filc_thread* my_thread, filc
             if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR)
                 continue;
             
-            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR) {
-                filc_unpin((filc_object*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
-                continue;
-            }
-            
             PAS_TESTING_ASSERT(
                 (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_BMALLOC_PTR);
             bmalloc_deallocate((void*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
@@ -1162,7 +1197,6 @@ static PAS_ALWAYS_INLINE void filc_pop_native_frame(filc_thread* my_thread, filc
 }
 
 PAS_API void filc_native_frame_add(filc_native_frame* frame, filc_object* object);
-PAS_API void filc_native_frame_pin(filc_native_frame* frame, filc_object* object);
 PAS_API void filc_native_frame_defer_bmalloc_deallocate(filc_native_frame* frame, void* bmalloc_object);
 
 /* Requires that we have a top_native_frame, so can only be called from native functions. */
@@ -1213,7 +1247,7 @@ PAS_API void filc_mark_global_roots(filc_object_array* mark_stack);
 
 static inline bool filc_origin_node_is_inline_frame(const filc_origin_node* origin_node)
 {
-    return origin_node->num_objects_ish == UINT_MAX;
+    return origin_node->num_lowers_ish == UINT_MAX;
 }
 
 static inline bool filc_origin_node_is_function_origin(const filc_origin_node* origin_node)
@@ -1280,41 +1314,400 @@ static inline void filc_testing_validate_ptr(filc_ptr ptr)
         filc_validate_ptr(ptr, NULL);
 }
 
+static inline char* filc_aux_get_ptr(uintptr_t aux)
+{
+    return (char*)(aux & FILC_OBJECT_AUX_PTR_MASK);
+}
+
+static inline filc_object_flags filc_aux_get_flags(uintptr_t aux)
+{
+    return (filc_object_flags)(aux >> FILC_OBJECT_AUX_FLAGS_SHIFT);
+}
+
+#define FILC_AUX_CREATE(flags, ptr) ((uintptr_t)(ptr) + \
+                                     ((uintptr_t)(flags) << FILC_OBJECT_AUX_FLAGS_SHIFT))
+
+static inline uintptr_t filc_aux_create(filc_object_flags flags, char* ptr)
+{
+    uintptr_t result = FILC_AUX_CREATE(flags, ptr);
+    PAS_TESTING_ASSERT(filc_aux_get_ptr(result) == ptr);
+    PAS_TESTING_ASSERT(filc_aux_get_flags(result) == flags);
+    return result;
+}
+
+static uintptr_t filc_object_aux(filc_object* object)
+{
+    return __c11_atomic_load((_Atomic uintptr_t*)&object->aux, __ATOMIC_RELAXED);
+}
+
+static inline char* filc_object_aux_ptr(filc_object* object)
+{
+    return filc_aux_get_ptr(filc_object_aux(object));
+}
+
+/* This almost certainly exits! */
+PAS_API PAS_NEVER_INLINE char* filc_object_ensure_aux_ptr_slow(filc_thread* my_thread,
+                                                               filc_object* object);
+
+/* This may exit! */
+static inline char* filc_object_ensure_aux_ptr(filc_thread* my_thread, filc_object* object)
+{
+    char* result = filc_object_aux_ptr(object);
+    if (PAS_LIKELY(result))
+        return result;
+    return filc_object_ensure_aux_ptr_slow(my_thread, object);
+}
+
+char* filc_object_ensure_aux_ptr_outline(filc_thread* my_thread, filc_object* object);
+
+static inline filc_lower_or_box* filc_object_lower_or_box_ptr_at_offset(filc_object* object,
+                                                                        size_t offset)
+{
+    PAS_TESTING_ASSERT(pas_is_aligned(offset, FILC_WORD_SIZE));
+    PAS_TESTING_ASSERT(filc_object_aux_ptr(object));
+    return (filc_lower_or_box*)(filc_object_aux_ptr(object) + offset);
+}
+
+/* This may exit! */
+static inline filc_lower_or_box* filc_object_ensure_lower_or_box_ptr_at_offset(filc_thread* my_thread,
+                                                                               filc_object* object,
+                                                                               size_t offset)
+{
+    PAS_TESTING_ASSERT(pas_is_aligned(offset, FILC_WORD_SIZE));
+    return (filc_lower_or_box*)(filc_object_ensure_aux_ptr(my_thread, object) + offset);
+}
+
+static inline filc_lower_or_box filc_lower_or_box_load_unfenced(filc_lower_or_box* ptr)
+{
+    return __c11_atomic_load((_Atomic filc_lower_or_box*)ptr, __ATOMIC_RELAXED);
+}
+
+static inline filc_lower_or_box filc_lower_or_box_load(filc_lower_or_box* ptr)
+{
+    return __c11_atomic_load((_Atomic filc_lower_or_box*)ptr, __ATOMIC_SEQ_CST);
+}
+
+static inline void filc_lower_or_box_store_unfenced_unbarriered(filc_lower_or_box* ptr,
+                                                                filc_lower_or_box value)
+{
+    __c11_atomic_store((_Atomic filc_lower_or_box*)ptr, value, __ATOMIC_RELAXED);
+}
+
+static inline void filc_lower_or_box_store_unbarriered(filc_lower_or_box* ptr,
+                                                       filc_lower_or_box value)
+{
+    __c11_atomic_store((_Atomic filc_lower_or_box*)ptr, value, __ATOMIC_SEQ_CST);
+}
+
+static inline bool filc_lower_or_box_cas_weak_unfenced_unbarriered(filc_lower_or_box* ptr,
+                                                                   filc_lower_or_box expected,
+                                                                   filc_lower_or_box new_value)
+{
+    return __c11_atomic_compare_exchange_weak(
+        (_Atomic filc_lower_or_box*)ptr, &expected, new_value, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+static inline bool filc_lower_or_box_cas_weak_unbarriered(filc_lower_or_box* ptr,
+                                                          filc_lower_or_box expected,
+                                                          filc_lower_or_box new_value)
+{
+    return __c11_atomic_compare_exchange_weak(
+        (_Atomic filc_lower_or_box*)ptr, &expected, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static inline bool filc_lower_or_box_is_null(filc_lower_or_box value)
+{
+    return !value.encoded_value;
+}
+
+static inline bool filc_lower_or_box_is_box(filc_lower_or_box value)
+{
+    return !!(value.encoded_value & FILC_ATOMIC_BOX_BIT);
+}
+
+static inline bool filc_lower_or_box_is_lower(filc_lower_or_box value)
+{
+    return !filc_lower_or_box_is_box(value);
+}
+
+static inline filc_atomic_box* filc_lower_or_box_get_box(filc_lower_or_box value)
+{
+    PAS_TESTING_ASSERT(filc_lower_or_box_is_box(value));
+    return (filc_atomic_box*)(value.encoded_value & ~FILC_ATOMIC_BOX_BIT);
+}
+
+static inline void* filc_lower_or_box_get_lower(filc_lower_or_box value)
+{
+    PAS_TESTING_ASSERT(filc_lower_or_box_is_lower(value));
+    return (void*)value.encoded_value;
+}
+
+static inline filc_lower_or_box filc_lower_or_box_create_lower(void* lower)
+{
+    filc_lower_or_box result;
+    result.encoded_value = (uintptr_t)lower;
+    PAS_TESTING_ASSERT(filc_lower_or_box_is_lower(result));
+    return result;
+}
+
+static inline filc_lower_or_box filc_lower_or_box_create_box(filc_atomic_box* box)
+{
+    filc_lower_or_box result;
+    result.encoded_value = ((uintptr_t)box) | FILC_ATOMIC_BOX_BIT;
+    PAS_TESTING_ASSERT(filc_lower_or_box_is_box(result));
+    return result;
+}
+
+static inline filc_object_flags filc_object_get_flags(filc_object* object)
+{
+    return filc_aux_get_flags(filc_object_aux(object));
+}
+
+static inline filc_special_type filc_object_flags_special_type(filc_object_flags flags)
+{
+    return (flags >> FILC_OBJECT_FLAGS_SPECIAL_SHIFT) & FILC_SPECIAL_TYPE_MASK;
+}
+
+static inline bool filc_object_flags_is_special(filc_object_flags flags)
+{
+    return filc_object_flags_special_type(flags) != FILC_SPECIAL_TYPE_NONE;
+}
+
+static inline filc_log_align filc_object_flags_log_align(filc_object_flags flags)
+{
+    return (flags >> FILC_OBJECT_FLAGS_ALIGN_SHIFT) & FILC_LOG_ALIGN_MASK;
+}
+
+static inline bool filc_object_flags_is_aligned(filc_object_flags flags)
+{
+    return !!filc_object_flags_log_align(flags);
+}
+
+#define FILC_OBJECT_FLAGS_CREATE(flags, special_type, log_align) \
+    ((filc_object_flags)(flags) | \
+     ((filc_object_flags)(special_type) << FILC_OBJECT_FLAGS_SPECIAL_SHIFT) | \
+     ((filc_object_flags)(log_align) << FILC_OBJECT_FLAGS_ALIGN_SHIFT))
+
+static inline filc_object_flags filc_object_flags_create(filc_object_flags flags,
+                                                         filc_special_type special_type,
+                                                         filc_log_align log_align)
+{
+    PAS_TESTING_ASSERT(!filc_object_flags_is_special(flags));
+    PAS_TESTING_ASSERT(!filc_object_flags_is_aligned(flags));
+    filc_object_flags result = FILC_OBJECT_FLAGS_CREATE(flags, special_type, log_align);
+    PAS_TESTING_ASSERT(filc_object_flags_special_type(result) == special_type);
+    PAS_TESTING_ASSERT(filc_object_flags_log_align(result) == log_align);
+    return result;
+}
+
+static inline filc_special_type filc_object_special_type(filc_object* object)
+{
+    return filc_object_flags_special_type(filc_object_get_flags(object));
+}
+
+static inline bool filc_object_is_special(filc_object* object)
+{
+    return filc_object_special_type(object) != FILC_SPECIAL_TYPE_NONE;
+}
+
+static inline filc_log_align filc_object_log_align(filc_object* object)
+{
+    return filc_object_flags_log_align(filc_object_get_flags(object));
+}
+
+static inline bool filc_object_is_aligned(filc_object* object)
+{
+    return !!filc_object_log_align(object);
+}
+
+PAS_API void filc_special_type_dump(filc_special_type type, pas_stream* stream);
+PAS_API char* filc_special_type_to_new_string(filc_special_type type);
+
+static inline size_t filc_log_align_alignment(filc_log_align log_align)
+{
+    if (!log_align)
+        return FILC_MINALIGN;
+    size_t result = (size_t)1 << (size_t)log_align;
+    PAS_TESTING_ASSERT(result > FILC_MINALIGN);
+    return result;
+}
+
+static inline size_t filc_object_flags_alignment(filc_object_flags flags)
+{
+    return filc_log_align_alignment(filc_object_flags_log_align(flags));
+}
+
+static inline size_t filc_object_alignment(filc_object* object)
+{
+    return filc_object_flags_alignment(filc_object_get_flags(object));
+}
+
+static inline void* filc_object_mark_base_with_flags(filc_object* object, filc_object_flags flags)
+{
+    PAS_TESTING_ASSERT(!(flags & FILC_OBJECT_FLAG_GLOBAL));
+    filc_log_align log_align = filc_object_flags_log_align(flags);
+    if (PAS_LIKELY(!log_align))
+        return object;
+    return (void*)pas_round_down_to_power_of_2(
+        (uintptr_t)object, filc_log_align_alignment(log_align));
+}
+
+static inline void* filc_object_mark_base(filc_object* object)
+{
+    return filc_object_mark_base_with_flags(object, filc_object_get_flags(object));
+}
+
+static inline void* filc_object_lower_not_null(filc_object* object)
+{
+    PAS_TESTING_ASSERT(object);
+    return object + 1;
+}
+
+static inline void* filc_object_lower(filc_object* object)
+{
+    if (!object)
+        return NULL;
+    return filc_object_lower_not_null(object);
+}
+
+static inline void* filc_object_upper_not_null(filc_object* object)
+{
+    PAS_TESTING_ASSERT(object);
+    return object->upper;
+}
+
+static inline void* filc_object_upper(filc_object* object)
+{
+    if (!object)
+        return NULL;
+    return filc_object_upper_not_null(object);
+}
+
+static inline size_t filc_object_size_not_null(filc_object* object)
+{
+    PAS_TESTING_ASSERT(object);
+    return (char*)filc_object_upper_not_null(object) - (char*)filc_object_lower_not_null(object);
+}
+
+static inline size_t filc_object_size(filc_object* object)
+{
+    if (!object)
+        return 0;
+    return filc_object_size_not_null(object);
+}
+
+static inline void filc_object_validate_special_with_payload(filc_object* object)
+{
+    PAS_ASSERT(object);
+    PAS_ASSERT(object->upper == filc_object_lower(object));
+    PAS_ASSERT(filc_object_is_special(object));
+    PAS_ASSERT(filc_object_special_type(object) == FILC_SPECIAL_TYPE_THREAD ||
+               filc_object_special_type(object) == FILC_SPECIAL_TYPE_SIGNAL_HANDLER ||
+               filc_object_special_type(object) == FILC_SPECIAL_TYPE_PTR_TABLE ||
+               filc_object_special_type(object) == FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY ||
+               filc_object_special_type(object) == FILC_SPECIAL_TYPE_JMP_BUF ||
+               filc_object_special_type(object) == FILC_SPECIAL_TYPE_EXACT_PTR_TABLE);
+}
+
+static inline void filc_object_testing_validate_special_with_payload(filc_object* object)
+{
+    if (PAS_ENABLE_TESTING)
+        filc_object_validate_special_with_payload(object);
+}
+
+static inline filc_object* filc_object_for_lower_not_null(void* lower)
+{
+    PAS_TESTING_ASSERT(lower);
+    return (filc_object*)lower - 1;
+}
+
+static inline filc_object* filc_object_for_lower(void* lower)
+{
+    if (!lower)
+        return NULL;
+    return filc_object_for_lower_not_null(lower);
+}
+
 static inline filc_object* filc_object_for_special_payload(void* payload)
 {
     if (!payload)
         return NULL;
-    filc_object* result = (filc_object*)((char*)payload - FILC_SPECIAL_OBJECT_SIZE);
-    PAS_TESTING_ASSERT(result->lower == payload);
-    PAS_TESTING_ASSERT(result->upper == (char*)payload + FILC_WORD_SIZE);
-    PAS_TESTING_ASSERT(result->word_types[0] == FILC_WORD_TYPE_THREAD ||
-                       result->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
-                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
-                       result->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
-                       result->word_types[0] == FILC_WORD_TYPE_JMP_BUF ||
-                       result->word_types[0] == FILC_WORD_TYPE_EXACT_PTR_TABLE);
+    filc_object* result = filc_object_for_lower(payload);
+    filc_object_testing_validate_special_with_payload(result);
     return result;
 }
 
-static inline void* filc_object_special_payload(filc_object* object)
+static inline void* filc_object_special_payload_with_manual_tracking(filc_object* object)
 {
-    PAS_TESTING_ASSERT(object->lower == (char*)object + FILC_SPECIAL_OBJECT_SIZE);
-    return (char*)object + FILC_SPECIAL_OBJECT_SIZE;
+    filc_object_testing_validate_special_with_payload(object);
+    return filc_object_lower(object);
+}
+
+static inline void* filc_object_special_payload(filc_thread* my_thread, filc_object* object)
+{
+    filc_thread_track_object(my_thread, object);
+    return filc_object_special_payload_with_manual_tracking(object);
+}
+
+static inline void filc_alignment_header_construct(filc_alignment_header* header, size_t alignment)
+{
+    PAS_TESTING_ASSERT(alignment > PAS_MIN_ALIGN);
+    header->encoded_alignment = (uintptr_t)pas_log2(alignment) << (uintptr_t)PAS_ADDRESS_BITS;
+}
+
+static inline size_t filc_alignment_header_get_alignment(filc_alignment_header* header)
+{
+    return (uintptr_t)1 << (header->encoded_alignment >> (uintptr_t)PAS_ADDRESS_BITS);
+}
+
+static inline bool filc_allocation_starts_with_alignment_header(void* allocation)
+{
+    filc_alignment_header* header = (filc_alignment_header*)allocation;
+    if (header->encoded_alignment & PAS_ADDRESS_MASK) {
+        PAS_TESTING_ASSERT(!(header->encoded_alignment >> (uintptr_t)PAS_ADDRESS_BITS));
+        return false;
+    }
+    PAS_TESTING_ASSERT(filc_alignment_header_get_alignment(header) > FILC_MINALIGN);
+    return true;
+}
+
+static inline bool filc_allocation_starts_with_object(void* allocation)
+{
+    return !filc_allocation_starts_with_alignment_header(allocation);
+}
+
+static inline filc_alignment_header* filc_allocation_get_alignment_header(void* allocation)
+{
+    PAS_TESTING_ASSERT(filc_allocation_starts_with_alignment_header(allocation));
+    return (filc_alignment_header*)allocation;
+}
+
+static inline filc_object* filc_allocation_get_object(void* allocation)
+{
+    if (filc_allocation_starts_with_object(allocation))
+        return allocation;
+    return (filc_object*)((char*)allocation + filc_alignment_header_get_alignment(
+                              filc_allocation_get_alignment_header(allocation))) - 1;
+}
+
+static inline void* filc_ptr_lower(filc_ptr ptr)
+{
+    return ptr.lower;
 }
 
 static inline filc_object* filc_ptr_object(filc_ptr ptr)
 {
-    return (filc_object*)(uintptr_t)(ptr.word >> 64);
+    return filc_object_for_lower(filc_ptr_lower(ptr));
 }
 
 static inline void* filc_ptr_ptr(filc_ptr ptr)
 {
-    return (void*)(uintptr_t)ptr.word;
+    return ptr.ptr;
 }
 
 static inline bool filc_ptr_is_boxed_int(filc_ptr ptr)
 {
-    return !filc_ptr_object(ptr);
+    return !ptr.lower;
 }
 
 static inline void* filc_ptr_upper(filc_ptr ptr)
@@ -1324,16 +1717,51 @@ static inline void* filc_ptr_upper(filc_ptr ptr)
     return filc_ptr_object(ptr)->upper;
 }
 
-static inline void* filc_ptr_lower(filc_ptr ptr)
-{
-    if (filc_ptr_is_boxed_int(ptr))
-        return 0;
-    return filc_ptr_object(ptr)->lower;
-}
-
 static inline uintptr_t filc_ptr_offset(filc_ptr ptr)
 {
     return (char*)filc_ptr_ptr(ptr) - (char*)filc_ptr_lower(ptr);
+}
+
+static inline char* filc_ptr_aux_ptr(filc_ptr ptr)
+{
+    return filc_object_aux_ptr(filc_ptr_object(ptr));
+}
+
+static inline bool filc_ptr_has_aux_ptr(filc_ptr ptr)
+{
+    return !!filc_ptr_aux_ptr(ptr);
+}
+
+static inline char* filc_ptr_ensure_aux_ptr(filc_thread* my_thread, filc_ptr ptr)
+{
+    return filc_object_ensure_aux_ptr(my_thread, filc_ptr_object(ptr));
+}
+
+static inline filc_lower_or_box* filc_ptr_get_lower_or_box_ptr(filc_ptr ptr)
+{
+    return filc_object_lower_or_box_ptr_at_offset(filc_ptr_object(ptr), filc_ptr_offset(ptr));
+}
+
+/* This may exit! */
+static inline filc_lower_or_box* filc_ptr_ensure_lower_or_box_ptr(filc_thread* my_thread,
+                                                                  filc_ptr ptr)
+{
+    return filc_object_ensure_lower_or_box_ptr_at_offset(
+        my_thread, filc_ptr_object(ptr), filc_ptr_offset(ptr));
+}
+
+static inline filc_lower_or_box filc_ptr_load_lower_or_box_unfenced(filc_ptr ptr)
+{
+    if (!filc_ptr_has_aux_ptr(ptr))
+        return filc_lower_or_box_create_lower(NULL);
+    return filc_lower_or_box_load_unfenced(filc_ptr_get_lower_or_box_ptr(ptr));
+}
+
+static inline filc_lower_or_box filc_ptr_load_lower_or_box(filc_ptr ptr)
+{
+    if (!filc_ptr_has_aux_ptr(ptr))
+        return filc_lower_or_box_create_lower(NULL);
+    return filc_lower_or_box_load(filc_ptr_get_lower_or_box_ptr(ptr));
 }
 
 static inline uintptr_t filc_ptr_available(filc_ptr ptr)
@@ -1341,74 +1769,85 @@ static inline uintptr_t filc_ptr_available(filc_ptr ptr)
     return (char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr);
 }
 
-static inline filc_ptr filc_ptr_from_word(pas_uint128 word)
+static inline filc_ptr filc_ptr_create_with_lower_and_ptr_and_manual_tracking_yolo(void* lower,
+                                                                                   void* ptr)
 {
     filc_ptr result;
-    result.word = word;
+    result.lower = lower;
+    result.ptr = ptr;
+    return result;
+}
+
+static inline filc_ptr filc_ptr_create_with_lower_and_ptr_and_manual_tracking(void* lower, void* ptr)
+{
+    filc_ptr result = filc_ptr_create_with_lower_and_ptr_and_manual_tracking_yolo(lower, ptr);
     filc_testing_validate_ptr(result);
     return result;
 }
 
-static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking_yolo(filc_object* object,
-                                                                         void* ptr)
+static inline filc_ptr filc_ptr_create_with_lower_and_manual_tracking(void* lower)
 {
-    filc_ptr result;
-    result.word = ((pas_uint128)(uintptr_t)object << 64) | (pas_uint128)(uintptr_t)ptr;
-    PAS_TESTING_ASSERT(filc_ptr_object(result) == object);
-    PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
-    return result;
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking(lower, lower);
 }
 
-static inline filc_ptr filc_ptr_create_with_ptr_and_manual_tracking(filc_object* object, void* ptr)
+static inline filc_ptr filc_ptr_create_with_lower(filc_thread* my_thread, void* lower)
 {
-    filc_ptr result = filc_ptr_create_with_ptr_and_manual_tracking_yolo(object, ptr);
+    filc_thread_track_object(my_thread, filc_object_for_lower(lower));
+    return filc_ptr_create_with_lower_and_manual_tracking(lower);
+}
+
+static inline filc_ptr filc_ptr_create_with_object_and_ptr_and_manual_tracking_yolo(
+    filc_object* object, void* ptr)
+{
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking_yolo(filc_object_lower(object),
+                                                                       ptr);
+}
+
+static inline filc_ptr filc_ptr_create_with_object_and_ptr_and_manual_tracking(
+    filc_object* object, void* ptr)
+{
+    filc_ptr result = filc_ptr_create_with_object_and_ptr_and_manual_tracking_yolo(object, ptr);
     filc_testing_validate_ptr(result);
     return result;
 }
 
-static inline filc_ptr filc_ptr_create_with_manual_tracking_yolo(filc_object* object)
+static inline filc_ptr filc_ptr_create_with_object_and_manual_tracking_yolo(filc_object* object)
 {
-    return filc_ptr_create_with_ptr_and_manual_tracking_yolo(object, object->lower);
+    return filc_ptr_create_with_object_and_ptr_and_manual_tracking_yolo(
+        object, filc_object_lower(object));
 }
 
-static inline filc_ptr filc_ptr_create_with_manual_tracking(filc_object* object)
+static inline filc_ptr filc_ptr_create_with_object_and_manual_tracking(filc_object* object)
 {
-    return filc_ptr_create_with_ptr_and_manual_tracking(object, object->lower);
+    return filc_ptr_create_with_object_and_ptr_and_manual_tracking(object, filc_object_lower(object));
 }
 
-static inline filc_ptr filc_ptr_create(filc_thread* my_thread, filc_object* object)
+static inline filc_ptr filc_ptr_create_with_object(filc_thread* my_thread, filc_object* object)
 {
     filc_thread_track_object(my_thread, object);
-    return filc_ptr_create_with_manual_tracking(object);
+    return filc_ptr_create_with_object_and_manual_tracking(object);
 }
 
-static inline filc_ptr filc_ptr_forge_null(void)
+static inline filc_ptr filc_ptr_create_with_special_object_and_manual_tracking(filc_object* object)
 {
-    filc_ptr result;
-    result.word = 0;
-    PAS_TESTING_ASSERT(filc_ptr_is_boxed_int(result));
-    PAS_TESTING_ASSERT(!filc_ptr_ptr(result));
-    filc_testing_validate_ptr(result);
-    return result;
+    PAS_ASSERT(filc_object_is_special(object));
+    PAS_ASSERT(filc_object_aux_ptr(object));
+    return filc_ptr_create_with_object_and_ptr_and_manual_tracking(
+        object, filc_object_aux_ptr(object));
 }
 
-/* Creates a boxed int ptr, which cannot be accessed at all. */
-static inline filc_ptr filc_ptr_forge_invalid(void* ptr)
+static inline filc_ptr filc_ptr_create_with_special_object(filc_thread* my_thread,
+                                                           filc_object* object)
 {
-    filc_ptr result;
-    result.word = (pas_uint128)(uintptr_t)ptr;
-    PAS_TESTING_ASSERT(filc_ptr_is_boxed_int(result));
-    PAS_TESTING_ASSERT(filc_ptr_ptr(result) == ptr);
-    filc_testing_validate_ptr(result);
-    return result;
+    filc_thread_track_object(my_thread, object);
+    return filc_ptr_create_with_special_object_and_manual_tracking(object);
 }
 
 static inline filc_ptr filc_ptr_with_ptr(filc_ptr ptr, void* new_ptr)
 {
     filc_ptr result;
     result = ptr;
-    result.word &= ~(pas_uint128)UINTPTR_MAX;
-    result.word |= (pas_uint128)(uintptr_t)new_ptr;
+    result.ptr = new_ptr;
     PAS_TESTING_ASSERT(filc_ptr_object(result) == filc_ptr_object(ptr));
     PAS_TESTING_ASSERT(filc_ptr_ptr(result) == new_ptr);
     filc_testing_validate_ptr(result);
@@ -1422,85 +1861,75 @@ static inline filc_ptr filc_ptr_with_offset(filc_ptr ptr, uintptr_t offset)
 
 static inline filc_ptr filc_ptr_for_special_payload_with_manual_tracking(void* payload)
 {
-    return filc_ptr_create_with_manual_tracking(filc_object_for_special_payload(payload));
+    return filc_ptr_create_with_object_and_manual_tracking(filc_object_for_special_payload(payload));
 }
 
 static inline filc_ptr filc_ptr_for_special_payload(filc_thread* my_thread, void* payload)
 {
-    return filc_ptr_create(my_thread, filc_object_for_special_payload(payload));
+    return filc_ptr_create_with_lower(my_thread, payload);
 }
 
-static inline bool filc_ptr_is_totally_equal(filc_ptr a, filc_ptr b)
+static inline void* filc_flight_ptr_load_ptr(filc_ptr* ptr)
 {
-    return a.word == b.word;
+    return __c11_atomic_load((void*_Atomic*)&ptr->ptr, __ATOMIC_RELAXED);
 }
 
-static inline bool filc_ptr_is_totally_null(filc_ptr ptr)
+static inline void* filc_flight_ptr_load_lower(filc_ptr* ptr)
 {
-    return filc_ptr_is_totally_equal(ptr, filc_ptr_forge_null());
+    return __c11_atomic_load((void*_Atomic*)&ptr->lower, __ATOMIC_RELAXED);
 }
 
-static inline void* filc_ptr_load_ptr(filc_ptr* ptr)
+static inline void filc_flight_ptr_store_ptr(filc_ptr* ptr, void* raw_ptr)
 {
-    return __c11_atomic_load((void*_Atomic*)(void**)ptr, __ATOMIC_RELAXED);
+    __c11_atomic_store((void*_Atomic*)&ptr->ptr, raw_ptr, __ATOMIC_RELAXED);
 }
 
-static inline filc_object* filc_ptr_load_object(filc_ptr* ptr)
+static inline void filc_flight_ptr_store_lower(filc_ptr* ptr, filc_object* object)
 {
-    return __c11_atomic_load((filc_object*_Atomic*)(filc_object**)ptr + 1, __ATOMIC_RELAXED);
+    __c11_atomic_store((void*_Atomic*)&ptr->lower, object, __ATOMIC_RELAXED);
 }
 
-static inline void filc_ptr_store_ptr(filc_ptr* ptr, void* raw_ptr)
-{
-    __c11_atomic_store((void*_Atomic*)(void**)ptr, raw_ptr, __ATOMIC_RELAXED);
-}
-
-static inline void filc_ptr_store_object(filc_ptr* ptr, filc_object* object)
-{
-    __c11_atomic_store((filc_object*_Atomic*)(filc_object**)ptr + 1, object, __ATOMIC_RELAXED);
-}
-
-static inline bool filc_ptr_unfenced_unbarriered_weak_cas_object(
-    filc_ptr* ptr, filc_object* expected, filc_object* new_object)
+static inline bool filc_flight_ptr_unfenced_unbarriered_weak_cas_lower(
+    filc_ptr* ptr, void* expected, void* new_lower)
 {
     return __c11_atomic_compare_exchange_weak(
-        (filc_object*_Atomic*)(filc_object**)ptr + 1, &expected, new_object,
-        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        (void*_Atomic*)&ptr->lower, &expected, new_lower, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 }
 
 /* This is useful when using ptr loads for the purpose of loading something that *might* be a ptr
    but we don't know for sure, since it skips both tracking and testing mode ptr validation. */
-static inline filc_ptr filc_ptr_load_with_manual_tracking_yolo(filc_ptr* ptr)
+static inline filc_ptr filc_flight_ptr_load_with_manual_tracking_yolo(filc_ptr* ptr)
 {
     /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic load. */
-    return filc_ptr_create_with_ptr_and_manual_tracking_yolo(filc_ptr_load_object(ptr),
-                                                             filc_ptr_load_ptr(ptr));
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking_yolo(
+        filc_flight_ptr_load_lower(ptr),
+        filc_flight_ptr_load_ptr(ptr));
 }
 
-static inline filc_ptr filc_ptr_load_with_manual_tracking(filc_ptr* ptr)
+static inline filc_ptr filc_flight_ptr_load_with_manual_tracking(filc_ptr* ptr)
 {
     /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic load. */
-    return filc_ptr_create_with_ptr_and_manual_tracking(filc_ptr_load_object(ptr),
-                                                        filc_ptr_load_ptr(ptr));
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking(filc_flight_ptr_load_lower(ptr),
+                                                                  filc_flight_ptr_load_ptr(ptr));
 }
 
-static inline filc_ptr filc_ptr_load_atomic_with_manual_tracking(filc_ptr* ptr)
+static inline filc_ptr filc_flight_ptr_load_atomic_with_manual_tracking(filc_ptr* ptr)
 {
-    filc_ptr result;
-    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_SEQ_CST);
+    filc_ptr result = __c11_atomic_load((_Atomic filc_ptr*)ptr, __ATOMIC_SEQ_CST);
+    filc_testing_validate_ptr(result);
     return result;
 }
 
-static inline filc_ptr filc_ptr_load_atomic_unfenced_with_manual_tracking(filc_ptr* ptr)
+static inline filc_ptr filc_flight_ptr_load_atomic_unfenced_with_manual_tracking(filc_ptr* ptr)
 {
-    filc_ptr result;
-    result.word = __c11_atomic_load((_Atomic pas_uint128*)&ptr->word, __ATOMIC_RELAXED);
+    filc_ptr result = __c11_atomic_load((_Atomic filc_ptr*)ptr, __ATOMIC_RELAXED);
+    filc_testing_validate_ptr(result);
     return result;
 }
 
-static inline filc_ptr filc_ptr_load(filc_thread* my_thread, filc_ptr* ptr)
+static inline filc_ptr filc_flight_ptr_load(filc_thread* my_thread, filc_ptr* ptr)
 {
-    filc_ptr result = filc_ptr_load_with_manual_tracking(ptr);
+    filc_ptr result = filc_flight_ptr_load_with_manual_tracking(ptr);
     filc_thread_track_object(my_thread, filc_ptr_object(result));
     return result;
 }
@@ -1513,315 +1942,453 @@ static inline void filc_store_barrier(filc_thread* my_thread, filc_object* targe
         filc_store_barrier_slow(my_thread, target);
 }
 
-static inline void filc_store_barrier_for_word(filc_thread* my_thread, pas_uint128 word)
+void filc_store_barrier_for_lower_slow(filc_thread* my_thread, void* lower);
+
+static inline void filc_store_barrier_for_lower(filc_thread* my_thread, void* lower)
 {
-    filc_ptr ptr;
-    ptr.word = word;
-    filc_store_barrier(my_thread, filc_ptr_object(ptr));
+    if (PAS_UNLIKELY(filc_is_marking) && lower)
+        filc_store_barrier_for_lower_slow(my_thread, lower);
 }
 
-PAS_API void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target);
-
-static inline void filc_ptr_store_without_barrier(filc_ptr* ptr, filc_ptr value)
+static inline void filc_flight_ptr_store_without_barrier(filc_ptr* ptr, filc_ptr value)
 {
     /* FIXME: On ARM64, it would be faster if this was a 128-bit atomic store. */
-    filc_ptr_store_object(ptr, filc_ptr_object(value));
-    filc_ptr_store_ptr(ptr, filc_ptr_ptr(value));
+    filc_flight_ptr_store_lower(ptr, filc_ptr_lower(value));
+    filc_flight_ptr_store_ptr(ptr, filc_ptr_ptr(value));
 }
 
-static inline void filc_ptr_store(filc_thread* my_thread, filc_ptr* ptr, filc_ptr value)
+static inline void filc_flight_ptr_store(filc_thread* my_thread, filc_ptr* ptr, filc_ptr value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(value));
-    filc_ptr_store_without_barrier(ptr, value);
+    filc_flight_ptr_store_without_barrier(ptr, value);
 }
 
-static inline void filc_ptr_store_atomic_unfenced_without_barrier(filc_ptr* ptr, filc_ptr value)
+static inline void filc_flight_ptr_store_atomic_unfenced_without_barrier(filc_ptr* ptr,
+                                                                         filc_ptr value)
 {
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, value.word, __ATOMIC_RELAXED);
+    __c11_atomic_store((_Atomic filc_ptr*)ptr, value, __ATOMIC_RELAXED);
 }
 
-static inline void filc_ptr_store_atomic_without_barrier(filc_ptr* ptr, filc_ptr new_value)
+static inline void filc_flight_ptr_store_atomic_without_barrier(filc_ptr* ptr, filc_ptr new_value)
 {
-    __c11_atomic_store((_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST);
+    __c11_atomic_store((_Atomic filc_ptr*)ptr, new_value, __ATOMIC_SEQ_CST);
 }
 
-static inline void filc_ptr_store_atomic_unfenced(filc_thread* my_thread,
-                                                  filc_ptr* ptr, filc_ptr value)
+static inline void filc_flight_ptr_store_atomic_unfenced(filc_thread* my_thread,
+                                                         filc_ptr* ptr, filc_ptr value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(value));
-    filc_ptr_store_atomic_unfenced_without_barrier(ptr, value);
+    filc_flight_ptr_store_atomic_unfenced_without_barrier(ptr, value);
 }
 
-static inline void filc_ptr_store_atomic(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
+static inline void filc_flight_ptr_store_atomic(filc_thread* my_thread,
+                                                filc_ptr* ptr, filc_ptr new_value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    filc_ptr_store_atomic_without_barrier(ptr, new_value);
+    filc_flight_ptr_store_atomic_without_barrier(ptr, new_value);
 }
 
-static inline bool filc_ptr_unfenced_unbarriered_weak_cas(
+static inline bool filc_flight_ptr_unbarriered_weak_cas(
     filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
-    return __c11_atomic_compare_exchange_weak(
-        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
-        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    for (;;) {
+        filc_ptr old_value = filc_flight_ptr_load_with_manual_tracking(ptr);
+        if (old_value.ptr != expected.ptr)
+            return false;
+        if (__c11_atomic_compare_exchange_weak(
+                (_Atomic filc_ptr*)ptr, &old_value, new_value, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            return true;
+    }
 }
 
-static inline bool filc_ptr_unfenced_weak_cas(
+static inline bool filc_flight_ptr_weak_cas(
     filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    return filc_ptr_unfenced_unbarriered_weak_cas(ptr, expected, new_value);
+    return filc_flight_ptr_unbarriered_weak_cas(ptr, expected, new_value);
 }
 
-static inline filc_ptr filc_ptr_unfenced_strong_cas(
+static inline filc_ptr filc_flight_ptr_unbarriered_strong_cas(
+    filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+{
+    for (;;) {
+        filc_ptr old_value = filc_flight_ptr_load_with_manual_tracking(ptr);
+        filc_ptr actual_new_value;
+        if (old_value.ptr == expected.ptr)
+            actual_new_value = new_value;
+        else
+            actual_new_value = old_value;
+        if (__c11_atomic_compare_exchange_weak(
+                (_Atomic filc_ptr*)ptr, &old_value, actual_new_value,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            return old_value;
+    }
+}
+
+static inline filc_ptr filc_flight_ptr_strong_cas(
     filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    __c11_atomic_compare_exchange_strong(
-        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
-        __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-    return filc_ptr_from_word(expected.word);
+    return filc_flight_ptr_unbarriered_strong_cas(ptr, expected, new_value);
 }
 
-static inline bool filc_ptr_weak_cas(
-    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
+static inline filc_ptr filc_flight_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
 {
     filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    return __c11_atomic_compare_exchange_weak(
-        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
-        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return __c11_atomic_exchange((_Atomic filc_ptr*)ptr, new_value, __ATOMIC_SEQ_CST);
 }
 
-static inline filc_ptr filc_ptr_strong_cas(
-    filc_thread* my_thread, filc_ptr* ptr, filc_ptr expected, filc_ptr new_value)
-{
-    filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    __c11_atomic_compare_exchange_strong(
-        (_Atomic pas_uint128*)&ptr->word, &expected.word, new_value.word,
-        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-    return filc_ptr_from_word(expected.word);
-}
-
-static inline filc_ptr filc_ptr_unfenced_xchg(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
-{
-    filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    return filc_ptr_from_word(
-        __c11_atomic_exchange(
-            (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_RELAXED));
-}
-
-static inline filc_ptr filc_ptr_xchg(filc_thread* my_thread, filc_ptr* ptr, filc_ptr new_value)
-{
-    filc_store_barrier(my_thread, filc_ptr_object(new_value));
-    return filc_ptr_from_word(
-        __c11_atomic_exchange(
-            (_Atomic pas_uint128*)&ptr->word, new_value.word, __ATOMIC_SEQ_CST));
-}
-
-PAS_API void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream);
+PAS_API void filc_object_flags_dump_with_comma(
+    filc_object_flags flags, bool* comma, pas_stream* stream);
 PAS_API void filc_object_flags_dump(filc_object_flags flags, pas_stream* stream);
-PAS_API void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream);
 PAS_API void filc_object_dump(filc_object* object, pas_stream* stream);
 PAS_API void filc_ptr_dump(filc_ptr ptr, pas_stream* stream);
+PAS_API void filc_ptr_contents_dump(filc_ptr ptr, pas_stream* stream);
 PAS_API char* filc_object_to_new_string(filc_object* object);
-PAS_API char* filc_ptr_to_new_string(filc_ptr ptr); /* WARNING: this is different from
-                                                       zptr_to_new_string. This uses the
-                                                       bmalloc heap - WHICH MUST NEVER LEAK TO
-                                                       PIZLONATED CODE - whereas the other one
-                                                       uses the GC heap. */
+PAS_API char* filc_ptr_to_new_string(filc_ptr ptr);
+PAS_API char* filc_ptr_contents_to_new_string(filc_ptr ptr);
 
-PAS_API void filc_word_type_dump(filc_word_type type, pas_stream* stream);
-PAS_API char* filc_word_type_to_new_string(filc_word_type type);
+PAS_API PAS_NO_RETURN PAS_NEVER_INLINE void filc_check_native_access_fail(filc_ptr ptr,
+                                                                          size_t size_and_alignment,
+                                                                          filc_access_kind kind);
 
-static inline size_t filc_object_size(filc_object* object)
+static PAS_ALWAYS_INLINE bool filc_is_native_access_ok(filc_ptr ptr,
+                                                       size_t size_and_alignment,
+                                                       filc_access_kind kind)
 {
-    if (PAS_ENABLE_TESTING && object->upper < object->lower)
-        pas_log("Invalid object: %p, upper = %p, lower = %p.\n", object, object->upper, object->lower);
-    PAS_TESTING_ASSERT(object->upper >= object->lower);
-    size_t result = (char*)object->upper - (char*)object->lower;
-    PAS_TESTING_ASSERT(pas_is_aligned(result, FILC_WORD_SIZE));
+    PAS_ASSERT(pas_is_power_of_2(size_and_alignment));
+    PAS_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    if (!filc_ptr_lower(ptr))
+        return false;
+    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), size_and_alignment))
+        return false;
+    filc_object* object = filc_ptr_object(ptr);
+    if (kind == filc_write_access && (filc_object_get_flags(object) & FILC_OBJECT_FLAG_READONLY))
+        return false;
+    return filc_ptr_ptr(ptr) >= filc_object_lower_not_null(object)
+        && filc_ptr_ptr(ptr) < filc_object_upper_not_null(object);
+}
+
+static PAS_ALWAYS_INLINE void filc_check_native_access(filc_ptr ptr,
+                                                       size_t size_and_alignment,
+                                                       filc_access_kind access_kind)
+{
+    if (!filc_is_native_access_ok(ptr, size_and_alignment, access_kind))
+        filc_check_native_access_fail(ptr, size_and_alignment, access_kind);
+}
+
+/* This assumes that the ptr value is already barriered and that we're going to store the atomic box
+   into the aux. Hence, we have to run the barrier on the atomic box if barriers are enabled, because
+   we might allocate the box white (since we haven't acknowledged the black allocation handshake yet)
+   ehile the aux we're storing into might have been allocated black (by a thread that did acknowledge
+   the black allocation handshake). */
+PAS_API filc_atomic_box* filc_atomic_box_create_for_ptr_store(filc_thread* my_thread,
+                                                              filc_ptr value);
+
+static inline void* filc_atomic_box_load_lower_unfenced_with_manual_tracking(filc_atomic_box* box)
+{
+    return filc_flight_ptr_load_lower(&box->ptr);
+}
+
+static inline void* filc_lower_or_box_extract_lower(filc_lower_or_box value)
+{
+    if (filc_lower_or_box_is_lower(value))
+        return filc_lower_or_box_get_lower(value);
+    return filc_atomic_box_load_lower_unfenced_with_manual_tracking(filc_lower_or_box_get_box(value));
+}
+
+static inline filc_ptr filc_atomic_box_load_unfenced_with_manual_tracking(filc_atomic_box* box)
+{
+    return filc_flight_ptr_load_atomic_unfenced_with_manual_tracking(&box->ptr);
+}
+
+static inline filc_ptr filc_atomic_box_load_with_manual_tracking(filc_atomic_box* box)
+{
+    return filc_flight_ptr_load_atomic_with_manual_tracking(&box->ptr);
+}
+
+static inline void filc_atomic_box_store_unfenced_without_barrier(filc_atomic_box* box,
+                                                                  filc_ptr value)
+{
+    filc_flight_ptr_store_atomic_unfenced_without_barrier(&box->ptr, value);
+}
+
+static inline void filc_atomic_box_store_without_barrier(filc_atomic_box* box, filc_ptr value)
+{
+    filc_flight_ptr_store_atomic_without_barrier(&box->ptr, value);
+}
+
+static inline bool filc_atomic_box_cas_weak_without_barrier(filc_atomic_box* box,
+                                                            filc_ptr expected,
+                                                            filc_ptr new_value)
+{
+    return filc_flight_ptr_unbarriered_weak_cas(&box->ptr, expected, new_value);
+}
+
+static inline filc_ptr filc_atomic_box_cas_strong_without_barrier(filc_atomic_box* box,
+                                                                  filc_ptr expected,
+                                                                  filc_ptr new_value)
+{
+    return filc_flight_ptr_unbarriered_strong_cas(&box->ptr, expected, new_value);
+}
+
+static inline filc_ptr filc_load_ptr_with_manual_tracking(filc_ptr ptr, ptrdiff_t offset)
+{
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_read_access);
+    filc_lower_or_box lower_or_box = filc_ptr_load_lower_or_box_unfenced(ptr);
+    void* lower;
+    if (filc_lower_or_box_is_box(lower_or_box)) {
+        lower = filc_atomic_box_load_lower_unfenced_with_manual_tracking(
+            filc_lower_or_box_get_box(lower_or_box));
+    } else
+        lower = filc_lower_or_box_get_lower(lower_or_box);
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking(lower, *(void**)filc_ptr_ptr(ptr));
+}
+
+static inline filc_ptr filc_load_ptr(filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset)
+{
+    filc_ptr result = filc_load_ptr_with_manual_tracking(ptr, offset);
+    filc_thread_track_object(my_thread, filc_ptr_object(result));
     return result;
 }
 
-static inline size_t filc_object_num_words_for_size(size_t size)
+static inline filc_ptr filc_load_ptr_at(filc_thread* my_thread, filc_ptr ptr, const void* ptr_ptr)
 {
-    PAS_ASSERT(pas_is_aligned(size, FILC_WORD_SIZE));
-    return size / FILC_WORD_SIZE;
+    return filc_load_ptr(my_thread, filc_ptr_with_ptr(ptr, (void*)ptr_ptr), 0);
 }
 
-static inline size_t filc_object_num_words(filc_object* object)
+static inline filc_ptr filc_load_ptr_atomic_with_manual_tracking(filc_ptr ptr, ptrdiff_t offset)
 {
-    return filc_object_size(object) / FILC_WORD_SIZE;
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_read_access);
+    filc_lower_or_box lower_or_box = filc_ptr_load_lower_or_box(ptr);
+    if (filc_lower_or_box_is_box(lower_or_box)) {
+        return filc_atomic_box_load_with_manual_tracking(
+            filc_lower_or_box_get_box(lower_or_box));
+    }
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking(
+        filc_lower_or_box_get_lower(lower_or_box), *(void**)filc_ptr_ptr(ptr));
 }
 
-static PAS_ALWAYS_INLINE size_t filc_object_word_type_index_for_ptr(filc_object* object, void* ptr)
+static inline void filc_store_ptr(filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset,
+                                  filc_ptr value)
 {
-    PAS_TESTING_ASSERT(object);
-    PAS_TESTING_ASSERT(ptr >= object->lower);
-    PAS_TESTING_ASSERT(ptr < object->upper);
-    return ((char*)ptr - (char*)object->lower) / FILC_WORD_SIZE;
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_write_access);
+    filc_lower_or_box* lower_or_box_ptr = filc_ptr_ensure_lower_or_box_ptr(my_thread, ptr);
+    filc_store_barrier(my_thread, filc_ptr_object(value));
+    filc_lower_or_box_store_unfenced_unbarriered(
+        lower_or_box_ptr, filc_lower_or_box_create_lower(filc_ptr_lower(value)));
+    *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(value);
 }
 
-static inline filc_word_type filc_object_get_word_type(filc_object* object,
-                                                       size_t word_type_index)
+static inline void filc_store_ptr_at(filc_thread* my_thread, filc_ptr ptr, void* ptr_ptr,
+                                     filc_ptr value)
 {
-    PAS_TESTING_ASSERT(word_type_index < filc_object_num_words(object));
-    return object->word_types[word_type_index];
+    filc_store_ptr(my_thread, filc_ptr_with_ptr(ptr, ptr_ptr), 0, value);
 }
 
-static inline filc_word_type filc_cc_type_get_word_type(const filc_cc_type* type,
-                                                        size_t word_type_index)
+static inline void filc_store_ptr_atomic_with_ptr_pair(filc_thread* my_thread,
+                                                       void** ptr_ptr,
+                                                       filc_lower_or_box* lower_or_box_ptr,
+                                                       filc_ptr value)
 {
-    PAS_TESTING_ASSERT(word_type_index < type->num_words);
-    return type->word_types[word_type_index];
+    filc_store_barrier(my_thread, filc_ptr_object(value));
+    filc_lower_or_box lower_or_box = filc_lower_or_box_load(lower_or_box_ptr);
+    if (filc_lower_or_box_is_box(lower_or_box)) {
+        filc_atomic_box_store_without_barrier(
+            filc_lower_or_box_get_box(lower_or_box), value);
+    } else {
+        filc_lower_or_box_store_unbarriered(
+            lower_or_box_ptr,
+            filc_lower_or_box_create_box(filc_atomic_box_create_for_ptr_store(my_thread, value)));
+    }
+    *ptr_ptr = filc_ptr_ptr(value);
 }
 
-static inline size_t filc_cc_type_size(const filc_cc_type* type)
+void filc_store_ptr_atomic_with_ptr_pair_outline(filc_thread* my_thread,
+                                                 void** ptr_ptr,
+                                                 filc_lower_or_box* lower_or_box_ptr,
+                                                 filc_ptr value);
+
+static inline void filc_store_ptr_atomic(filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset,
+                                         filc_ptr value)
 {
-    if (PAS_ENABLE_TESTING)
-        return filc_mul_size(type->num_words, FILC_WORD_SIZE);
-    return type->num_words * FILC_WORD_SIZE;
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_write_access);
+    filc_lower_or_box* lower_or_box_ptr = filc_ptr_ensure_lower_or_box_ptr(my_thread, ptr);
+    filc_store_ptr_atomic_with_ptr_pair(my_thread, (void**)filc_ptr_ptr(ptr), lower_or_box_ptr,
+                                        value);
 }
 
-static inline filc_cc_ptr filc_cc_ptr_create(const filc_cc_type* type, void* base)
+bool filc_weak_cas_ptr(filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset,
+                       filc_ptr expected, filc_ptr new_value);
+filc_ptr filc_strong_cas_ptr_with_manual_tracking(
+    filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset, filc_ptr expected, filc_ptr new_value);
+filc_ptr filc_xchg_ptr_with_manual_tracking(
+    filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset, filc_ptr new_value);
+
+void filc_thread_ensure_cc_outline_buffer_slow(filc_thread* my_thread, size_t size);
+
+static inline void filc_thread_ensure_cc_outline_buffer(filc_thread* my_thread, size_t size)
 {
-    filc_cc_ptr result;
-    result.type = type;
-    result.base = base;
-    return result;
+    if (PAS_LIKELY(size <= my_thread->cc_outline_size))
+        return;
+    filc_thread_ensure_cc_outline_buffer_slow(my_thread, size);
 }
 
-static inline filc_cc_cursor filc_cc_cursor_create_at(filc_cc_ptr cc_ptr, void* cursor)
+static inline void filc_thread_ensure_cc_total_buffer(filc_thread* my_thread, size_t size)
+{
+    if (PAS_LIKELY(size <= FILC_CC_INLINE_SIZE))
+        return;
+    filc_thread_ensure_cc_outline_buffer(my_thread, size - FILC_CC_INLINE_SIZE);
+}
+
+static inline void filc_thread_ensure_zero_cc_total_buffer(filc_thread* my_thread, size_t size)
+{
+    filc_thread_ensure_cc_total_buffer(my_thread, size);
+    pas_zero_memory(my_thread->cc_inline_buffer, pas_min_uintptr(size, FILC_CC_INLINE_SIZE));
+    pas_zero_memory(my_thread->cc_inline_aux_buffer, pas_min_uintptr(size, FILC_CC_INLINE_SIZE));
+    if (size > FILC_CC_INLINE_SIZE) {
+        pas_zero_memory(my_thread->cc_outline_buffer, size - FILC_CC_INLINE_SIZE);
+        pas_zero_memory(my_thread->cc_outline_aux_buffer, size - FILC_CC_INLINE_SIZE);
+    }
+}
+
+static inline filc_cc_cursor filc_cc_cursor_create_at(size_t offset, size_t size)
 {
     filc_cc_cursor result;
-    result.cc_ptr = cc_ptr;
-    result.cursor = cursor;
+    result.offset = offset;
+    result.size = size;
     return result;
 }
 
-static inline filc_cc_cursor filc_cc_cursor_create_begin(filc_cc_ptr cc_ptr)
+static inline filc_cc_cursor filc_cc_cursor_create_begin(size_t size)
 {
-    return filc_cc_cursor_create_at(cc_ptr, cc_ptr.base);
+    return filc_cc_cursor_create_at(0, size);
 }
 
-static inline size_t filc_cc_ptr_word_type_index_for_ptr(filc_cc_ptr cc_ptr, void* ptr)
+static inline filc_cc_sizer filc_cc_sizer_create(void)
 {
-    return ((char*)ptr - (char*)cc_ptr.base) / FILC_WORD_SIZE;
+    filc_cc_sizer result;
+    result.size = 0;
+    return result;
 }
 
-static inline size_t filc_cc_ptr_size(filc_cc_ptr cc_ptr)
+static inline size_t filc_cc_sizer_total_size(filc_cc_sizer* sizer)
 {
-    return filc_cc_type_size(cc_ptr.type);
+    return pas_round_up_to_power_of_2(sizer->size, FILC_WORD_SIZE);
 }
 
-static inline void* filc_cc_ptr_end(filc_cc_ptr cc_ptr)
+static inline filc_cc_cursor filc_cc_sizer_get_cursor(filc_thread* my_thread, filc_cc_sizer* sizer)
 {
-    return (char*)cc_ptr.base + filc_cc_ptr_size(cc_ptr);
+    filc_thread_ensure_zero_cc_total_buffer(my_thread, filc_cc_sizer_total_size(sizer));
+    return filc_cc_cursor_create_begin(filc_cc_sizer_total_size(sizer));
 }
 
-static inline size_t filc_cc_cursor_word_type_index(filc_cc_cursor cursor)
+static inline pizlonated_return_value pizlonated_return_value_create(bool has_exception,
+                                                                     size_t return_size)
 {
-    return filc_cc_ptr_word_type_index_for_ptr(cursor.cc_ptr, cursor.cursor);
+    pizlonated_return_value result;
+    result.has_exception = has_exception;
+    result.return_size = return_size;
+    return result;
 }
 
-PAS_API void filc_cc_type_dump_for_cursor(const filc_cc_type* type, size_t word_type_index,
-                                          pas_stream* stream);
-PAS_API void filc_cc_type_dump(const filc_cc_type* type, pas_stream* stream);
-PAS_API void filc_cc_ptr_dump(filc_cc_ptr cc_ptr, pas_stream* stream);
 PAS_API void filc_cc_cursor_dump(filc_cc_cursor cursor, pas_stream* stream);
 
-PAS_API char* filc_cc_type_to_new_string(const filc_cc_type* type);
-PAS_API char* filc_cc_ptr_to_new_string(filc_cc_ptr ptr);
 PAS_API char* filc_cc_cursor_to_new_string(filc_cc_cursor cursor);
 
-static inline bool filc_is_valid_actual_cc_type(filc_word_type type)
-{
-    return type == FILC_WORD_TYPE_UNSET
-        || type == FILC_WORD_TYPE_INT
-        || type == FILC_WORD_TYPE_PTR;
-}
-
-static inline bool filc_is_valid_expected_cc_type(filc_word_type type)
-{
-    return type == FILC_WORD_TYPE_INT
-        || type == FILC_WORD_TYPE_PTR;
-}
-
-static inline bool filc_cc_type_complies(filc_word_type actual_type,
-                                         filc_word_type expected_type)
-{
-    PAS_TESTING_ASSERT(filc_is_valid_actual_cc_type(actual_type));
-    PAS_TESTING_ASSERT(filc_is_valid_expected_cc_type(expected_type));
-    return !(actual_type & (expected_type ^ (FILC_WORD_TYPE_INT | FILC_WORD_TYPE_PTR)));
-}
-
-static inline bool filc_cc_cursor_has_next(filc_cc_cursor* cursor,
-                                           size_t size_and_alignment,
-                                           filc_word_type word_type)
+static inline bool filc_cc_cursor_has_next(filc_cc_cursor* cursor, size_t size_and_alignment)
 {
     PAS_TESTING_ASSERT(size_and_alignment);
     PAS_TESTING_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
-    uintptr_t original_cursor_as_int = (uintptr_t)cursor->cursor;
-    uintptr_t cursor_as_int = original_cursor_as_int;
-    cursor_as_int = pas_round_up_to_power_of_2(cursor_as_int, size_and_alignment);
-    PAS_TESTING_ASSERT(cursor_as_int >= original_cursor_as_int);
-    uintptr_t word_type_index =
-        filc_cc_ptr_word_type_index_for_ptr(cursor->cc_ptr, (void*)cursor_as_int);
-    if (word_type_index >= cursor->cc_ptr.type->num_words)
-        return false;
-    return filc_cc_type_complies(cursor->cc_ptr.type->word_types[word_type_index], word_type);
+    PAS_TESTING_ASSERT(pas_is_power_of_2(size_and_alignment));
+    uintptr_t original_cursor_offset = cursor->offset;
+    uintptr_t cursor_offset = original_cursor_offset;
+    cursor_offset = pas_round_up_to_power_of_2(cursor_offset, size_and_alignment);
+    PAS_TESTING_ASSERT(cursor_offset >= original_cursor_offset);
+    return cursor_offset < cursor->size;
 }
 
-/* Cursors assume that you're always getting something that is native-aligned, so the size is the
-   alignment. */
-static PAS_ALWAYS_INLINE void* filc_cc_cursor_get_next(filc_cc_cursor* cursor,
-                                                       size_t size_and_alignment,
-                                                       filc_word_type type)
+static PAS_ALWAYS_INLINE size_t filc_cc_cursor_get_next_arg_offset(filc_cc_cursor* cursor,
+                                                                   size_t size_and_alignment)
 {
     PAS_TESTING_ASSERT(size_and_alignment);
     PAS_TESTING_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
-    PAS_TESTING_ASSERT(filc_is_valid_expected_cc_type(type));
-    if (type == FILC_WORD_TYPE_PTR)
-        PAS_TESTING_ASSERT(size_and_alignment == FILC_WORD_SIZE);
-    uintptr_t original_cursor_as_int = (uintptr_t)cursor->cursor;
-    uintptr_t cursor_as_int = original_cursor_as_int;
-    cursor_as_int = pas_round_up_to_power_of_2(cursor_as_int, size_and_alignment);
-    PAS_TESTING_ASSERT(cursor_as_int >= original_cursor_as_int);
-    uintptr_t new_cursor_as_int = cursor_as_int + size_and_alignment;
-    PAS_TESTING_ASSERT(new_cursor_as_int > cursor_as_int);
-    uintptr_t word_type_index =
-        filc_cc_ptr_word_type_index_for_ptr(cursor->cc_ptr, (void*)cursor_as_int);
+    PAS_TESTING_ASSERT(pas_is_power_of_2(size_and_alignment));
+    uintptr_t original_cursor_offset = cursor->offset;
+    uintptr_t cursor_offset = original_cursor_offset;
+    cursor_offset = pas_round_up_to_power_of_2(cursor_offset, size_and_alignment);
+    PAS_TESTING_ASSERT(cursor_offset >= original_cursor_offset);
     FILC_CHECK(
-        word_type_index < cursor->cc_ptr.type->num_words,
+        cursor_offset < cursor->size,
         NULL,
         "cc cursor %s doesn't have room for %zu byte argument.",
-        filc_cc_cursor_to_new_string(filc_cc_cursor_create_at(cursor->cc_ptr, (void*)cursor_as_int)),
+        filc_cc_cursor_to_new_string(filc_cc_cursor_create_at(cursor_offset, cursor->size)),
         size_and_alignment);
-    FILC_CHECK(
-        filc_cc_type_complies(cursor->cc_ptr.type->word_types[word_type_index], type),
-        NULL,
-        "cc cursor %s has wrong type (expected %s).",
-        filc_cc_cursor_to_new_string(filc_cc_cursor_create_at(cursor->cc_ptr, (void*)cursor_as_int)),
-        filc_word_type_to_new_string(type));
-    cursor->cursor = (void*)new_cursor_as_int;
-    return (void*)cursor_as_int;
+    cursor->offset = cursor_offset + size_and_alignment;
+    return cursor_offset;
 }
 
-static inline filc_ptr* filc_cc_cursor_get_next_ptr_ptr(filc_cc_cursor* cursor)
+static PAS_ALWAYS_INLINE void filc_cc_sizer_add_arg(filc_cc_sizer* sizer,
+                                                    size_t size_and_alignment)
 {
-    return (filc_ptr*)filc_cc_cursor_get_next(cursor, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR);
+    PAS_TESTING_ASSERT(size_and_alignment);
+    PAS_TESTING_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    PAS_TESTING_ASSERT(pas_is_power_of_2(size_and_alignment));
+    uintptr_t original_sizer_size = sizer->size;
+    uintptr_t sizer_size = original_sizer_size;
+    sizer_size = pas_round_up_to_power_of_2(sizer_size, size_and_alignment);
+    PAS_TESTING_ASSERT(sizer_size >= original_sizer_size);
+    sizer->size = sizer_size + size_and_alignment;
+}
+
+static inline size_t filc_thread_cc_total_size(filc_thread* my_thread)
+{
+
+    return FILC_CC_INLINE_SIZE + my_thread->cc_outline_size;
+}
+
+static PAS_ALWAYS_INLINE void* filc_thread_cc_slot_at_offset(filc_thread* my_thread, size_t offset)
+{
+    if (offset < FILC_CC_INLINE_SIZE)
+        return (char*)my_thread->cc_inline_buffer + offset;
+    PAS_TESTING_ASSERT(offset - FILC_CC_INLINE_SIZE < my_thread->cc_outline_size);
+    return my_thread->cc_outline_buffer + (offset - FILC_CC_INLINE_SIZE);
+}
+
+static PAS_ALWAYS_INLINE filc_lower_or_box* filc_thread_cc_aux_slot_at_offset(filc_thread* my_thread,
+                                                                              size_t offset)
+{
+    if (offset < FILC_CC_INLINE_SIZE)
+        return (filc_lower_or_box*)((char*)my_thread->cc_inline_aux_buffer + offset);
+    PAS_TESTING_ASSERT(offset - FILC_CC_INLINE_SIZE < my_thread->cc_outline_size);
+    return (filc_lower_or_box*)(my_thread->cc_outline_aux_buffer + (offset - FILC_CC_INLINE_SIZE));
 }
 
 /* NOTE: It's entirely the caller's responsibility to track all pointers passed as arguments.
    Therefore, this is the right function to call for retrieving pointers to arguments. */
-static inline filc_ptr filc_cc_cursor_get_next_ptr(filc_cc_cursor* cursor)
+static inline filc_ptr filc_cc_cursor_get_next_ptr(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    return *filc_cc_cursor_get_next_ptr_ptr(cursor);
+    size_t offset = filc_cc_cursor_get_next_arg_offset(cursor, sizeof(void*));
+    return filc_ptr_create_with_lower_and_ptr_and_manual_tracking(
+        *(void**)filc_thread_cc_aux_slot_at_offset(my_thread, offset),
+        *(void**)filc_thread_cc_slot_at_offset(my_thread, offset));
 }
 
-static inline void filc_cc_cursor_set_next_ptr(filc_cc_cursor* cursor, filc_ptr ptr)
+static inline void filc_cc_cursor_set_next_ptr(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                               filc_ptr ptr)
 {
-    *filc_cc_cursor_get_next_ptr_ptr(cursor) = ptr;
+    size_t offset = filc_cc_cursor_get_next_arg_offset(cursor, sizeof(void*));
+    *(void**)filc_thread_cc_aux_slot_at_offset(my_thread, offset) = filc_ptr_lower(ptr);
+    *(void**)filc_thread_cc_slot_at_offset(my_thread, offset) = filc_ptr_ptr(ptr);
+}
+
+static inline void filc_cc_sizer_add_ptr(filc_cc_sizer* sizer)
+{
+    filc_cc_sizer_add_arg(sizer, sizeof(void*));
 }
 
 /* NOTE: It's entirely the caller's responsibility to track all pointers returned. Therefore, this
@@ -1829,203 +2396,278 @@ static inline void filc_cc_cursor_set_next_ptr(filc_cc_cursor* cursor, filc_ptr 
 static inline filc_ptr filc_cc_cursor_get_next_ptr_and_track(filc_thread* my_thread,
                                                              filc_cc_cursor* cursor)
 {
-    filc_ptr result = filc_cc_cursor_get_next_ptr(cursor);
+    filc_ptr result = filc_cc_cursor_get_next_ptr(my_thread, cursor);
     filc_thread_track_object(my_thread, filc_ptr_object(result));
     return result;
 }
 
-#define filc_cc_cursor_get_next_int_ptr_impl(cursor, int_type) \
-    (int_type*)filc_cc_cursor_get_next(cursor, sizeof(int_type), FILC_WORD_TYPE_INT)
+#define filc_cc_cursor_get_next_int_ptr_impl(thread, cursor, int_type) \
+    (int_type*)filc_thread_cc_slot_at_offset( \
+        (thread), filc_cc_cursor_get_next_arg_offset((cursor), sizeof(int_type)))
 
-#define filc_cc_cursor_get_next_int_impl(cursor, int_type) \
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, int_type)
+#define filc_cc_cursor_get_next_int_impl(thread, cursor, int_type) \
+    *filc_cc_cursor_get_next_int_ptr_impl((thread), (cursor), int_type)
 
-static inline int filc_cc_cursor_get_next_int(filc_cc_cursor* cursor)
+static inline int filc_cc_cursor_get_next_int(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    return (int)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    return (int)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline void filc_cc_cursor_set_next_int(filc_cc_cursor* cursor, int value)
+static inline void filc_cc_cursor_set_next_int(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                               int value)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned)value;
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)(unsigned)value;
 }
 
-static inline unsigned filc_cc_cursor_get_next_unsigned(filc_cc_cursor* cursor)
+static inline void filc_cc_sizer_add_int(filc_cc_sizer* sizer)
 {
-    return (unsigned)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline void filc_cc_cursor_set_next_unsigned(filc_cc_cursor* cursor, unsigned value)
+static inline unsigned filc_cc_cursor_get_next_unsigned(filc_thread* my_thread,
+                                                        filc_cc_cursor* cursor)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    return (unsigned)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline long filc_cc_cursor_get_next_long(filc_cc_cursor* cursor)
+static inline void filc_cc_cursor_set_next_unsigned(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                    unsigned value)
 {
-    return (long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
 }
 
-static inline void filc_cc_cursor_set_next_long(filc_cc_cursor* cursor, long value)
+static inline void filc_cc_sizer_add_unsigned(filc_cc_sizer* sizer)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned long)value;
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline unsigned long filc_cc_cursor_get_next_unsigned_long(filc_cc_cursor* cursor)
+static inline long filc_cc_cursor_get_next_long(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    return (unsigned long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    return (long)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline void filc_cc_cursor_set_next_unsigned_long(filc_cc_cursor* cursor, unsigned long value)
+static inline void filc_cc_cursor_set_next_long(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                long value)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) =
+        (uint64_t)(unsigned long)value;
 }
 
-static inline size_t filc_cc_cursor_get_next_size_t(filc_cc_cursor* cursor)
+static inline void filc_cc_sizer_add_long(filc_cc_sizer* sizer)
 {
-    return (size_t)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline void filc_cc_cursor_set_next_size_t(filc_cc_cursor* cursor, size_t value)
+static inline unsigned long filc_cc_cursor_get_next_unsigned_long(filc_thread* my_thread,
+                                                                  filc_cc_cursor* cursor)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    return (unsigned long)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline double filc_cc_cursor_get_next_double(filc_cc_cursor* cursor)
+static inline void filc_cc_cursor_set_next_unsigned_long(filc_thread* my_thread,
+                                                         filc_cc_cursor* cursor, unsigned long value)
 {
-    return filc_cc_cursor_get_next_int_impl(cursor, double);
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
 }
 
-static inline void filc_cc_cursor_set_next_double(filc_cc_cursor* cursor, double value)
+static inline void filc_cc_sizer_add_unsigned_long(filc_cc_sizer* sizer)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, double) = value;
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline float filc_cc_cursor_get_next_float(filc_cc_cursor* cursor)
+static inline size_t filc_cc_cursor_get_next_size_t(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    return (float)filc_cc_cursor_get_next_int_impl(cursor, double);
+    return (size_t)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline void filc_cc_cursor_set_next_float(filc_cc_cursor* cursor, float value)
+static inline void filc_cc_cursor_set_next_size_t(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                  size_t value)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, double) = (double)value;
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
 }
 
-static inline bool filc_cc_cursor_get_next_bool(filc_cc_cursor* cursor)
+static inline void filc_cc_sizer_add_size_t(filc_cc_sizer* sizer)
 {
-    return (bool)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline void filc_cc_cursor_set_next_bool(filc_cc_cursor* cursor, bool value)
+static inline double filc_cc_cursor_get_next_double(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    return filc_cc_cursor_get_next_int_impl(my_thread, cursor, double);
 }
 
-static inline ssize_t filc_cc_cursor_get_next_ssize_t(filc_cc_cursor* cursor)
+static inline void filc_cc_cursor_set_next_double(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                  double value)
 {
-    return (ssize_t)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, double) = value;
 }
 
-static inline void filc_cc_cursor_set_next_ssize_t(filc_cc_cursor* cursor, ssize_t value)
+static inline void filc_cc_sizer_add_double(filc_cc_sizer* sizer)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(size_t)value;
+    filc_cc_sizer_add_arg(sizer, sizeof(double));
 }
 
-static inline unsigned short filc_cc_cursor_get_next_unsigned_short(filc_cc_cursor* cursor)
+static inline float filc_cc_cursor_get_next_float(filc_thread* my_thread, filc_cc_cursor* cursor)
 {
-    return (unsigned short)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    return (float)filc_cc_cursor_get_next_int_impl(my_thread, cursor, double);
 }
 
-static inline void filc_cc_cursor_set_next_unsigned_short(filc_cc_cursor* cursor,
+static inline void filc_cc_cursor_set_next_float(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                 float value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, double) = (double)value;
+}
+
+static inline void filc_cc_sizer_add_float(filc_cc_sizer* sizer)
+{
+    filc_cc_sizer_add_arg(sizer, sizeof(double));
+}
+
+static inline bool filc_cc_cursor_get_next_bool(filc_thread* my_thread, filc_cc_cursor* cursor)
+{
+    return (bool)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_bool(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                bool value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
+}
+
+static inline void filc_cc_sizer_add_bool(filc_cc_sizer* sizer)
+{
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
+}
+
+static inline ssize_t filc_cc_cursor_get_next_ssize_t(filc_thread* my_thread, filc_cc_cursor* cursor)
+{
+    return (ssize_t)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_ssize_t(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                   ssize_t value)
+{
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)(size_t)value;
+}
+
+static inline void filc_cc_sizer_add_ssize_t(filc_cc_sizer* sizer)
+{
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
+}
+
+static inline unsigned short filc_cc_cursor_get_next_unsigned_short(filc_thread* my_thread,
+                                                                    filc_cc_cursor* cursor)
+{
+    return (unsigned short)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned_short(filc_thread* my_thread,
+                                                          filc_cc_cursor* cursor,
                                                           unsigned short value)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
 }
 
-static inline unsigned long long filc_cc_cursor_get_next_unsigned_long_long(filc_cc_cursor* cursor)
+static inline void filc_cc_sizer_add_unsigned_short(filc_cc_sizer* sizer)
 {
-    return (unsigned long long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline void filc_cc_cursor_set_next_unsigned_long_long(filc_cc_cursor* cursor,
+static inline unsigned long long filc_cc_cursor_get_next_unsigned_long_long(filc_thread* my_thread,
+                                                                            filc_cc_cursor* cursor)
+{
+    return (unsigned long long)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
+}
+
+static inline void filc_cc_cursor_set_next_unsigned_long_long(filc_thread* my_thread,
+                                                              filc_cc_cursor* cursor,
                                                               unsigned long long value)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)value;
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) = (uint64_t)value;
 }
 
-static inline long long filc_cc_cursor_get_next_long_long(filc_cc_cursor* cursor)
+static inline void filc_cc_sizer_add_unsigned_long_long(filc_cc_sizer* sizer)
 {
-    return (long long)filc_cc_cursor_get_next_int_impl(cursor, uint64_t);
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline void filc_cc_cursor_set_next_long_long(filc_cc_cursor* cursor, long long value)
+static inline long long filc_cc_cursor_get_next_long_long(filc_thread* my_thread,
+                                                          filc_cc_cursor* cursor)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, uint64_t) = (uint64_t)(unsigned long long)value;
+    return (long long)filc_cc_cursor_get_next_int_impl(my_thread, cursor, uint64_t);
 }
 
-static inline pas_uint128 filc_cc_cursor_get_next_pas_uint128(filc_cc_cursor* cursor)
+static inline void filc_cc_cursor_set_next_long_long(filc_thread* my_thread, filc_cc_cursor* cursor,
+                                                     long long value)
 {
-    return filc_cc_cursor_get_next_int_impl(cursor, pas_uint128);
+    *filc_cc_cursor_get_next_int_ptr_impl(my_thread, cursor, uint64_t) =
+        (uint64_t)(unsigned long long)value;
 }
 
-static inline void filc_cc_cursor_set_next_pas_uint128(filc_cc_cursor* cursor, pas_uint128 value)
+static inline void filc_cc_sizer_add_long_long(filc_cc_sizer* sizer)
 {
-    *filc_cc_cursor_get_next_int_ptr_impl(cursor, pas_uint128) = value;
+    filc_cc_sizer_add_arg(sizer, sizeof(uint64_t));
 }
 
-static inline bool filc_word_type_is_special(filc_word_type word_type)
+static inline bool filc_special_type_is_valid(filc_special_type special_type)
 {
-    switch (word_type) {
-    case FILC_WORD_TYPE_FUNCTION:
-    case FILC_WORD_TYPE_THREAD:
-    case FILC_WORD_TYPE_SIGNAL_HANDLER:
-    case FILC_WORD_TYPE_PTR_TABLE:
-    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
-    case FILC_WORD_TYPE_DL_HANDLE:
-    case FILC_WORD_TYPE_JMP_BUF:
-    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+    switch (special_type) {
+    case FILC_SPECIAL_TYPE_THREAD:
+    case FILC_SPECIAL_TYPE_PTR_TABLE:
+    case FILC_SPECIAL_TYPE_EXACT_PTR_TABLE:
+    case FILC_SPECIAL_TYPE_FUNCTION:
+    case FILC_SPECIAL_TYPE_SIGNAL_HANDLER:
+    case FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY:
+    case FILC_SPECIAL_TYPE_DL_HANDLE:
+    case FILC_SPECIAL_TYPE_JMP_BUF:
         return true;
     default:
         return false;
     }
 }
 
-static inline bool filc_special_word_type_has_destructor(filc_word_type word_type)
+static inline bool filc_special_type_has_destructor(filc_special_type special_type)
 {
-    switch (word_type) {
-    case FILC_WORD_TYPE_THREAD:
-    case FILC_WORD_TYPE_PTR_TABLE:
-    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
+    switch (special_type) {
+    case FILC_SPECIAL_TYPE_THREAD:
+    case FILC_SPECIAL_TYPE_PTR_TABLE:
+    case FILC_SPECIAL_TYPE_EXACT_PTR_TABLE:
         return true;
-    case FILC_WORD_TYPE_FUNCTION:
-    case FILC_WORD_TYPE_SIGNAL_HANDLER:
-    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
-    case FILC_WORD_TYPE_DL_HANDLE:
-    case FILC_WORD_TYPE_JMP_BUF:
+    case FILC_SPECIAL_TYPE_FUNCTION:
+    case FILC_SPECIAL_TYPE_SIGNAL_HANDLER:
+    case FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY:
+    case FILC_SPECIAL_TYPE_DL_HANDLE:
+    case FILC_SPECIAL_TYPE_JMP_BUF:
         return false;
     default:
-        PAS_ASSERT(!"Not a special word type");
+        PAS_ASSERT(!"Not a special type");
         return false;
     }
 }
 
-PAS_API filc_ptr filc_get_next_bytes_for_va_arg(
-    filc_thread* my_thread, filc_ptr ptr_ptr, size_t size, size_t alignment, const filc_origin* origin);
+/* This assumes that the origin has been stored by the caller. Does a check that a read access is
+   possible. Returns the pointer at which that access can be performed. This strongly assumes that we
+   immediately load from the returned pointer with no safepoints. */
+void* filc_get_next_bytes_for_va_arg(filc_ptr ptr_ptr, size_t size, size_t alignment);
+
+/* Same as filc_get_next_bytes_for_va_arg, but for cases where pointers may be loaded. So, this
+   gets the aux and returns it (or returns NULL if there is no aux). This strongly assumes that we
+   immediately load from the returned pointer pair without safepoints. */
+filc_ptr_pair filc_get_next_ptr_bytes_for_va_arg(filc_ptr ptr_ptr, size_t size, size_t alignment);
 
 /* Allocates a "special" object; this is used for functions, threads, and and other specials. For
    these types, the object's lower/upper pretends to have just one word but the payload size could be
    anything. The one word is set to word_type. */
-filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_word_type word_type);
+filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, size_t alignment,
+                                   filc_special_type special_type);
 
 /* Same as filc_allocate_special, but usable before we have ever created threads and before we have
    any thread context. */
-filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type);
-
-filc_object* filc_allocate_with_existing_data(
-    filc_thread* my_thread, void* data, size_t size, filc_object_flags object_flags,
-    filc_word_type initial_word_type);
+filc_object* filc_allocate_special_early(size_t size, size_t alignment,
+                                         filc_special_type special_type);
 
 filc_object* filc_allocate_special_with_existing_payload(
-    filc_thread* my_thread, void* payload, filc_word_type word_type);
+    filc_thread* my_thread, void* payload, filc_special_type special_type);
 
 /* Allocates an object with a payload of the given size and brings all words into the unset state. The
    object's lower/upper are set accordingly. */
@@ -2035,8 +2677,8 @@ filc_object* filc_allocate(filc_thread* my_thread, size_t size);
    have that alignment. Word types start out unset and the object's lower/upper are set accordingly. */
 filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment);
 
-/* Allocates an object and initializes it to be an int object. */
-filc_object* filc_allocate_int(filc_thread* my_thread, size_t size);
+/* Allocates an object that is page aligned and has a destructor that will munmap it. */
+filc_object* filc_allocate_for_mmap(filc_thread* my_thread, size_t size);
 
 /* Reallocates the given object. The old object is freed and the new object contains a copy of the old
    one up to the new_size. Any fresh memory not copied from the old object starts out with unset state. */
@@ -2044,13 +2686,12 @@ filc_object* filc_reallocate(filc_thread* my_thread, filc_object* object, size_t
 filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object* object,
                                             size_t new_size, size_t alignment);
 
-/* "Frees" the object. This transitions the state of all words to the free state. */
-void filc_free(filc_thread* my_thread, filc_object* object);
+/* "Frees" the object. This transitions the state of all words to the free state.
+ 
+   This assumes that you've already done some basic checks that the object is OK to free. */
+void filc_free(filc_object* object);
 
-/* Frees the object without checking that it's an object that can be freed. Used internally by
-   filc_free() and by munmap(). Only call this after checking that it's something that is OK to free.
-   This still does the is-not-already-free check. */
-void filc_free_yolo(filc_thread* my_thread, filc_object* object);
+PAS_API void filc_unmap(void* ptr, size_t size);
 
 filc_ptr_table* filc_ptr_table_create(filc_thread* my_thread);
 void filc_ptr_table_destruct(filc_ptr_table* ptr_table);
@@ -2075,9 +2716,6 @@ filc_ptr filc_exact_ptr_table_decode(filc_thread* my_thread, filc_exact_ptr_tabl
 void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table,
                                              filc_object_array* stack);
 
-/* This pins the object like filc_pin, and adds it to the native frame for automatic unpinning. */
-void filc_pin_tracked(filc_thread* my_thread, filc_object* object);
-
 static inline const char* filc_access_kind_get_string(filc_access_kind access_kind)
 {
     switch (access_kind) {
@@ -2090,219 +2728,79 @@ static inline const char* filc_access_kind_get_string(filc_access_kind access_ki
     return NULL;
 }
 
-void filc_check_access_common(filc_ptr, size_t bytes, filc_access_kind kind,
-                              const filc_origin* origin);
-
-/* NOTE: At some point, we should let this exit, but we should be careful: if it exits then all
-   checks we did previously have to at least go through check_accessible again. */
-void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind kind,
-                           const filc_origin* origin);
-void filc_check_access_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment, filc_access_kind kind,
-                                   const filc_origin* origin);
-void filc_check_access_ptr(filc_ptr ptr, filc_access_kind kind, const filc_origin* origin);
-
-/* CPT stands for Check Pin Tracked.
-
-   This is filc_check_access_int followed by filc_pin_tracked.
-
-   This does all of the things that make it safe to pass a pointer to Fil-C memory to the kernel,
-   assuming that the kernel call is taking a primitive buffer. But even if you get it wrong and the
-   kernel expected a buffer with pointers, then the worst that can happen is a filc_safety_panic.
-
-   What this does in detail:
-
-   Check: it checks that the pointer points to integer memory of the given size, and that it can be
-   accessed for read or write (depending on filc_access_kind).
-
-   Pin: pins the memory so that any attempt to free or munmap it will fail. This also asserts that
-   the memory is not free, but that's redundant (if it had been free, the check would have failed).
-   Note that pinning is only essential for mmaps, not for normal allocations, since the fact that
-   the memory is known to GC as a root means even freeing it won't actually cause it to get reused
-   until the root goes away. But for mmaps, pinning is essential because munmap really does free the
-   memory immediately and the GC root is just the capability. Munmap will fail with a safety panic if
-   the pointed-at memory is pinned, so pinning prevents that race.
-
-   Track: registers the memory with the top filc_native_frame, so that it's unpinned automatically
-   when the native frame pops. This means that you don't have to unpin the memory yourself. Tracking
-   also means that the GC will see the memory as a root, though that's redundant in almost all cases
-   (you're likely dealing with a pointer that came from an argument, which is already tracked, or a
-   pointer you got from filc_ptr_load, which is also already tracked).
-
-   Normally you use this by calling filc_cpt_read_int/filc_cpt_write_int, which are shorthands that
-   pass filc_read_access/filc_write_access as the `kind`, respectively.
-
-   A great example of how to use this is zsys_read, so I'll describe that here:
-
-       ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
-       {
-           filc_cpt_write_int(my_thread, buf, size);
-           return FILC_SYSCALL(my_thread, read(fd, filc_ptr_ptr(buf), size));
-       }
-
-   Since the read() syscall writes to the buffer, we filc_cpt_write_int. Once we have done this, it's
-   safe to do a FILC_SYSCALL and pass the filc_ptr_ptr(buf) to it, since the memory is now definitely
-   writable and its state cannot change due to the pin. When the function returns, the native thunk
-   wrapper will pop the native frame, which will unpin the buffer automatically.
-
-   Note that a lot of code uses filc_check_access_int and then either filc_pin_tracked or just
-   filc_pin, but that's only because that code was written because I had the insight to combine them
-   into just this one call. That code might get left alone under the "if it ain't broke don't fix it"
-   doctrine.
-
-   Also note that for some things, this call is totally wrong. Consider aio, which results in the
-   kernel holding onto the buffer past the return of the syscall. In that case, you'll want to use
-   filc_pin directly. There are likely to be other cases where you have to use the other APIs for some
-   subtle reasons. */
-void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, uintptr_t bytes,
-                         filc_access_kind kind);
-
-void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
-void filc_check_read_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
-                                 const filc_origin* origin);
-void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin);
-void filc_check_write_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
-                                  const filc_origin* origin);
-void filc_check_read_ptr_outline(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_ptr_outline(filc_ptr ptr, const filc_origin* origin);
-
-/* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_read_access). */
-void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
-
-/* This is a shorthand for filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access). */
-void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes);
-
-static PAS_ALWAYS_INLINE bool filc_is_native_access_ok(filc_ptr ptr,
-                                                       size_t size_and_alignment,
-                                                       filc_word_type expected_word_type,
-                                                       filc_access_kind kind)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_aligned_access_fail(
+    filc_ptr ptr, size_t bytes, size_t alignment, filc_access_kind kind);
+ 
+static PAS_ALWAYS_INLINE void filc_check_aligned_access(
+    filc_ptr ptr, size_t bytes, size_t alignment, filc_access_kind kind)
 {
-    PAS_ASSERT(expected_word_type == FILC_WORD_TYPE_INT || expected_word_type == FILC_WORD_TYPE_PTR);
-    PAS_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    static const bool extreme_assert = false;
     
-    filc_object* object = filc_ptr_object(ptr);
-    char* raw_ptr = (char*)filc_ptr_ptr(ptr);
-    if (!object)
-        return false;
-    if (!pas_is_aligned((uintptr_t)raw_ptr, size_and_alignment))
-        return false;
-    if (kind == filc_write_access && (object->flags & FILC_OBJECT_FLAG_READONLY))
-        return false;
-    if (raw_ptr >= (char*)object->upper)
-        return false;
-    char* lower = (char*)object->lower;
-    if (raw_ptr < lower)
-        return false;
-    filc_word_type* word_type_ptr = object->word_types + (raw_ptr - lower) / FILC_WORD_SIZE;
-    filc_word_type actual_word_type = *word_type_ptr;
-    if (actual_word_type == expected_word_type)
-        return true;
-    if (actual_word_type != FILC_WORD_TYPE_UNSET)
-        return false;
-    filc_word_type previous_word_type =
-        pas_compare_and_swap_uint8_strong(word_type_ptr, FILC_WORD_TYPE_UNSET, expected_word_type);
-    return previous_word_type == FILC_WORD_TYPE_UNSET
-        || previous_word_type == expected_word_type;
+    if (extreme_assert)
+        filc_validate_ptr(ptr, NULL);
+
+    if (!bytes)
+        return;
+
+    if (PAS_UNLIKELY(!pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), alignment))
+        || PAS_UNLIKELY(!filc_ptr_object(ptr))
+        || PAS_UNLIKELY(filc_ptr_ptr(ptr) < filc_ptr_lower(ptr))
+        || PAS_UNLIKELY(filc_ptr_ptr(ptr) >= filc_ptr_upper(ptr))
+        || PAS_UNLIKELY(bytes > (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)))
+        || (kind == filc_write_access
+            && PAS_UNLIKELY(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_READONLY)))
+        filc_check_aligned_access_fail(ptr, bytes, alignment, kind);
 }
 
-PAS_API PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_native_int_fail(
-    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin);
-
-static PAS_ALWAYS_INLINE void filc_check_read_native_int(filc_ptr ptr, size_t size_and_alignment,
-                                                         const filc_origin* origin)
+static PAS_ALWAYS_INLINE void filc_check_access(
+    filc_ptr ptr, size_t bytes, filc_access_kind kind)
 {
-    if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_read_access))
-        filc_check_read_native_int_fail(ptr, size_and_alignment, origin);
+    filc_check_aligned_access(ptr, bytes, 1, kind);
 }
 
-void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int16(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin);
-void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin);
-
-PAS_NO_RETURN void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin);
-
-PAS_API PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_native_int_fail(
-    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin);
-
-static PAS_ALWAYS_INLINE void filc_check_write_native_int(filc_ptr ptr, size_t size_and_alignment,
-                                                          const filc_origin* origin)
+static PAS_ALWAYS_INLINE void filc_check_read(filc_ptr ptr, size_t bytes)
 {
-    if (!filc_is_native_access_ok(ptr, size_and_alignment, FILC_WORD_TYPE_INT, filc_write_access))
-        filc_check_write_native_int_fail(ptr, size_and_alignment, origin);
+    filc_check_access(ptr, bytes, filc_read_access);
 }
 
-void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int16(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin);
-void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin);
-
-PAS_NO_RETURN void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin);
-PAS_NO_RETURN void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin);
-
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_ptr_fail(
-    filc_ptr ptr, const filc_origin* origin);
-
-static PAS_ALWAYS_INLINE void filc_check_read_ptr(filc_ptr ptr, const filc_origin* origin)
+static PAS_ALWAYS_INLINE void filc_check_aligned_read(filc_ptr ptr, size_t bytes, size_t alignment)
 {
-    if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_read_access))
-        filc_check_read_ptr_fail(ptr, origin);
+    filc_check_aligned_access(ptr, bytes, alignment, filc_read_access);
 }
 
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_ptr_fail(
-    filc_ptr ptr, const filc_origin* origin);
+static PAS_ALWAYS_INLINE void filc_check_write(filc_ptr ptr, size_t bytes)
+{
+    filc_check_access(ptr, bytes, filc_write_access);
+}
+
+static PAS_ALWAYS_INLINE void filc_check_aligned_write(filc_ptr ptr, size_t bytes, size_t alignment)
+{
+    filc_check_aligned_access(ptr, bytes, alignment, filc_write_access);
+}
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_access_check_fail(
     filc_ptr ptr, const filc_optimized_access_check_origin* check_origin);
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_alignment_contradiction(
     filc_ptr ptr, const filc_optimized_alignment_contradiction_origin* contradiction_origin);
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_type_contradiction(
-    filc_ptr ptr, const filc_optimized_type_contradiction_origin* contradiction_origin);
 
-static PAS_ALWAYS_INLINE void filc_check_write_ptr(filc_ptr ptr, const filc_origin* origin)
-{
-    if (!filc_is_native_access_ok(ptr, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR, filc_write_access))
-        filc_check_write_ptr_fail(ptr, origin);
-}
+#define FILC_LOAD_PTR_FIELD(my_thread, ptr, struct_type, field_name) \
+    filc_load_ptr((my_thread), (ptr), PAS_OFFSETOF(struct_type, field_name))
 
-#define FILC_CHECK_INT_FIELD(ptr, struct_type, field_name, access_kind) do { \
-        struct_type check_temp; \
-        filc_check_access_int(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
-                              sizeof(check_temp.field_name), (access_kind), NULL); \
-    } while (false)
-
-#define FILC_CHECK_PTR_FIELD(ptr, struct_type, field_name, access_kind) do { \
-        filc_check_access_ptr(filc_ptr_with_offset((ptr), PAS_OFFSETOF(struct_type, field_name)), \
-                              (access_kind), NULL); \
-    } while (false)
+#define FILC_STORE_PTR_FIELD(my_thread, ptr, struct_type, field_name, value) \
+    filc_store_ptr((my_thread), (ptr), PAS_OFFSETOF(struct_type, field_name), value)
 
 void filc_check_function_call(filc_ptr ptr);
 PAS_NO_RETURN void filc_check_function_call_fail(filc_ptr ptr);
 
-void filc_check_access_special(
-    filc_ptr ptr, filc_word_type expected_type, const filc_origin* origin);
+void filc_check_access_special(filc_ptr ptr, filc_special_type expected_type);
 
-PAS_NO_RETURN void filc_cc_args_check_failure(
-    filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin);
-PAS_NO_RETURN void filc_cc_rets_check_failure(
-    filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin);
+PAS_NO_RETURN void filc_cc_args_check_failure(size_t actual_size, size_t expected_size,
+                                              const filc_origin* origin);
+PAS_NO_RETURN void filc_cc_rets_check_failure(size_t actual_size, size_t expected_size,
+                                              const filc_origin* origin);
 
 PAS_API PAS_NO_RETURN void filc_stack_overflow_failure_impl(void);
-
-/* Checks that the pointer is in fact an mmap, isn't free, and then pins and tracks
-   it.
-
-   Does not perform any other safety checks. */
-void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr);
 
 static PAS_ALWAYS_INLINE void filc_memset_small(void* ptr, unsigned value, size_t bytes)
 {
@@ -2310,6 +2808,17 @@ static PAS_ALWAYS_INLINE void filc_memset_small(void* ptr, unsigned value, size_
     char* end_ptr = byte_ptr + bytes;
     while (byte_ptr < end_ptr) {
         *byte_ptr++ = value;
+        pas_compiler_fence();
+    }
+}
+
+static PAS_ALWAYS_INLINE void filc_memset_small_word(void* ptr, uintptr_t value, size_t bytes)
+{
+    PAS_TESTING_ASSERT(pas_is_aligned(bytes, sizeof(uintptr_t)));
+    uintptr_t* word_ptr = (uintptr_t*)ptr;
+    uintptr_t* end_ptr = (uintptr_t*)((char*)ptr + bytes);
+    while (word_ptr < end_ptr) {
+        *word_ptr++ = value;
         pas_compiler_fence();
     }
 }
@@ -2350,38 +2859,26 @@ static PAS_ALWAYS_INLINE void filc_memmove_small(void* dst, void* src, size_t by
     filc_memcpy_small_up_or_down(dst, src, bytes, dst < src);
 }
 
-void filc_memset_with_exit(filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes);
-void filc_memcpy_with_exit(
-    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
-    void* dst, const void* src, size_t bytes);
-void filc_memmove_with_exit(
-    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
-    void* dst, const void* src, size_t bytes);
+/* These functions assume that the memory that you're setting or copying is already tracked by GC. */
+void filc_memset_with_exit(filc_thread* my_thread, void* ptr, unsigned value, size_t bytes);
+void filc_memcpy_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
+void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes);
 
-/* You can call these if you know that you're copying pointers (or possible pointers) and you've
-   already proved that it's safe and the pointer/size are aligned.
-   
-   These also happen to be used as the implementation of filc_memset_impl/filc_memcpy_impl/
-   filc_memmove_impl in those cases where pointer copying is detected. Those also do all the
-   checks needed to ensure memory safety. So, usually, you want those, not these.
-
-   The number of bytes must be a multiple of 16. */
 static inline void filc_low_level_ptr_safe_bzero(void* raw_ptr, size_t bytes)
 {
     static const bool verbose = false;
     size_t words;
-    filc_ptr* ptr;
+    void** ptr;
     if (verbose)
         pas_log("bytes = %zu\n", bytes);
-    ptr = (filc_ptr*)raw_ptr;
-    PAS_TESTING_ASSERT(pas_is_aligned(bytes, FILC_WORD_SIZE));
-    words = bytes / FILC_WORD_SIZE;
+    ptr = (void**)raw_ptr;
+    PAS_TESTING_ASSERT(pas_is_aligned(bytes, sizeof(void*)));
+    words = bytes / sizeof(void*);
     while (words--)
-        filc_ptr_store_without_barrier(ptr++, filc_ptr_forge_null());
+        __c11_atomic_store((void*_Atomic*)ptr++, NULL, __ATOMIC_RELAXED);
 }
 
-void filc_low_level_ptr_safe_bzero_with_exit(
-    filc_thread* my_thread, filc_object* object, void* ptr, size_t bytes);
+void filc_low_level_ptr_safe_bzero_with_exit(filc_thread* my_thread, void* ptr, size_t bytes);
 
 void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t count,
                  const filc_origin* origin);
@@ -2392,7 +2889,9 @@ void filc_memset(filc_thread* my_thread, filc_ptr ptr, unsigned value, size_t co
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* origin);
 
-filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr);
+filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, size_t size);
+size_t filc_prepare_to_return_with_data(filc_thread* my_thread, filc_ptr rets,
+                                        const filc_origin* origin);
 
 /* Checks that the ptr points at a valid C string. That is, there is a null terminator before we
    get to the upper bound. Returns a copy of that string allocated in the utility heap, and checks
@@ -2410,17 +2909,17 @@ filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr);
    It's necessary to free the string when you're done with it. */
 char* filc_check_and_get_new_str(filc_ptr ptr);
 
-/* Assumes that the given memory has already been checked to be int and that it has the given size,
-   but otherwise does all of the same checks as filc_check_and_get_new_str(). */
-char* filc_check_and_get_new_str_for_int_memory(char* base, size_t size);
+/* Assumes that the given memory has already been checked to be the given size, but otherwise does all
+   of the same checks as filc_check_and_get_new_str(). */
+char* filc_check_and_get_new_str_for_valid_range(char* base, size_t size);
 
 char* filc_check_and_get_new_str_or_null(filc_ptr ptr);
 
 /* Helper around filc_check_and_get_new_str that doesn't require freeing, since the
    new string is added to the native frame's bmalloc deferral list. */
 char* filc_check_and_get_tmp_str(filc_thread* my_thread, filc_ptr ptr);
-char* filc_check_and_get_tmp_str_for_int_memory(filc_thread* my_thread,
-                                                char* base, size_t size);
+char* filc_check_and_get_tmp_str_for_valid_range(filc_thread* my_thread,
+                                                 char* base, size_t size);
 char* filc_check_and_get_tmp_str_or_null(filc_thread* my_thread, filc_ptr ptr);
 
 /* Safely create a Fil-C string from a legacy C string. */
@@ -2459,17 +2958,17 @@ bool filc_global_initialization_context_add(
 void filc_global_initialization_context_destroy(filc_global_initialization_context* context);
 
 void filc_execute_constant_relocations(
-    void* constant, filc_constant_relocation* relocations, size_t num_relocations,
+    filc_object* constant, filc_constant_relocation* relocations, size_t num_relocations,
     filc_global_initialization_context* context);
 
-void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE));
+void filc_defer_or_run_global_ctor(pizlonated_function global_ctor);
 void filc_run_deferred_global_ctors(filc_thread* my_thread); /* Important safety property: libc must
                                                                 call this before letting the user
                                                                 start threads. But it's OK if the
                                                                 deferred constructors that this calls
                                                                 start threads, as far as safety
                                                                 goes. */
-void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE));
+void filc_run_global_dtor(pizlonated_function global_dtor);
 void filc_error(const char* reason, const filc_origin* origin);
 
 /* This works out whether we're supposed to catch the exception or keep going by calling the personality
@@ -2547,14 +3046,11 @@ PAS_API void filc_set_errno(int errno_value);
     })
 
 PAS_API void filc_check_user_sigset(filc_ptr ptr, filc_access_kind access_kind);
-PAS_API void filc_from_user_sigset(filc_user_sigset* user_sigset, sigset_t* sigset);
-PAS_API void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset);
+PAS_API void filc_from_user_sigset(sigset_t* user_sigset, sigset_t* sigset);
+PAS_API void filc_to_user_sigset(sigset_t* sigset, sigset_t* user_sigset);
 
 PAS_API int filc_from_user_signum(int signum);
 PAS_API int filc_to_user_signum(int signum);
-
-PAS_API int filc_from_user_open_flags(int user_flags);
-PAS_API int filc_to_user_open_flags(int user_flags);
 
 PAS_API void filc_extract_user_iovec_entry(filc_thread* my_thread,
                                            filc_ptr user_iov_entry_ptr,
@@ -2566,8 +3062,6 @@ PAS_API void filc_prepare_iovec_entry(filc_thread* my_thread,
                                       filc_access_kind access_kind);
 PAS_API struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov,
                                          int iovcnt, filc_access_kind access_kind);
-
-PAS_API int filc_from_user_atfd(int fd);
 
 PAS_API char** filc_check_and_get_null_terminated_string_array(
     filc_thread* my_thread, filc_ptr user_array_ptr);
@@ -2645,8 +3139,8 @@ PAS_API unsigned filc_get_unsigned_env(const char* name, unsigned default_value)
 PAS_API size_t filc_get_size_env(const char* name, size_t default_value);
 
 void filc_start_program(int argc, char** argv,
-                        filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
-                        filc_ptr pizlonated_main(filc_global_initialization_context*));
+                        pizlonated_linker_stub pizlonated___libc_start_main,
+                        pizlonated_linker_stub pizlonated_main);
 
 PAS_END_EXTERN_C;
 

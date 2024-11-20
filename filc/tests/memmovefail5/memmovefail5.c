@@ -22,6 +22,15 @@ int main()
 
     zmemmove(&a, &a.str, sizeof(struct foo) - __builtin_offsetof(struct foo, str));
 
+    struct foo* b = (struct foo*)((char*)&a - __builtin_offsetof(struct foo, str));
+
+    ZASSERT(!strcmp(b->str, "hello"));
+    ZASSERT(b->z == 3);
+    ZASSERT(b->w == 4);
+    ZASSERT(!zhasvalidcap(a.str));
+    ZASSERT(a.z == 3);
+    ZASSERT(a.w == 4);
+
     return 0;
 }
 

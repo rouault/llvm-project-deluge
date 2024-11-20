@@ -2333,8 +2333,8 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       break;
     }
     const ASTRecordLayout &Layout = getASTObjCInterfaceLayout(ObjCI->getDecl());
-    ConstexprWidth = Width = toBits(Layout.getSize()); // FIXME(FilC)
-    ConstexprAlign = Align = toBits(Layout.getAlignment()); // FIXME(FilC)
+    ConstexprWidth = Width = toBits(Layout.getSize());
+    ConstexprAlign = Align = toBits(Layout.getAlignment());
     break;
   }
   case Type::BitInt: {

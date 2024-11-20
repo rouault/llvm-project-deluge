@@ -2,4 +2,4 @@ return:
   failure
 output-includes:
   - "filc safety error"
-  - "type mismatch"
+  - "cannot read pointer to special object"

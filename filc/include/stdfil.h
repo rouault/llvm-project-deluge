@@ -160,42 +160,6 @@ static inline __attribute__((__always_inline__)) filc_bool zvalinbounds(void* pt
     return zinbounds(ptr) && zinbounds((char*)ptr + size - 1);
 }
 
-/* Returns true if the pointer points to a byte with unset type. */
-filc_bool zisunset(void* ptr);
-
-/* Returns true if the pointer points at an integer byte.
-   
-   If this returns false, then the pointer may point to a pointer, or be unset, or to opaque memory,
-   or to any other type when we add more types.
- 
-   Pointer must be in bounds, else your process dies. */
-filc_bool zisint(void* ptr);
-
-/* Returns the pointer phase of the pointer.
-   
-   - 0 means this points to the base of a pointer.
-   
-   - 1..31 (inclusive) means you're pointing into the middle of a pointer; so, you subtract that many
-     bytes from your pointer, then you'll be able to dereference it.
-   
-   - -1 means that this does not point to a pointer at all. This means it could mean that it's an int
-     or it could be unset or it could mean opaque memory. (Or any other type when we add more types.)
-     
-   Pointer must be in bounds, else your process dies. */
-int zptrphase(void* ptr);
-
-/* Returns true if the pointer points at any kind of pointer memory. Equivalent to
-   isptrphase(p) != -1. */
-static inline __attribute__((__always_inline__)) filc_bool zisptr(void* ptr)
-{
-    return zptrphase(ptr) != -1;
-}
-
-/* Returns true if the pointer points at pointers or integers.
- 
-   New types, as well as opaque memory, will return false. */
-filc_bool zisintorptr(void* ptr);
-
 /* Construct a pointer that has the capability from `object` but the address from `address`. This
    is a memory-safe operation, and it's guaranteed to be equivalent to:
    
@@ -279,31 +243,17 @@ static inline __attribute__((__always_inline__)) void* zretagptr(void* newptr, v
 void zmemset(void* dst, unsigned value, __SIZE_TYPE__ count);
 void zmemmove(void* dst, void* src, __SIZE_TYPE__ count);
 
-/* The pointer-nullifying memmove.
-   
-   This memmove will kill your process if anything goes out of bounds.
-   
-   But on pointers (either destination thinks the byte is a pointer or the source thinks the byte is
-   a pointer), the value copied is zero.
-   
-   For example, if you call this to copy pointers to ints, those ints will become zero.
-   
-   Or if you call this to copy ints to pointers, those pointers will become zero.
-
-   Also if you copy pointers to pointers, then zero will be copied.
-
-   But if you copy ints to ints, then the actual bytes are copied. */
-void zmemmove_nullify(void* dst, const void* src, __SIZE_TYPE__ count);
-
 /* Allocates a new string (with zgc_alloc(char, strlen+1)) and prints a dump of the ptr to that string.
-   Returns that string. You have to zgc_free the string when you're done with it.
+   Returns that string.
 
    This is exposed as %P in the zprintf family of functions. */
 char* zptr_to_new_string(const void* ptr);
 
-/* Mostly type-oblivious memcmp implementation. This works for any two ranges so long as they contain
-   ints, ptrs, or unset words. It's fine to compare ints to ptrs, for example. */
-int zmemcmp(const void* ptr1, const void* ptr2, __SIZE_TYPE__ count);
+/* Allocates a new string (with zgc_alloc(char, strlen+1)) and prints a dump of the ptr and the entire
+   object contents to that string. Returns that string.
+   
+   This is exposed as %O in the zprintf family of functions. */
+char* zptr_contents_to_new_string(const void* ptr);
 
 /* The zptrtable can be used to encode pointers as integers. The integers are __SIZE_TYPE__ but
    tend to be small; you can usually get away with storing them in 32 bits.
@@ -404,9 +354,11 @@ char* zasprintf(const char* format, ...);
    zvasprintf under the hood and then prints the entire string in one write(2) call (unless write
    demands that we call it again).
 
-   Note that the main reason why you might want to use this for debugging over printf is that it supports:
+   Note that the main reason why you might want to use this for debugging over printf is that it
+   supports:
 
        - '%P', which prints the full filc_ptr (i.e. 0xptr,0xlower,0xupper,...type...).
+       - '%O', which prints the full object contents.
 
    But if you want to debug floating point, you should maybe go with printf. */
 void zvprintf(const char* format, __builtin_va_list args);
@@ -527,20 +479,16 @@ void* zargs(void);
 /* Calls the `callee` with the arguments being a snapshot of the passed-in `args` object. The `args`
    object does not have to be readonly, but can be.
    
-   zcall_int() expects the `callee` to return some integer typed value up to 16 bytes. Returns that
-   value as an unsigned __int128.
-   
-   zcall_ptr() expects the `callee` to return some pointer.
-   
-   zcall_void() allows the `callee` to return any value so long as it's not larger than 16 bytes.
+   Returns a readonly object containing the return value.
    
    Beware that C/C++ functions declared to return structs really return void, and they have some
    special parameter that is a pointer to the buffer where the return value is stored.
 
    FIXME: This currently does not support unwinding and exceptions. */
-unsigned __int128 zcall_int(void* callee, void* args);
-void* zcall_ptr(void* callee, void* args);
-void zcall_void(void* callee, void* args);
+void* zcall(void* callee, void* args);
+
+/* Returns from the calling function, passing the contents of the rets object as the return value. */
+void zreturn(void* rets);
 
 /* Returns true if running in the build of the runtime that has extra (super expensive) testing
    checks.

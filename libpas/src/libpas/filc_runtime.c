@@ -108,73 +108,30 @@ pas_heap* filc_destructor_heap;
 verse_heap_object_set* filc_destructor_set;
 
 const filc_object filc_free_singleton = {
-    .lower = FILC_FREE_BOUND,
-    .upper = FILC_FREE_BOUND,
-    .flags = FILC_OBJECT_FLAG_FREE | FILC_OBJECT_FLAG_GLOBAL | FILC_OBJECT_FLAG_READONLY,
-    .word_types = { }
+    .upper = (void*)(&filc_free_singleton + 1),
+    .aux = FILC_AUX_CREATE(FILC_OBJECT_FLAG_FREE |
+                           FILC_OBJECT_FLAG_GLOBAL |
+                           FILC_OBJECT_FLAG_READONLY,
+                           NULL)
 };
 
 filc_object_array filc_global_variable_roots;
 
-const filc_cc_type filc_empty_cc_type = {
-    .num_words = 0,
-    .word_types = { }
-};
-
-const filc_cc_type filc_void_cc_type = {
-    .num_words = 1,
-    .word_types = {
-        FILC_WORD_TYPE_UNSET
-    }
-};
-
-const filc_cc_type filc_int_cc_type = {
-    .num_words = 1,
-    .word_types = {
-        FILC_WORD_TYPE_INT
-    }
-};
-
-const filc_cc_type filc_ptr_cc_type = {
-    .num_words = 1,
-    .word_types = {
-        FILC_WORD_TYPE_PTR
-    }
-};
-
 void filc_check_user_sigset(filc_ptr ptr, filc_access_kind access_kind)
 {
-    filc_check_access_int(ptr, sizeof(filc_user_sigset), access_kind, NULL);
+    filc_check_access(ptr, sizeof(sigset_t), access_kind);
 }
-
-struct user_sigaction {
-    filc_ptr sa_handler_ish;
-    filc_user_sigset sa_mask;
-    int sa_flags;
-};
 
 static void check_user_sigaction(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct user_sigaction, sa_handler_ish, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_sigaction, sa_mask, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_sigaction, sa_flags, access_kind);
-}
-
-int filc_from_user_signum(int signum)
-{
-    return signum;
-}
-
-int filc_to_user_signum(int signum)
-{
-    return signum;
+    filc_check_access(ptr, sizeof(struct sigaction), access_kind);
 }
 
 /* NOTE: Unlike most other allocation functions, this does not track the allocated object properly.
    It registers it with the global thread list. But once the thread is started, it will dispose itself
    once done, and remove it from the list. So, it's necessary to track threads after creating them
    somehow, unless it's a thread that cannot be disposed. */
-filc_thread* filc_thread_create(void)
+filc_thread* filc_thread_create_with_manual_tracking(void)
 {
     static const bool verbose = false;
     if (sizeof(filc_thread) > FILC_THREAD_ALLOCATOR_OFFSET) {
@@ -183,15 +140,15 @@ filc_thread* filc_thread_create(void)
     }
     PAS_ASSERT(sizeof(filc_thread) <= FILC_THREAD_ALLOCATOR_OFFSET);
     filc_object* thread_object = filc_allocate_special_early(
-        FILC_THREAD_SIZE_WITH_ALLOCATORS, FILC_WORD_TYPE_THREAD);
-    filc_thread* thread = thread_object->lower;
+        FILC_THREAD_SIZE_WITH_ALLOCATORS, FILC_CC_ALIGNMENT, FILC_SPECIAL_TYPE_THREAD);
+    filc_thread* thread = filc_object_lower(thread_object);
     if (verbose)
         pas_log("created thread: %p\n", thread);
     PAS_ASSERT(filc_object_for_special_payload(thread) == thread_object);
 
     pas_system_mutex_construct(&thread->lock);
     pas_system_condition_construct(&thread->cond);
-    filc_object_array_construct(&thread->allocation_roots);
+    filc_ptr_array_construct(&thread->allocation_roots);
     filc_object_array_construct(&thread->mark_stack);
 
     unsigned allocator_index = 0;
@@ -262,9 +219,9 @@ void filc_thread_undo_create(filc_thread* thread)
         PAS_ASSERT(thread->error_starting);
         PAS_ASSERT(thread != filc_get_my_thread());
     }
-    PAS_ASSERT(!thread->allocation_roots.num_objects);
+    PAS_ASSERT(!thread->allocation_roots.size);
     PAS_ASSERT(!thread->mark_stack.num_objects);
-    filc_object_array_destruct(&thread->allocation_roots);
+    filc_ptr_array_destruct(&thread->allocation_roots);
     filc_object_array_destruct(&thread->mark_stack);
     filc_thread_destroy_space_with_guard_page(thread);
 }
@@ -275,14 +232,14 @@ void filc_thread_mark_outgoing_ptrs(filc_thread* thread, filc_object_array* stac
        mark those as part of marking thread roots. The things here are the ones that are treated
        as normal outgoing object ptrs rather than roots. */
     
-    fugc_mark_or_free(stack, &thread->arg_ptr);
-    fugc_mark_or_free(stack, &thread->cookie_ptr);
-    fugc_mark_or_free(stack, &thread->result_ptr);
+    fugc_mark_or_free_flight(stack, &thread->arg_ptr);
+    fugc_mark_or_free_flight(stack, &thread->cookie_ptr);
+    fugc_mark_or_free_flight(stack, &thread->result_ptr);
 
     /* These need to be marked because phase2 of unwinding calls the personality function multiple
        times before finishing using them. */
-    fugc_mark_or_free(stack, &thread->unwind_context_ptr);
-    fugc_mark_or_free(stack, &thread->exception_object_ptr);
+    fugc_mark_or_free_flight(stack, &thread->unwind_context_ptr);
+    fugc_mark_or_free_flight(stack, &thread->exception_object_ptr);
 }
 
 void filc_thread_destruct(filc_thread* thread)
@@ -331,7 +288,7 @@ void filc_thread_dispose(filc_thread* thread)
 
 static void check_zthread(filc_ptr ptr)
 {
-    filc_check_access_special(ptr, FILC_WORD_TYPE_THREAD, NULL);
+    filc_check_access_special(ptr, FILC_SPECIAL_TYPE_THREAD);
 }
 
 static filc_signal_handler* signal_table[FILC_MAX_USER_SIGNUM + 1];
@@ -368,8 +325,31 @@ void filc_initialize(void)
 {
     PAS_ASSERT(!is_initialized);
 
-    /* This must match SpecialObjectSize in FilPizlonator.cpp. */
-    PAS_ASSERT(FILC_SPECIAL_OBJECT_SIZE == 32);
+    /* There's a bunch of alignment math that is simpler if these things are true. If you make any of
+       these conditions fail to hold, then it's an audit-the-runtime kind of situation. */
+    PAS_ASSERT(sizeof(filc_object) == FILC_MINALIGN);
+    PAS_ASSERT(FILC_MINALIGN == VERSE_HEAP_MIN_ALIGN);
+    PAS_ASSERT(sizeof(filc_lower_or_box) == sizeof(void*));
+    PAS_ASSERT(sizeof(filc_lower_or_box) == sizeof(uintptr_t));
+    PAS_ASSERT(sizeof(filc_lower_or_box) == FILC_WORD_SIZE);
+
+    /* The compiler hardcodes these constants. */
+    PAS_ASSERT(FILC_FLIGHT_PTR_ALIGNMENT == 16);
+    PAS_ASSERT(FILC_OBJECT_AUX_PTR_MASK == 0xfffffffffffflu);
+    PAS_ASSERT(FILC_OBJECT_AUX_FLAGS_SHIFT == 48);
+    PAS_ASSERT(sizeof(filc_object) == 16);
+    PAS_ASSERT(FILC_SPECIAL_TYPE_FUNCTION == 1);
+    PAS_ASSERT(FILC_SPECIAL_TYPE_MASK == 15);
+    PAS_ASSERT(FILC_OBJECT_FLAG_GLOBAL == 1);
+    PAS_ASSERT(FILC_OBJECT_FLAG_READONLY == 2);
+    PAS_ASSERT(FILC_OBJECT_FLAG_FREE == 4);
+    PAS_ASSERT(FILC_OBJECT_FLAG_GLOBAL_AUX == 16);
+    PAS_ASSERT(FILC_OBJECT_FLAGS_SPECIAL_SHIFT == 5);
+    PAS_ASSERT(FILC_OBJECT_FLAGS_ALIGN_SHIFT == 9);
+    PAS_ASSERT(FILC_ATOMIC_BOX_BIT == 1);
+    PAS_ASSERT(FILC_NUM_UNWIND_REGISTERS == 2);
+    PAS_ASSERT(FILC_CC_INLINE_SIZE == 256);
+    PAS_ASSERT(FILC_CC_ALIGNMENT == 64);
 
 #define INITIALIZE_LOCK(name) \
     pas_system_mutex_construct(&filc_## name ## _lock)
@@ -386,7 +366,7 @@ void filc_initialize(void)
 
     filc_object_array_construct(&filc_global_variable_roots);
 
-    filc_thread* thread = filc_thread_create();
+    filc_thread* thread = filc_thread_create_with_manual_tracking();
     thread->has_started = true;
     thread->has_stopped = false;
     thread->thread = pthread_self();
@@ -799,14 +779,7 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
     if (was_top_native_frame_unlocked)
         filc_lock_top_native_frame(my_thread);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "call_signal_handler", 0);
-
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    FILC_DEFINE_FRAME("call_signal_handler");
     filc_push_frame(my_thread, frame);
 
     filc_native_frame native_frame;
@@ -814,12 +787,12 @@ static void call_signal_handler(filc_thread* my_thread, filc_signal_handler* han
 
     /* Load the function from the handler first since as soon as we exit, the handler might get GC'd.
        Also, we're choosing not to rely on the fact that functions are global and we track them anyway. */
-    filc_ptr function_ptr = filc_ptr_load(my_thread, &handler->function_ptr);
+    filc_ptr function_ptr = filc_flight_ptr_load(my_thread, &handler->function_ptr);
 
     /* This check shouldn't be necessary; we do it out of an abundance of paranoia! */
     filc_check_function_call(function_ptr);
     filc_call_user_void_int(
-        my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(function_ptr), signum);
+        my_thread, (pizlonated_function)filc_ptr_ptr(function_ptr), signum);
 
     filc_pop_native_frame(my_thread, &native_frame);
     filc_pop_frame(my_thread, frame);
@@ -926,13 +899,13 @@ void filc_exit(filc_thread* my_thread)
     }
 }
 
-void filc_enter_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+void filc_enter_with_allocation_root(filc_thread* my_thread, void* allocation_root)
 {
     filc_enter(my_thread);
     filc_pop_allocation_root(my_thread, allocation_root);
 }
 
-void filc_exit_with_allocation_root(filc_thread* my_thread, filc_object* allocation_root)
+void filc_exit_with_allocation_root(filc_thread* my_thread, void* allocation_root)
 {
     filc_push_allocation_root(my_thread, allocation_root);
     filc_exit(my_thread);
@@ -1053,7 +1026,6 @@ static PAS_ALWAYS_INLINE void native_frame_add_impl(filc_native_frame* frame, ui
 {
     PAS_TESTING_ASSERT(
         (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR ||
-        (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR ||
         (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_BMALLOC_PTR);
 
     if (frame->size >= frame->capacity)
@@ -1070,17 +1042,6 @@ void filc_native_frame_add(filc_native_frame* frame, filc_object* object)
         return;
 
     native_frame_add_impl(frame, (uintptr_t)object | FILC_NATIVE_FRAME_TRACKED_PTR);
-}
-
-void filc_native_frame_pin(filc_native_frame* frame, filc_object* object)
-{
-    PAS_TESTING_ASSERT(!frame->locked);
-    
-    if (!object)
-        return;
-
-    filc_pin(object);
-    native_frame_add_impl(frame, (uintptr_t)object | FILC_NATIVE_FRAME_PINNED_PTR);
 }
 
 void filc_native_frame_defer_bmalloc_deallocate(filc_native_frame* frame, void* bmalloc_object)
@@ -1158,8 +1119,8 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     assert_participates_in_pollchecks(my_thread);
 
     size_t index;
-    for (index = my_thread->allocation_roots.num_objects; index--;) {
-        filc_object* allocation_root = my_thread->allocation_roots.objects[index];
+    for (index = my_thread->allocation_roots.size; index--;) {
+        void* allocation_root = my_thread->allocation_roots.array[index];
         /* Allocation roots have to have the mark bit set without being put on any mark stack, since
            they have no outgoing references and they are not ready for scanning. */
         verse_heap_set_is_marked_relaxed(allocation_root, true);
@@ -1175,10 +1136,11 @@ void filc_thread_mark_roots(filc_thread* my_thread)
             filc_origin_dump_all_inline(frame->origin, "; ", &pas_log_stream.base);
             pas_log("\n");
         }
-        for (index = function_origin->base.num_objects_ish; index--;) {
+        PAS_ASSERT(function_origin->base.num_lowers_ish < UINT_MAX);
+        for (index = function_origin->base.num_lowers_ish; index--;) {
             if (verbose)
-                pas_log("Marking thread root %p\n", frame->objects[index]);
-            fugc_mark(&my_thread->mark_stack, frame->objects[index]);
+                pas_log("Marking thread root %p\n", frame->lowers[index]);
+            fugc_mark(&my_thread->mark_stack, filc_object_for_lower(frame->lowers[index]));
         }
     }
 
@@ -1186,10 +1148,7 @@ void filc_thread_mark_roots(filc_thread* my_thread)
     for (native_frame = my_thread->top_native_frame; native_frame; native_frame = native_frame->parent) {
         for (index = native_frame->size; index--;) {
             uintptr_t encoded_ptr = native_frame->array[index];
-            /* In almost all cases where we pin, the object is already otherwise tracked. But we're
-               going to be paranoid anyway because that's how we roll. */
-            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR ||
-                (encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_PINNED_PTR) {
+            if ((encoded_ptr & FILC_NATIVE_FRAME_PTR_MASK) == FILC_NATIVE_FRAME_TRACKED_PTR) {
                 fugc_mark(
                     &my_thread->mark_stack,
                     (filc_object*)(encoded_ptr & ~FILC_NATIVE_FRAME_PTR_MASK));
@@ -1264,8 +1223,7 @@ static void signal_pizlonator(int signum)
 {
     static const bool verbose = false;
     
-    int user_signum = filc_to_user_signum(signum);
-    PAS_ASSERT((unsigned)user_signum <= FILC_MAX_USER_SIGNUM);
+    PAS_ASSERT((unsigned)signum <= FILC_MAX_USER_SIGNUM);
     filc_thread* thread = filc_get_my_thread();
 
     /* We're running on a thread that shouldn't be receiving signals or we're running in a thread
@@ -1278,8 +1236,7 @@ static void signal_pizlonator(int signum)
        - Newly created threads have signals blocked until they set the thread. */
     if (!thread) {
         pas_log("Received a user signal on non-user thread!\n");
-        pas_log("Native signum: %d\n", signum);
-        pas_log("User signum: %d\n", user_signum);
+        pas_log("Signum: %d\n", signum);
         dump_signals_mask();
     }
     PAS_ASSERT(thread);
@@ -1287,9 +1244,9 @@ static void signal_pizlonator(int signum)
     if ((thread->state & FILC_THREAD_STATE_ENTERED)) {
         /* For all we know the user asked for a mask that allows us to recurse, hence the lock-freedom. */
         for (;;) {
-            uint64_t old_value = thread->num_deferred_signals[user_signum];
+            uint64_t old_value = thread->num_deferred_signals[signum];
             if (pas_compare_and_swap_uint64_weak(
-                    thread->num_deferred_signals + user_signum, old_value, old_value + 1))
+                    thread->num_deferred_signals + signum, old_value, old_value + 1))
                 break;
         }
         for (;;) {
@@ -1313,7 +1270,7 @@ static void signal_pizlonator(int signum)
     if (verbose)
         pas_log("calling signal handler from pizlonator\n");
     
-    call_signal_handler(thread, signal_table[user_signum], user_signum);
+    call_signal_handler(thread, signal_table[signum], signum);
 
     filc_exit(thread);
 }
@@ -1362,19 +1319,71 @@ void filc_origin_dump_all_inline(const filc_origin* origin, const char* separato
     }
 }
 
+void filc_special_type_dump(filc_special_type type, pas_stream* stream)
+{
+    switch (type) {
+    case FILC_SPECIAL_TYPE_NONE:
+        pas_stream_printf(stream, "none");
+        return;
+    case FILC_SPECIAL_TYPE_THREAD:
+        pas_stream_printf(stream, "thread");
+        return;
+    case FILC_SPECIAL_TYPE_PTR_TABLE:
+        pas_stream_printf(stream, "ptr_table");
+        return;
+    case FILC_SPECIAL_TYPE_EXACT_PTR_TABLE:
+        pas_stream_printf(stream, "exact_ptr_table");
+        return;
+    case FILC_SPECIAL_TYPE_FUNCTION:
+        pas_stream_printf(stream, "function");
+        return;
+    case FILC_SPECIAL_TYPE_SIGNAL_HANDLER:
+        pas_stream_printf(stream, "signal_handler");
+        return;
+    case FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY:
+        pas_stream_printf(stream, "ptr_table_array");
+        return;
+    case FILC_SPECIAL_TYPE_DL_HANDLE:
+        pas_stream_printf(stream, "dl_handle");
+        return;
+    case FILC_SPECIAL_TYPE_JMP_BUF:
+        pas_stream_printf(stream, "jmp_buf");
+        return;
+    default:
+        pas_stream_printf(stream, "?%u", (unsigned)type);
+        return;
+    }
+}
+
+char* filc_special_type_to_new_string(filc_special_type type)
+{
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    filc_special_type_dump(type, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
 void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas_stream* stream)
 {
     if (flags & FILC_OBJECT_FLAG_FREE) {
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "free");
     }
-    if (flags & FILC_OBJECT_FLAG_SPECIAL) {
+    if (filc_object_flags_is_special(flags)) {
         pas_stream_print_comma(stream, comma, ",");
-        pas_stream_printf(stream, "special");
+        pas_stream_printf(stream, "special(");
+        filc_special_type_dump(filc_object_flags_special_type(flags), stream);
+        pas_stream_printf(stream, ")");
     }
     if (flags & FILC_OBJECT_FLAG_GLOBAL) {
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "global");
+    }
+    if (flags & FILC_OBJECT_FLAG_GLOBAL_AUX) {
+        pas_stream_print_comma(stream, comma, ",");
+        pas_stream_printf(stream, "global_aux");
     }
     if (flags & FILC_OBJECT_FLAG_MMAP) {
         pas_stream_print_comma(stream, comma, ",");
@@ -1384,9 +1393,9 @@ void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "readonly");
     }
-    if (flags >> FILC_OBJECT_FLAGS_PIN_SHIFT) {
+    if (filc_object_flags_is_aligned(flags)) {
         pas_stream_print_comma(stream, comma, ",");
-        pas_stream_printf(stream, "pinned(%u)", flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
+        pas_stream_printf(stream, "aligned(%zu)", filc_object_flags_alignment(flags));
     }
 }
 
@@ -1400,7 +1409,7 @@ void filc_object_flags_dump(filc_object_flags flags, pas_stream* stream)
     filc_object_flags_dump_with_comma(flags, &comma, stream);
 }
 
-void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream)
+void filc_object_dump(filc_object* object, pas_stream* stream)
 {
     static const bool verbose = false;
     
@@ -1408,75 +1417,42 @@ void filc_object_dump_for_ptr(filc_object* object, void* ptr, pas_stream* stream
         pas_stream_printf(stream, "<null>");
         return;
     }
-    pas_stream_printf(stream, "%p,%p", object->lower, object->upper);
-    bool comma = true;
-    filc_object_flags_dump_with_comma(object->flags, &comma, stream);
-    if (!filc_object_num_words(object)) {
-        pas_stream_printf(stream, ",empty");
-        return;
-    }
-    pas_stream_printf(stream, ",");
-    size_t start_index;
-    size_t end_index;
-    size_t highlighted_index;
-    bool has_highlighted_index;
-    size_t index;
-    size_t max_end_index;
-    has_highlighted_index = false;
-    max_end_index = filc_object_num_words(object) - 1;
-    if (ptr < object->lower)
-        highlighted_index = 0;
-    else if (ptr >= object->upper)
-        highlighted_index = max_end_index;
+    if (filc_object_is_special(object))
+        pas_stream_printf(stream, "aux=%p", filc_object_aux_ptr(object));
     else {
-        highlighted_index = filc_object_word_type_index_for_ptr(object, ptr);
-        has_highlighted_index = true;
+        pas_stream_printf(stream, "%p,%p", filc_object_lower(object), filc_object_upper(object));
+        if (filc_object_aux_ptr(object))
+            pas_stream_printf(stream, ",aux=%p", filc_object_aux_ptr(object));
     }
-    PAS_ASSERT(highlighted_index < filc_object_num_words(object));
-    PAS_ASSERT(highlighted_index <= max_end_index);
-    /* FIXME: We really want a total context length and then if the ptr is on one end, then we pring
-       more context on the other end. */
-    static const size_t context_radius = 20;
-    if (highlighted_index > context_radius)
-        start_index = highlighted_index - context_radius;
-    else
-        start_index = 0;
-    if (verbose) {
-        pas_log("max_end_index = %zu, highlighted_index = %zu, context_radius = %zu\n",
-                max_end_index, highlighted_index, context_radius);
-    }
-    if (max_end_index - highlighted_index > context_radius)
-        end_index = highlighted_index + 1 + context_radius;
-    else
-        end_index = max_end_index;
-    if (verbose) {
-        pas_log("start_index = %zu\n", start_index);
-        pas_log("end_index = %zu\n", end_index);
-    }
-    PAS_ASSERT(start_index < filc_object_num_words(object));
-    PAS_ASSERT(end_index < filc_object_num_words(object));
-    if (start_index)
-        pas_stream_printf(stream, "...");
-    for (index = start_index; index <= end_index; ++index) {
-        if (has_highlighted_index && index == highlighted_index)
-            pas_stream_printf(stream, "[");
-        filc_word_type_dump(filc_object_get_word_type(object, index), stream);
-        if (has_highlighted_index && index == highlighted_index)
-            pas_stream_printf(stream, "]");
-    }
-    if (end_index < max_end_index)
-        pas_stream_printf(stream, "...");
-}
-
-void filc_object_dump(filc_object* object, pas_stream* stream)
-{
-    filc_object_dump_for_ptr(object, NULL, stream);
+    bool comma = true;
+    filc_object_flags_dump_with_comma(filc_object_get_flags(object), &comma, stream);
 }
 
 void filc_ptr_dump(filc_ptr ptr, pas_stream* stream)
 {
     pas_stream_printf(stream, "%p,", filc_ptr_ptr(ptr));
-    filc_object_dump_for_ptr(filc_ptr_object(ptr), filc_ptr_ptr(ptr), stream);
+    filc_object_dump(filc_ptr_object(ptr), stream);
+}
+
+void filc_ptr_contents_dump(filc_ptr ptr, pas_stream* stream)
+{
+    filc_ptr_dump(ptr, stream);
+    pas_stream_printf(stream, ":[");
+    bool comma = false;
+    filc_ptr cursor;
+    for (cursor = filc_ptr_with_ptr(ptr, filc_ptr_lower(ptr));
+         filc_ptr_ptr(cursor) < filc_ptr_upper(cursor);
+         cursor = filc_ptr_with_offset(cursor, FILC_WORD_SIZE)) {
+        pas_stream_print_comma(stream, &comma, " ");
+        pas_stream_printf(stream, "+%zu:", (size_t)filc_ptr_offset(cursor));
+        filc_ptr value = filc_load_ptr_with_manual_tracking(cursor, 0);
+        if (filc_ptr_is_boxed_int(value)) {
+            pas_stream_printf(stream, "%p", filc_ptr_ptr(value));
+            continue;
+        }
+        filc_ptr_dump(value, stream);
+    }
+    pas_stream_printf(stream, "]");
 }
 
 static char* ptr_to_new_string_impl(filc_ptr ptr, pas_allocation_config* allocation_config)
@@ -1504,62 +1480,114 @@ char* filc_ptr_to_new_string(filc_ptr ptr)
     return ptr_to_new_string_impl(ptr, &allocation_config);
 }
 
-void filc_cc_type_dump_for_cursor(const filc_cc_type* type, size_t word_type_index, pas_stream* stream)
+char* filc_ptr_contents_to_new_string(filc_ptr ptr)
 {
-    if (!type) {
-        /* This shouldn't happen, but we have a story for dumping it anyway to make debugging easier. */
-        pas_stream_printf(stream, "<null>");
-        return;
-    }
-    if (!type->num_words) {
-        pas_stream_printf(stream, "empty");
-        return;
-    }
-    size_t index;
-    for (index = 0; index < type->num_words; ++index) {
-        if (word_type_index == index)
-            pas_stream_printf(stream, "[");
-        filc_word_type_dump(type->word_types[index], stream);
-        if (word_type_index == index)
-            pas_stream_printf(stream, "]");
+    pas_allocation_config allocation_config;
+    bmalloc_initialize_allocation_config(&allocation_config);
+    pas_string_stream stream;
+    pas_string_stream_construct(&stream, &allocation_config);
+    filc_ptr_contents_dump(ptr, &stream.base);
+    return pas_string_stream_take_string(&stream);
+}
+
+void filc_store_ptr_atomic_with_ptr_pair_outline(filc_thread* my_thread,
+                                                 void** ptr_ptr,
+                                                 filc_lower_or_box* lower_or_box_ptr,
+                                                 filc_ptr value)
+{
+    return filc_store_ptr_atomic_with_ptr_pair(my_thread, ptr_ptr, lower_or_box_ptr, value);
+}
+
+bool filc_weak_cas_ptr(filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset,
+                       filc_ptr expected, filc_ptr new_value)
+{
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_write_access);
+    filc_lower_or_box* lower_or_box_ptr = filc_ptr_ensure_lower_or_box_ptr(my_thread, ptr);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    for (;;) {
+        filc_lower_or_box lower_or_box = filc_lower_or_box_load(lower_or_box_ptr);
+        bool did_succeed;
+        if (filc_lower_or_box_is_box(lower_or_box)) {
+            did_succeed = filc_atomic_box_cas_weak_without_barrier(
+                filc_lower_or_box_get_box(lower_or_box), expected, new_value);
+        } else if (*(void**)filc_ptr_ptr(ptr) != filc_ptr_ptr(expected))
+            return false;
+        else {
+            if (!filc_lower_or_box_cas_weak_unbarriered(
+                    lower_or_box_ptr, lower_or_box,
+                    filc_lower_or_box_create_box(
+                        filc_atomic_box_create_for_ptr_store(my_thread, new_value))))
+                continue;
+            did_succeed = true;
+        }
+        if (did_succeed)
+            *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+        return did_succeed;
     }
 }
 
-void filc_cc_type_dump(const filc_cc_type* type, pas_stream* stream)
+filc_ptr filc_strong_cas_ptr_with_manual_tracking(
+    filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset, filc_ptr expected, filc_ptr new_value)
 {
-    filc_cc_type_dump_for_cursor(type, SIZE_MAX, stream);
+    ptr = filc_ptr_with_offset(ptr, offset);
+    filc_check_native_access(ptr, sizeof(void*), filc_write_access);
+    filc_lower_or_box* lower_or_box_ptr = filc_ptr_ensure_lower_or_box_ptr(my_thread, ptr);
+    filc_store_barrier(my_thread, filc_ptr_object(new_value));
+    for (;;) {
+        filc_lower_or_box lower_or_box = filc_lower_or_box_load(lower_or_box_ptr);
+        filc_ptr old_value;
+        if (filc_lower_or_box_is_box(lower_or_box)) {
+            old_value = filc_atomic_box_cas_strong_without_barrier(
+                filc_lower_or_box_get_box(lower_or_box), expected, new_value);
+        } else {
+            void* old_ptr = *(void**)filc_ptr_ptr(ptr);
+            if (old_ptr != filc_ptr_ptr(expected)) {
+                old_value = filc_ptr_create_with_lower_and_ptr_and_manual_tracking(
+                    filc_lower_or_box_get_lower(lower_or_box), old_ptr);
+            } else {
+                if (!filc_lower_or_box_cas_weak_unbarriered(
+                        lower_or_box_ptr, lower_or_box,
+                        filc_lower_or_box_create_box(
+                            filc_atomic_box_create_for_ptr_store(my_thread, new_value))))
+                    continue;
+                old_value = filc_ptr_create_with_lower_and_ptr_and_manual_tracking(
+                    filc_lower_or_box_get_lower(lower_or_box), filc_ptr_ptr(expected));
+            }
+        }
+        if (filc_ptr_ptr(old_value) == filc_ptr_ptr(expected))
+            *(void**)filc_ptr_ptr(ptr) = filc_ptr_ptr(new_value);
+        return old_value;
+    }
 }
 
-void filc_cc_ptr_dump(filc_cc_ptr cc_ptr, pas_stream* stream)
+filc_ptr filc_xchg_ptr_with_manual_tracking(
+    filc_thread* my_thread, filc_ptr ptr, ptrdiff_t offset, filc_ptr new_value)
 {
-    pas_stream_printf(stream, "%p,", cc_ptr.base);
-    filc_cc_type_dump(cc_ptr.type, stream);
+    for (;;) {
+        filc_ptr result = filc_load_ptr_with_manual_tracking(ptr, offset);
+        if (filc_weak_cas_ptr(my_thread, ptr, offset, result, new_value))
+            return result;
+    }
+}
+
+void filc_thread_ensure_cc_outline_buffer_slow(filc_thread* my_thread, size_t size)
+{
+    PAS_ASSERT(size > my_thread->cc_outline_size);
+    PAS_ASSERT(pas_is_aligned(size, FILC_WORD_SIZE));
+    size = pas_round_up_to_power_of_2(size, FILC_CC_ALIGNMENT);
+    bmalloc_deallocate(my_thread->cc_outline_buffer);
+    bmalloc_deallocate(my_thread->cc_outline_aux_buffer);
+    my_thread->cc_outline_buffer = bmalloc_allocate_with_alignment(size, FILC_CC_ALIGNMENT);
+    my_thread->cc_outline_aux_buffer = bmalloc_allocate_with_alignment(size, FILC_CC_ALIGNMENT);
+    pas_zero_memory(my_thread->cc_outline_buffer, size);
+    pas_zero_memory(my_thread->cc_outline_aux_buffer, size);
+    my_thread->cc_outline_size = size;
 }
 
 void filc_cc_cursor_dump(filc_cc_cursor cursor, pas_stream* stream)
 {
-    pas_stream_printf(stream, "%p,%p,", cursor.cursor, cursor.cc_ptr.base);
-    filc_cc_type_dump_for_cursor(cursor.cc_ptr.type, filc_cc_cursor_word_type_index(cursor), stream);
-}
-
-char* filc_cc_type_to_new_string(const filc_cc_type* type)
-{
-    pas_allocation_config allocation_config;
-    bmalloc_initialize_allocation_config(&allocation_config);
-    pas_string_stream stream;
-    pas_string_stream_construct(&stream, &allocation_config);
-    filc_cc_type_dump(type, &stream.base);
-    return pas_string_stream_take_string(&stream);
-}
-
-char* filc_cc_ptr_to_new_string(filc_cc_ptr cc_ptr)
-{
-    pas_allocation_config allocation_config;
-    bmalloc_initialize_allocation_config(&allocation_config);
-    pas_string_stream stream;
-    pas_string_stream_construct(&stream, &allocation_config);
-    filc_cc_ptr_dump(cc_ptr, &stream.base);
-    return pas_string_stream_take_string(&stream);
+    pas_stream_printf(stream, "%zu,%zu", cursor.offset, cursor.size);
 }
 
 char* filc_cc_cursor_to_new_string(filc_cc_cursor cursor)
@@ -1572,61 +1600,6 @@ char* filc_cc_cursor_to_new_string(filc_cc_cursor cursor)
     return pas_string_stream_take_string(&stream);
 }
 
-void filc_word_type_dump(filc_word_type type, pas_stream* stream)
-{
-    switch (type) {
-    case FILC_WORD_TYPE_UNSET:
-        pas_stream_printf(stream, "_");
-        return;
-    case FILC_WORD_TYPE_INT:
-        pas_stream_printf(stream, "i");
-        return;
-    case FILC_WORD_TYPE_PTR:
-        pas_stream_printf(stream, "P");
-        return;
-    case FILC_WORD_TYPE_FREE:
-        pas_stream_printf(stream, "/");
-        return;
-    case FILC_WORD_TYPE_FUNCTION:
-        pas_stream_printf(stream, "function");
-        return;
-    case FILC_WORD_TYPE_THREAD:
-        pas_stream_printf(stream, "thread");
-        return;
-    case FILC_WORD_TYPE_SIGNAL_HANDLER:
-        pas_stream_printf(stream, "signal_handler");
-        return;
-    case FILC_WORD_TYPE_PTR_TABLE:
-        pas_stream_printf(stream, "ptr_table");
-        return;
-    case FILC_WORD_TYPE_PTR_TABLE_ARRAY:
-        pas_stream_printf(stream, "ptr_table_array");
-        return;
-    case FILC_WORD_TYPE_DL_HANDLE:
-        pas_stream_printf(stream, "dl_handle");
-        return;
-    case FILC_WORD_TYPE_JMP_BUF:
-        pas_stream_printf(stream, "jmp_buf");
-        return;
-    case FILC_WORD_TYPE_EXACT_PTR_TABLE:
-        pas_stream_printf(stream, "exact_ptr_table");
-        return;
-    default:
-        pas_stream_printf(stream, "?%u", type);
-        return;
-    }
-}
-
-char* filc_word_type_to_new_string(filc_word_type type)
-{
-    pas_string_stream stream;
-    pas_allocation_config allocation_config;
-    bmalloc_initialize_allocation_config(&allocation_config);
-    pas_string_stream_construct(&stream, &allocation_config);
-    filc_word_type_dump(type, &stream.base);
-    return pas_string_stream_take_string(&stream);
-}
-
 PAS_NEVER_INLINE void filc_store_barrier_slow(filc_thread* my_thread, filc_object* object)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
@@ -1634,9 +1607,51 @@ PAS_NEVER_INLINE void filc_store_barrier_slow(filc_thread* my_thread, filc_objec
     fugc_mark(&my_thread->mark_stack, object);
 }
 
-void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
+PAS_NEVER_INLINE void filc_store_barrier_for_lower_slow(filc_thread* my_thread, void* lower)
 {
-    filc_store_barrier(my_thread, target);
+    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
+    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    fugc_mark(&my_thread->mark_stack, filc_object_for_lower_not_null(lower));
+}
+
+PAS_NO_RETURN PAS_NEVER_INLINE void filc_check_native_access_fail(filc_ptr ptr,
+                                                                  size_t size_and_alignment,
+                                                                  filc_access_kind kind)
+{
+    PAS_ASSERT(pas_is_power_of_2(size_and_alignment));
+    PAS_ASSERT(size_and_alignment <= FILC_WORD_SIZE);
+    FILC_CHECK(
+        filc_ptr_lower(ptr),
+        NULL,
+        "cannot %s pointer with null object (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+    FILC_CHECK(
+        pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), size_and_alignment),
+        NULL,
+        "alignment requirement of %zu bytes not met; in this case ptr %% %zu = %zu (ptr = %s).",
+        size_and_alignment, size_and_alignment, (size_t)filc_ptr_ptr(ptr) % size_and_alignment,
+        filc_ptr_to_new_string(ptr));
+    if (kind == filc_write_access) {
+        FILC_CHECK(
+            !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_READONLY),
+            NULL,
+            "cannot write to read-only object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
+    }
+    /* At this point we know that we have to be out of bounds. */
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
+        NULL,
+        "cannot %s pointer with ptr < lower (ptr = %s).", 
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
+        NULL,
+        "cannot %s pointer with ptr >= upper (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+
+    PAS_UNREACHABLE();
 }
 
 /* Just checks bounds, but assumes that you do a type check or at least an accessibility (not free
@@ -1651,109 +1666,67 @@ void filc_store_barrier_outline(filc_thread* my_thread, filc_object* target)
     } while (false)
 
 #define CHECK_ACCESSIBLE_FAST(object, fail) do { \
-        if (((object)->flags & (FILC_OBJECT_FLAG_FREE | \
-                                FILC_OBJECT_FLAG_SPECIAL))) \
+        if ((filc_object_get_flags(object) & (FILC_OBJECT_FLAG_FREE | \
+                                              FILC_OBJECT_FLAGS_SPECIAL_MASK))) \
             fail; \
     } while (false)
 
 /* Also checks that the object isn't free or special, just because it's cheap to do such a check. */
 #define CHECK_WRITE_FAST(object, fail) do { \
-        if (((object)->flags & (FILC_OBJECT_FLAG_READONLY | \
-                                FILC_OBJECT_FLAG_FREE | \
-                                FILC_OBJECT_FLAG_SPECIAL))) \
+        if ((filc_object_get_flags(object) & (FILC_OBJECT_FLAG_READONLY | \
+                                              FILC_OBJECT_FLAG_FREE | \
+                                              FILC_OBJECT_FLAGS_SPECIAL_MASK))) \
             fail; \
     } while (false)
 
-/* Weirdly enough, this is currently called in cases where we expect this to check at minimum that
-   the object is non-NULL even if `bytes` is 0. We could fix that, but might be more trouble than
-   it's worth. */
-void filc_check_access_common(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
-                              const filc_origin* origin)
+void filc_check_access_special(filc_ptr ptr, filc_special_type special_type)
 {
-    static const bool extreme_assert = false;
-    
-    if (extreme_assert)
-        filc_validate_ptr(ptr, origin);
-
-    FILC_CHECK(
-        filc_ptr_object(ptr),
-        origin,
-        "cannot %s pointer with null object (ptr = %s).",
-        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
-    
-    FILC_CHECK(
-        filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
-        origin,
-        "cannot %s pointer with ptr < lower (ptr = %s).", 
-        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
-        origin,
-        "cannot %s pointer with ptr >= upper (ptr = %s).",
-        filc_access_kind_get_string(access_kind), filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        bytes <= (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
-        origin,
-        "cannot %s %zu bytes when upper - ptr = %zu (ptr = %s).",
-        filc_access_kind_get_string(access_kind), bytes,
-        (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
-        filc_ptr_to_new_string(ptr));
-
-    if (access_kind == filc_write_access) {
-        FILC_CHECK(
-            !(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY),
-            origin,
-            "cannot write to read-only object (ptr = %s).",
-            filc_ptr_to_new_string(ptr));
-    }
-}
-
-void filc_check_access_special(filc_ptr ptr, filc_word_type word_type, const filc_origin* origin)
-{
-    PAS_ASSERT(filc_word_type_is_special(word_type));
+    PAS_TESTING_ASSERT(filc_special_type_is_valid(special_type));
     
     if (PAS_ENABLE_TESTING)
-        filc_validate_ptr(ptr, origin);
+        filc_validate_ptr(ptr, NULL);
+
+    /* FIXME: Optimize this so the fact path is inline and doesn't have the FILC_CHECK logic. */
 
     FILC_CHECK(
         filc_ptr_object(ptr),
-        origin,
+        NULL,
         "cannot access pointer with null object (ptr = %s).",
         filc_ptr_to_new_string(ptr));
+
+    /* This check is only to make the error reporting better, it's totally subsumed by the next
+       check. */
+    FILC_CHECK(
+        filc_object_is_special(filc_ptr_object(ptr)),
+        NULL,
+        "cannot access pointer as %s, object isn't even special (pts = %s).",
+        filc_special_type_to_new_string(special_type), filc_ptr_to_new_string(ptr));
     
     FILC_CHECK(
-        filc_ptr_ptr(ptr) == filc_ptr_lower(ptr),
-        origin,
-        "cannot access pointer as %s with ptr != lower (ptr = %s).", 
-        filc_word_type_to_new_string(word_type), filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL,
-        origin,
-        "cannot access pointer as %s, object isn't even special (ptr = %s).",
-        filc_word_type_to_new_string(word_type), filc_ptr_to_new_string(ptr));
-
-    FILC_CHECK(
-        filc_ptr_object(ptr)->word_types[0] == word_type,
-        origin,
+        filc_object_special_type(filc_ptr_object(ptr)) == special_type,
+        NULL,
         "cannot access pointer as %s, object has wrong special type (ptr = %s).",
-        filc_word_type_to_new_string(word_type), filc_ptr_to_new_string(ptr));
+        filc_special_type_to_new_string(special_type), filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) == filc_ptr_aux_ptr(ptr),
+        NULL,
+        "cannot access pointer as %s with ptr != aux (ptr = %s).", 
+        filc_special_type_to_new_string(special_type), filc_ptr_to_new_string(ptr));
 }
 
-PAS_NO_RETURN void filc_cc_args_check_failure(
-    filc_cc_ptr args, const filc_cc_type* expected_type, const filc_origin* origin)
+PAS_NO_RETURN void filc_cc_args_check_failure(size_t actual_size, size_t expected_size,
+                                              const filc_origin* origin)
 {
-    filc_safety_panic(origin, "argument type mismatch (args = %s, expected type = %s).",
-                      filc_cc_ptr_to_new_string(args), filc_cc_type_to_new_string(expected_type));
+    filc_safety_panic(origin, "argument size mismatch (actual = %zu, expected = %zu).",
+                      actual_size, expected_size);
 }
 
-PAS_NO_RETURN void filc_cc_rets_check_failure(
-    filc_cc_ptr rets, const filc_cc_type* expected_type, const filc_origin* origin)
+PAS_NO_RETURN void filc_cc_rets_check_failure(size_t actual_size, size_t expected_size,
+                                              const filc_origin* origin)
 {
-    filc_safety_panic(origin, "return type mismatch (rets = %s, expected type = %s).",
-                      filc_cc_ptr_to_new_string(rets), filc_cc_type_to_new_string(expected_type));
+    filc_safety_panic(origin, "return size mismatch (actual = %zu, expected = %zu).",
+                      actual_size, expected_size);
 }
 
 PAS_API PAS_NO_RETURN void filc_stack_overflow_failure_impl(void)
@@ -1761,88 +1734,240 @@ PAS_API PAS_NO_RETURN void filc_stack_overflow_failure_impl(void)
     filc_safety_panic(NULL, "stack overflow.");
 }
 
-static void check_not_free(filc_ptr ptr, const filc_origin* origin)
+static void check_not_free(filc_ptr ptr)
 {
     FILC_CHECK(
-        !(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE),
-        origin,
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE),
+        NULL,
         "cannot access pointer to free object (ptr = %s).",
         filc_ptr_to_new_string(ptr));
 }
 
-static void check_object_accessible(filc_object* object, const filc_origin* origin)
+static void check_object_accessible(filc_object* object)
 {
     FILC_CHECK(
-        !(object->flags & (FILC_OBJECT_FLAG_FREE | FILC_OBJECT_FLAG_SPECIAL)),
-        origin,
+        !(filc_object_get_flags(object) & (FILC_OBJECT_FLAG_FREE | FILC_OBJECT_FLAGS_SPECIAL_MASK)),
+        NULL,
         "cannot access pointer to free or special object (object = %s).",
         filc_object_to_new_string(object));
 }
 
-static void check_accessible(filc_ptr ptr, const filc_origin* origin)
+static void check_accessible(filc_ptr ptr)
 {
     FILC_CHECK(
-        !(filc_ptr_object(ptr)->flags & (FILC_OBJECT_FLAG_FREE | FILC_OBJECT_FLAG_SPECIAL)),
-        origin,
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & (FILC_OBJECT_FLAG_FREE |
+                                                         FILC_OBJECT_FLAGS_SPECIAL_MASK)),
+        NULL,
         "cannot access pointer to free or special object (ptr = %s).",
         filc_ptr_to_new_string(ptr));
 }
 
-filc_ptr filc_get_next_bytes_for_va_arg(
-    filc_thread* my_thread, filc_ptr ptr_ptr, size_t size, size_t alignment, const filc_origin* origin)
+static PAS_ALWAYS_INLINE filc_ptr get_next_bytes_for_va_arg_impl(
+    filc_ptr ptr_ptr, size_t size, size_t alignment)
 {
     filc_ptr ptr_value;
     uintptr_t ptr_as_int;
-    filc_ptr result;
 
-    filc_check_write_ptr(ptr_ptr, origin);
-    filc_ptr* ptr = (filc_ptr*)filc_ptr_ptr(ptr_ptr);
-
-    ptr_value = filc_ptr_load_with_manual_tracking(ptr);
+    /* In a perfect world, we'd track this pointer because logically we're doing a ptr store later on,
+       and the ptr store may exit.
+       
+       But we expect this code to be a fast path, so we skip tracking and do something a bit shady.
+       
+       We load without tracking, and then avoid exiting by storing just the raw ptr back rather than
+       storing the whole pointer. This totally avoids the exit. It's correct because if va_list is
+       being used correctly then the capability will still be the same. At worst, if the user stores a
+       different capability, then this will result in the user getting a trap.
+       
+       Some alternatives that I could have done:
+       
+       - I could push a native frame and do the tracking. Maybe it's not even a slowdown to do that.
+       
+       - I could have a special place in filc_thread to stash capabilities that are need to be tracked
+         cheaply.
+       
+       - I could have filc_store_ptr track the value part of the pointer on the slow path that
+         allocates the aux. This would probably be even more shady, in practive, than what I'm
+         doing. */
+    ptr_value = filc_load_ptr_with_manual_tracking(ptr_ptr, 0);
     ptr_as_int = (uintptr_t)filc_ptr_ptr(ptr_value);
     ptr_as_int = pas_round_up_to_power_of_2(ptr_as_int, alignment);
 
-    result = filc_ptr_with_ptr(ptr_value, (void*)ptr_as_int);
+    filc_ptr result = filc_ptr_with_ptr(ptr_value, (void*)ptr_as_int);
+    filc_check_read(result, size); /* Doesn't have to be a check_aligned_read because we already
+                                      forced alignment. */
 
-    filc_ptr_store(my_thread, ptr, filc_ptr_with_ptr(ptr_value, (char*)ptr_as_int + size));
+    filc_check_native_access(ptr_ptr, sizeof(void*), filc_write_access);
+    *(void**)filc_ptr_ptr(ptr_ptr) = (char*)ptr_as_int + size;
 
     return result;
 }
 
-filc_object* filc_allocate_special_early(size_t size, filc_word_type word_type)
+void* filc_get_next_bytes_for_va_arg(filc_ptr ptr_ptr, size_t size, size_t alignment)
+{
+    return filc_ptr_ptr(get_next_bytes_for_va_arg_impl(ptr_ptr, size, alignment));
+}
+
+filc_ptr_pair filc_get_next_ptr_bytes_for_va_arg(filc_ptr ptr_ptr, size_t size, size_t alignment)
+{
+    filc_ptr result_ptr = get_next_bytes_for_va_arg_impl(ptr_ptr, size, alignment);
+
+    filc_ptr_pair result;
+    result.raw_ptr = filc_ptr_ptr(result_ptr);
+
+    char* aux_ptr = filc_ptr_aux_ptr(result_ptr);
+    if (!aux_ptr)
+        result.lower_or_box_ptr = NULL;
+    else
+        result.lower_or_box_ptr = (filc_lower_or_box*)(aux_ptr + filc_ptr_offset(result_ptr));
+    
+    return result;
+}
+
+char* filc_object_ensure_aux_ptr_slow(filc_thread* my_thread, filc_object* object)
+{
+    static const bool verbose = false;
+    static const bool not_atomic_hack = false;
+    if (verbose) {
+        pas_log("ensuring aux for ");
+        filc_object_dump(object, &pas_log_stream.base);
+        pas_log("\n");
+    }
+    PAS_TESTING_ASSERT(object);
+    PAS_TESTING_ASSERT(object != &filc_free_singleton);
+    size_t size = filc_object_size_not_null(object);
+    /* When freeing an object, there's a window of time when we might see the size being zero, but
+       the free bit isn't set yet. There's no universe where we'd want to ensure aux for an object
+       whose size was legitimately zero. Therefore, we do this check to guard against the race where
+       we would succeed at CASing the aux into the object but allocate a zero-sized aux, resulting in
+       access failures on this newly created aux (since in that case the rest of the access would have
+       presumably already checked that it's in bounds of whatever the size was before it was
+       freed). */
+    FILC_CHECK(
+        size,
+        NULL,
+        "attempt to create aux for object with zero size %s.\n",
+        filc_object_to_new_string(object));
+    char* aux_ptr = filc_thread_allocate(my_thread, size);
+    if (verbose)
+        pas_log("allocated aux at %p with size %zu, ending at %p\n", aux_ptr, size, aux_ptr + size);
+    if (PAS_LIKELY(size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS))
+        filc_memset_small_word(aux_ptr, 0, size);
+    else {
+        /* It's wild that we have to do this, but it's really necessary, and it means that anytime
+           we do a store, it's a safepoint.
+        
+           Fortunately, any object referenced from roots is guaranteed to be kept alive along with its
+           aux. even if this exit happens, anything the compiler had been able to prove about objects
+           referenced from locals will continue to be true.
+           
+           The only thing that the compiler can't reason about at all are barriers, but that was
+           already true due to the fantastic properties of Phil's concurrent marking (even if you just
+           allocated an object you still need a barrier). */
+        filc_exit_with_allocation_root(my_thread, aux_ptr);
+        memset(aux_ptr, 0, size);
+        filc_enter_with_allocation_root(my_thread, aux_ptr);
+    }
+    if (PAS_UNLIKELY(filc_is_marking))
+        verse_heap_set_is_marked_relaxed(aux_ptr, true);
+    for (;;) {
+        uintptr_t aux = object->aux;
+        PAS_ASSERT(!(filc_aux_get_flags(aux) & FILC_OBJECT_FLAGS_SPECIAL_MASK));
+        if (filc_aux_get_ptr(aux)) {
+            if (verbose) {
+                pas_log("object already has aux at %p: ", (void*)aux);
+                filc_object_dump(object, &pas_log_stream.base);
+                pas_log("\n");
+            }
+            return filc_aux_get_ptr(aux);
+        }
+        FILC_CHECK(
+            !(filc_aux_get_flags(aux) & FILC_OBJECT_FLAG_FREE),
+            NULL,
+            "attempt to create aux for free object %s.\n",
+            filc_object_to_new_string(object));
+        if (not_atomic_hack) {
+            object->aux = filc_aux_create(filc_aux_get_flags(aux), aux_ptr);
+            return aux_ptr;
+        }
+        if (pas_compare_and_swap_uintptr_weak(
+                &object->aux, aux, filc_aux_create(filc_aux_get_flags(aux), aux_ptr))) {
+            if (verbose) {
+                pas_log("created aux at %p: ", aux_ptr);
+                filc_object_dump(object, &pas_log_stream.base);
+                pas_log("\n");
+            }
+            return aux_ptr;
+        }
+    }
+}
+
+char* filc_object_ensure_aux_ptr_outline(filc_thread* my_thread, filc_object* object)
+{
+    return filc_object_ensure_aux_ptr(my_thread, object);
+}
+
+filc_atomic_box* filc_atomic_box_create_for_ptr_store(filc_thread* my_thread, filc_ptr value)
+{
+    filc_atomic_box* result = filc_thread_allocate(my_thread, sizeof(filc_atomic_box));
+    /* We know that the ptr value is already barriered. */
+    result->ptr = value;
+    if (PAS_UNLIKELY(filc_is_marking))
+        verse_heap_set_is_marked_relaxed(result, true);
+    pas_store_store_fence();
+    return result;
+}
+
+filc_object* filc_allocate_special_early(size_t size, size_t alignment,
+                                         filc_special_type special_type)
 {
     /* NOTE: This cannot assert anything about the Fil-C thread because we do use this before any
        threads have been created. */
 
     /* NOTE: This must not exit, because we might hold rando locks while calling into this. */
 
-    PAS_ASSERT(filc_word_type_is_special(word_type));
+    PAS_ASSERT(filc_special_type_is_valid(special_type));
 
     pas_heap* heap;
-    if (filc_special_word_type_has_destructor(word_type))
+    if (filc_special_type_has_destructor(special_type))
         heap = filc_destructor_heap;
     else
         heap = filc_default_heap;
 
     size_t total_size;
-    PAS_ASSERT(!pas_add_uintptr_overflow(FILC_SPECIAL_OBJECT_SIZE, size, &total_size));
+    size_t base_size;
+    PAS_ASSERT(FILC_MINALIGN == sizeof(filc_object));
+    if (alignment > FILC_MINALIGN)
+        base_size = alignment;
+    else
+        base_size = sizeof(filc_object);
+    PAS_ASSERT(!pas_add_uintptr_overflow(base_size, size, &total_size));
 
-    filc_object* result = (filc_object*)verse_heap_allocate(heap, total_size);
-    result->lower = (char*)result + FILC_SPECIAL_OBJECT_SIZE;
-    result->upper = (char*)result + FILC_SPECIAL_OBJECT_SIZE + FILC_WORD_SIZE;
-    result->flags = FILC_OBJECT_FLAG_SPECIAL;
-    result->word_types[0] = word_type;
-    pas_zero_memory(result->lower, size);
+    void* allocation = verse_heap_allocate_with_alignment(heap, total_size, alignment);
+    filc_log_align log_align;
+    filc_object* result;
+    if (alignment > FILC_MINALIGN) {
+        filc_alignment_header_construct((filc_alignment_header*)allocation, alignment);
+        result = (filc_object*)((char*)allocation + alignment) - 1;
+        log_align = pas_log2(alignment);
+    } else {
+        result = (filc_object*)allocation;
+        log_align = 0;
+    }
+    filc_object_flags object_flags = filc_object_flags_create(0, special_type, log_align);
+    result->upper = filc_object_lower_not_null(result);
+    result->aux = filc_aux_create(object_flags, filc_object_lower(result));
+    pas_zero_memory(filc_object_lower(result), size);
     pas_store_store_fence();
 
     return result;
 }
 
-filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, filc_word_type word_type)
+filc_object* filc_allocate_special(filc_thread* my_thread, size_t size, size_t alignment,
+                                   filc_special_type special_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    return filc_allocate_special_early(size, word_type);
+    return filc_allocate_special_early(size, alignment, special_type);
 }
 
 static PAS_NEVER_INLINE PAS_NO_RETURN void size_too_big(size_t size)
@@ -1850,193 +1975,110 @@ static PAS_NEVER_INLINE PAS_NO_RETURN void size_too_big(size_t size)
     filc_safety_panic(NULL, "attempt to allocate object that is too big (size = %zu).", size);
 }
 
-static PAS_ALWAYS_INLINE void prepare_allocate_object(
-    size_t* size, size_t* num_words, size_t* base_object_size)
+static PAS_ALWAYS_INLINE void prepare_allocate_object(size_t* size)
 {
     if (PAS_UNLIKELY(*size > FILC_MAX_ALLOCATION_SIZE))
         size_too_big(*size);
     size_t original_size = *size;
-    *size = pas_round_up_to_power_of_2(*size, FILC_WORD_SIZE);
+    *size = pas_round_up_to_power_of_2(*size, FILC_MINALIGN);
     PAS_TESTING_ASSERT(*size >= original_size);
-    *num_words = filc_object_num_words_for_size(*size);
-    if (PAS_ENABLE_TESTING) {
-        PAS_ASSERT(!pas_add_uintptr_overflow(
-                       PAS_OFFSETOF(filc_object, word_types), *num_words, base_object_size));
-    } else
-        *base_object_size = PAS_OFFSETOF(filc_object, word_types) + *num_words;
-}
-
-static PAS_ALWAYS_INLINE void initialize_object_with_existing_data(
-    filc_object* result, void* data, size_t size,
-    size_t num_words, filc_object_flags object_flags,
-    filc_word_type initial_word_type)
-{
-    result->lower = data;
-    result->upper = (char*)data + size;
-    result->flags = object_flags;
-
-    size_t index;
-    for (index = num_words; index--;)
-        result->word_types[index] = initial_word_type;
-}
-
-filc_object* filc_allocate_with_existing_data(
-    filc_thread* my_thread, void* data, size_t size, filc_object_flags object_flags,
-    filc_word_type initial_word_type)
-{
-    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_FREE));
-    PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_SPECIAL));
-    PAS_ASSERT(!(object_flags & FILC_OBJECT_FLAG_GLOBAL));
-    PAS_ASSERT(data >= FILC_MIN_BOUND);
-
-    size_t num_words;
-    size_t base_object_size;
-    prepare_allocate_object(&size, &num_words, &base_object_size);
-    filc_object* result = (filc_object*)filc_thread_allocate(my_thread, base_object_size);
-    if (size <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
-        initialize_object_with_existing_data(
-            result, data, size, num_words, object_flags, initial_word_type);
-    } else {
-        filc_exit_with_allocation_root(my_thread, result);
-        initialize_object_with_existing_data(
-            result, data, size, num_words, object_flags, initial_word_type);
-        filc_enter_with_allocation_root(my_thread, result);
-    }
-    return result;
 }
 
 filc_object* filc_allocate_special_with_existing_payload(
-    filc_thread* my_thread, void* payload, filc_word_type word_type)
+    filc_thread* my_thread, void* payload, filc_special_type special_type)
 {
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    PAS_ASSERT(word_type == FILC_WORD_TYPE_FUNCTION ||
-               word_type == FILC_WORD_TYPE_DL_HANDLE);
-    PAS_ASSERT(payload >= FILC_MIN_BOUND);
+    PAS_ASSERT(special_type == FILC_SPECIAL_TYPE_FUNCTION ||
+               special_type == FILC_SPECIAL_TYPE_DL_HANDLE);
 
-    filc_object* result = (filc_object*)filc_thread_allocate(my_thread, FILC_SPECIAL_OBJECT_SIZE);
-    result->lower = payload;
-    result->upper = (char*)payload + FILC_WORD_SIZE;
-    result->flags = FILC_OBJECT_FLAG_SPECIAL;
-    result->word_types[0] = word_type;
+    filc_object* result = (filc_object*)filc_thread_allocate(my_thread, sizeof(filc_object));
+    result->upper = filc_object_lower_not_null(result);
+    result->aux = filc_aux_create(
+        filc_object_flags_create(0, special_type, 0),
+        payload);
     pas_store_store_fence();
     return result;
 }
 
 static PAS_ALWAYS_INLINE void prepare_allocate(
-    size_t* size, size_t alignment,
-    size_t* num_words, size_t* offset_to_payload, size_t* total_size)
+    size_t* size, size_t alignment, size_t* offset_to_payload, size_t* total_size)
 {
-    size_t base_object_size;
-    prepare_allocate_object(size, num_words, &base_object_size);
-    *offset_to_payload = pas_round_up_to_power_of_2(base_object_size, alignment);
-    PAS_TESTING_ASSERT(*offset_to_payload >= base_object_size);
-    if (PAS_ENABLE_TESTING)
-        PAS_ASSERT(!pas_add_uintptr_overflow(*offset_to_payload, *size, total_size));
-    else
-        *total_size = *offset_to_payload + *size;
+    PAS_ASSERT(sizeof(filc_object) == FILC_MINALIGN);
+    prepare_allocate_object(size);
+    *offset_to_payload = pas_max_uintptr(alignment, sizeof(filc_object));
+    *total_size = *size + *offset_to_payload;
+    PAS_TESTING_ASSERT(*total_size > *size);
 }
 
-static PAS_ALWAYS_INLINE void initialize_object_bounds(
-    filc_object* result, size_t size, size_t offset_to_payload)
+static PAS_ALWAYS_INLINE filc_object* initialize_object_header(
+    void* allocation, size_t size, size_t alignment, size_t offset_to_payload,
+    filc_object_flags object_flags, char* aux_ptr)
 {
-    result->lower = (char*)result + offset_to_payload;
-    result->upper = (char*)result + offset_to_payload + size;
-}
-
-static PAS_ALWAYS_INLINE void initialize_object_header(
-    filc_object* result, size_t size, size_t offset_to_payload, filc_object_flags object_flags)
-{
-    initialize_object_bounds(result, size, offset_to_payload);
-    result->flags = object_flags;
-}
-
-static PAS_NEVER_INLINE filc_object* finish_allocate_large(
-    filc_thread* my_thread, void* allocation, size_t size, size_t num_words,
-    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
-{
-    filc_object* result = (filc_object*)allocation;
-    filc_exit_with_allocation_root(my_thread, result);
-    
-    initialize_object_header(result, size, offset_to_payload, object_flags);
-
-    size_t index;
-    for (index = num_words; index--;)
-        result->word_types[index] = initial_word_type;
-    
-    pas_zero_memory((char*)result + offset_to_payload, size);
-    
-    pas_store_store_fence();
-    
-    filc_enter_with_allocation_root(my_thread, result);
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("initializing new object with allocation at %p, payload at %p, size %zu, end at %p\n",
+                allocation, (char*)allocation + offset_to_payload, size,
+                (char*)allocation + offset_to_payload + size);
+    }
+    PAS_TESTING_ASSERT(pas_is_aligned(size, FILC_WORD_SIZE));
+    PAS_TESTING_ASSERT(!filc_object_flags_is_special(object_flags));
+    PAS_TESTING_ASSERT(!filc_object_flags_is_aligned(object_flags));
+    if (alignment > sizeof(filc_object)) {
+        PAS_TESTING_ASSERT(offset_to_payload > sizeof(filc_object));
+        PAS_TESTING_ASSERT(offset_to_payload == alignment);
+        filc_alignment_header_construct((filc_alignment_header*)allocation, alignment);
+    }
+    filc_object* result = filc_object_for_lower_not_null((char*)allocation + offset_to_payload);
+    result->upper = (char*)(result + 1) + size;
+    if (alignment > FILC_MINALIGN) {
+        object_flags = filc_object_flags_create(
+            object_flags, FILC_SPECIAL_TYPE_NONE, pas_log2(alignment));
+        PAS_TESTING_ASSERT(filc_object_flags_alignment(object_flags) == alignment);
+    }
+    result->aux = filc_aux_create(object_flags, aux_ptr);
     return result;
 }
 
-static PAS_ALWAYS_INLINE filc_object* finish_allocate_small(
-    void* allocation, size_t size, size_t num_words,
-    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
+static PAS_NEVER_INLINE filc_object* finish_allocate_large(
+    filc_thread* my_thread, filc_object* result, size_t size)
 {
-    static const bool verbose = false;
+    filc_exit_with_allocation_root(my_thread, filc_object_mark_base(result));
     
-    filc_object* result = (filc_object*)allocation;
-
-    PAS_TESTING_ASSERT(size == num_words * FILC_WORD_SIZE);
-
-    if (verbose)
-        pas_log("allocation = %p, base = %p, object_flags = %u, initial_word_type = %u\n", allocation, (char*)allocation + offset_to_payload, object_flags, initial_word_type);
-
-    if (!object_flags && !initial_word_type) {
-        if (verbose)
-            pas_log("Going down the fast path.\n");
-        initialize_object_bounds(result, size, offset_to_payload);
-        pas_uint128* dst_ptr = (pas_uint128*)&result->flags;
-        PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)dst_ptr, FILC_WORD_SIZE));
-        pas_uint128* end_ptr = (pas_uint128*)((char*)result + offset_to_payload + size);
-        PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)end_ptr, FILC_WORD_SIZE));
-        PAS_TESTING_ASSERT(dst_ptr < end_ptr);
-        do {
-            *dst_ptr++ = 0;
-            pas_compiler_fence();
-        } while (dst_ptr < end_ptr);
-    } else {
-        initialize_object_header(result, size, offset_to_payload, object_flags);
-        
-        pas_uint128* dst_ptr = (pas_uint128*)((char*)result + offset_to_payload);
-        
-        size_t index;
-        for (index = num_words; index--;) {
-            result->word_types[index] = initial_word_type;
-            dst_ptr[index] = 0;
-            pas_compiler_fence();
-        }
-    }
+    pas_zero_memory(filc_object_lower(result), size);
     
+    pas_store_store_fence();
+    
+    filc_enter_with_allocation_root(my_thread, filc_object_mark_base(result));
+    return result;
+}
+
+static PAS_ALWAYS_INLINE filc_object* finish_allocate_small(filc_object* result, size_t size)
+{
+    filc_memset_small_word(filc_object_lower(result), 0, size);
     pas_store_store_fence();
     return result;
 }
 
 static PAS_ALWAYS_INLINE filc_object* finish_allocate(
-    filc_thread* my_thread, void* allocation, size_t size, size_t num_words,
-    size_t offset_to_payload, filc_object_flags object_flags, filc_word_type initial_word_type)
+    filc_thread* my_thread, void* allocation, size_t size, size_t alignment,
+    size_t offset_to_payload, filc_object_flags object_flags)
 {
-    if (PAS_UNLIKELY(size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)) {
-        return finish_allocate_large(
-            my_thread, allocation, size, num_words, offset_to_payload, object_flags,
-            initial_word_type);
-    }
-    return finish_allocate_small(
-        allocation, size, num_words, offset_to_payload, object_flags, initial_word_type);
+    filc_object* result = initialize_object_header(
+        allocation, size, alignment, offset_to_payload, object_flags, NULL);
+    if (PAS_UNLIKELY(size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS))
+        return finish_allocate_large(my_thread, result, size);
+    return finish_allocate_small(result, size);
 }
 
 static PAS_ALWAYS_INLINE filc_object* allocate_impl(
-    filc_thread* my_thread, size_t size, filc_object_flags object_flags, filc_word_type initial_word_type)
+    filc_thread* my_thread, size_t size, filc_object_flags object_flags)
 {
     static const bool verbose = false;
     
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
+    PAS_TESTING_ASSERT(!(object_flags & FILC_OBJECT_FLAG_MMAP));
 
     if (verbose) {
         pas_log("Allocating %zu bytes\n", size);
@@ -2046,18 +2088,19 @@ static PAS_ALWAYS_INLINE filc_object* allocate_impl(
     size_t num_words;
     size_t offset_to_payload;
     size_t total_size;
-    prepare_allocate(&size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
+    prepare_allocate(&size, FILC_WORD_SIZE, &offset_to_payload, &total_size);
     return finish_allocate(
         my_thread, filc_thread_allocate(my_thread, total_size),
-        size, num_words, offset_to_payload, object_flags, initial_word_type);
+        size, FILC_WORD_SIZE, offset_to_payload, object_flags);
 }
 
 filc_object* filc_allocate(filc_thread* my_thread, size_t size)
 {
-    return allocate_impl(my_thread, size, 0, FILC_WORD_TYPE_UNSET);
+    return allocate_impl(my_thread, size, 0);
 }
 
-filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment)
+static PAS_ALWAYS_INLINE filc_object* allocate_aligned_impl(
+    filc_thread* my_thread, size_t size, size_t alignment, filc_object_flags object_flags)
 {
     static const bool verbose = false;
     
@@ -2069,83 +2112,86 @@ filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, s
         filc_thread_dump_stack(my_thread, &pas_log_stream.base);
     }
 
+    pas_heap* heap;
+    if ((object_flags & FILC_OBJECT_FLAG_MMAP)) {
+        PAS_TESTING_ASSERT(alignment == pas_page_malloc_alignment());
+        heap = filc_destructor_heap;
+    } else
+        heap = filc_default_heap;
+
     alignment = pas_max_uintptr(alignment, FILC_WORD_SIZE);
     size_t num_words;
     size_t offset_to_payload;
     size_t total_size;
-    prepare_allocate(&size, alignment, &num_words, &offset_to_payload, &total_size);
+    prepare_allocate(&size, alignment, &offset_to_payload, &total_size);
     return finish_allocate(
         my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
-        size, num_words, offset_to_payload, 0, FILC_WORD_TYPE_UNSET);
+        size, alignment, offset_to_payload, object_flags);
 }
 
-filc_object* filc_allocate_int(filc_thread* my_thread, size_t size)
+filc_object* filc_allocate_with_alignment(filc_thread* my_thread, size_t size, size_t alignment)
 {
-    return allocate_impl(my_thread, size, 0, FILC_WORD_TYPE_INT);
+    return allocate_aligned_impl(my_thread, size, alignment, 0);
 }
 
 static filc_object* finish_reallocate(
     filc_thread* my_thread, void* allocation, filc_object* old_object, size_t new_size,
-    size_t num_words, size_t offset_to_payload)
+    size_t alignment, size_t offset_to_payload)
 {
     static const bool verbose = false;
 
     if (verbose)
         pas_log("new_size = %zu\n", new_size);
     
-    check_object_accessible(old_object, NULL);
+    check_object_accessible(old_object);
 
-    size_t old_num_words = filc_object_num_words(old_object);
-    size_t old_size = filc_object_size(old_object);
+    size_t old_size = filc_object_size_not_null(old_object);
+    char* old_aux_ptr = filc_object_aux_ptr(old_object);
 
-    size_t common_num_words = pas_min_uintptr(num_words, old_num_words);
     size_t common_size = pas_min_uintptr(new_size, old_size);
+    char* new_aux_ptr = NULL;
+    if (old_aux_ptr)
+        new_aux_ptr = filc_thread_allocate(my_thread, new_size);
 
-    filc_object* result = (filc_object*)allocation;
-    result->lower = (char*)result + offset_to_payload;
-    result->upper = (char*)result + offset_to_payload + new_size;
-    result->flags = 0;
-    if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        filc_exit_with_allocation_root(my_thread, result);
-    size_t index;
-    for (index = num_words; index--;)
-        result->word_types[index] = FILC_WORD_TYPE_UNSET;
-    pas_zero_memory((char*)result + offset_to_payload, new_size);
+    filc_object* result = initialize_object_header(
+        allocation, new_size, alignment, offset_to_payload, 0, new_aux_ptr);
+    if (verbose)
+        pas_log("old_object = %p, result = %p\n", old_object, result);
     if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
-        filc_enter_with_allocation_root(my_thread, result);
-        filc_thread_track_object(my_thread, result);
+        if (new_aux_ptr)
+            filc_push_allocation_root(my_thread, new_aux_ptr);
+        filc_exit_with_allocation_root(my_thread, allocation);
     }
-    filc_ptr* dst = (filc_ptr*)((char*)result + offset_to_payload);
-    filc_ptr* src = (filc_ptr*)old_object->lower;
-    for (index = common_num_words; index--;) {
-        if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
+    memcpy(filc_object_lower(result), filc_object_lower(old_object), common_size);
+    if (new_size > common_size)
+        pas_zero_memory((char*)filc_object_lower(result) + common_size, new_size - common_size);
+    if (new_aux_ptr)
+        pas_zero_memory(new_aux_ptr, new_size);
+    if (new_size > FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
+        filc_enter_with_allocation_root(my_thread, allocation);
+        if (new_aux_ptr)
+            filc_pop_allocation_root(my_thread, new_aux_ptr);
+    }
+    /* FIXME: We could conditionalize this. */
+    filc_thread_track_object(my_thread, result);
+    /* FIXME: This could be optimized the same way that memmove is. */
+    if (new_aux_ptr) {
+        size_t offset;
+        PAS_ASSERT(pas_is_aligned(common_size, sizeof(filc_lower_or_box)));
+        for (offset = 0; offset < common_size; offset += sizeof(filc_lower_or_box)) {
+            filc_lower_or_box* old_lower_or_box_ptr = (filc_lower_or_box*)(old_aux_ptr + offset);
+            filc_lower_or_box* new_lower_or_box_ptr = (filc_lower_or_box*)(new_aux_ptr + offset);
+            filc_lower_or_box lower_or_box = filc_lower_or_box_load_unfenced(old_lower_or_box_ptr);
+            void* lower = filc_lower_or_box_extract_lower(lower_or_box);
+            filc_store_barrier(my_thread, filc_object_for_lower(lower));
+            filc_lower_or_box_store_unfenced_unbarriered(
+                new_lower_or_box_ptr, filc_lower_or_box_create_lower(lower));
             filc_pollcheck(my_thread, NULL);
-        filc_word_type word_type = old_object->word_types[index];
-        /* Don't have to check for freeing here since old_object has to be a malloc object and
-           those get freed by GC, so even if a free happened, we still have access to the memory. */
-        filc_ptr ptr_word = filc_ptr_load_with_manual_tracking_yolo(src + index);
-        if (word_type == FILC_WORD_TYPE_UNSET || filc_ptr_is_totally_null(ptr_word)) {
-            /* It's possible that the word type is unset, but the ptr word is not zero, which can
-               happen if there's a race leading to us seeing the old word type. But that means that
-               it's valid for us to "copy" the zero that used to be there.
-            
-               Anyway, we copy the zero by not doing anything - not even initializing the type. */
-            continue;
         }
-        /* Surely need the barrier since the destination object is black and the source object is
-           whatever. */
-        if (word_type == FILC_WORD_TYPE_PTR)
-            filc_store_barrier(my_thread, filc_ptr_object(ptr_word));
-        /* It's definitely fine to set the word_type without CAS because we still own the object.
-           I think that it's fine to set the word_type without any fences because we've done a
-           barrier anyway, so pointed-to object is tracked in this GC cycle. And for a new GC cycle
-           to start, we'd need to cross a pollcheck, and which point everything gets fenced. */
-        result->word_types[index] = word_type;
-        filc_ptr_store_without_barrier(dst + index, ptr_word);
     }
 
     pas_store_store_fence();
-    filc_free(my_thread, old_object);
+    filc_free(old_object);
 
     return result;
 }
@@ -2155,13 +2201,12 @@ filc_object* filc_reallocate(filc_thread* my_thread, filc_object* object, size_t
     PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
 
-    size_t num_words;
     size_t offset_to_payload;
     size_t total_size;
-    prepare_allocate(&new_size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
+    prepare_allocate(&new_size, FILC_WORD_SIZE, &offset_to_payload, &total_size);
     return finish_reallocate(
         my_thread, filc_thread_allocate(my_thread, total_size),
-        object, new_size, num_words, offset_to_payload);
+        object, new_size, FILC_WORD_SIZE, offset_to_payload);
 }
 
 filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object* object,
@@ -2171,78 +2216,48 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
     PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
 
     alignment = pas_max_uintptr(alignment, FILC_WORD_SIZE);
-    size_t num_words;
     size_t offset_to_payload;
     size_t total_size;
-    prepare_allocate(&new_size, FILC_WORD_SIZE, &num_words, &offset_to_payload, &total_size);
+    prepare_allocate(&new_size, alignment, &offset_to_payload, &total_size);
     return finish_reallocate(
         my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
-        object, new_size, num_words, offset_to_payload);
+        object, new_size, alignment, offset_to_payload);
 }
 
-void filc_free_yolo(filc_thread* my_thread, filc_object* object)
+void filc_free(filc_object* object)
 {
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("freeing ");
+        filc_object_dump(object, &pas_log_stream.base);
+        pas_log("\n");
+    }
+    PAS_TESTING_ASSERT(!filc_object_is_special(object)); /* We could allow freeing special objects
+                                                            at some point. */
+    PAS_TESTING_ASSERT(!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_GLOBAL));
+    object->upper = filc_object_lower_not_null(object);
     for (;;) {
-        filc_object_flags old_flags = object->flags;
+        uintptr_t aux = object->aux;
         FILC_CHECK(
-            !(old_flags & FILC_OBJECT_FLAG_FREE),
+            !(filc_aux_get_flags(aux) & FILC_OBJECT_FLAG_FREE),
             NULL,
             "cannot free already free object %s.",
             filc_object_to_new_string(object));
-        /* Technically, this check is only needed for mmap objects. */
-        FILC_CHECK(
-            !(old_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT),
-            NULL,
-            "cannot free pinned object %s.",
-            filc_object_to_new_string(object));
-        filc_object_flags new_flags = old_flags | FILC_OBJECT_FLAG_FREE;
-        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
+        /* FIXME: This CAS could be relaxed! */
+        if (pas_compare_and_swap_uintptr_weak(
+                &object->aux, aux,
+                filc_aux_create(filc_aux_get_flags(aux) | FILC_OBJECT_FLAG_FREE,
+                                filc_aux_get_ptr(aux))))
             break;
     }
-    if (filc_object_size(object) > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        filc_exit(my_thread);
-    size_t index;
-    for (index = filc_object_num_words(object); index--;) {
-        filc_word_type old_type = filc_object_get_word_type(object, index);
-        PAS_TESTING_ASSERT(
-            old_type == FILC_WORD_TYPE_UNSET ||
-            old_type == FILC_WORD_TYPE_INT ||
-            old_type == FILC_WORD_TYPE_PTR);
-        /* If this was a ptr, and now it's not, then this would be like overwriting a pointer, from
-           the GC's standpoint. It's a pointer deletion. But we don't have a deletion barrier! So
-           it's fine! */
-        object->word_types[index] = FILC_WORD_TYPE_FREE;
-    }
-    if (filc_object_size(object) > FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        filc_enter(my_thread);
-}
-
-void filc_free(filc_thread* my_thread, filc_object* object)
-{
-    FILC_CHECK(
-        !(object->flags & FILC_OBJECT_FLAG_SPECIAL),
-        NULL,
-        "cannot free special object %s.",
-        filc_object_to_new_string(object));
-    FILC_CHECK(
-        !(object->flags & FILC_OBJECT_FLAG_GLOBAL),
-        NULL,
-        "cannot free global object %s.",
-        filc_object_to_new_string(object));
-    FILC_CHECK(
-        !(object->flags & FILC_OBJECT_FLAG_MMAP),
-        NULL,
-        "cannot free mmap object %s.",
-        filc_object_to_new_string(object));
-    filc_free_yolo(my_thread, object);
 }
 
 static size_t num_ptrtables = 0;
 
 filc_ptr_table* filc_ptr_table_create(filc_thread* my_thread)
 {
-    filc_ptr_table* result = (filc_ptr_table*)
-        filc_allocate_special(my_thread, sizeof(filc_ptr_table), FILC_WORD_TYPE_PTR_TABLE)->lower;
+    filc_ptr_table* result = (filc_ptr_table*)filc_object_special_payload_with_manual_tracking(
+        filc_allocate_special(my_thread, sizeof(filc_ptr_table), 1, FILC_SPECIAL_TYPE_PTR_TABLE));
 
     pas_lock_construct(&result->lock);
     filc_ptr_uintptr_hash_map_construct(&result->encode_map);
@@ -2302,9 +2317,9 @@ static uintptr_t ptr_table_encode_holding_lock(
                at all. */
             size_t index;
             for (index = ptr_table->array->num_entries; index--;) {
-                filc_ptr_store(
+                filc_flight_ptr_store(
                     my_thread, new_array->ptrs + index,
-                    filc_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index));
+                    filc_flight_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index));
             }
 
             new_array->num_entries = ptr_table->array->num_entries;
@@ -2317,16 +2332,16 @@ static uintptr_t ptr_table_encode_holding_lock(
 
     PAS_ASSERT(result < ptr_table->array->num_entries);
     PAS_ASSERT(result < ptr_table->array->capacity);
-    filc_ptr_store(my_thread, &add_result.entry->key, ptr);
+    filc_flight_ptr_store(my_thread, &add_result.entry->key, ptr);
     add_result.entry->value = result;
-    filc_ptr_store(my_thread, ptr_table->array->ptrs + result, ptr);
+    filc_flight_ptr_store(my_thread, ptr_table->array->ptrs + result, ptr);
     return (result + FILC_PTR_TABLE_OFFSET) << FILC_PTR_TABLE_SHIFT;
 }
 
 uintptr_t filc_ptr_table_encode(filc_thread* my_thread, filc_ptr_table* ptr_table, filc_ptr ptr)
 {
     if (!filc_ptr_ptr(ptr) || !filc_ptr_object(ptr)
-        || (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+        || (filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE))
         return 0;
     pas_lock_lock(&ptr_table->lock);
     uintptr_t result = ptr_table_encode_holding_lock(my_thread, ptr_table, ptr);
@@ -2345,12 +2360,12 @@ filc_ptr filc_ptr_table_decode_with_manual_tracking(filc_ptr_table* ptr_table, u
     /* NULL shouldn't have gotten this far. */
     PAS_TESTING_ASSERT(encoded_ptr);
 
-    filc_ptr result = filc_ptr_load_with_manual_tracking(array->ptrs + index);
+    filc_ptr result = filc_flight_ptr_load_with_manual_tracking(array->ptrs + index);
     if (!filc_ptr_ptr(result))
         return filc_ptr_forge_null();
 
     PAS_TESTING_ASSERT(filc_ptr_object(result));
-    if (filc_ptr_object(result)->flags & FILC_OBJECT_FLAG_FREE)
+    if (filc_object_get_flags(filc_ptr_object(result)) & FILC_OBJECT_FLAG_FREE)
         return filc_ptr_forge_null();
 
     return result;
@@ -2398,7 +2413,7 @@ void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_ar
         filc_ptr_uintptr_hash_map_entry entry = ptr_table->encode_map.table[index];
         if (filc_ptr_uintptr_hash_map_entry_is_empty_or_deleted(entry))
             continue;
-        if (filc_ptr_object(entry.key)->flags & FILC_OBJECT_FLAG_FREE)
+        if (filc_object_get_flags(filc_ptr_object(entry.key)) & FILC_OBJECT_FLAG_FREE)
             continue;
         fugc_mark(stack, filc_ptr_object(entry.key));
         filc_ptr_uintptr_hash_map_add_new(&new_encode_map, entry, NULL, &allocation_config);
@@ -2412,10 +2427,10 @@ void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_ar
        filc_ptr_table_array_mark_outgoing_ptrs(). It's not clear that we could avoid marking them in
        that function, though maybe we could avoid it. */
     for (index = ptr_table->array->num_entries; index--;) {
-        filc_ptr ptr = filc_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index);
+        filc_ptr ptr = filc_flight_ptr_load_with_manual_tracking(ptr_table->array->ptrs + index);
         if (!filc_ptr_ptr(ptr))
             continue;
-        if (!(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+        if (!(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE))
             continue;
         if (ptr_table->num_free_indices >= ptr_table->free_indices_capacity) {
             PAS_ASSERT(ptr_table->num_free_indices == ptr_table->free_indices_capacity);
@@ -2423,7 +2438,8 @@ void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_ar
             size_t new_free_indices_capacity = ptr_table->free_indices_capacity << 1;
             PAS_ASSERT(new_free_indices_capacity > ptr_table->free_indices_capacity);
 
-            uintptr_t* new_free_indices = bmalloc_allocate(sizeof(uintptr_t) * new_free_indices_capacity);
+            uintptr_t* new_free_indices =
+                bmalloc_allocate(sizeof(uintptr_t) * new_free_indices_capacity);
             memcpy(new_free_indices, ptr_table->free_indices,
                    sizeof(uintptr_t) * ptr_table->num_free_indices);
 
@@ -2433,7 +2449,7 @@ void filc_ptr_table_mark_outgoing_ptrs(filc_ptr_table* ptr_table, filc_object_ar
         }
         PAS_ASSERT(ptr_table->num_free_indices < ptr_table->free_indices_capacity);
         ptr_table->free_indices[ptr_table->num_free_indices++] = index;
-        filc_ptr_store_without_barrier(ptr_table->array->ptrs + index, filc_ptr_forge_null());
+        filc_flight_ptr_store_without_barrier(ptr_table->array->ptrs + index, filc_ptr_forge_null());
     }
     
     pas_lock_unlock(&ptr_table->lock);
@@ -2448,7 +2464,8 @@ filc_ptr_table_array* filc_ptr_table_array_create(filc_thread* my_thread, size_t
                    PAS_OFFSETOF(filc_ptr_table_array, ptrs), array_size, &total_size));
     
     filc_ptr_table_array* result = (filc_ptr_table_array*)
-        filc_allocate_special(my_thread, total_size, FILC_WORD_TYPE_PTR_TABLE_ARRAY)->lower;
+        filc_object_special_payload_with_manual_tracking(
+            filc_allocate_special(my_thread, total_size, 1, FILC_SPECIAL_TYPE_PTR_TABLE_ARRAY));
     result->capacity = capacity;
 
     return result;
@@ -2457,14 +2474,18 @@ filc_ptr_table_array* filc_ptr_table_array_create(filc_thread* my_thread, size_t
 void filc_ptr_table_array_mark_outgoing_ptrs(filc_ptr_table_array* array, filc_object_array* stack)
 {
     size_t index;
-    for (index = array->num_entries; index--;)
-        fugc_mark(stack, filc_ptr_object(filc_ptr_load_with_manual_tracking(array->ptrs + index)));
+    for (index = array->num_entries; index--;) {
+        fugc_mark(stack, filc_ptr_object(
+                      filc_flight_ptr_load_with_manual_tracking(array->ptrs + index)));
+    }
 }
 
 filc_exact_ptr_table* filc_exact_ptr_table_create(filc_thread* my_thread)
 {
-    filc_exact_ptr_table* result = (filc_exact_ptr_table*)filc_allocate_special(
-        my_thread, sizeof(filc_exact_ptr_table), FILC_WORD_TYPE_EXACT_PTR_TABLE)->lower;
+    filc_exact_ptr_table* result = (filc_exact_ptr_table*)
+        filc_object_special_payload_with_manual_tracking(
+            filc_allocate_special(
+                my_thread, sizeof(filc_exact_ptr_table), 1, FILC_SPECIAL_TYPE_EXACT_PTR_TABLE));
 
     pas_lock_construct(&result->lock);
     filc_uintptr_ptr_hash_map_construct(&result->decode_map);
@@ -2486,7 +2507,7 @@ uintptr_t filc_exact_ptr_table_encode(filc_thread* my_thread, filc_exact_ptr_tab
                                       filc_ptr ptr)
 {
     if (!filc_ptr_object(ptr)
-        || (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE))
+        || (filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE))
         return (uintptr_t)filc_ptr_ptr(ptr);
     
     pas_allocation_config allocation_config;
@@ -2494,7 +2515,7 @@ uintptr_t filc_exact_ptr_table_encode(filc_thread* my_thread, filc_exact_ptr_tab
 
     filc_uintptr_ptr_hash_map_entry decode_entry;
     decode_entry.key = (uintptr_t)filc_ptr_ptr(ptr);
-    filc_ptr_store(my_thread, &decode_entry.value, ptr);
+    filc_flight_ptr_store(my_thread, &decode_entry.value, ptr);
     
     pas_lock_lock(&ptr_table->lock);
     filc_uintptr_ptr_hash_map_set(&ptr_table->decode_map, decode_entry, NULL, &allocation_config);
@@ -2544,7 +2565,7 @@ void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table, fi
         filc_uintptr_ptr_hash_map_entry entry = ptr_table->decode_map.table[index];
         if (filc_uintptr_ptr_hash_map_entry_is_empty_or_deleted(entry))
             continue;
-        if (filc_ptr_object(entry.value)->flags & FILC_OBJECT_FLAG_FREE)
+        if (filc_object_get_flags(filc_ptr_object(entry.value)) & FILC_OBJECT_FLAG_FREE)
             continue;
         fugc_mark(stack, filc_ptr_object(entry.value));
         filc_uintptr_ptr_hash_map_add_new(&new_decode_map, entry, NULL, &allocation_config);
@@ -2555,63 +2576,15 @@ void filc_exact_ptr_table_mark_outgoing_ptrs(filc_exact_ptr_table* ptr_table, fi
     pas_lock_unlock(&ptr_table->lock);
 }
 
-void filc_pin(filc_object* object)
-{
-    if (!object)
-        return;
-    if (object->flags & FILC_OBJECT_FLAG_GLOBAL)
-        return;
-    for (;;) {
-        filc_object_flags old_flags = object->flags;
-        FILC_CHECK(
-            !(old_flags & FILC_OBJECT_FLAG_FREE),
-            NULL,
-            "cannot pin free object %s.",
-            filc_object_to_new_string(object));
-        filc_object_flags new_flags = old_flags + ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
-        FILC_CHECK(
-            new_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT,
-            NULL,
-            "pin count overflow in %s.",
-            filc_object_to_new_string(object));
-        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
-            break;
-    }
-}
-
-void filc_unpin(filc_object* object)
-{
-    if (!object)
-        return;
-    if (object->flags & FILC_OBJECT_FLAG_GLOBAL)
-        return;
-    for (;;) {
-        filc_object_flags old_flags = object->flags;
-        PAS_ASSERT(!(old_flags & FILC_OBJECT_FLAG_FREE)); /* should never happen */
-        PAS_ASSERT(old_flags >> FILC_OBJECT_FLAGS_PIN_SHIFT);
-        PAS_ASSERT(old_flags >= ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT));
-        filc_object_flags new_flags = old_flags - ((filc_object_flags)1 << FILC_OBJECT_FLAGS_PIN_SHIFT);
-        if (pas_compare_and_swap_uint16_weak_relaxed(&object->flags, old_flags, new_flags))
-            break;
-    }
-}
-
-void filc_pin_tracked(filc_thread* my_thread, filc_object* object)
-{
-    PAS_TESTING_ASSERT(my_thread == filc_get_my_thread());
-    PAS_TESTING_ASSERT(my_thread->state & FILC_THREAD_STATE_ENTERED);
-    PAS_TESTING_ASSERT(my_thread->top_native_frame);
-    filc_native_frame_pin(my_thread->top_native_frame, object);
-}
-
 filc_ptr filc_native_zgc_alloc(filc_thread* my_thread, size_t size)
 {
-    return filc_ptr_create_with_manual_tracking(filc_allocate(my_thread, size));
+    return filc_ptr_create_with_object_and_manual_tracking(filc_allocate(my_thread, size));
 }
 
 filc_ptr filc_native_zgc_aligned_alloc(filc_thread* my_thread, size_t alignment, size_t size)
 {
-    return filc_ptr_create_with_manual_tracking(filc_allocate_with_alignment(my_thread, size, alignment));
+    return filc_ptr_create_with_object_and_manual_tracking(
+        filc_allocate_with_alignment(my_thread, size, alignment));
 }
 
 static filc_object* object_for_deallocate(filc_ptr ptr)
@@ -2620,6 +2593,21 @@ static filc_object* object_for_deallocate(filc_ptr ptr)
         filc_ptr_object(ptr),
         NULL,
         "cannot free ptr with no object (ptr = %s).",
+        filc_ptr_to_new_string(ptr));
+    FILC_CHECK(
+        !filc_object_is_special(filc_ptr_object(ptr)),
+        NULL,
+        "cannot free special object %s.",
+        filc_ptr_to_new_string(ptr));
+    FILC_CHECK(
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_GLOBAL),
+        NULL,
+        "cannot free global object %s.",
+        filc_ptr_to_new_string(ptr));
+    FILC_CHECK(
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_MMAP),
+        NULL,
+        "cannot free mmap object %s.",
         filc_ptr_to_new_string(ptr));
     FILC_CHECK(
         filc_ptr_ptr(ptr) == filc_ptr_lower(ptr),
@@ -2637,7 +2625,7 @@ filc_ptr filc_native_zgc_realloc(filc_thread* my_thread, filc_ptr old_ptr, size_
         return filc_native_zgc_alloc(my_thread, size);
     if (verbose)
         pas_log("zrealloc to size = %zu\n", size);
-    return filc_ptr_create_with_manual_tracking(
+    return filc_ptr_create_with_object_and_manual_tracking(
         filc_reallocate(my_thread, object_for_deallocate(old_ptr), size));
 }
 
@@ -2646,7 +2634,7 @@ filc_ptr filc_native_zgc_aligned_realloc(filc_thread* my_thread,
 {
     if (!filc_ptr_ptr(old_ptr))
         return filc_native_zgc_aligned_alloc(my_thread, alignment, size);
-    return filc_ptr_create_with_manual_tracking(
+    return filc_ptr_create_with_object_and_manual_tracking(
         filc_reallocate_with_alignment(my_thread, object_for_deallocate(old_ptr), alignment, size));
 }
 
@@ -2655,7 +2643,7 @@ void filc_native_zgc_free(filc_thread* my_thread, filc_ptr ptr)
     PAS_UNUSED_PARAM(my_thread);
     if (!filc_ptr_ptr(ptr))
         return;
-    filc_free(my_thread, object_for_deallocate(ptr));
+    filc_free(object_for_deallocate(ptr));
 }
 
 filc_ptr filc_native_zgetlower(filc_thread* my_thread, filc_ptr ptr)
@@ -2673,46 +2661,8 @@ filc_ptr filc_native_zgetupper(filc_thread* my_thread, filc_ptr ptr)
 bool filc_native_zhasvalidcap(filc_thread* my_thread, filc_ptr ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    return filc_ptr_object(ptr) && !(filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE);
-}
-
-bool filc_native_zisunset(filc_thread* my_thread, filc_ptr ptr)
-{
-    PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_common(ptr, 1, filc_read_access, NULL);
-    check_not_free(ptr, NULL);
-    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
-        return false;
-    uintptr_t offset = filc_ptr_offset(ptr);
-    uintptr_t word_type_index = offset / FILC_WORD_SIZE;
-    return filc_object_get_word_type(filc_ptr_object(ptr), word_type_index) == FILC_WORD_TYPE_UNSET;
-}
-
-bool filc_native_zisint(filc_thread* my_thread, filc_ptr ptr)
-{
-    PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_common(ptr, 1, filc_read_access, NULL);
-    check_not_free(ptr, NULL);
-    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
-        return false;
-    uintptr_t offset = filc_ptr_offset(ptr);
-    uintptr_t word_type_index = offset / FILC_WORD_SIZE;
-    return filc_object_get_word_type(filc_ptr_object(ptr), word_type_index) == FILC_WORD_TYPE_INT;
-}
-
-int filc_native_zptrphase(filc_thread* my_thread, filc_ptr ptr)
-{
-    PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_common(ptr, 1, filc_read_access, NULL);
-    check_not_free(ptr, NULL);
-    if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_SPECIAL)
-        return -1;
-    uintptr_t offset = filc_ptr_offset(ptr);
-    uintptr_t word_type_index = offset / FILC_WORD_SIZE;
-    uintptr_t offset_in_word = offset % FILC_WORD_SIZE;
-    if (filc_object_get_word_type(filc_ptr_object(ptr), word_type_index) != FILC_WORD_TYPE_PTR)
-        return -1;
-    return (int)offset_in_word;
+    return filc_ptr_object(ptr)
+        && !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE);
 }
 
 filc_ptr filc_native_zptrtable_new(filc_thread* my_thread)
@@ -2722,14 +2672,14 @@ filc_ptr filc_native_zptrtable_new(filc_thread* my_thread)
 
 size_t filc_native_zptrtable_encode(filc_thread* my_thread, filc_ptr table_ptr, filc_ptr ptr)
 {
-    filc_check_access_special(table_ptr, FILC_WORD_TYPE_PTR_TABLE, NULL);
+    filc_check_access_special(table_ptr, FILC_SPECIAL_TYPE_PTR_TABLE);
     return filc_ptr_table_encode(my_thread, (filc_ptr_table*)filc_ptr_ptr(table_ptr), ptr);
 }
 
 filc_ptr filc_native_zptrtable_decode(filc_thread* my_thread, filc_ptr table_ptr, size_t encoded_ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_special(table_ptr, FILC_WORD_TYPE_PTR_TABLE, NULL);
+    filc_check_access_special(table_ptr, FILC_SPECIAL_TYPE_PTR_TABLE);
     return filc_ptr_table_decode_with_manual_tracking(
         (filc_ptr_table*)filc_ptr_ptr(table_ptr), encoded_ptr);
 }
@@ -2741,7 +2691,7 @@ filc_ptr filc_native_zexact_ptrtable_new(filc_thread* my_thread)
 
 size_t filc_native_zexact_ptrtable_encode(filc_thread* my_thread, filc_ptr table_ptr, filc_ptr ptr)
 {
-    filc_check_access_special(table_ptr, FILC_WORD_TYPE_EXACT_PTR_TABLE, NULL);
+    filc_check_access_special(table_ptr, FILC_SPECIAL_TYPE_EXACT_PTR_TABLE);
     return filc_exact_ptr_table_encode(my_thread, (filc_exact_ptr_table*)filc_ptr_ptr(table_ptr), ptr);
 }
 
@@ -2749,7 +2699,7 @@ filc_ptr filc_native_zexact_ptrtable_decode(filc_thread* my_thread, filc_ptr tab
                                             size_t encoded_ptr)
 {
     PAS_UNUSED_PARAM(my_thread);
-    filc_check_access_special(table_ptr, FILC_WORD_TYPE_EXACT_PTR_TABLE, NULL);
+    filc_check_access_special(table_ptr, FILC_SPECIAL_TYPE_EXACT_PTR_TABLE);
     return filc_exact_ptr_table_decode_with_manual_tracking(
         (filc_exact_ptr_table*)filc_ptr_ptr(table_ptr), encoded_ptr);
 }
@@ -2762,54 +2712,43 @@ size_t filc_native_ztesting_get_num_ptrtables(filc_thread* my_thread)
 
 void filc_validate_object(filc_object* object, const filc_origin* origin)
 {
-    FILC_ASSERT(object->lower >= FILC_MIN_BOUND, origin);
-    FILC_ASSERT(object->upper >= FILC_MIN_BOUND, origin);
-    
     if (object == &filc_free_singleton) {
-        FILC_ASSERT(object->lower == FILC_FREE_BOUND, origin);
-        FILC_ASSERT(object->upper == FILC_FREE_BOUND, origin);
-        FILC_ASSERT(object->flags == FILC_OBJECT_FLAG_FREE, origin);
+        FILC_ASSERT(!filc_object_size_not_null(object), origin);
+        FILC_ASSERT(object->aux == filc_aux_create(FILC_OBJECT_FLAG_FREE |
+                                                   FILC_OBJECT_FLAG_GLOBAL |
+                                                   FILC_OBJECT_FLAG_READONLY,
+                                                   NULL), origin);
         return;
     }
 
-    if (object->flags & FILC_OBJECT_FLAG_SPECIAL) {
-        FILC_ASSERT(object->upper == (char*)object->lower + FILC_WORD_SIZE, origin);
-        FILC_ASSERT(object->word_types[0] == FILC_WORD_TYPE_FREE ||
-                    object->word_types[0] == FILC_WORD_TYPE_FUNCTION ||
-                    object->word_types[0] == FILC_WORD_TYPE_THREAD ||
-                    object->word_types[0] == FILC_WORD_TYPE_SIGNAL_HANDLER ||
-                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE ||
-                    object->word_types[0] == FILC_WORD_TYPE_PTR_TABLE_ARRAY ||
-                    object->word_types[0] == FILC_WORD_TYPE_DL_HANDLE ||
-                    object->word_types[0] == FILC_WORD_TYPE_JMP_BUF ||
-                    object->word_types[0] == FILC_WORD_TYPE_EXACT_PTR_TABLE,
-                    origin);
-        if (object->word_types[0] != FILC_WORD_TYPE_FUNCTION &&
-            object->word_types[0] != FILC_WORD_TYPE_DL_HANDLE)
-            FILC_ASSERT(pas_is_aligned((uintptr_t)object->lower, FILC_WORD_SIZE), origin);
+    if (filc_object_is_special(object)) {
+        FILC_CHECK(
+            !filc_object_size_not_null(object),
+            origin,
+            "special object has non-null size (object = %s, object at %p, upper = %p)",
+            filc_object_to_new_string(object), object, object->upper);
+        FILC_ASSERT(filc_special_type_is_valid(filc_object_special_type(object)), origin);
+        if (filc_object_special_type(object) != FILC_SPECIAL_TYPE_FUNCTION &&
+            filc_object_special_type(object) != FILC_SPECIAL_TYPE_DL_HANDLE) {
+            FILC_ASSERT(pas_is_aligned(
+                            (uintptr_t)filc_object_special_payload_with_manual_tracking(object),
+                            FILC_WORD_SIZE), origin);
+            FILC_ASSERT(filc_object_aux_ptr(object)
+                        == filc_object_special_payload_with_manual_tracking(object), origin);
+        }
         return;
     }
 
-    FILC_ASSERT(pas_is_aligned((uintptr_t)object->lower, FILC_WORD_SIZE), origin);
-    FILC_ASSERT(pas_is_aligned((uintptr_t)object->upper, FILC_WORD_SIZE), origin);
-    FILC_ASSERT(object->upper >= object->lower, origin);
-
-    size_t index;
-    for (index = filc_object_num_words(object); index--;) {
-        filc_word_type word_type = filc_object_get_word_type(object, index);
-        FILC_ASSERT(word_type == FILC_WORD_TYPE_UNSET ||
-                    word_type == FILC_WORD_TYPE_INT ||
-                    word_type == FILC_WORD_TYPE_PTR ||
-                    word_type == FILC_WORD_TYPE_FREE,
-                    origin);
-    }
+    FILC_ASSERT(pas_is_aligned((uintptr_t)filc_object_lower(object), FILC_WORD_SIZE), origin);
+    FILC_ASSERT(pas_is_aligned((uintptr_t)filc_object_upper(object), FILC_WORD_SIZE), origin);
+    FILC_ASSERT(filc_object_upper(object) >= filc_object_lower(object), origin);
 }
 
 void filc_validate_ptr(filc_ptr ptr, const filc_origin* origin)
 {
     if (filc_ptr_is_boxed_int(ptr))
         return;
-
+    
     filc_validate_object(filc_ptr_object(ptr), origin);
 }
 
@@ -2821,249 +2760,76 @@ filc_ptr filc_native_zptr_to_new_string(filc_thread* my_thread, filc_ptr ptr)
     return result;
 }
 
-/* Returns true if the type was int, false if unset, calls fails otherwise. */
-#define CHECK_INT_OR_UNSET_FAST_ONE(raw_ptr, object, lower, fail) ({ \
-        size_t offset = (raw_ptr) - (lower); \
-        size_t word_type_index = offset / FILC_WORD_SIZE; \
-        filc_word_type* word_type_ptr = (object)->word_types + (word_type_index); \
-        filc_word_type word_type = *word_type_ptr; \
-        bool result = false; \
-        if (word_type == FILC_WORD_TYPE_INT) \
-            result = true; \
-        else if (word_type != FILC_WORD_TYPE_UNSET) \
-            fail; \
-        result; \
-    })
-
-#define CHECK_INT_BODY(word_type_index, object, fail) do { \
-        filc_word_type* word_type_ptr = (object)->word_types + (word_type_index); \
-        filc_word_type word_type = *word_type_ptr; \
-        if (word_type == FILC_WORD_TYPE_INT) \
-            continue; \
-        if (word_type != FILC_WORD_TYPE_UNSET) \
-            fail; \
-        word_type = pas_compare_and_swap_uint8_strong( \
-            word_type_ptr, FILC_WORD_TYPE_UNSET, FILC_WORD_TYPE_INT); \
-        if (word_type != FILC_WORD_TYPE_UNSET && \
-            word_type != FILC_WORD_TYPE_INT) \
-            fail; \
-    } while (false)
-
-#define CHECK_INT_FAST_ONE(raw_ptr, object, lower, fail) do { \
-        size_t offset = (raw_ptr) - (lower); \
-        size_t word_type_index = offset / FILC_WORD_SIZE; \
-        CHECK_INT_BODY(word_type_index, object, fail); \
-    } while (false)
-
-#define CHECK_INT_FAST(raw_ptr, object, lower, count, fail) do { \
-        filc_object* my_object = (object); \
-        size_t offset = (raw_ptr) - (lower); \
-        size_t first_word_type_index = offset / FILC_WORD_SIZE; \
-        size_t last_word_type_index = (offset + count - 1) / FILC_WORD_SIZE; \
-        size_t word_type_index; \
-        for (word_type_index = first_word_type_index; \
-             word_type_index <= last_word_type_index; \
-             word_type_index++) \
-            CHECK_INT_BODY(word_type_index, (my_object), fail); \
-    } while (false)
-
-static void check_int_or_unset(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
+filc_ptr filc_native_zptr_contents_to_new_string(filc_thread* my_thread, filc_ptr ptr)
 {
-    uintptr_t offset;
-    uintptr_t first_word_type_index;
-    uintptr_t last_word_type_index;
-    uintptr_t word_type_index;
-
-    offset = filc_ptr_offset(ptr);
-    first_word_type_index = offset / FILC_WORD_SIZE;
-    last_word_type_index = (offset + bytes - 1) / FILC_WORD_SIZE;
-
-    /* FIXME: Eventually, we'll want this to exit.
-     
-       If we do make it exit, then we'll have to make sure that we check that the object is not
-       FREE, since any exit might observe munmap.
-
-       And - that will mean that any checks done before the check_int will have to check FREE again
-       (i.e. check_accessible).
-
-       This suggests that when we do this, we should make it optional and then be very carefuly where
-       we deploy it. */
-
-    for (word_type_index = first_word_type_index;
-         word_type_index <= last_word_type_index;
-         word_type_index++) {
-        filc_word_type word_type = filc_object_get_word_type(filc_ptr_object(ptr), word_type_index);
-        FILC_CHECK(
-            word_type == FILC_WORD_TYPE_INT || word_type == FILC_WORD_TYPE_UNSET,
-            origin,
-            "cannot access %zu bytes as int or unset, span contains non-ints (ptr = %s).",
-            bytes, filc_ptr_to_new_string(ptr));
-    }
+    char* str = filc_ptr_contents_to_new_string(ptr);
+    filc_ptr result = filc_strdup(my_thread, str);
+    bmalloc_deallocate(str);
+    return result;
 }
 
-static void check_int(filc_ptr ptr, uintptr_t bytes, const filc_origin* origin)
+PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_aligned_access_fail(
+    filc_ptr ptr, size_t bytes, size_t alignment, filc_access_kind kind)
 {
-    uintptr_t offset;
-    uintptr_t first_word_type_index;
-    uintptr_t last_word_type_index;
-    uintptr_t word_type_index;
+    filc_validate_ptr(ptr, NULL);
 
-    offset = filc_ptr_offset(ptr);
-    first_word_type_index = offset / FILC_WORD_SIZE;
-    last_word_type_index = (offset + bytes - 1) / FILC_WORD_SIZE;
+    PAS_ASSERT(bytes);
 
-    /* FIXME: Eventually, we'll want this to exit.
-     
-       If we do make it exit, then we'll have to make sure that we check that the object is not
-       FREE, since any exit might observe munmap.
-
-       And - that will mean that any checks done before the check_int will have to check FREE again
-       (i.e. check_accessible).
-
-       This suggests that when we do this, we should make it optional and then be very carefuly where
-       we deploy it. */
-
-    for (word_type_index = first_word_type_index;
-         word_type_index <= last_word_type_index;
-         word_type_index++) {
-        for (;;) {
-            filc_word_type word_type = filc_object_get_word_type(filc_ptr_object(ptr), word_type_index);
-            if (word_type == FILC_WORD_TYPE_UNSET) {
-                if (pas_compare_and_swap_uint8_weak(
-                        filc_ptr_object(ptr)->word_types + word_type_index,
-                        FILC_WORD_TYPE_UNSET,
-                        FILC_WORD_TYPE_INT))
-                    break;
-                continue;
-            }
-            
-            FILC_CHECK(
-                word_type == FILC_WORD_TYPE_INT,
-                origin,
-                "cannot access %zu bytes as int, span contains non-ints (ptr = %s).",
-                bytes, filc_ptr_to_new_string(ptr));
-            break;
-        }
-    }
-}
-
-void filc_check_access_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
-                                   filc_access_kind access_kind, const filc_origin* origin)
-{
-    if (!bytes)
-        return;
-    filc_check_access_common(ptr, bytes, access_kind, origin);
     FILC_CHECK(
         pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), alignment),
-        origin,
-        "alignment requirement of %zu bytes not met during int access; in this case ptr %% %zu = %zu "
+        NULL,
+        "alignment requirement of %zu bytes not met during %s; in this case ptr %% %zu = %zu "
         "(ptr = %s).",
-        alignment, alignment, (size_t)filc_ptr_ptr(ptr) % alignment, filc_ptr_to_new_string(ptr));
-    check_int(ptr, bytes, origin);
-}
+        filc_access_kind_get_string(kind), alignment, alignment,
+        (size_t)filc_ptr_ptr(ptr) % alignment, filc_ptr_to_new_string(ptr));
 
-void filc_check_access_int(filc_ptr ptr, size_t bytes, filc_access_kind access_kind,
-                           const filc_origin* origin)
-{
-    filc_check_access_aligned_int(ptr, bytes, 1, access_kind, origin);
-}
-
-void filc_check_access_ptr(filc_ptr ptr, filc_access_kind access_kind, const filc_origin* origin)
-{
-    uintptr_t offset;
-    uintptr_t word_type_index;
-
-    filc_check_access_common(ptr, sizeof(filc_ptr), access_kind, origin);
-
-    offset = filc_ptr_offset(ptr);
     FILC_CHECK(
-        pas_is_aligned(offset, FILC_WORD_SIZE),
-        origin,
-        "cannot %s memory as ptr without 16-byte alignment; in this case ptr %% 16 = %zu (ptr = %s).",
-        filc_access_kind_get_string(access_kind), (size_t)(offset % FILC_WORD_SIZE),
-        filc_ptr_to_new_string(ptr));
-    word_type_index = offset / FILC_WORD_SIZE;
+        filc_ptr_object(ptr),
+        NULL,
+        "cannot %s pointer with null object (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE),
+        NULL,
+        "cannot %s pointer to free object (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
     
-    for (;;) {
-        filc_word_type word_type = filc_object_get_word_type(filc_ptr_object(ptr), word_type_index);
-        if (word_type == FILC_WORD_TYPE_UNSET) {
-            if (pas_compare_and_swap_uint8_weak(
-                    filc_ptr_object(ptr)->word_types + word_type_index,
-                    FILC_WORD_TYPE_UNSET,
-                    FILC_WORD_TYPE_PTR))
-                break;
-            continue;
-        }
-        
+    FILC_CHECK(
+        !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAGS_SPECIAL_MASK),
+        NULL,
+        "cannot %s pointer to special object (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+    
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) >= filc_ptr_lower(ptr),
+        NULL,
+        "cannot %s pointer with ptr < lower (ptr = %s).", 
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        filc_ptr_ptr(ptr) < filc_ptr_upper(ptr),
+        NULL,
+        "cannot %s pointer with ptr >= upper (ptr = %s).",
+        filc_access_kind_get_string(kind), filc_ptr_to_new_string(ptr));
+
+    FILC_CHECK(
+        bytes <= (uintptr_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
+        NULL,
+        "cannot %s %zu bytes when upper - ptr = %zu (ptr = %s).",
+        filc_access_kind_get_string(kind), bytes,
+        (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)),
+        filc_ptr_to_new_string(ptr));
+
+    if (kind == filc_write_access) {
         FILC_CHECK(
-            word_type == FILC_WORD_TYPE_PTR,
-            origin,
-            "cannot %s %zu bytes as ptr, word is non-ptr (ptr = %s).",
-            filc_access_kind_get_string(access_kind), FILC_WORD_SIZE, filc_ptr_to_new_string(ptr));
-        break;
+            !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_READONLY),
+            NULL,
+            "cannot write to read-only object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
     }
-}
-
-void filc_cpt_access_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes,
-                         filc_access_kind access_kind)
-{
-    filc_check_access_int(ptr, bytes, access_kind, NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(ptr));
-}
-
-void filc_check_read_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
-{
-    filc_check_access_int(ptr, bytes, filc_read_access, origin);
-}
-
-void filc_check_read_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
-                                 const filc_origin* origin)
-{
-    filc_check_access_aligned_int(ptr, bytes, alignment, filc_read_access, origin);
-}
-
-void filc_check_write_int(filc_ptr ptr, size_t bytes, const filc_origin* origin)
-{
-    filc_check_access_int(ptr, bytes, filc_write_access, origin);
-}
-
-void filc_check_write_aligned_int(filc_ptr ptr, size_t bytes, size_t alignment,
-                                  const filc_origin* origin)
-{
-    filc_check_access_aligned_int(ptr, bytes, alignment, filc_write_access, origin);
-}
-
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_ptr_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_access_ptr(ptr, filc_read_access, origin);
+    
     PAS_UNREACHABLE();
-}
-
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_ptr_fail(
-    filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_access_ptr(ptr, filc_write_access, origin);
-    PAS_UNREACHABLE();
-}
-
-void filc_check_read_ptr_outline(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_ptr(ptr, origin);
-}
-
-void filc_check_write_ptr_outline(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_ptr(ptr, origin);
-}
-
-void filc_cpt_read_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
-{
-    filc_cpt_access_int(my_thread, ptr, bytes, filc_read_access);
-}
-
-void filc_cpt_write_int(filc_thread* my_thread, filc_ptr ptr, size_t bytes)
-{
-    filc_cpt_access_int(my_thread, ptr, bytes, filc_write_access);
 }
 
 PAS_NO_RETURN static void finish_panicking(const char* kind_string)
@@ -3102,6 +2868,12 @@ PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_access_check_fail(
     if (!filc_ptr_object(ptr)) {
         pas_log("cannot %s pointer with null object.\n",
                 check_origin->needs_write ? "write" : "read");
+    } else if ((filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE)) {
+        pas_log("cannot %s pointer to free object.\n",
+                check_origin->needs_write ? "write" : "read");
+    } else if ((filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAGS_SPECIAL_MASK)) {
+        pas_log("cannot %s pointer to special object.\n",
+                check_origin->needs_write ? "write" : "read");
     } else if (check_origin->size && filc_ptr_ptr(ptr) < filc_ptr_lower(ptr)) {
         pas_log("cannot %s pointer with ptr < lower.\n",
                 check_origin->needs_write ? "write" : "read");
@@ -3113,59 +2885,34 @@ PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_access_check_fail(
                 check_origin->needs_write ? "write" : "read", (size_t)check_origin->size,
                 (size_t)((char*)filc_ptr_upper(ptr) - (char*)filc_ptr_ptr(ptr)));
     } else if (check_origin->needs_write &&
-               (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_READONLY))
+               (filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_READONLY))
         pas_log("cannot write to read-only object.\n");
     else if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr) + (uintptr_t)check_origin->alignment_offset,
                              check_origin->alignment))
         pas_log("alignment requirement of %u bytes not met.\n", (unsigned)check_origin->alignment);
-    else if (filc_ptr_object(ptr)->flags & FILC_OBJECT_FLAG_FREE)
-        pas_log("cannot access pointer to free object.\n");
-    else {
-        PAS_ASSERT(check_origin->type == FILC_WORD_TYPE_INT ||
-                   check_origin->type == FILC_WORD_TYPE_PTR);
-        pas_log("type mismatch.\n");
-    }
+    else
+        PAS_ASSERT(!"Should not be reached");
     pas_log("    pointer: ");
     filc_ptr_dump(ptr, &pas_log_stream.base);
     pas_log("\n");
-    switch (check_origin->type) {
-    case FILC_WORD_TYPE_UNSET:
-        pas_log("    expected");
-        if (check_origin->size) {
-            pas_log(" %zu %sbytes",
-                    (size_t)check_origin->size, check_origin->needs_write ? "writable " : "");
-        } else if (check_origin->needs_write)
-            pas_log(" writable capability");
-        else
-            pas_log(" valid capability");
-        PAS_ASSERT(check_origin->alignment >= 1);
-        PAS_ASSERT(check_origin->alignment <= FILC_WORD_SIZE);
-        PAS_ASSERT(pas_is_power_of_2(check_origin->alignment));
-        PAS_ASSERT(check_origin->alignment_offset < check_origin->alignment);
-        if (check_origin->alignment > 1) {
-            pas_log(" aligned to %zu bytes", (size_t)check_origin->alignment);
-            if (check_origin->alignment_offset)
-                pas_log(" at offset %zu", (size_t)check_origin->alignment_offset);
-        }
-        pas_log(".\n");
-        break;
-    case FILC_WORD_TYPE_INT:
-        PAS_ASSERT(check_origin->size);
-        PAS_ASSERT(!check_origin->alignment_offset);
-        PAS_ASSERT(check_origin->alignment == check_origin->size);
-        pas_log("    expected %zu %saligned bytes of int.\n",
+    pas_log("    expected");
+    if (check_origin->size) {
+        pas_log(" %zu %sbytes",
                 (size_t)check_origin->size, check_origin->needs_write ? "writable " : "");
-        break;
-    case FILC_WORD_TYPE_PTR:
-        PAS_ASSERT(check_origin->size == FILC_WORD_SIZE);
-        PAS_ASSERT(!check_origin->alignment_offset);
-        PAS_ASSERT(check_origin->alignment == FILC_WORD_SIZE);
-        pas_log("    expected %saligned ptr.\n", check_origin->needs_write ? "writable " : "");
-        break;
-    default:
-        PAS_ASSERT(!"Should not be reached");
-        break;
+    } else if (check_origin->needs_write)
+        pas_log(" writable capability");
+    else
+        pas_log(" valid capability");
+    PAS_ASSERT(check_origin->alignment >= 1);
+    PAS_ASSERT(check_origin->alignment <= FILC_WORD_SIZE);
+    PAS_ASSERT(pas_is_power_of_2(check_origin->alignment));
+    PAS_ASSERT(check_origin->alignment_offset < check_origin->alignment);
+    if (check_origin->alignment > 1) {
+        pas_log(" with ptr aligned to %zu bytes", (size_t)check_origin->alignment);
+        if (check_origin->alignment_offset)
+            pas_log(" at offset %zu", (size_t)check_origin->alignment_offset);
     }
+    pas_log(".\n");
     optimized_check_fail_impl(check_origin->scheduled_origin, check_origin->semantic_origins);
 }
 
@@ -3190,35 +2937,9 @@ PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_alignment_contradiction(
                               contradiction_origin->semantic_origins);
 }
 
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_optimized_type_contradiction(
-    filc_ptr ptr, const filc_optimized_type_contradiction_origin* contradiction_origin)
-{
-    pas_log("filc safety error: type contradiction.\n");
-    pas_log("    pointer: ");
-    filc_ptr_dump(ptr, &pas_log_stream.base);
-    pas_log("\n");
-    pas_log("required types:\n");
-    /* Gotta have at least two required types for there to have been a contradiction! */
-    PAS_ASSERT(contradiction_origin->checks[0].size);
-    PAS_ASSERT(contradiction_origin->checks[1].size);
-    size_t index;
-    for (index = 0; contradiction_origin->checks[index].size; ++index) {
-        PAS_ASSERT(contradiction_origin->checks[index].type != FILC_WORD_TYPE_UNSET);
-        pas_log("    type ");
-        filc_word_type_dump(contradiction_origin->checks[index].type, &pas_log_stream.base);
-        pas_log(" at offset %d and size %u.\n",
-                contradiction_origin->checks[index].offset,
-                (unsigned)contradiction_origin->checks[index].size);
-    }
-    PAS_ASSERT(!contradiction_origin->checks[index].size);
-    PAS_ASSERT(contradiction_origin->checks[index].type == FILC_WORD_TYPE_UNSET);
-    optimized_check_fail_impl(contradiction_origin->scheduled_origin,
-                              contradiction_origin->semantic_origins);
-}
-
 void filc_check_function_call(filc_ptr ptr)
 {
-    filc_check_access_special(ptr, FILC_WORD_TYPE_FUNCTION, NULL);
+    filc_check_access_special(ptr, FILC_SPECIAL_TYPE_FUNCTION);
 }
 
 PAS_NO_RETURN void filc_check_function_call_fail(filc_ptr ptr)
@@ -3227,228 +2948,85 @@ PAS_NO_RETURN void filc_check_function_call_fail(filc_ptr ptr)
     PAS_UNREACHABLE();
 }
 
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_read_native_int_fail(
-    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
+static void fix_origin(const filc_origin* origin)
 {
-    filc_check_read_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
-    PAS_UNREACHABLE();
+    filc_thread* my_thread = filc_get_my_thread();
+    if (origin && my_thread->top_frame)
+        my_thread->top_frame->origin = origin;
 }
 
-PAS_NEVER_INLINE PAS_NO_RETURN void filc_check_write_native_int_fail(
-    filc_ptr ptr, size_t size_and_alignment, const filc_origin* origin)
-{
-    filc_check_write_aligned_int(ptr, size_and_alignment, size_and_alignment, origin);
-    PAS_UNREACHABLE();
-}
-
-void filc_check_read_int8(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_native_int(ptr, 1, origin);
-}
-
-void filc_check_read_int16(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_native_int(ptr, 2, origin);
-}
-
-void filc_check_read_int32(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_native_int(ptr, 4, origin);
-}
-
-void filc_check_read_int64(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_native_int(ptr, 8, origin);
-}
-
-void filc_check_read_int128(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_native_int(ptr, 16, origin);
-}
-
-PAS_NO_RETURN void filc_check_read_int8_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_int8(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_read_int16_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_int16(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_read_int32_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_int32(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_read_int64_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_int64(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_read_int128_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_read_int128(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-void filc_check_write_int8(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_native_int(ptr, 1, origin);
-}
-
-void filc_check_write_int16(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_native_int(ptr, 2, origin);
-}
-
-void filc_check_write_int32(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_native_int(ptr, 4, origin);
-}
-
-void filc_check_write_int64(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_native_int(ptr, 8, origin);
-}
-
-void filc_check_write_int128(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_native_int(ptr, 16, origin);
-}
-
-PAS_NO_RETURN void filc_check_write_int8_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_int8(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_write_int16_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_int16(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_write_int32_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_int32(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_write_int64_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_int64(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-PAS_NO_RETURN void filc_check_write_int128_fail(filc_ptr ptr, const filc_origin* origin)
-{
-    filc_check_write_int128(ptr, origin);
-    PAS_UNREACHABLE();
-}
-
-void filc_check_pin_and_track_mmap(filc_thread* my_thread, filc_ptr ptr)
+static void check_mmap(filc_ptr ptr)
 {
     filc_object* object = filc_ptr_object(ptr);
     PAS_ASSERT(object); /* To use this function you should have already checked that the ptr is
                            accessible. */
     FILC_CHECK(
-        object->flags & FILC_OBJECT_FLAG_MMAP,
+        filc_object_get_flags(object) & FILC_OBJECT_FLAG_MMAP,
         NULL,
         "cannot perform this operation on something that was not mmapped (ptr = %s).",
         filc_ptr_to_new_string(ptr));
     FILC_CHECK(
-        !(object->flags & FILC_OBJECT_FLAG_FREE),
+        !(filc_object_get_flags(object) & FILC_OBJECT_FLAG_FREE),
         NULL,
         "cannot perform this operation on a free object (ptr = %s).",
         filc_ptr_to_new_string(ptr));
-    filc_pin_tracked(my_thread, object);
 }
 
-void filc_memset_with_exit(
-    filc_thread* my_thread, filc_object* object, void* ptr, unsigned value, size_t bytes)
+void filc_memset_with_exit(filc_thread* my_thread, void* ptr, unsigned value, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         filc_memset_small(ptr, value, bytes);
         return;
     }
-    filc_pin(object);
     filc_exit(my_thread);
     memset(ptr, value, bytes);
     filc_enter(my_thread);
-    filc_unpin(object);
 }
 
-void filc_memcpy_with_exit(
-    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
-    void* dst, const void* src, size_t bytes)
+void filc_memcpy_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         memcpy(dst, src, bytes);
         return;
     }
-    filc_pin(dst_object);
-    filc_pin(src_object);
     filc_exit(my_thread);
     memcpy(dst, src, bytes);
     filc_enter(my_thread);
-    filc_unpin(dst_object);
-    filc_unpin(src_object);
 }
 
-void filc_memmove_with_exit(
-    filc_thread* my_thread, filc_object* dst_object, filc_object* src_object,
-    void* dst, const void* src, size_t bytes)
+void filc_memmove_with_exit(filc_thread* my_thread, void* dst, const void* src, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         memmove(dst, src, bytes);
         return;
     }
-    filc_pin(dst_object);
-    filc_pin(src_object);
     filc_exit(my_thread);
     memmove(dst, src, bytes);
     filc_enter(my_thread);
-    filc_unpin(dst_object);
-    filc_unpin(src_object);
 }
 
-void filc_low_level_ptr_safe_bzero_with_exit(
-    filc_thread* my_thread, filc_object* object, void* raw_ptr, size_t bytes)
+void filc_low_level_ptr_safe_bzero_with_exit(filc_thread* my_thread, void* raw_ptr, size_t bytes)
 {
     if (bytes <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS) {
         filc_low_level_ptr_safe_bzero(raw_ptr, bytes);
         return;
     }
-    filc_pin(object);
     filc_exit(my_thread);
     filc_low_level_ptr_safe_bzero(raw_ptr, bytes);
     filc_enter(my_thread);
-    filc_unpin(object);
 }
 
 PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(
-    filc_ptr ptr, unsigned value, size_t count, const filc_origin* passed_origin)
+    filc_ptr ptr, size_t count, const filc_origin* passed_origin)
 {
     static const bool verbose = false;
     char* raw_ptr;
 
     filc_thread* my_thread = filc_get_my_thread();
-    
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memset", 0);
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    fix_origin(passed_origin);
+
+    FILC_DEFINE_FRAME("memset");
     filc_push_frame(my_thread, frame);
 
     raw_ptr = filc_ptr_ptr(ptr);
@@ -3456,33 +3034,30 @@ PAS_NO_RETURN PAS_NEVER_INLINE static void memset_fail(
     if (verbose)
         pas_log("count = %zu\n", count);
 
-    filc_check_access_common(ptr, count, filc_write_access, NULL);
-    if (value) {
-        check_int(ptr, count, NULL);
-        PAS_UNREACHABLE();
-    }
-    
-    /* FIXME: If the hanging chads in this range are already UNSET, then we don't have to do
-       anything. In particular, we could leave them UNSET and then skip the memset.
-       
-       But, we cnanot leave them UNSET and do the memset since that might race with someone
-       converting the range to PTR and result in a partially-nulled ptr. */
-    
-    char* start = raw_ptr;
-    char* end = raw_ptr + count;
-    char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
-    char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
-    PAS_ASSERT((aligned_start > end) == (aligned_end < start));
-    if (aligned_start > end || aligned_end < start) {
-        check_int_or_unset(ptr, count, NULL);
-        PAS_UNREACHABLE();
-    }
-    if (aligned_start > start)
-        check_int_or_unset(ptr, aligned_start - start, NULL);
-    check_accessible(ptr, NULL);
-    if (end > aligned_end)
-        check_int_or_unset(filc_ptr_with_ptr(ptr, aligned_end), end - aligned_end, NULL);
+    filc_check_access(ptr, count, filc_write_access);
     PAS_UNREACHABLE();
+}
+
+PAS_ALWAYS_INLINE static void nuke_aux_entry(char* aux_ptr, size_t offset)
+{
+    filc_lower_or_box* lower_or_box_ptr = (filc_lower_or_box*)(aux_ptr + offset);
+    filc_lower_or_box_store_unfenced_unbarriered(
+        lower_or_box_ptr, filc_lower_or_box_create_lower(NULL));
+}
+
+PAS_ALWAYS_INLINE static void nuke_aux_range(filc_thread* my_thread, char* aux_ptr,
+                                             size_t aligned_start_offset, size_t aligned_end_offset,
+                                             filc_size_mode size_mode)
+{
+    if (size_mode == filc_large_size)
+        filc_exit(my_thread);
+
+    size_t offset;
+    for (offset = aligned_start_offset; offset < aligned_end_offset; offset += FILC_WORD_SIZE)
+        nuke_aux_entry(aux_ptr, offset);
+    
+    if (size_mode == filc_large_size)
+        filc_enter(my_thread);
 }
 
 PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, filc_ptr ptr,
@@ -3496,55 +3071,27 @@ PAS_ALWAYS_INLINE static void memset_impl_specialized(filc_thread* my_thread, fi
     filc_object* object = filc_ptr_object(ptr);
 
     if (!object)
-        memset_fail(ptr, value, count, origin);
+        memset_fail(ptr, count, origin);
 
-    char* lower = (char*)object->lower;
-    char* upper = (char*)object->upper;
-    CHECK_BOUNDS_FAST(raw_ptr, lower, upper, count, memset_fail(ptr, value, count, origin));
-    CHECK_WRITE_FAST(object, memset_fail(ptr, value, count, origin));
+    char* lower = (char*)filc_object_lower(object);
+    char* upper = (char*)filc_object_upper(object);
+    CHECK_BOUNDS_FAST(raw_ptr, lower, upper, count, memset_fail(ptr, count, origin));
+    CHECK_WRITE_FAST(object, memset_fail(ptr, count, origin));
 
-    if (value) {
-        CHECK_INT_FAST(raw_ptr, object, lower, count,
-                       memset_fail(ptr, value, count, origin));
-        if (size_mode == filc_small_size)
-            filc_memset_small(raw_ptr, value, count);
-        else
-            filc_memset_with_exit(my_thread, object, raw_ptr, value, count);
-        return;
-    }
-
-    char* start = raw_ptr;
-    char* end = raw_ptr + count;
-    char* aligned_start = (char*)pas_round_up_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE);
-    char* aligned_end = (char*)pas_round_down_to_power_of_2((uintptr_t)end, FILC_WORD_SIZE);
-    PAS_TESTING_ASSERT((aligned_start > end) == (aligned_end < start));
-    /* FIXME: If the type is unset then we don't have to do anything - we can just skip the
-       memset for that word. Not only is that more forgiving, but it's also faster. */
-    if (aligned_start > end) {
-        PAS_TESTING_ASSERT(
-            (char*)pas_round_down_to_power_of_2((uintptr_t)start, FILC_WORD_SIZE)
-            == (char*)pas_round_down_to_power_of_2((uintptr_t)end - 1, FILC_WORD_SIZE));
-        if (CHECK_INT_OR_UNSET_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin)))
-            filc_memset_small(start, 0, count);
-        return;
-    }
-    if (aligned_start > start) {
-        PAS_TESTING_ASSERT((size_t)(aligned_start - start) < FILC_WORD_SIZE);
-        if (CHECK_INT_OR_UNSET_FAST_ONE(start, object, lower, memset_fail(ptr, 0, count, origin)))
-            filc_memset_small(start, 0, aligned_start - start);
-    }
     if (size_mode == filc_small_size)
-        filc_low_level_ptr_safe_bzero(aligned_start, aligned_end - aligned_start);
-    else {
-        filc_low_level_ptr_safe_bzero_with_exit(
-            my_thread, object, aligned_start, aligned_end - aligned_start);
-    }
-    if (end > aligned_end) {
-        PAS_TESTING_ASSERT((size_t)(end - aligned_end) < FILC_WORD_SIZE);
-        if (CHECK_INT_OR_UNSET_FAST_ONE(
-                aligned_end, object, lower, memset_fail(ptr, 0, count, origin)))
-            filc_memset_small(aligned_end, 0, end - aligned_end);
-    }
+        filc_memset_small(raw_ptr, value, count);
+    else
+        filc_memset_with_exit(my_thread, raw_ptr, value, count);
+
+    char* aux_ptr = filc_object_aux_ptr(object);
+    if (!aux_ptr)
+        return;
+
+    size_t start_offset = raw_ptr - lower;
+    size_t end_offset = start_offset + count;
+    size_t aligned_start_offset = pas_round_down_to_power_of_2(start_offset, FILC_WORD_SIZE);
+    size_t aligned_end_offset = pas_round_up_to_power_of_2(end_offset, FILC_WORD_SIZE);
+    nuke_aux_range(my_thread, aux_ptr, aligned_start_offset, aligned_end_offset, size_mode);
 }
 
 PAS_NEVER_INLINE static void memset_large(filc_thread* my_thread, filc_ptr ptr, unsigned value,
@@ -3588,112 +3135,14 @@ PAS_NO_RETURN PAS_NEVER_INLINE void memmove_fail(filc_ptr dst, filc_ptr src, siz
                 count);
         filc_thread_dump_stack(my_thread, &pas_log_stream.base);
     }
-    
-    if (passed_origin)
-        my_thread->top_frame->origin = passed_origin;
-    
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "memmove", 0);
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+
+    fix_origin(passed_origin);
+
+    FILC_DEFINE_FRAME("memmove");
     filc_push_frame(my_thread, frame);
 
-    filc_check_access_common(dst, count, filc_write_access, NULL);
-    filc_check_access_common(src, count, filc_read_access, NULL);
-
-    filc_object* dst_object = filc_ptr_object(dst);
-    filc_object* src_object = filc_ptr_object(src);
-
-    char* dst_start = filc_ptr_ptr(dst);
-    char* src_start = filc_ptr_ptr(src);
-
-    char* dst_end = dst_start + count;
-    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
-    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
-
-    PAS_TESTING_ASSERT((aligned_dst_start > dst_end) == (aligned_dst_end < dst_start));
-    if (aligned_dst_start > dst_end) {
-        check_int(dst, count, NULL);
-        check_int(src, count, NULL);
-        PAS_UNREACHABLE();
-    }
-
-    if (aligned_dst_start > dst_start) {
-        check_int(dst, aligned_dst_start - dst_start, NULL);
-        check_int(src, aligned_dst_start - dst_start, NULL);
-    }
-
-    bool src_can_has_ptrs =
-        pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
-        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE);
-
-    check_accessible(dst, NULL);
-    if (src_can_has_ptrs)
-        check_accessible(src, NULL);
-    else
-        check_int(src, count, NULL);
-    
-    filc_ptr* cur_dst = (filc_ptr*)aligned_dst_start;
-    filc_ptr* cur_src = (filc_ptr*)(src_start + (aligned_dst_start - dst_start));
-    size_t cur_dst_word_index = ((char*)cur_dst - (char*)dst_object->lower) / FILC_WORD_SIZE;
-    size_t cur_src_word_index = ((char*)cur_src - (char*)src_object->lower) / FILC_WORD_SIZE;
-    size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
-
-    while (countdown--) {
-        filc_word_type src_word_type;
-        filc_ptr src_word;
-        if (src_can_has_ptrs) {
-            src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
-            src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
-        } else {
-            src_word_type = FILC_WORD_TYPE_INT;
-            src_word = *cur_src;
-        }
-        if (!filc_ptr_is_totally_null(src_word) && src_word_type != FILC_WORD_TYPE_UNSET) {
-            FILC_CHECK(
-                src_word_type == FILC_WORD_TYPE_INT ||
-                src_word_type == FILC_WORD_TYPE_PTR,
-                NULL,
-                "cannot copy anything but int or ptr (dst = %s, src = %s).",
-                filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
-                filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
-            filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
-            if (dst_word_type == FILC_WORD_TYPE_UNSET) {
-                filc_word_type old_word_type = pas_compare_and_swap_uint8_strong(
-                    dst_object->word_types + cur_dst_word_index,
-                    FILC_WORD_TYPE_UNSET,
-                    src_word_type);
-                FILC_CHECK(
-                    old_word_type == FILC_WORD_TYPE_UNSET ||
-                    old_word_type == src_word_type,
-                    NULL,
-                    "type mismatch while copying (dst = %s, src = %s).",
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
-            } else {
-                FILC_CHECK(
-                    src_word_type == dst_word_type,
-                    NULL,
-                    "type mismatch while copying (dst = %s, src = %s).",
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(dst, cur_dst)),
-                    filc_ptr_to_new_string(filc_ptr_with_ptr(src, cur_src)));
-            }
-        }
-        cur_dst++;
-        cur_src++;
-        cur_dst_word_index++;
-        cur_src_word_index++;
-    }
-
-    if (dst_end > aligned_dst_end) {
-        check_int(filc_ptr_with_ptr(dst, aligned_dst_end), dst_end - aligned_dst_end, NULL);
-        check_int(filc_ptr_with_offset(src, aligned_dst_end - dst_start), dst_end - aligned_dst_end,
-                  NULL);
-    }
-
+    filc_check_access(dst, count, filc_write_access);
+    filc_check_access(src, count, filc_read_access);
     PAS_UNREACHABLE();
 }
 
@@ -3704,253 +3153,281 @@ enum memmove_smidgen_part {
 
 typedef enum memmove_smidgen_part memmove_smidgen_part;
 
-static PAS_ALWAYS_INLINE void memmove_smidgen(memmove_smidgen_part part, filc_ptr dst, filc_ptr src,
-                                              char* dst_lower, char* src_lower,
-                                              char* dst_start, char* aligned_dst_start,
-                                              char* dst_end, char* aligned_dst_end,
-                                              char* src_start, bool is_up, size_t count,
-                                              const filc_origin* origin)
+static PAS_ALWAYS_INLINE void memmove_smidgen(memmove_smidgen_part part, char* dst_aux_ptr,
+                                              size_t dst_start_offset, size_t dst_end_offset,
+                                              bool has_dst_aux)
 {
+    /* This is hella subtle. has_dst_aux means: did we have a dst_aux at the start of the memmove?
+       If we didn't have one at the start, then there's no reason to nuke the smidgen, even if we
+       since created one. Simple! */
+    if (!has_dst_aux)
+        return;
     switch (part) {
     case memmove_lower_smidgen:
-        if (aligned_dst_start > dst_start) {
-            PAS_TESTING_ASSERT((size_t)(aligned_dst_start - dst_start) < FILC_WORD_SIZE);
-            CHECK_INT_FAST_ONE(dst_start, filc_ptr_object(dst), dst_lower,
-                               memmove_fail(dst, src, count, origin));
-            CHECK_INT_FAST_ONE(src_start, filc_ptr_object(src), src_lower,
-                               memmove_fail(dst, src, count, origin));
-            filc_memcpy_small_up_or_down(dst_start, src_start, aligned_dst_start - dst_start, is_up);
-        }
+        if (pas_is_aligned(dst_start_offset, FILC_WORD_SIZE))
+            return;
+        nuke_aux_entry(dst_aux_ptr, pas_round_down_to_power_of_2(dst_start_offset, FILC_WORD_SIZE));
         return;
 
     case memmove_upper_smidgen:
-        if (dst_end > aligned_dst_end) {
-            PAS_TESTING_ASSERT((size_t)(dst_end - aligned_dst_end) < FILC_WORD_SIZE);
-            CHECK_INT_FAST_ONE(aligned_dst_end, filc_ptr_object(dst), dst_lower,
-                               memmove_fail(dst, src, count, origin));
-            CHECK_INT_FAST_ONE(src_start + (aligned_dst_end - dst_start), filc_ptr_object(src),
-                               src_lower, memmove_fail(dst, src, count, origin));
-            filc_memcpy_small_up_or_down(aligned_dst_end, src_start + (aligned_dst_end - dst_start),
-                                         dst_end - aligned_dst_end, is_up);
-        }
+        if (pas_is_aligned(dst_end_offset, FILC_WORD_SIZE))
+            return;
+        nuke_aux_entry(dst_aux_ptr, pas_round_down_to_power_of_2(dst_end_offset, FILC_WORD_SIZE));
         return;
     }
     PAS_ASSERT(!"Bad part");
 }
 
-PAS_ALWAYS_INLINE static void memmove_impl_body(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_ptr* cur_dst,
-    filc_ptr* cur_src, size_t cur_dst_word_index, size_t cur_src_word_index,
-    bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin)
+PAS_ALWAYS_INLINE static void memmove_aux_loop_body(filc_thread* my_thread,
+                                                    char** dst_aux_ptr,
+                                                    char* src_aux_ptr,
+                                                    size_t dst_start_offset,
+                                                    size_t src_start_offset,
+                                                    size_t dst_end_offset,
+                                                    bool do_barrier,
+                                                    bool has_dst_aux,
+                                                    filc_object* dst_object,
+                                                    bool is_up)
 {
-    filc_object* dst_object = filc_ptr_object(dst);
-    filc_object* src_object = filc_ptr_object(src);
-    
-    filc_word_type src_word_type;
-    filc_ptr src_word;
-    if (src_can_has_ptrs) {
-        src_word_type = filc_object_get_word_type(src_object, cur_src_word_index);
-        src_word = filc_ptr_load_with_manual_tracking_yolo(cur_src);
+    PAS_TESTING_ASSERT(dst_end_offset >= dst_start_offset);
+    PAS_TESTING_ASSERT(pas_is_aligned(dst_start_offset, FILC_WORD_SIZE));
+    PAS_TESTING_ASSERT(pas_is_aligned(src_start_offset, FILC_WORD_SIZE));
+    PAS_TESTING_ASSERT(pas_is_aligned(dst_end_offset, FILC_WORD_SIZE));
+    PAS_TESTING_ASSERT(src_aux_ptr);
+    PAS_TESTING_ASSERT(pas_is_aligned((uintptr_t)src_aux_ptr, FILC_WORD_SIZE));
+    size_t dst_offset;
+    size_t src_offset;
+    if (is_up) {
+        dst_offset = dst_start_offset;
+        src_offset = src_start_offset;
     } else {
-        src_word_type = FILC_WORD_TYPE_INT;
-        src_word = *cur_src;
+        dst_offset = dst_end_offset;
+        src_offset = src_start_offset + (dst_end_offset - dst_start_offset);
     }
-    if (filc_ptr_is_totally_null(src_word) || src_word_type == FILC_WORD_TYPE_UNSET) {
-        /* copying an unset zero word is always legal to any destination type, no
-           problem. it's even OK to copy a zero into free memory. and there's zero value
-           in changing the destination type from unset to anything.
-           
-           And if we saw a non-zero src_word but an unset word type, then that means that
-           the word had just been zero and we're racing. In that case pretend we had read
-           the zero. */
-        filc_ptr_store_without_barrier(cur_dst, filc_ptr_forge_null());
-        return;
-    }
-
-    if (do_barrier) {
-        if (src_word_type == FILC_WORD_TYPE_PTR)
-            fugc_mark(&my_thread->mark_stack, filc_ptr_object(src_word));
-        else if (src_word_type != FILC_WORD_TYPE_INT)
-            memmove_fail(dst, src, count, origin);
-    } else {
-        if (src_word_type != FILC_WORD_TYPE_PTR && src_word_type != FILC_WORD_TYPE_INT)
-            memmove_fail(dst, src, count, origin);
-    }
-    
-    filc_word_type dst_word_type = filc_object_get_word_type(dst_object, cur_dst_word_index);
-    if (dst_word_type == FILC_WORD_TYPE_UNSET) {
-        filc_word_type old_word_type = pas_compare_and_swap_uint8_strong(
-            dst_object->word_types + cur_dst_word_index,
-            FILC_WORD_TYPE_UNSET,
-            src_word_type);
-        if (old_word_type != FILC_WORD_TYPE_UNSET && old_word_type != src_word_type)
-            memmove_fail(dst, src, count, origin);
-    } else if (src_word_type != dst_word_type)
-        memmove_fail(dst, src, count, origin);
-    
-    filc_ptr_store_without_barrier(cur_dst, src_word);
-}
-
-PAS_ALWAYS_INLINE static void memmove_impl_loop(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_ptr* cur_dst,
-    filc_ptr* cur_src, size_t cur_dst_word_index, size_t cur_src_word_index,
-    size_t countdown, bool is_up, bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin)
-{
-    while (countdown--) {
-        memmove_impl_body(my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
-                          cur_src_word_index, do_barrier, src_can_has_ptrs, origin);
+    for (;;) {
         if (is_up) {
-            cur_dst++;
-            cur_src++;
-            cur_dst_word_index++;
-            cur_src_word_index++;
+            if (dst_offset >= dst_end_offset) {
+                PAS_TESTING_ASSERT(dst_offset == dst_end_offset);
+                return;
+            }
         } else {
-            cur_dst--;
-            cur_src--;
-            cur_dst_word_index--;
-            cur_src_word_index--;
+            if (dst_offset <= dst_start_offset) {
+                PAS_TESTING_ASSERT(dst_offset == dst_start_offset);
+                return;
+            }
+            dst_offset -= FILC_WORD_SIZE;
+            src_offset -= FILC_WORD_SIZE;
+        }
+        filc_lower_or_box src_lower_or_box = filc_lower_or_box_load_unfenced(
+            (filc_lower_or_box*)(src_aux_ptr + src_offset));
+        void* lower = filc_lower_or_box_extract_lower(src_lower_or_box);
+        bool do_store = true;
+        if (!has_dst_aux && !*dst_aux_ptr) {
+            if (lower)
+                *dst_aux_ptr = filc_object_ensure_aux_ptr(my_thread, dst_object);
+            else
+                do_store = false;
+        }
+        if (do_store) {
+            if (!has_dst_aux) {
+                /* FIXME: Could optimize the no-dst-aux case to have two loops; one for before when
+                   we create the aux and one for after.
+                
+                   Then, we could do the same barrier specialization that the other paths use.
+                
+                   But I suspect that this isn't a sufficiently interesting case to worry about for
+                   now, and it would not be a super trivial optimization. */
+                filc_store_barrier(my_thread, filc_object_for_lower(lower));
+            } else if (do_barrier && lower)
+                fugc_mark(&my_thread->mark_stack, filc_object_for_lower_not_null(lower));
+            filc_lower_or_box* dst_lower_or_box_ptr = (filc_lower_or_box*)(*dst_aux_ptr + dst_offset);
+            filc_lower_or_box_store_unfenced_unbarriered(
+                dst_lower_or_box_ptr, filc_lower_or_box_create_lower(lower));
+        }
+        if (is_up) {
+            dst_offset += FILC_WORD_SIZE;
+            src_offset += FILC_WORD_SIZE;
         }
     }
 }
 
-PAS_ALWAYS_INLINE static void memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_size_mode size_mode,
-    bool is_up, bool do_barrier, bool src_can_has_ptrs, const filc_origin* origin, char* dst_lower,
-    char* src_lower)
+PAS_ALWAYS_INLINE static void memmove_aux_loop(filc_thread* my_thread,
+                                               char* dst_aux_ptr,
+                                               char* src_aux_ptr,
+                                               size_t dst_start_offset,
+                                               size_t src_start_offset,
+                                               size_t dst_end_offset,
+                                               filc_size_mode size_mode,
+                                               bool do_barrier,
+                                               bool has_dst_aux,
+                                               filc_object* dst_object,
+                                               bool is_up)
 {
-    filc_object* dst_object = filc_ptr_object(dst);
-    filc_object* src_object = filc_ptr_object(src);
+    dst_start_offset = pas_round_up_to_power_of_2(dst_start_offset, FILC_WORD_SIZE);
+    src_start_offset = pas_round_up_to_power_of_2(src_start_offset, FILC_WORD_SIZE);
+    dst_end_offset = pas_round_down_to_power_of_2(dst_end_offset, FILC_WORD_SIZE);
 
-    char* dst_start = filc_ptr_ptr(dst);
-    char* src_start = filc_ptr_ptr(src);
-
-    char* dst_end = dst_start + count;
-    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
-    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
-
-    if (src_can_has_ptrs)
-        CHECK_ACCESSIBLE_FAST(src_object, memmove_fail(dst, src, count, origin));
-    else {
-        CHECK_INT_FAST(src_start, src_object, src_lower, count,
-                       memmove_fail(dst, src, count, origin));
-    }
+    if (dst_end_offset <= dst_start_offset)
+        return;
     
-    filc_ptr* cur_dst = (filc_ptr*)aligned_dst_start;
-    filc_ptr* cur_src = (filc_ptr*)(src_start + (aligned_dst_start - dst_start));
-    size_t cur_dst_word_index = ((char*)cur_dst - dst_lower) / FILC_WORD_SIZE;
-    size_t cur_src_word_index = ((char*)cur_src - src_lower) / FILC_WORD_SIZE;
-    size_t countdown = (aligned_dst_end - aligned_dst_start) / FILC_WORD_SIZE;
-
-    if (!is_up) {
-        cur_dst += countdown - 1;
-        cur_src += countdown - 1;
-        cur_dst_word_index += countdown - 1;
-        cur_src_word_index += countdown - 1;
-    }
-
     switch (size_mode) {
     case filc_small_size:
-        memmove_impl_loop(my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
-                          cur_src_word_index, countdown, is_up, do_barrier, src_can_has_ptrs, origin);
-        return;
-    case filc_large_size:
-        PAS_TESTING_ASSERT(!do_barrier);
-        while (countdown) {
-            size_t inner_countdown = pas_min_uintptr(
-                countdown, FILC_MAX_BYTES_BETWEEN_POLLCHECKS / FILC_WORD_SIZE);
-            if (PAS_LIKELY(!filc_is_marking)) {
-                bool do_barrier = false;
-                memmove_impl_loop(
-                    my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
-                    cur_src_word_index, inner_countdown, is_up, do_barrier, src_can_has_ptrs, origin);
-            } else {
-                bool do_barrier = true;
-                memmove_impl_loop(
-                    my_thread, dst, src, count, cur_dst, cur_src, cur_dst_word_index,
-                    cur_src_word_index, inner_countdown, is_up, do_barrier, src_can_has_ptrs, origin);
-            }
-            
-            if (is_up) {
-                cur_dst += inner_countdown;
-                cur_src += inner_countdown;
-                cur_dst_word_index += inner_countdown;
-                cur_src_word_index += inner_countdown;
-            } else {
-                cur_dst -= inner_countdown;
-                cur_src -= inner_countdown;
-                cur_dst_word_index -= inner_countdown;
-                cur_src_word_index -= inner_countdown;
-            }
-            countdown -= inner_countdown;
-            if (filc_pollcheck(my_thread, NULL)) {
-                CHECK_ACCESSIBLE_FAST(dst_object, memmove_fail(dst, src, count, origin));
-                CHECK_ACCESSIBLE_FAST(src_object, memmove_fail(dst, src, count, origin));
-            }
+        memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
+                              dst_start_offset, src_start_offset, dst_end_offset,
+                              do_barrier, has_dst_aux, dst_object, is_up);
+        break;
+
+    case filc_large_size: {
+        size_t dst_offset;
+        size_t src_offset;
+        if (is_up) {
+            dst_offset = dst_start_offset;
+            src_offset = src_start_offset;
+        } else {
+            dst_offset = dst_end_offset;
+            src_offset = src_start_offset + (dst_end_offset - dst_start_offset);
         }
+        for (;;) {
+            size_t current_dst_start_offset;
+            size_t current_dst_end_offset;
+            size_t current_src_start_offset;
+            PAS_ASSERT(pas_is_aligned(FILC_MAX_BYTES_BETWEEN_POLLCHECKS, FILC_WORD_SIZE));
+            if (is_up) {
+                if (dst_offset >= dst_end_offset) {
+                    PAS_TESTING_ASSERT(dst_offset == dst_end_offset);
+                    break;
+                }
+                current_dst_start_offset = dst_offset;
+                current_dst_end_offset = pas_min_uintptr(
+                    dst_offset + FILC_MAX_BYTES_BETWEEN_POLLCHECKS,
+                    dst_end_offset);
+                current_src_start_offset = src_offset;
+                dst_offset = current_dst_end_offset;
+                src_offset += current_dst_end_offset - current_dst_start_offset;
+            } else {
+                if (dst_offset <= dst_start_offset) {
+                    PAS_TESTING_ASSERT(dst_offset == dst_start_offset);
+                    break;
+                }
+                size_t step = pas_min_uintptr(FILC_MAX_BYTES_BETWEEN_POLLCHECKS,
+                                              dst_offset - dst_start_offset);
+                current_dst_end_offset = dst_offset;
+                current_dst_start_offset = dst_offset - step;
+                current_src_start_offset = src_offset - step;
+                dst_offset -= step;
+                src_offset -= step;
+            }
+            PAS_TESTING_ASSERT(pas_is_aligned(current_dst_start_offset, FILC_WORD_SIZE));
+            PAS_TESTING_ASSERT(pas_is_aligned(current_dst_end_offset, FILC_WORD_SIZE));
+            PAS_TESTING_ASSERT(pas_is_aligned(current_src_start_offset, FILC_WORD_SIZE));
+            if (!has_dst_aux && PAS_UNLIKELY(filc_is_marking)) {
+                bool do_barrier = true;
+                memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
+                                      current_dst_start_offset, current_src_start_offset,
+                                      current_dst_end_offset,
+                                      do_barrier, has_dst_aux, dst_object, is_up);
+            } else {
+                bool do_barrier = false;
+                memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
+                                      current_dst_start_offset, current_src_start_offset,
+                                      current_dst_end_offset,
+                                      do_barrier, has_dst_aux, dst_object, is_up);
+            }
+            filc_pollcheck(my_thread, NULL);
+        }
+        break;
+    } }
+}
+
+PAS_ALWAYS_INLINE static void memmove_aux_direction_specialized(filc_thread* my_thread,
+                                                                char* dst_aux_ptr,
+                                                                char* src_aux_ptr,
+                                                                size_t dst_start_offset,
+                                                                size_t src_start_offset,
+                                                                size_t dst_end_offset,
+                                                                filc_size_mode size_mode,
+                                                                bool do_barrier,
+                                                                bool has_dst_aux,
+                                                                filc_object* dst_object,
+                                                                bool is_up)
+{
+    memmove_smidgen(is_up ? memmove_lower_smidgen : memmove_upper_smidgen,
+                    dst_aux_ptr, dst_start_offset, dst_end_offset, has_dst_aux);
+
+    memmove_aux_loop(my_thread, dst_aux_ptr, src_aux_ptr, dst_start_offset, src_start_offset,
+                     dst_end_offset, size_mode, do_barrier, has_dst_aux, dst_object, is_up);
+
+    memmove_smidgen(is_up ? memmove_upper_smidgen : memmove_lower_smidgen,
+                    dst_aux_ptr, dst_start_offset, dst_end_offset, has_dst_aux);
+}
+
+PAS_ALWAYS_INLINE static void memmove_aux_barrier_specialized(filc_thread* my_thread,
+                                                              char* dst_aux_ptr,
+                                                              char* src_aux_ptr,
+                                                              size_t dst_start_offset,
+                                                              size_t src_start_offset,
+                                                              size_t dst_end_offset,
+                                                              filc_size_mode size_mode,
+                                                              bool do_barrier,
+                                                              bool has_dst_aux,
+                                                              filc_object* dst_object)
+{
+    // NOTE: If dst_aux_ptr != src_aux_ptr, then we could use either variant.
+    if (dst_aux_ptr + dst_start_offset < src_aux_ptr + src_start_offset || !has_dst_aux) {
+        bool is_up = true;
+        memmove_aux_direction_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                          dst_start_offset, src_start_offset, dst_end_offset,
+                                          size_mode, do_barrier, has_dst_aux, dst_object, is_up);
         return;
     }
-
-    PAS_ASSERT(!"Should not be reached");
-}
-
-PAS_ALWAYS_INLINE static void memmove_impl_size_direction_and_barrier_specialized(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, filc_size_mode size_mode,
-    bool is_up, bool do_barrier, const filc_origin* origin, char* dst_lower, char* src_lower)
-{
-    filc_object* dst_object = filc_ptr_object(dst);
-    filc_object* src_object = filc_ptr_object(src);
-
-    char* dst_start = filc_ptr_ptr(dst);
-    char* src_start = filc_ptr_ptr(src);
-
-    char* dst_end = dst_start + count;
-    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
-    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
-
-    memmove_smidgen(is_up ? memmove_lower_smidgen : memmove_upper_smidgen,
-                    dst, src, dst_lower, src_lower, dst_start, aligned_dst_start, dst_end,
-                    aligned_dst_end, src_start, is_up, count, origin);
-
-    bool src_can_has_ptrs =
-        pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
-        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE);
-
-    if (pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
-        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE)) {
-        bool src_can_has_ptrs = true;
-        memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
-            my_thread, dst, src, count, size_mode, is_up, do_barrier, src_can_has_ptrs, origin,
-            dst_lower, src_lower);
-    } else {
-        bool src_can_has_ptrs = false;
-        memmove_impl_size_direction_barrier_and_can_has_ptrs_specialized(
-            my_thread, dst, src, count, size_mode, is_up, do_barrier, src_can_has_ptrs, origin,
-            dst_lower, src_lower);
-    }
-    
-    memmove_smidgen(is_up ? memmove_upper_smidgen : memmove_lower_smidgen,
-                    dst, src, dst_lower, src_lower, dst_start, aligned_dst_start, dst_end,
-                    aligned_dst_end, src_start, is_up, count, origin);
-}
-
-PAS_NEVER_INLINE void memmove_impl_small_size_up_barrier(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
-{
-    bool is_up = true;
-    bool do_barrier = true;
-    memmove_impl_size_direction_and_barrier_specialized(
-        my_thread, dst, src, count, filc_small_size, is_up, do_barrier, origin,
-        filc_ptr_object(dst)->lower, filc_ptr_object(src)->lower);
-}
-
-PAS_NEVER_INLINE void memmove_impl_small_size_down_barrier(
-    filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count, const filc_origin* origin)
-{
     bool is_up = false;
+    memmove_aux_direction_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                      dst_start_offset, src_start_offset, dst_end_offset,
+                                      size_mode, do_barrier, has_dst_aux, dst_object, is_up);
+}
+
+PAS_NEVER_INLINE static void memmove_aux_small_barrier(filc_thread* my_thread,
+                                                       char* dst_aux_ptr,
+                                                       char* src_aux_ptr,
+                                                       size_t dst_start_offset,
+                                                       size_t src_start_offset,
+                                                       size_t dst_end_offset)
+{
     bool do_barrier = true;
-    memmove_impl_size_direction_and_barrier_specialized(
-        my_thread, dst, src, count, filc_small_size, is_up, do_barrier, origin,
-        filc_ptr_object(dst)->lower, filc_ptr_object(src)->lower);
+    bool has_dst_aux = true;
+    memmove_aux_barrier_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                    dst_start_offset, src_start_offset, dst_end_offset,
+                                    filc_small_size, do_barrier, has_dst_aux, NULL);
+}
+
+PAS_NEVER_INLINE static void memmove_aux_small_no_dst(filc_thread* my_thread,
+                                                      char* dst_aux_ptr,
+                                                      char* src_aux_ptr,
+                                                      size_t dst_start_offset,
+                                                      size_t src_start_offset,
+                                                      size_t dst_end_offset,
+                                                      filc_object* dst_object)
+{
+    bool do_barrier = false;
+    bool has_dst_aux = false;
+    memmove_aux_barrier_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                    dst_start_offset, src_start_offset, dst_end_offset,
+                                    filc_small_size, do_barrier, has_dst_aux, dst_object);
+}
+
+PAS_NEVER_INLINE static void memmove_aux_large_no_dst(filc_thread* my_thread,
+                                                      char* dst_aux_ptr,
+                                                      char* src_aux_ptr,
+                                                      size_t dst_start_offset,
+                                                      size_t src_start_offset,
+                                                      size_t dst_end_offset,
+                                                      filc_object* dst_object)
+{
+    bool do_barrier = false;
+    bool has_dst_aux = false;
+    memmove_aux_barrier_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                    dst_start_offset, src_start_offset, dst_end_offset,
+                                    filc_large_size, do_barrier, has_dst_aux, dst_object);
 }
 
 /* Assumes that the dst/src are tracked by GC. Assumes that count is nonzero. */
@@ -3980,50 +3457,74 @@ PAS_ALWAYS_INLINE static void memmove_impl_size_specialized(filc_thread* my_thre
     char* dst_start = filc_ptr_ptr(dst);
     char* src_start = filc_ptr_ptr(src);
 
-    char* dst_lower = (char*)dst_object->lower;
-    char* dst_upper = (char*)dst_object->upper;
-    char* src_lower = (char*)src_object->lower;
-    char* src_upper = (char*)src_object->upper;
+    char* dst_lower = (char*)filc_object_lower(dst_object);
+    char* dst_upper = (char*)filc_object_upper(dst_object);
+    char* src_lower = (char*)filc_object_lower(src_object);
+    char* src_upper = (char*)filc_object_upper(src_object);
 
     CHECK_BOUNDS_FAST(dst_start, dst_lower, dst_upper, count, memmove_fail(dst, src, count, origin));
     CHECK_BOUNDS_FAST(src_start, src_lower, src_upper, count, memmove_fail(dst, src, count, origin));
     CHECK_WRITE_FAST(dst_object, memmove_fail(dst, src, count, origin));
 
-    char* dst_end = dst_start + count;
-    char* aligned_dst_start = (char*)pas_round_up_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE);
-    char* aligned_dst_end = (char*)pas_round_down_to_power_of_2((uintptr_t)dst_end, FILC_WORD_SIZE);
-
-    PAS_TESTING_ASSERT((aligned_dst_start > dst_end) == (aligned_dst_end < dst_start));
-    if (aligned_dst_start > dst_end) {
-        PAS_TESTING_ASSERT(count < FILC_WORD_SIZE);
-        PAS_TESTING_ASSERT(pas_round_down_to_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
-                           pas_round_down_to_power_of_2((uintptr_t)dst_end - 1, FILC_WORD_SIZE));
-        CHECK_INT_FAST_ONE(dst_start, dst_object, dst_lower, memmove_fail(dst, src, count, origin));
-        CHECK_INT_FAST_ONE(src_start, src_object, src_lower, memmove_fail(dst, src, count, origin));
+    if (size_mode == filc_small_size)
         filc_memmove_small(dst_start, src_start, count);
+    else
+        filc_memmove_with_exit(my_thread, dst_start, src_start, count);
+
+    /* Here are the cases in descending order of nastiness:
+       
+       - Target doesn't have an aux, but the source does, and the offsets are in phase. In that case,
+         we have to scan through the source aux until we find a non-NULL lower, and then allocate the
+         target aux. Allocating the aux might exit, so the barrier state might change.
+
+       - We have to barrier, both have aux, and the offsets are in phase.
+
+v       - We don't have to barrier, both have aux, and the offsets are in phase.
+
+       - The destination has aux, but either the source doesn't or the offsets are out of phase.
+         Doesn't matter if we have a barrier in this case. We just nuke the dst aux range.
+
+       - Neither has aux. Or, source has aux, the destination does not, but the offsets are out of
+         phase. Then there's just nothing to do. Best case ever! */
+    char* dst_aux_ptr = filc_object_aux_ptr(dst_object);
+    char* src_aux_ptr = filc_object_aux_ptr(src_object);
+    size_t dst_start_offset = dst_start - dst_lower;
+    size_t src_start_offset = src_start - src_lower;
+    size_t dst_end_offset = dst_start_offset + count;
+    if (dst_aux_ptr) {
+        if (!src_aux_ptr || (pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) !=
+                             pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE))) {
+            nuke_aux_range(my_thread, dst_aux_ptr,
+                           pas_round_down_to_power_of_2(dst_start_offset, FILC_WORD_SIZE),
+                           pas_round_up_to_power_of_2(dst_end_offset, FILC_WORD_SIZE),
+                           size_mode);
+            return;
+        }
+        if (size_mode == filc_large_size || PAS_LIKELY(!filc_is_marking)) {
+            /* NOTE: do_barrier is ignored if we're in large_size. */
+            bool do_barrier = false;
+            bool has_dst_aux = true;
+            memmove_aux_barrier_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
+                                            dst_start_offset, src_start_offset, dst_end_offset,
+                                            size_mode, do_barrier, has_dst_aux, NULL);
+            return;
+        }
+        memmove_aux_small_barrier(my_thread, dst_aux_ptr, src_aux_ptr,
+                                  dst_start_offset, src_start_offset, dst_end_offset);
         return;
     }
-
-    if (dst_start < src_start) {
-        bool is_up = true;
-        if (size_mode == filc_large_size || PAS_LIKELY(!filc_is_marking)) {
-            /* NOTE: do_barrier is ignored if we're in large_size. */
-            bool do_barrier = false;
-            memmove_impl_size_direction_and_barrier_specialized(
-                my_thread, dst, src, count, size_mode, is_up, do_barrier, origin, dst_lower,
-                src_lower);
-        } else
-            memmove_impl_small_size_up_barrier(my_thread, dst, src, count, origin);
-    } else {
-        bool is_up = false;
-        if (size_mode == filc_large_size || PAS_LIKELY(!filc_is_marking)) {
-            /* NOTE: do_barrier is ignored if we're in large_size. */
-            bool do_barrier = false;
-            memmove_impl_size_direction_and_barrier_specialized(
-                my_thread, dst, src, count, size_mode, is_up, do_barrier, origin, dst_lower,
-                src_lower);
-        } else
-            memmove_impl_small_size_down_barrier(my_thread, dst, src, count, origin);
+    if (src_aux_ptr && (pas_modulo_power_of_2((uintptr_t)dst_start, FILC_WORD_SIZE) ==
+                        pas_modulo_power_of_2((uintptr_t)src_start, FILC_WORD_SIZE))) {
+        if (size_mode == filc_small_size) {
+            memmove_aux_small_no_dst(my_thread, dst_aux_ptr, src_aux_ptr,
+                                     dst_start_offset, src_start_offset, dst_end_offset,
+                                     dst_object);
+            return;
+        }
+        memmove_aux_large_no_dst(my_thread, dst_aux_ptr, src_aux_ptr,
+                                 dst_start_offset, src_start_offset, dst_end_offset,
+                                 dst_object);
+        return;
     }
 }
 
@@ -4047,126 +3548,151 @@ PAS_ALWAYS_INLINE void memmove_impl(filc_thread* my_thread, filc_ptr dst, filc_p
 void filc_memmove(filc_thread* my_thread, filc_ptr dst, filc_ptr src, size_t count,
                   const filc_origin* passed_origin)
 {
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("filc_memmove: dst = ");
+        filc_ptr_dump(dst, &pas_log_stream.base);
+        pas_log(", src = ");
+        filc_ptr_dump(src, &pas_log_stream.base);
+        pas_log(", count = %zu, origin = ", count);
+        filc_origin_dump_all_inline(passed_origin, "/", &pas_log_stream.base);
+        pas_log("\n");
+    }
     memmove_impl(my_thread, dst, src, count, passed_origin);
 }
 
-filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, filc_cc_ptr cc_ptr)
+static filc_ptr promote_cc_to_heap(filc_thread* my_thread, size_t size)
 {
-    if (!filc_cc_ptr_size(cc_ptr))
+    PAS_ASSERT(size <= filc_thread_cc_total_size(my_thread));
+
+    if (!size)
         return filc_ptr_forge_null();
 
-    filc_object* result_object = allocate_impl(
-        my_thread, filc_cc_ptr_size(cc_ptr), FILC_OBJECT_FLAG_READONLY, FILC_WORD_TYPE_UNSET);
-    size_t index;
-    pas_uint128* dst_base = (pas_uint128*)result_object->lower;
-    pas_uint128* src_base = (pas_uint128*)cc_ptr.base;
-    for (index = cc_ptr.type->num_words; index--;) {
-        filc_word_type word_type = cc_ptr.type->word_types[index];
-        PAS_TESTING_ASSERT(filc_is_valid_actual_cc_type(word_type));
-        pas_uint128 word = src_base[index];
-        if (word_type == FILC_WORD_TYPE_PTR)
-            filc_store_barrier_for_word(my_thread, word);
-        result_object->word_types[index] = word_type;
-        dst_base[index] = word;
+    /* The calling convention requires that the CC size is always a multiple of word size. */
+    PAS_ASSERT(pas_is_aligned(size, FILC_WORD_SIZE));
+
+    filc_object* result_object = allocate_impl(my_thread, size, FILC_OBJECT_FLAG_READONLY);
+    filc_thread_track_object(my_thread, result_object);
+
+    size_t offset;
+    for (offset = 0; offset < size; offset += FILC_WORD_SIZE) {
+        *(filc_word*)((char*)filc_object_lower(result_object) + offset) =
+            *(filc_word*)filc_thread_cc_slot_at_offset(my_thread, offset);
     }
-    pas_store_store_fence();
     
-    return filc_ptr_create_with_manual_tracking(result_object);
+    for (offset = 0; offset < size; offset += FILC_WORD_SIZE) {
+        void* lower = filc_lower_or_box_get_lower(
+            filc_lower_or_box_load_unfenced(
+                filc_thread_cc_aux_slot_at_offset(my_thread, offset)));
+        if (lower) {
+            filc_thread_track_object(my_thread, filc_object_for_lower(lower));
+            char* aux_ptr = filc_object_ensure_aux_ptr(my_thread, result_object);
+            filc_store_barrier(my_thread, filc_object_for_lower(lower));
+            filc_lower_or_box_store_unfenced_unbarriered(
+                (filc_lower_or_box*)(aux_ptr + offset),
+                filc_lower_or_box_create_lower(lower));
+        }
+    }
+
+    return filc_ptr_create_with_object_and_manual_tracking(result_object);
 }
 
-static void zcall_impl(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr,
-                       filc_cc_ptr rets)
+static size_t demote_cc_from_heap(filc_thread* my_thread, filc_ptr ptr, const filc_origin* origin,
+                                  bool do_tracking)
 {
-    filc_cc_ptr args;
-
-    size_t available = filc_ptr_available(args_ptr);
-    if (available) {
-        filc_cc_type* args_type;
-        size_t available_words = pas_round_up_to_power_of_2(
-            available, FILC_WORD_SIZE) / FILC_WORD_SIZE;
-        filc_check_access_common(args_ptr, available, filc_read_access, NULL);
-        args.base = filc_bmalloc_allocate_tmp(my_thread, available);
-        args_type = filc_bmalloc_allocate_tmp(
-            my_thread,
-            PAS_OFFSETOF(filc_cc_type, word_types) + sizeof(filc_word_type) * available_words);
-        args_type->num_words = available_words;
-        args.type = args_type;
-        if (pas_is_aligned(available, FILC_WORD_SIZE)) { 
-            PAS_ASSERT(pas_is_aligned((uintptr_t)filc_ptr_ptr(args_ptr), FILC_WORD_SIZE));
-            size_t available_words = available / FILC_WORD_SIZE;
-            filc_ptr* src_ptr = (filc_ptr*)filc_ptr_ptr(args_ptr);
-            filc_ptr* dst_ptr = (filc_ptr*)args.base;
-            filc_word_type* src_type_ptr =
-                filc_ptr_object(args_ptr)->word_types +
-                filc_object_word_type_index_for_ptr(filc_ptr_object(args_ptr),
-                                                    filc_ptr_ptr(args_ptr));
-            filc_word_type* dst_type_ptr = args_type->word_types;
-            size_t count;
-            for (count = available_words; count--;) {
-                for (;;) {
-                    filc_word_type word_type = *src_type_ptr;
-                    filc_ptr word = filc_ptr_load_with_manual_tracking_yolo(src_ptr);
-                    if (word_type == FILC_WORD_TYPE_UNSET && !filc_ptr_is_totally_null(word)) {
-                        pas_fence();
-                        continue;
-                    }
-                    if (word_type == FILC_WORD_TYPE_PTR)
-                        filc_thread_track_object(my_thread, filc_ptr_object(word));
-                    *dst_type_ptr = word_type;
-                    *dst_ptr = word;
-                    break;
-                }
-                src_ptr++;
-                dst_ptr++;
-                src_type_ptr++;
-                dst_type_ptr++;
-            }
-        } else {
-            check_int(args_ptr, available, NULL);
-            size_t index;
-            for (index = available_words; index--;)
-                args_type->word_types[index] = FILC_WORD_TYPE_INT;
-            memcpy(args.base, filc_ptr_ptr(args_ptr), available);
-        }
-    } else {
-        args.base = NULL;
-        args.type = &filc_empty_cc_type;
+    if (filc_ptr_ptr(ptr)) {
+        FILC_CHECK(
+            filc_ptr_object(ptr),
+            origin,
+            "cannot access ptr with null object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
+        FILC_CHECK(
+            !(filc_object_get_flags(filc_ptr_object(ptr)) & FILC_OBJECT_FLAG_FREE),
+            origin,
+            "cannot access free object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
+        FILC_CHECK(
+            !filc_object_is_special(filc_ptr_object(ptr)),
+            origin,
+            "cannot access special object (ptr = %s).",
+            filc_ptr_to_new_string(ptr));
+        FILC_CHECK(
+            pas_is_aligned((uintptr_t)filc_ptr_ptr(ptr), FILC_WORD_SIZE),
+            origin,
+            "alignment requirement of %zu bytes not met; in this case ptr %% %zu = %zu (ptr = %s).",
+            FILC_WORD_SIZE, FILC_WORD_SIZE, (size_t)filc_ptr_ptr(ptr) % FILC_WORD_SIZE,
+            filc_ptr_to_new_string(ptr));
     }
 
+    size_t available = filc_ptr_available(ptr);
+    if (!available)
+        return 0;
+
+    PAS_ASSERT(filc_ptr_ptr(ptr));
+    PAS_ASSERT(pas_is_aligned(available, FILC_WORD_SIZE));
+    
+    filc_thread_ensure_cc_total_buffer(my_thread, available);
+
+    size_t offset;
+    for (offset = 0; offset < available; offset += FILC_WORD_SIZE) {
+        *(filc_word*)filc_thread_cc_slot_at_offset(my_thread, offset) =
+            *(filc_word*)((char*)filc_ptr_ptr(ptr) + offset);
+    }
+
+    char* aux_ptr = filc_ptr_aux_ptr(ptr);
+    for (offset = 0; offset < available; offset += FILC_WORD_SIZE) {
+        void* lower;
+        if (aux_ptr) {
+            lower = filc_lower_or_box_extract_lower(
+                filc_lower_or_box_load_unfenced((filc_lower_or_box*)(
+                                                    aux_ptr + filc_ptr_offset(ptr) + offset)));
+            if (do_tracking)
+                filc_thread_track_object(my_thread, filc_object_for_lower(lower));
+        } else
+            lower = NULL;
+        filc_lower_or_box_store_unfenced_unbarriered(
+            filc_thread_cc_aux_slot_at_offset(my_thread, offset),
+            filc_lower_or_box_create_lower(lower));
+    }
+
+    return available;
+}
+
+filc_ptr filc_promote_args_to_heap(filc_thread* my_thread, size_t size)
+{
+    filc_native_frame native_frame;
+    filc_push_native_frame(my_thread, &native_frame);
+
+    filc_ptr result = promote_cc_to_heap(my_thread, size);
+
+    filc_pop_native_frame(my_thread, &native_frame);
+
+    return result;
+}
+
+size_t filc_prepare_to_return_with_data(filc_thread* my_thread, filc_ptr rets,
+                                        const filc_origin* origin)
+{
+    bool do_tracking = false; /* It's not necessary for the function doing the returning to track
+                                 pointers that it returns, unless it exits before returning, since
+                                 it's the caller's responsibility to track those pointers. */
+    return demote_cc_from_heap(my_thread, rets, origin, do_tracking);
+}
+
+filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
+{
+    bool do_tracking = true;
+    size_t arg_size = demote_cc_from_heap(my_thread, args_ptr, NULL, do_tracking);
+    
     filc_check_function_call(callee_ptr);
 
     filc_lock_top_native_frame(my_thread);
-    PAS_ASSERT(!((bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callee_ptr))(my_thread, args, rets));
+    pizlonated_return_value result =
+        ((pizlonated_function)filc_ptr_ptr(callee_ptr))(my_thread, arg_size);
+    PAS_ASSERT(!result.has_exception);
     filc_unlock_top_native_frame(my_thread);
-}
 
-pas_uint128 filc_native_zcall_int(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
-{
-    filc_cc_ptr rets;
-    pas_uint128 rets_obj = 0;
-    rets.type = &filc_int_cc_type;
-    rets.base = &rets_obj;
-    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
-    return rets_obj;
-}
-
-filc_ptr filc_native_zcall_ptr(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
-{
-    filc_cc_ptr rets;
-    filc_ptr rets_obj = filc_ptr_forge_null();
-    rets.type = &filc_ptr_cc_type;
-    rets.base = &rets_obj;
-    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
-    return rets_obj;
-}
-
-void filc_native_zcall_void(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
-{
-    filc_cc_ptr rets;
-    pas_uint128 rets_obj = 0;
-    rets.type = &filc_void_cc_type;
-    rets.base = &rets_obj;
-    zcall_impl(my_thread, callee_ptr, args_ptr, rets);
+    return promote_cc_to_heap(my_thread, result.return_size);
 }
 
 void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)
@@ -4177,29 +3703,6 @@ void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned valu
 void filc_native_zmemmove(filc_thread* my_thread, filc_ptr dst_ptr, filc_ptr src_ptr, size_t count)
 {
     memmove_impl(my_thread, dst_ptr, src_ptr, count, NULL);
-}
-
-int filc_native_zmemcmp(filc_thread* my_thread, filc_ptr ptr1, filc_ptr ptr2, size_t count)
-{
-    if (!count)
-        return 0;
-
-    filc_check_access_common(ptr1, count, filc_read_access, NULL);
-    filc_check_access_common(ptr2, count, filc_read_access, NULL);
-    check_accessible(ptr1, NULL);
-    check_accessible(ptr2, NULL);
-
-    if (count <= FILC_MAX_BYTES_BETWEEN_POLLCHECKS)
-        return memcmp(filc_ptr_ptr(ptr1), filc_ptr_ptr(ptr2), count);
-
-    filc_pin(filc_ptr_object(ptr1));
-    filc_pin(filc_ptr_object(ptr2));
-    filc_exit(my_thread);
-    int result = memcmp(filc_ptr_ptr(ptr1), filc_ptr_ptr(ptr2), count);
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(ptr1));
-    filc_unpin(filc_ptr_object(ptr2));
-    return result;
 }
 
 static char* finish_check_and_get_new_str(char* base, size_t length)
@@ -4214,17 +3717,16 @@ char* filc_check_and_get_new_str(filc_ptr str)
 {
     size_t available;
     size_t length;
-    filc_check_access_common(str, 1, filc_read_access, NULL);
+    filc_check_access(str, 1, filc_read_access);
     available = filc_ptr_available(str);
     length = strnlen((char*)filc_ptr_ptr(str), available);
     FILC_ASSERT(length < available, NULL);
     FILC_ASSERT(length + 1 <= available, NULL);
-    check_int(str, length + 1, NULL);
 
     return finish_check_and_get_new_str((char*)filc_ptr_ptr(str), length);
 }
 
-char* filc_check_and_get_new_str_for_int_memory(char* base, size_t size)
+char* filc_check_and_get_new_str_for_valid_range(char* base, size_t size)
 {
     size_t length;
     FILC_ASSERT(size, NULL);
@@ -4249,9 +3751,9 @@ char* filc_check_and_get_tmp_str(filc_thread* my_thread, filc_ptr ptr)
     return result;
 }
 
-char* filc_check_and_get_tmp_str_for_int_memory(filc_thread* my_thread, char* base, size_t size)
+char* filc_check_and_get_tmp_str_for_valid_range(filc_thread* my_thread, char* base, size_t size)
 {
-    char* result = filc_check_and_get_new_str_for_int_memory(base, size);
+    char* result = filc_check_and_get_new_str_for_valid_range(base, size);
     filc_defer_bmalloc_deallocate(my_thread, result);
     return result;
 }
@@ -4268,8 +3770,8 @@ filc_ptr filc_strdup(filc_thread* my_thread, const char* str)
     if (!str)
         return filc_ptr_forge_null();
     size_t size = strlen(str) + 1;
-    filc_ptr result = filc_ptr_create(my_thread, filc_allocate_int(my_thread, size));
-    filc_memcpy_with_exit(my_thread, filc_ptr_object(result), NULL, filc_ptr_ptr(result), str, size);
+    filc_ptr result = filc_ptr_create_with_object(my_thread, filc_allocate(my_thread, size));
+    filc_memcpy_with_exit(my_thread, filc_ptr_ptr(result), str, size);
     return result;
 }
 
@@ -4315,12 +3817,14 @@ bool filc_global_initialization_context_add(
 
     filc_global_initialization_lock_assert_held();
     filc_testing_validate_object(object, NULL);
-    PAS_ASSERT(object->flags & FILC_OBJECT_FLAG_GLOBAL);
+    PAS_ASSERT(filc_object_get_flags(object) & FILC_OBJECT_FLAG_GLOBAL);
 
-    if (verbose)
-        pas_log("dealing with pizlonated_gptr = %p\n", pizlonated_gptr);
+    if (verbose) {
+        pas_log("dealing with context = %p, pizlonated_gptr = %p, object = %p\n",
+                context, pizlonated_gptr, object);
+    }
 
-    filc_ptr gptr_value = filc_ptr_load_atomic_unfenced_with_manual_tracking(pizlonated_gptr);
+    filc_ptr gptr_value = filc_flight_ptr_load_atomic_unfenced_with_manual_tracking(pizlonated_gptr);
     if (filc_ptr_ptr(gptr_value)) {
         PAS_ASSERT(filc_ptr_object(gptr_value));
         PAS_ASSERT(filc_ptr_lower(gptr_value) == filc_ptr_ptr(gptr_value));
@@ -4390,8 +3894,8 @@ void filc_global_initialization_context_destroy(filc_global_initialization_conte
         filc_object* object = (filc_object*)entry.value;
         PAS_TESTING_ASSERT(filc_ptr_is_totally_null(*pizlonated_gptr));
         filc_testing_validate_object(object, NULL);
-        filc_ptr_store_atomic_unfenced_without_barrier(
-            pizlonated_gptr, filc_ptr_create_with_manual_tracking(object));
+        filc_flight_ptr_store_atomic_unfenced_without_barrier(
+            pizlonated_gptr, filc_ptr_create_with_object_and_manual_tracking(object));
     }
 
     bmalloc_initialize_allocation_config(&allocation_config);
@@ -4406,7 +3910,7 @@ static filc_ptr get_constant_value(filc_constant_kind kind, void* target,
 {
     switch (kind) {
     case filc_global_constant: {
-        filc_ptr result = ((filc_ptr (*)(filc_global_initialization_context*))target)(context);
+        filc_ptr result = ((pizlonated_linker_stub)target)(context);
         PAS_ASSERT(filc_ptr_object(result));
         PAS_ASSERT(filc_ptr_ptr(result));
         return result;
@@ -4415,8 +3919,9 @@ static filc_ptr get_constant_value(filc_constant_kind kind, void* target,
         filc_constexpr_node* node = (filc_constexpr_node*)target;
         switch (node->opcode) {
         case filc_constexpr_add_ptr_immediate:
-            return filc_ptr_with_offset(get_constant_value(node->left_kind, node->left_target, context),
-                                        node->right_value);
+            return filc_ptr_with_offset(
+                get_constant_value(node->left_kind, node->left_target, context),
+                node->right_value);
         }
         PAS_ASSERT(!"Bad constexpr opcode");
     } }
@@ -4425,49 +3930,49 @@ static filc_ptr get_constant_value(filc_constant_kind kind, void* target,
 }
 
 void filc_execute_constant_relocations(
-    void* constant, filc_constant_relocation* relocations, size_t num_relocations,
+    filc_object* constant, filc_constant_relocation* relocations, size_t num_relocations,
     filc_global_initialization_context* context)
 {
     static const bool verbose = false;
     size_t index;
+    PAS_ASSERT(constant);
     PAS_ASSERT(context);
     if (verbose)
         pas_log("Executing constant relocations!\n");
     /* Nothing here needs to be atomic, since the constant doesn't become visible to the universe
        until the initialization context is destroyed. */
+    char* payload_ptr = (char*)filc_object_lower(constant);
+    char* aux_ptr = filc_object_aux_ptr(constant);
+    PAS_ASSERT(payload_ptr);
+    PAS_ASSERT(aux_ptr);
     for (index = num_relocations; index--;) {
         filc_constant_relocation* relocation;
-        filc_ptr* ptr_ptr;
         relocation = relocations + index;
         PAS_ASSERT(pas_is_aligned(relocation->offset, FILC_WORD_SIZE));
-        ptr_ptr = (filc_ptr*)((char*)constant + relocation->offset);
-        PAS_ASSERT(filc_ptr_is_totally_null(*ptr_ptr));
-        PAS_ASSERT(pas_is_aligned((uintptr_t)ptr_ptr, FILC_WORD_SIZE));
-        filc_ptr_store_without_barrier(
-            ptr_ptr, get_constant_value(relocation->kind, relocation->target, context));
+        filc_ptr value = get_constant_value(relocation->kind, relocation->target, context);
+        void** raw_ptr_ptr = (void**)(payload_ptr + relocation->offset);
+        filc_lower_or_box* lower_or_box_ptr = (filc_lower_or_box*)(aux_ptr + relocation->offset);
+        PAS_ASSERT(!*raw_ptr_ptr);
+        PAS_ASSERT(filc_lower_or_box_is_null(filc_lower_or_box_load_unfenced(lower_or_box_ptr)));
+        *raw_ptr_ptr = filc_ptr_ptr(value);
+        filc_lower_or_box_store_unfenced_unbarriered(
+            lower_or_box_ptr, filc_lower_or_box_create_lower(filc_ptr_lower(value)));
     }
 }
 
 static bool did_run_deferred_global_ctors = false;
-static bool (**deferred_global_ctors)(PIZLONATED_SIGNATURE) = NULL; 
+static pizlonated_function* deferred_global_ctors = NULL; 
 static size_t num_deferred_global_ctors = 0;
 static size_t deferred_global_ctors_capacity = 0;
 
-static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONATED_SIGNATURE))
+static void run_global_ctor(filc_thread* my_thread, pizlonated_function global_ctor)
 {
     if (!run_global_ctors) {
         pas_log("filc: skipping global ctor.\n");
         return;
     }
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_ctor", 0);
-
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    FILC_DEFINE_FRAME("run_global_ctor");
     filc_push_frame(my_thread, frame);
 
     filc_call_user_void(my_thread, global_ctor);
@@ -4475,7 +3980,7 @@ static void run_global_ctor(filc_thread* my_thread, bool (*global_ctor)(PIZLONAT
     filc_pop_frame(my_thread, frame);
 }
 
-void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE))
+void filc_defer_or_run_global_ctor(pizlonated_function global_ctor)
 {
     if (did_run_deferred_global_ctors) {
         filc_thread* my_thread = filc_get_my_thread();
@@ -4487,17 +3992,17 @@ void filc_defer_or_run_global_ctor(bool (*global_ctor)(PIZLONATED_SIGNATURE))
     }
 
     if (num_deferred_global_ctors >= deferred_global_ctors_capacity) {
-        bool (**new_deferred_global_ctors)(PIZLONATED_SIGNATURE);
+        pizlonated_function* new_deferred_global_ctors;
         size_t new_deferred_global_ctors_capacity;
 
         PAS_ASSERT(num_deferred_global_ctors == deferred_global_ctors_capacity);
 
         new_deferred_global_ctors_capacity = (deferred_global_ctors_capacity + 1) * 2;
-        new_deferred_global_ctors = (bool (**)(PIZLONATED_SIGNATURE))bmalloc_allocate(
-            new_deferred_global_ctors_capacity * sizeof(bool (*)(PIZLONATED_SIGNATURE)));
+        new_deferred_global_ctors = (pizlonated_function*)bmalloc_allocate(
+            new_deferred_global_ctors_capacity * sizeof(pizlonated_function));
 
         memcpy(new_deferred_global_ctors, deferred_global_ctors,
-               num_deferred_global_ctors * sizeof(bool (*)(PIZLONATED_SIGNATURE)));
+               num_deferred_global_ctors * sizeof(pizlonated_function));
 
         bmalloc_deallocate(deferred_global_ctors);
 
@@ -4524,7 +4029,7 @@ void filc_run_deferred_global_ctors(filc_thread* my_thread)
     deferred_global_ctors_capacity = 0;
 }
 
-void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE))
+void filc_run_global_dtor(pizlonated_function global_dtor)
 {
     if (!run_global_dtors) {
         pas_log("filc: skipping global dtor.\n");
@@ -4535,14 +4040,7 @@ void filc_run_global_dtor(bool (*global_dtor)(PIZLONATED_SIGNATURE))
     
     filc_enter(my_thread);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "run_global_dtor", 0);
-
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    FILC_DEFINE_FRAME("run_global_dtor");
     filc_push_frame(my_thread, frame);
 
     filc_call_user_void(my_thread, global_dtor);
@@ -4574,13 +4072,11 @@ PAS_NEVER_INLINE PAS_NO_RETURN static void panic_impl(
     const filc_origin* origin, const char* prefix, const char* kind_string, const char* format,
     va_list args)
 {
-    filc_thread* my_thread = filc_get_my_thread();
-    if (origin && my_thread->top_frame)
-        my_thread->top_frame->origin = origin;
+    fix_origin(origin);
     pas_log("%s: ", prefix);
     pas_vlog(format, args);
     pas_log("\n");
-    filc_thread_dump_stack(my_thread, &pas_log_stream.base);
+    filc_thread_dump_stack(filc_get_my_thread(), &pas_log_stream.base);
     finish_panicking(kind_string);
 }
 
@@ -4590,7 +4086,8 @@ PAS_NEVER_INLINE PAS_NO_RETURN void filc_safety_panic(
     va_list args;
     va_start(args, format);
     panic_impl(
-        origin, "filc safety error", "thwarted a futile attempt to violate memory safety.", format, args);
+        origin, "filc safety error", "thwarted a futile attempt to violate memory safety.",
+        format, args);
 }
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_internal_panic(
@@ -4598,7 +4095,9 @@ PAS_NEVER_INLINE PAS_NO_RETURN void filc_internal_panic(
 {
     va_list args;
     va_start(args, format);
-    panic_impl(origin, "filc internal error", "internal Fil-C error (it's probably a bug).", format, args);
+    panic_impl(
+        origin, "filc internal error", "internal Fil-C error (it's probably a bug).",
+        format, args);
 }
 
 PAS_NEVER_INLINE PAS_NO_RETURN void filc_user_panic(
@@ -4740,15 +4239,15 @@ void filc_native_zdump_stack(filc_thread* my_thread)
 }
 
 struct stack_frame_description {
-    filc_ptr function_name;
-    filc_ptr filename;
+    const char* function_name;
+    const char* filename;
     unsigned line;
     unsigned column;
     bool can_throw;
     bool can_catch;
     bool is_inline;
-    filc_ptr personality_function;
-    filc_ptr eh_data;
+    const char* personality_function;
+    const char* eh_data;
 };
 
 typedef struct stack_frame_description stack_frame_description;
@@ -4756,27 +4255,14 @@ typedef struct stack_frame_description stack_frame_description;
 static void check_stack_frame_description(
     filc_ptr stack_frame_description_ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(
-        stack_frame_description_ptr, stack_frame_description, function_name, access_kind);
-    FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, filename, access_kind);
-    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, line, access_kind);
-    FILC_CHECK_INT_FIELD(stack_frame_description_ptr, stack_frame_description, column, access_kind);
-    FILC_CHECK_INT_FIELD(
-        stack_frame_description_ptr, stack_frame_description, can_throw, access_kind);
-    FILC_CHECK_INT_FIELD(
-        stack_frame_description_ptr, stack_frame_description, can_catch, access_kind);
-    FILC_CHECK_INT_FIELD(
-        stack_frame_description_ptr, stack_frame_description, is_inline, access_kind);
-    FILC_CHECK_PTR_FIELD(
-        stack_frame_description_ptr, stack_frame_description, personality_function, access_kind);
-    FILC_CHECK_PTR_FIELD(stack_frame_description_ptr, stack_frame_description, eh_data, access_kind);
+    filc_check_access(
+        stack_frame_description_ptr, sizeof(struct stack_frame_description), access_kind);
 }
 
 void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr arg_ptr)
 {
     filc_check_function_call(callback_ptr);
-    bool (*callback)(PIZLONATED_SIGNATURE) =
-        (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
+    pizlonated_function callback = (pizlonated_function)filc_ptr_ptr(callback_ptr);
 
     filc_frame* my_frame = my_thread->top_frame;
     PAS_ASSERT(my_frame->origin);
@@ -4797,27 +4283,25 @@ void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc
              origin;
              origin = filc_origin_next_inline(origin)) {
             bool is_inline = filc_origin_node_is_inline_frame(origin->origin_node);
-            filc_ptr description_ptr = filc_ptr_create(
+            filc_ptr description_ptr = filc_ptr_create_with_object(
                 my_thread, filc_allocate(my_thread, sizeof(stack_frame_description)));
             check_stack_frame_description(description_ptr, filc_write_access);
             stack_frame_description* description =
                 (stack_frame_description*)filc_ptr_ptr(description_ptr);
-            filc_ptr_store(
-                my_thread,
-                &description->function_name,
-                filc_strdup(my_thread, origin->origin_node->function));
-            filc_ptr_store(
-                my_thread,
-                &description->filename,
-                filc_strdup(my_thread, origin->origin_node->filename));
+            filc_store_ptr_at(my_thread, description_ptr, &description->function_name,
+                              filc_strdup(my_thread, origin->origin_node->function));
+            filc_store_ptr_at(my_thread, description_ptr, &description->filename,
+                              filc_strdup(my_thread, origin->origin_node->filename));
             description->line = origin->line;
             description->column = origin->column;
             description->is_inline = is_inline;
             if (is_inline) {
                 description->can_throw = false;
                 description->can_catch = false;
-                filc_ptr_store(my_thread, &description->personality_function, filc_ptr_forge_null());
-                filc_ptr_store(my_thread, &description->eh_data, filc_ptr_forge_null());
+                filc_store_ptr_at(my_thread, description_ptr, &description->personality_function,
+                                  filc_ptr_forge_null());
+                filc_store_ptr_at(my_thread, description_ptr, &description->eh_data,
+                                  filc_ptr_forge_null());
             } else {
                 const filc_function_origin* function_origin =
                     filc_origin_node_as_function_origin(origin->origin_node);
@@ -4832,14 +4316,15 @@ void filc_native_zstack_scan(filc_thread* my_thread, filc_ptr callback_ptr, filc
                     has_personality = false;
                     personality_function = filc_ptr_forge_null();
                 }
-                filc_ptr_store(my_thread, &description->personality_function, personality_function);
+                filc_store_ptr_at(my_thread, description_ptr, &description->personality_function,
+                                  personality_function);
                 filc_ptr eh_data;
                 filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)outer_origin;
                 if (has_personality && origin_with_eh->eh_data_getter)
                     eh_data = origin_with_eh->eh_data_getter(NULL);
                 else
                     eh_data = filc_ptr_forge_null();
-                filc_ptr_store(my_thread, &description->eh_data, eh_data);
+                filc_store_ptr_at(my_thread, description_ptr, &description->eh_data, eh_data);
             }
 
             if (!filc_call_user_bool_ptr_ptr(my_thread, callback, description_ptr, arg_ptr))
@@ -4874,37 +4359,29 @@ enum unwind_action {
 typedef enum unwind_action unwind_action;
 
 struct unwind_context {
-    filc_ptr language_specific_data;
-    filc_ptr registers[FILC_NUM_UNWIND_REGISTERS];
+    const void* language_specific_data;
+    void* registers[FILC_NUM_UNWIND_REGISTERS];
 };
 
 typedef struct unwind_context unwind_context;
 
 static void check_unwind_context(filc_ptr unwind_context_ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(unwind_context_ptr, unwind_context, language_specific_data, access_kind);
-    unsigned index;
-    for (index = FILC_NUM_UNWIND_REGISTERS; index--;) {
-        filc_check_access_ptr(
-            filc_ptr_with_offset(
-                unwind_context_ptr, PAS_OFFSETOF(unwind_context, registers) + index * sizeof(filc_ptr)),
-            access_kind, NULL);
-    }
+    filc_check_access(unwind_context_ptr, sizeof(unwind_context), access_kind);
 }
 
 typedef unsigned long long unwind_exception_class;
 
 struct unwind_exception {
     unwind_exception_class exception_class;
-    filc_ptr exception_cleanup;
+    pizlonated_function exception_cleanup;
 };
 
 typedef struct unwind_exception unwind_exception;
 
 static void check_unwind_exception(filc_ptr unwind_exception_ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_INT_FIELD(unwind_exception_ptr, unwind_exception, exception_class, access_kind);
-    FILC_CHECK_PTR_FIELD(unwind_exception_ptr, unwind_exception, exception_cleanup, access_kind);
+    filc_check_access(unwind_exception_ptr, sizeof(unwind_exception), access_kind);
 }
 
 static unwind_reason_code call_personality(
@@ -4915,13 +4392,13 @@ static unwind_reason_code call_personality(
     unwind_context* context = (unwind_context*)filc_ptr_ptr(context_ptr);
 
     filc_origin_with_eh* origin_with_eh = (filc_origin_with_eh*)current_frame->origin;
-    filc_ptr (*eh_data_getter)(filc_global_initialization_context*) = origin_with_eh->eh_data_getter;
+    pizlonated_linker_stub eh_data_getter = origin_with_eh->eh_data_getter;
     filc_ptr eh_data;
     if (eh_data_getter)
         eh_data = eh_data_getter(NULL);
     else
         eh_data = filc_ptr_forge_null();
-    filc_ptr_store(my_thread, &context->language_specific_data, eh_data);
+    filc_store_ptr_at(my_thread, context_ptr, &context->language_specific_data, eh_data);
     
     check_unwind_exception(exception_object_ptr, filc_read_access);
     unwind_exception* exception_object = (unwind_exception*)filc_ptr_ptr(exception_object_ptr);
@@ -4933,14 +4410,15 @@ static unwind_reason_code call_personality(
     filc_check_function_call(personality_ptr);
 
     return (unwind_reason_code)filc_call_user_eh_personality(
-        my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(personality_ptr),
+        my_thread, (pizlonated_function)filc_ptr_ptr(personality_ptr),
         version, actions, exception_class, exception_object_ptr, context_ptr);
 }
 
 filc_exception_and_int filc_native__Unwind_RaiseException(
     filc_thread* my_thread, filc_ptr exception_object_ptr)
 {
-    filc_ptr context_ptr = filc_ptr_create(my_thread, filc_allocate(my_thread, sizeof(unwind_context)));
+    filc_ptr context_ptr = filc_ptr_create_with_object(
+        my_thread, filc_allocate(my_thread, sizeof(unwind_context)));
 
     filc_frame* my_frame = my_thread->top_frame;
     PAS_ASSERT(my_frame->origin);
@@ -4975,8 +4453,8 @@ filc_exception_and_int filc_native__Unwind_RaiseException(
             context_ptr);
         if (personality_result == unwind_reason_handler_found) {
             my_thread->found_frame_for_unwind = current_frame;
-            filc_ptr_store(my_thread, &my_thread->unwind_context_ptr, context_ptr);
-            filc_ptr_store(my_thread, &my_thread->exception_object_ptr, exception_object_ptr);
+            filc_flight_ptr_store(my_thread, &my_thread->unwind_context_ptr, context_ptr);
+            filc_flight_ptr_store(my_thread, &my_thread->exception_object_ptr, exception_object_ptr);
             /* This triggers phase 2. */
             return filc_exception_and_int_with_exception();
         }
@@ -5028,7 +4506,8 @@ static bool landing_pad_impl(filc_thread* my_thread, filc_ptr context_ptr,
     unsigned index;
     for (index = FILC_NUM_UNWIND_REGISTERS; index--;) {
         PAS_ASSERT(filc_ptr_is_totally_null(my_thread->unwind_registers[index]));
-        my_thread->unwind_registers[index] = filc_ptr_load(my_thread, context->registers + index);
+        my_thread->unwind_registers[index] =
+            filc_load_ptr_at(my_thread, context_ptr, context->registers + index);
         if (verbose) {
             pas_log("Unwind register %u: ", index);
             filc_ptr_dump(my_thread->unwind_registers[index], &pas_log_stream.base);
@@ -5042,22 +4521,16 @@ bool filc_landing_pad(filc_thread* my_thread)
 {
     filc_frame* current_frame = my_thread->top_frame;
     PAS_ASSERT(current_frame);
-    
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "landing_pad", 0);
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+
+    FILC_DEFINE_FRAME("landing_pad");
     filc_push_frame(my_thread, frame);
     PAS_ASSERT(current_frame == frame->parent);
 
     filc_native_frame native_frame;
     filc_push_native_frame(my_thread, &native_frame);
 
-    filc_ptr context_ptr = filc_ptr_load(my_thread, &my_thread->unwind_context_ptr);
-    filc_ptr exception_object_ptr = filc_ptr_load(my_thread, &my_thread->exception_object_ptr);
+    filc_ptr context_ptr = filc_flight_ptr_load(my_thread, &my_thread->unwind_context_ptr);
+    filc_ptr exception_object_ptr = filc_flight_ptr_load(my_thread, &my_thread->exception_object_ptr);
     filc_frame* found_frame = my_thread->found_frame_for_unwind;
 
     bool result = landing_pad_impl(
@@ -5134,12 +4607,14 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
     PAS_ASSERT(frame->origin);
     const filc_function_origin* function_origin = filc_origin_get_function_origin(frame->origin);
     PAS_ASSERT(function_origin);
+    PAS_ASSERT(function_origin->base.num_lowers_ish < UINT_MAX);
     
-    filc_jmp_buf* result = (filc_jmp_buf*)filc_allocate_special(
-        my_thread,
-        PAS_OFFSETOF(filc_jmp_buf, objects)
-        + filc_mul_size(function_origin->base.num_objects_ish, sizeof(filc_object*)),
-        FILC_WORD_TYPE_JMP_BUF)->lower;
+    filc_jmp_buf* result = (filc_jmp_buf*)filc_object_special_payload_with_manual_tracking(
+        filc_allocate_special(my_thread,
+                              PAS_OFFSETOF(filc_jmp_buf, lowers)
+                              + filc_mul_size(function_origin->base.num_lowers_ish, sizeof(void*)),
+                              1,
+                              FILC_SPECIAL_TYPE_JMP_BUF));
 
     result->kind = kind; /* We save the kind because it lets us do a safety check, but that check isn't
                             needed for memory safety, so we could drop it. */
@@ -5148,17 +4623,17 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
        because frames that create native frames don't setjmp. Basically, native code doesn't setjmp. */
     filc_native_frame_assert_locked(my_thread->top_native_frame);
     result->saved_top_native_frame = my_thread->top_native_frame;
-    result->saved_allocation_roots_num_objects = my_thread->allocation_roots.num_objects;
-    result->num_objects = function_origin->base.num_objects_ish;
+    result->saved_allocation_roots_size = my_thread->allocation_roots.size;
+    result->num_lowers = function_origin->base.num_lowers_ish;
     size_t index;
-    for (index = function_origin->base.num_objects_ish; index--;) {
-        filc_store_barrier(my_thread, frame->objects[index]);
-        result->objects[index] = frame->objects[index];
+    for (index = function_origin->base.num_lowers_ish; index--;) {
+        filc_store_barrier(my_thread, filc_object_for_lower(frame->lowers[index]));
+        result->lowers[index] = frame->lowers[index];
     }
 
     PAS_ASSERT(
-        result->num_objects ==
-        filc_origin_get_function_origin(result->saved_top_frame->origin)->base.num_objects_ish);
+        result->num_lowers ==
+        filc_origin_get_function_origin(result->saved_top_frame->origin)->base.num_lowers_ish);
 
     if ((kind == filc_jmp_buf_sigsetjmp && value) ||
         (kind == filc_jmp_buf_setjmp && setjmp_saves_sigmask)) {
@@ -5172,8 +4647,8 @@ filc_jmp_buf* filc_jmp_buf_create(filc_thread* my_thread, filc_jmp_buf_kind kind
 void filc_jmp_buf_mark_outgoing_ptrs(filc_jmp_buf* jmp_buf, filc_object_array* stack)
 {
     size_t index;
-    for (index = jmp_buf->num_objects; index--;)
-        fugc_mark(stack, jmp_buf->objects[index]);
+    for (index = jmp_buf->num_lowers; index--;)
+        fugc_mark(stack, filc_object_for_lower(jmp_buf->lowers[index]));
 }
 
 static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value,
@@ -5183,7 +4658,7 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
                kind == filc_jmp_buf__setjmp ||
                kind == filc_jmp_buf_sigsetjmp);
     
-    filc_check_access_special(jmp_buf_ptr, FILC_WORD_TYPE_JMP_BUF, NULL);
+    filc_check_access_special(jmp_buf_ptr, FILC_SPECIAL_TYPE_JMP_BUF);
     filc_jmp_buf* jmp_buf = (filc_jmp_buf*)filc_ptr_ptr(jmp_buf_ptr);
 
     FILC_CHECK(
@@ -5201,12 +4676,13 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
         const filc_function_origin* function_origin =
             filc_origin_get_function_origin(current_frame->origin);
         PAS_ASSERT(function_origin);
-        PAS_ASSERT(function_origin->num_setjmps <= function_origin->base.num_objects_ish);
+        PAS_ASSERT(function_origin->base.num_lowers_ish < UINT_MAX);
+        PAS_ASSERT(function_origin->num_setjmps <= function_origin->base.num_lowers_ish);
         unsigned index;
         for (index = function_origin->num_setjmps; index-- && !found_frame;) {
-            unsigned object_index = function_origin->base.num_objects_ish - 1 - index;
-            PAS_ASSERT(object_index < function_origin->base.num_objects_ish);
-            if (filc_object_for_special_payload(jmp_buf) == current_frame->objects[object_index]) {
+            unsigned lower_index = function_origin->base.num_lowers_ish - 1 - index;
+            PAS_ASSERT(lower_index < function_origin->base.num_lowers_ish);
+            if (jmp_buf == current_frame->lowers[lower_index]) {
                 PAS_ASSERT(current_frame == jmp_buf->saved_top_frame);
                 found_frame = true;
                 break;
@@ -5226,14 +4702,14 @@ static void longjmp_impl(filc_thread* my_thread, filc_ptr jmp_buf_ptr, int value
             filc_unlock_top_native_frame(my_thread);
         filc_pop_native_frame(my_thread, my_thread->top_native_frame);
     }
-    my_thread->allocation_roots.num_objects = jmp_buf->saved_allocation_roots_num_objects;
+    my_thread->allocation_roots.size = jmp_buf->saved_allocation_roots_size;
 
     PAS_ASSERT(my_thread->top_frame == jmp_buf->saved_top_frame);
-    PAS_ASSERT(filc_origin_get_function_origin(my_thread->top_frame->origin)->base.num_objects_ish
-               == jmp_buf->num_objects);
+    PAS_ASSERT(filc_origin_get_function_origin(my_thread->top_frame->origin)->base.num_lowers_ish
+               == jmp_buf->num_lowers);
     size_t index;
-    for (index = jmp_buf->num_objects; index--;)
-        my_thread->top_frame->objects[index] = jmp_buf->objects[index];
+    for (index = jmp_buf->num_lowers; index--;)
+        my_thread->top_frame->lowers[index] = jmp_buf->lowers[index];
 
     if (jmp_buf->did_save_sigmask)
         PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &jmp_buf->sigmask, NULL));
@@ -5272,10 +4748,10 @@ static void cpuid_impl(unsigned leaf, unsigned count, filc_ptr eax_ptr, filc_ptr
     unsigned edx = 0;
     asm volatile("cpuid"
                  : "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx));
-    filc_check_write_int32(eax_ptr, NULL);
-    filc_check_write_int32(ebx_ptr, NULL);
-    filc_check_write_int32(ecx_ptr, NULL);
-    filc_check_write_int32(edx_ptr, NULL);
+    filc_check_write(eax_ptr, sizeof(int32_t));
+    filc_check_write(ebx_ptr, sizeof(int32_t));
+    filc_check_write(ecx_ptr, sizeof(int32_t));
+    filc_check_write(edx_ptr, sizeof(int32_t));
     *(unsigned*)filc_ptr_ptr(eax_ptr) = eax;
     *(unsigned*)filc_ptr_ptr(ebx_ptr) = ebx;
     *(unsigned*)filc_ptr_ptr(ecx_ptr) = ecx;
@@ -5307,7 +4783,7 @@ unsigned long filc_native_zxgetbv(filc_thread* my_thread)
     return (unsigned long)low | ((unsigned long)high << (unsigned long)32);
 }
 
-static bool (*pizlonated_errno_handler)(PIZLONATED_SIGNATURE);
+static pizlonated_function pizlonated_errno_handler;
 
 void filc_native_zregister_sys_errno_handler(filc_thread* my_thread, filc_ptr errno_handler)
 {
@@ -5317,10 +4793,10 @@ void filc_native_zregister_sys_errno_handler(filc_thread* my_thread, filc_ptr er
         NULL,
         "errno handler already registered.");
     filc_check_function_call(errno_handler);
-    pizlonated_errno_handler = (bool(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(errno_handler);
+    pizlonated_errno_handler = (pizlonated_function)filc_ptr_ptr(errno_handler);
 }
 
-static bool (*pizlonated_dlerror_handler)(PIZLONATED_SIGNATURE);
+static pizlonated_function pizlonated_dlerror_handler;
 
 void filc_native_zregister_sys_dlerror_handler(filc_thread* my_thread, filc_ptr dlerror_handler)
 {
@@ -5330,7 +4806,7 @@ void filc_native_zregister_sys_dlerror_handler(filc_thread* my_thread, filc_ptr 
         NULL,
         "dlerror handler already registered.");
     filc_check_function_call(dlerror_handler);
-    pizlonated_dlerror_handler = (bool(*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(dlerror_handler);
+    pizlonated_dlerror_handler = (pizlonated_function)filc_ptr_ptr(dlerror_handler);
 }
 
 void filc_set_user_errno(int errno_value)
@@ -5368,14 +4844,10 @@ static void set_dlerror(const char* error)
 void filc_extract_user_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_ptr,
                                    filc_ptr* user_iov_base, size_t* iov_len)
 {
-    filc_check_read_ptr(
-        filc_ptr_with_offset(user_iov_entry_ptr, PAS_OFFSETOF(filc_user_iovec, iov_base)), NULL);
-    filc_check_read_int(
-        filc_ptr_with_offset(user_iov_entry_ptr, PAS_OFFSETOF(filc_user_iovec, iov_len)),
-        sizeof(size_t), NULL);
-    *user_iov_base = filc_ptr_load(
-        my_thread, &((filc_user_iovec*)filc_ptr_ptr(user_iov_entry_ptr))->iov_base);
-    *iov_len = ((filc_user_iovec*)filc_ptr_ptr(user_iov_entry_ptr))->iov_len;
+    filc_check_read(user_iov_entry_ptr, sizeof(struct iovec));
+    struct iovec* user_iov_entry = (struct iovec*)filc_ptr_ptr(user_iov_entry_ptr);
+    *user_iov_base = filc_load_ptr_at(my_thread, user_iov_entry_ptr, &user_iov_entry->iov_base);
+    *iov_len = user_iov_entry->iov_len;
 }
 
 void filc_prepare_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_ptr,
@@ -5384,8 +4856,7 @@ void filc_prepare_iovec_entry(filc_thread* my_thread, filc_ptr user_iov_entry_pt
     filc_ptr user_iov_base;
     size_t iov_len;
     filc_extract_user_iovec_entry(my_thread, user_iov_entry_ptr, &user_iov_base, &iov_len);
-    filc_check_access_int(user_iov_base, iov_len, access_kind, NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(user_iov_base));
+    filc_check_access(user_iov_base, iov_len, access_kind);
     iov_entry->iov_base = filc_ptr_ptr(user_iov_base);
     iov_entry->iov_len = iov_len;
 }
@@ -5403,7 +4874,7 @@ struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int 
         my_thread, filc_mul_size(sizeof(struct iovec), iovcnt));
     for (index = 0; index < (size_t)iovcnt; ++index) {
         filc_prepare_iovec_entry(
-            my_thread, filc_ptr_with_offset(user_iov, filc_mul_size(sizeof(filc_user_iovec), index)),
+            my_thread, filc_ptr_with_offset(user_iov, filc_mul_size(sizeof(struct iovec), index)),
             iov + index, access_kind);
     }
     return iov;
@@ -5424,7 +4895,7 @@ ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_io
 
 ssize_t filc_native_zsys_read(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_cpt_write_int(my_thread, buf, size);
+    filc_check_write(buf, size);
     return FILC_SYSCALL(my_thread, read(fd, filc_ptr_ptr(buf), size));
 }
 
@@ -5443,7 +4914,7 @@ ssize_t filc_native_zsys_readv(filc_thread* my_thread, int fd, filc_ptr user_iov
 
 ssize_t filc_native_zsys_write(filc_thread* my_thread, int fd, filc_ptr buf, size_t size)
 {
-    filc_cpt_read_int(my_thread, buf, size);
+    filc_check_read(buf, size);
     return FILC_SYSCALL(my_thread, write(fd, filc_ptr_ptr(buf), size));
 }
 
@@ -5508,27 +4979,12 @@ unsigned filc_native_zsys_getegid(filc_thread* my_thread)
     return result;
 }
 
-int filc_from_user_open_flags(int user_flags)
-{
-    return user_flags;
-}
-
-int filc_to_user_open_flags(int flags)
-{
-    return flags;
-}
-
-int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int user_flags,
+int filc_native_zsys_open(filc_thread* my_thread, filc_ptr path_ptr, int flags,
                           filc_cc_cursor* args)
 {
-    int flags = filc_from_user_open_flags(user_flags);
-    if (flags < 0) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     unsigned mode = 0;
     if (flags >= 0 && (flags & O_CREAT))
-        mode = filc_cc_cursor_get_next_unsigned(args);
+        mode = filc_cc_cursor_get_next_unsigned(my_thread, args);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_exit(my_thread);
     int result = open(path, flags, mode);
@@ -5547,85 +5003,25 @@ int filc_native_zsys_getpid(filc_thread* my_thread)
     return result;
 }
 
-static bool from_user_clock_id(int user_clock_id, clockid_t* result)
+int filc_native_zsys_clock_gettime(filc_thread* my_thread, int clock_id, filc_ptr timespec_ptr)
 {
-    *result = user_clock_id;
-    return true;
-}
-
-int filc_native_zsys_clock_gettime(filc_thread* my_thread, int user_clock_id, filc_ptr timespec_ptr)
-{
-    clockid_t clock_id;
-    if (!from_user_clock_id(user_clock_id, &clock_id)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
-    struct timespec ts;
-    filc_exit(my_thread);
-    int result = clock_gettime(clock_id, &ts);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    filc_check_write_int(timespec_ptr, sizeof(filc_user_timespec), NULL);
-    filc_user_timespec* user_timespec = (filc_user_timespec*)filc_ptr_ptr(timespec_ptr);
-    user_timespec->tv_sec = ts.tv_sec;
-    user_timespec->tv_nsec = ts.tv_nsec;
-    return 0;
-}
-
-static bool from_user_fstatat_flag(int user_flag, int* result)
-{
-    *result = user_flag;
-    return true;
-}
-
-static int handle_fstat_result(filc_ptr user_stat_ptr, struct stat *st,
-                               int result, int my_errno)
-{
-    filc_check_write_int(user_stat_ptr, sizeof(struct stat), NULL);
-    if (result < 0) {
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    memcpy(filc_ptr_ptr(user_stat_ptr), st, sizeof(struct stat));
-    return 0;
-}
-
-int filc_from_user_atfd(int fd)
-{
-    return fd;
+    filc_check_write(timespec_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(
+        my_thread, clock_gettime(clock_id, (struct timespec*)filc_ptr_ptr(timespec_ptr)));
 }
 
 int filc_native_zsys_fstatat(
-    filc_thread* my_thread, int user_fd, filc_ptr path_ptr, filc_ptr user_stat_ptr,
-    int user_flag)
+    filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr stat_ptr, int flag)
 {
-    int flag;
-    if (!from_user_fstatat_flag(user_flag, &flag)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
-    int fd = filc_from_user_atfd(user_fd);
-    struct stat st;
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_exit(my_thread);
-    int result = fstatat(fd, path, &st, flag);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    return handle_fstat_result(user_stat_ptr, &st, result, my_errno);
+    filc_check_write(stat_ptr, sizeof(struct stat));
+    return FILC_SYSCALL(my_thread, fstatat(fd, path, (struct stat*)filc_ptr_ptr(stat_ptr), flag));
 }
 
-int filc_native_zsys_fstat(filc_thread* my_thread, int fd, filc_ptr user_stat_ptr)
+int filc_native_zsys_fstat(filc_thread* my_thread, int fd, filc_ptr stat_ptr)
 {
-    struct stat st;
-    filc_exit(my_thread);
-    int result = fstat(fd, &st);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    return handle_fstat_result(user_stat_ptr, &st, result, my_errno);
+    filc_check_write(stat_ptr, sizeof(struct stat));
+    return FILC_SYSCALL(my_thread, fstat(fd, (struct stat*)filc_ptr_ptr(stat_ptr)));
 }
 
 static bool from_user_sa_flags(int user_flags, int* flags)
@@ -5692,48 +5088,40 @@ static filc_ptr to_user_special_signal_handler(void* handler)
 }
 
 int filc_native_zsys_sigaction(
-    filc_thread* my_thread, int user_signum, filc_ptr act_ptr, filc_ptr oact_ptr)
+    filc_thread* my_thread, int signum, filc_ptr act_ptr, filc_ptr oact_ptr)
 {
     static const bool verbose = false;
 
     if (verbose)
-        pas_log("[%d] sigaction on signum = %d\n", getpid(), user_signum);
+        pas_log("[%d] sigaction on signum = %d\n", getpid(), signum);
     
-    int signum = filc_from_user_signum(user_signum);
-    if (signum < 0) {
-        if (verbose)
-            pas_log("bad signum\n");
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     if (is_unsafe_signal_for_handlers(signum) && filc_ptr_ptr(act_ptr)) {
         filc_set_errno(ENOSYS);
         return -1;
     }
     if (filc_ptr_ptr(act_ptr))
         check_user_sigaction(act_ptr, filc_read_access);
-    struct user_sigaction* user_act = (struct user_sigaction*)filc_ptr_ptr(act_ptr);
-    struct user_sigaction* user_oact = (struct user_sigaction*)filc_ptr_ptr(oact_ptr);
+    struct sigaction* user_act = (struct sigaction*)filc_ptr_ptr(act_ptr);
+    struct sigaction* user_oact = (struct sigaction*)filc_ptr_ptr(oact_ptr);
     struct sigaction act;
     struct sigaction oact;
     if (user_act) {
         filc_from_user_sigset(&user_act->sa_mask, &act.sa_mask);
-        filc_ptr user_handler = filc_ptr_load(my_thread, &user_act->sa_handler_ish);
+        filc_ptr user_handler = filc_load_ptr_at(my_thread, act_ptr, &user_act->sa_handler);
         if (is_user_special_signal_handler(filc_ptr_ptr(user_handler)))
             act.sa_handler = from_user_special_signal_handler(filc_ptr_ptr(user_handler));
         else {
             filc_check_function_call(user_handler);
-            filc_object* handler_object = filc_allocate_special(
-                my_thread, sizeof(filc_signal_handler), FILC_WORD_TYPE_SIGNAL_HANDLER);
-            filc_thread_track_object(my_thread, handler_object);
-            filc_signal_handler* handler = (filc_signal_handler*)handler_object->lower;
-            handler->function_ptr = user_handler;
+            filc_signal_handler* handler = filc_object_special_payload(
+                my_thread, filc_allocate_special(
+                    my_thread, sizeof(filc_signal_handler), 1, FILC_SPECIAL_TYPE_SIGNAL_HANDLER));
+            filc_flight_ptr_store(my_thread, &handler->function_ptr, user_handler);
             handler->mask = act.sa_mask;
-            handler->user_signum = user_signum;
+            handler->user_signum = signum;
             pas_store_store_fence();
-            PAS_ASSERT((unsigned)user_signum <= FILC_MAX_USER_SIGNUM);
+            PAS_ASSERT((unsigned)signum <= FILC_MAX_USER_SIGNUM);
             filc_store_barrier(my_thread, filc_object_for_special_payload(handler));
-            signal_table[user_signum] = handler;
+            signal_table[signum] = handler;
             act.sa_handler = signal_pizlonator;
         }
         if (!from_user_sa_flags(user_act->sa_flags, &act.sa_flags)) {
@@ -5761,15 +5149,16 @@ int filc_native_zsys_sigaction(
         check_user_sigaction(oact_ptr, filc_write_access);
         if (is_unsafe_signal_for_handlers(signum))
             PAS_ASSERT(oact.sa_handler == SIG_DFL);
-        if (is_special_signal_handler(oact.sa_handler))
-            filc_ptr_store(my_thread, &user_oact->sa_handler_ish,
-                           to_user_special_signal_handler(oact.sa_handler));
-        else {
+        if (is_special_signal_handler(oact.sa_handler)) {
+            filc_store_ptr_at(my_thread, oact_ptr, &user_oact->sa_handler,
+                              to_user_special_signal_handler(oact.sa_handler));
+        } else {
             PAS_ASSERT(oact.sa_handler == signal_pizlonator);
-            PAS_ASSERT((unsigned)user_signum <= FILC_MAX_USER_SIGNUM);
+            PAS_ASSERT((unsigned)signum <= FILC_MAX_USER_SIGNUM);
             /* FIXME: The signal_table entry should really be a filc_ptr so we can return it here. */
-            filc_ptr_store(my_thread, &user_oact->sa_handler_ish,
-                           filc_ptr_load_with_manual_tracking(&signal_table[user_signum]->function_ptr));
+            filc_store_ptr_at(my_thread, oact_ptr, &user_oact->sa_handler,
+                              filc_flight_ptr_load(
+                                  my_thread, &signal_table[signum]->function_ptr));
         }
         filc_to_user_sigset(&oact.sa_mask, &user_oact->sa_mask);
         user_oact->sa_flags = to_user_sa_flags(oact.sa_flags);
@@ -5779,22 +5168,8 @@ int filc_native_zsys_sigaction(
 
 int filc_native_zsys_pipe(filc_thread* my_thread, filc_ptr fds_ptr)
 {
-    int fds[2];
-    filc_exit(my_thread);
-    int result = pipe(fds);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        /* Make sure not to modify what fds_ptr points to on error, even if the system modified
-           our fds, since that would be nonconforming behavior. Probably doesn't matter since of
-           course we would never run on a nonconforming system. */
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    filc_check_write_int(fds_ptr, sizeof(int) * 2, NULL);
-    ((int*)filc_ptr_ptr(fds_ptr))[0] = fds[0];
-    ((int*)filc_ptr_ptr(fds_ptr))[1] = fds[1];
-    return 0;
+    filc_check_write(fds_ptr, sizeof(int) * 2);
+    return FILC_SYSCALL(my_thread, pipe((int*)filc_ptr_ptr(fds_ptr)));
 }
 
 int filc_native_zsys_select(filc_thread* my_thread, int nfds,
@@ -5808,40 +5183,18 @@ int filc_native_zsys_select(filc_thread* my_thread, int nfds,
         "attempt to select with nfds = %d (should be 1024 or less).",
         nfds);
     if (filc_ptr_ptr(readfds_ptr))
-        filc_check_write_int(readfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(readfds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(writefds_ptr))
-        filc_check_write_int(writefds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(writefds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(exceptfds_ptr))
-        filc_check_write_int(exceptfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(exceptfds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(timeout_ptr))
-        filc_check_write_int(timeout_ptr, sizeof(filc_user_timeval), NULL);
+        filc_check_write(timeout_ptr, sizeof(struct timeval));
     fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
     fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
     fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
-    filc_user_timeval* user_timeout = (filc_user_timeval*)filc_ptr_ptr(timeout_ptr);
-    struct timeval timeout;
-    if (user_timeout) {
-        timeout.tv_sec = user_timeout->tv_sec;
-        timeout.tv_usec = user_timeout->tv_usec;
-    }
-    filc_pin(filc_ptr_object(readfds_ptr));
-    filc_pin(filc_ptr_object(writefds_ptr));
-    filc_pin(filc_ptr_object(exceptfds_ptr));
-    filc_exit(my_thread);
-    int result = select(nfds, readfds, writefds, exceptfds, user_timeout ? &timeout : NULL);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(readfds_ptr));
-    filc_unpin(filc_ptr_object(writefds_ptr));
-    filc_unpin(filc_ptr_object(exceptfds_ptr));
-    if (result < 0)
-        filc_set_errno(my_errno);
-    if (user_timeout) {
-        filc_check_write_int(timeout_ptr, sizeof(filc_user_timeval), NULL);
-        user_timeout->tv_sec = timeout.tv_sec;
-        user_timeout->tv_usec = timeout.tv_usec;
-    }
-    return result;
+    struct timeval* timeout = (struct timeval*)filc_ptr_ptr(timeout_ptr);
+    return FILC_SYSCALL(my_thread, select(nfds, readfds, writefds, exceptfds, timeout));
 }
 
 void filc_native_zsys_sched_yield(filc_thread* my_thread)
@@ -5851,38 +5204,10 @@ void filc_native_zsys_sched_yield(filc_thread* my_thread)
     filc_enter(my_thread);
 }
 
-static bool from_user_resource(int user_resource, int* result)
+int filc_native_zsys_getrlimit(filc_thread* my_thread, int resource, filc_ptr rlim_ptr)
 {
-    *result = user_resource;
-    return true;
-}
-
-#define to_user_rlimit_value(value) (value)
-
-int filc_native_zsys_getrlimit(filc_thread* my_thread, int user_resource, filc_ptr rlim_ptr)
-{
-    int resource;
-    if (!from_user_resource(user_resource, &resource))
-        goto einval;
-    struct rlimit rlim;
-    filc_exit(my_thread);
-    int result = getrlimit(resource, &rlim);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    else {
-        PAS_ASSERT(!result);
-        filc_check_write_int(rlim_ptr, sizeof(filc_user_rlimit), NULL);
-        filc_user_rlimit* user_rlim = (filc_user_rlimit*)filc_ptr_ptr(rlim_ptr);
-        user_rlim->rlim_cur = to_user_rlimit_value(rlim.rlim_cur);
-        user_rlim->rlim_max = to_user_rlimit_value(rlim.rlim_max);
-    }
-    return result;
-
-einval:
-    filc_set_errno(EINVAL);
-    return -1;
+    filc_check_write(rlim_ptr, sizeof(struct rlimit));
+    return FILC_SYSCALL(my_thread, getrlimit(resource, (struct rlimit*)filc_ptr_ptr(rlim_ptr)));
 }
 
 unsigned filc_native_zsys_umask(filc_thread* my_thread, unsigned mask)
@@ -5893,54 +5218,22 @@ unsigned filc_native_zsys_umask(filc_thread* my_thread, unsigned mask)
     return result;
 }
 
-int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr user_value_ptr)
+int filc_native_zsys_getitimer(filc_thread* my_thread, int which, filc_ptr value_ptr)
 {
-    filc_exit(my_thread);
-    struct itimerval value;
-    int result = getitimer(which, &value);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    filc_check_write_int(user_value_ptr, sizeof(filc_user_itimerval), NULL);
-    filc_user_itimerval* user_value = (filc_user_itimerval*)filc_ptr_ptr(user_value_ptr);
-    user_value->it_interval.tv_sec = value.it_interval.tv_sec;
-    user_value->it_interval.tv_usec = value.it_interval.tv_usec;
-    user_value->it_value.tv_sec = value.it_value.tv_sec;
-    user_value->it_value.tv_usec = value.it_value.tv_usec;
-    return 0;
+    filc_check_write(value_ptr, sizeof(struct itimerval));
+    return FILC_SYSCALL(my_thread, getitimer(which, (struct itimerval*)filc_ptr_ptr(value_ptr)));
 }
 
-int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr user_new_value_ptr,
-                               filc_ptr user_old_value_ptr)
+int filc_native_zsys_setitimer(filc_thread* my_thread, int which, filc_ptr new_value_ptr,
+                               filc_ptr old_value_ptr)
 {
-    filc_check_write_int(user_new_value_ptr, sizeof(filc_user_itimerval), NULL);
-    struct itimerval new_value;
-    filc_user_itimerval* user_new_value = (filc_user_itimerval*)filc_ptr_ptr(user_new_value_ptr);
-    new_value.it_interval.tv_sec = user_new_value->it_interval.tv_sec;
-    new_value.it_interval.tv_usec = user_new_value->it_interval.tv_usec;
-    new_value.it_value.tv_sec = user_new_value->it_value.tv_sec;
-    new_value.it_value.tv_usec = user_new_value->it_value.tv_usec;
-    filc_exit(my_thread);
-    struct itimerval old_value;
-    int result = setitimer(which, &new_value, &old_value);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    filc_user_itimerval* user_old_value = (filc_user_itimerval*)filc_ptr_ptr(user_old_value_ptr);
-    if (user_old_value) {
-        filc_check_read_int(user_old_value_ptr, sizeof(filc_user_itimerval), NULL);
-        user_old_value->it_interval.tv_sec = old_value.it_interval.tv_sec;
-        user_old_value->it_interval.tv_usec = old_value.it_interval.tv_usec;
-        user_old_value->it_value.tv_sec = old_value.it_value.tv_sec;
-        user_old_value->it_value.tv_usec = old_value.it_value.tv_usec;
-    }
-    return 0;
+    if (filc_ptr_ptr(new_value_ptr))
+        filc_check_read(new_value_ptr, sizeof(struct itimerval));
+    if (filc_ptr_ptr(old_value_ptr))
+        filc_check_write(old_value_ptr, sizeof(struct itimerval));
+    return FILC_SYSCALL(my_thread, setitimer(which,
+                                             (const struct itimerval*)filc_ptr_ptr(new_value_ptr),
+                                             (struct itimerval*)filc_ptr_ptr(old_value_ptr)));
 }
 
 int filc_native_zsys_pause(filc_thread* my_thread)
@@ -5978,65 +5271,25 @@ int filc_native_zsys_pselect(filc_thread* my_thread, int nfds,
         "attempt to select with nfds = %d (should be 1024 or less).",
         nfds);
     if (filc_ptr_ptr(readfds_ptr))
-        filc_check_write_int(readfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(readfds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(writefds_ptr))
-        filc_check_write_int(writefds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(writefds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(exceptfds_ptr))
-        filc_check_write_int(exceptfds_ptr, sizeof(fd_set), NULL);
+        filc_check_write(exceptfds_ptr, sizeof(fd_set));
     if (filc_ptr_ptr(timeout_ptr))
-        filc_check_read_int(timeout_ptr, sizeof(filc_user_timespec), NULL);
+        filc_check_read(timeout_ptr, sizeof(struct timespec));
     if (filc_ptr_ptr(sigmask_ptr))
         filc_check_user_sigset(sigmask_ptr, filc_read_access);
     fd_set* readfds = (fd_set*)filc_ptr_ptr(readfds_ptr);
     fd_set* writefds = (fd_set*)filc_ptr_ptr(writefds_ptr);
     fd_set* exceptfds = (fd_set*)filc_ptr_ptr(exceptfds_ptr);
-    filc_user_timespec* user_timeout = (filc_user_timespec*)filc_ptr_ptr(timeout_ptr);
-    struct timespec timeout;
-    if (user_timeout) {
-        timeout.tv_sec = user_timeout->tv_sec;
-        timeout.tv_nsec = user_timeout->tv_nsec;
-    }
-    filc_user_sigset* user_sigmask = (filc_user_sigset*)filc_ptr_ptr(sigmask_ptr);
+    struct timespec* timeout = (struct timespec*)filc_ptr_ptr(timeout_ptr);
+    sigset_t* user_sigmask = (sigset_t*)filc_ptr_ptr(sigmask_ptr);
     sigset_t sigmask;
     if (user_sigmask)
         filc_from_user_sigset(user_sigmask, &sigmask);
-    filc_pin(filc_ptr_object(readfds_ptr));
-    filc_pin(filc_ptr_object(writefds_ptr));
-    filc_pin(filc_ptr_object(exceptfds_ptr));
-    filc_exit(my_thread);
-    int result = pselect(nfds, readfds, writefds, exceptfds,
-                         user_timeout ? &timeout : NULL,
-                         user_sigmask ? &sigmask : NULL);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(readfds_ptr));
-    filc_unpin(filc_ptr_object(writefds_ptr));
-    filc_unpin(filc_ptr_object(exceptfds_ptr));
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
-}
-
-int filc_native_zsys_getpeereid(filc_thread* my_thread, int fd, filc_ptr uid_ptr, filc_ptr gid_ptr)
-{
-    uid_t uid;
-    gid_t gid;
-#if PAS_OS(LINUX)
-    struct ucred cred;
-    socklen_t len = sizeof(cred);
-    if (FILC_SYSCALL(my_thread, getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len)) < 0)
-        return -1;
-    uid = cred.uid;
-    gid = cred.gid;
-#else /* PAS_OS(LINUX) -> so !PAS_OS(LINUX) */
-    if (FILC_SYSCALL(my_thread, getpeereid(fd, &uid, &gid)) < 0)
-        return -1;
-#endif /* PAS_OS(LINUX) -> so end of !PAS_OS(LINUX) */
-    filc_check_write_int(uid_ptr, sizeof(unsigned), NULL);
-    filc_check_write_int(gid_ptr, sizeof(unsigned), NULL);
-    *(unsigned*)filc_ptr_ptr(uid_ptr) = uid;
-    *(unsigned*)filc_ptr_ptr(gid_ptr) = gid;
-    return 0;
+    return FILC_SYSCALL(my_thread, pselect(nfds, readfds, writefds, exceptfds, timeout,
+                                           user_sigmask ? &sigmask : NULL));
 }
 
 int filc_native_zsys_kill(filc_thread* my_thread, int pid, int sig)
@@ -6103,7 +5356,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int user_how, filc_ptr 
     if (filc_ptr_ptr(user_set_ptr)) {
         filc_check_user_sigset(user_set_ptr, filc_read_access);
         set = alloca(sizeof(sigset_t));
-        filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(user_set_ptr), set);
+        filc_from_user_sigset((sigset_t*)filc_ptr_ptr(user_set_ptr), set);
     } else
         set = NULL;
     if (filc_ptr_ptr(user_oldset_ptr)) {
@@ -6125,7 +5378,7 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int user_how, filc_ptr 
     if (filc_ptr_ptr(user_oldset_ptr)) {
         PAS_ASSERT(oldset);
         filc_check_user_sigset(user_oldset_ptr, filc_write_access);
-        filc_to_user_sigset(oldset, (filc_user_sigset*)filc_ptr_ptr(user_oldset_ptr));
+        filc_to_user_sigset(oldset, (sigset_t*)filc_ptr_ptr(user_oldset_ptr));
     }
     return 0;
 }
@@ -6214,28 +5467,11 @@ int filc_native_zsys_fork(filc_thread* my_thread)
     return result;
 }
 
-static int to_user_wait_status(int status)
-{
-    return status;
-}
-
 int filc_native_zsys_waitpid(filc_thread* my_thread, int pid, filc_ptr status_ptr, int options)
 {
-    filc_exit(my_thread);
-    int status;
-    int result = waitpid(pid, &status, options);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        PAS_ASSERT(result == -1);
-        filc_set_errno(my_errno);
-        return -1;
-    }
-    if (filc_ptr_ptr(status_ptr)) {
-        filc_check_write_int(status_ptr, sizeof(int), NULL);
-        *(int*)filc_ptr_ptr(status_ptr) = to_user_wait_status(status);
-    }
-    return result;
+    if (filc_ptr_ptr(status_ptr))
+        filc_check_write(status_ptr, sizeof(int));
+    return FILC_SYSCALL(my_thread, waitpid(pid, (int*)filc_ptr_ptr(status_ptr), options));
 }
 
 int filc_native_zsys_listen(filc_thread* my_thread, int sockfd, int backlog)
@@ -6264,10 +5500,9 @@ static size_t length_of_null_terminated_ptr_array(filc_ptr array_ptr)
 {
     size_t result = 0;
     for (;; result++) {
-        filc_check_read_ptr(array_ptr, NULL);
-        if (!filc_ptr_ptr(filc_ptr_load_with_manual_tracking((filc_ptr*)filc_ptr_ptr(array_ptr))))
+        if (!filc_ptr_ptr(filc_load_ptr_with_manual_tracking(array_ptr, 0)))
             return result;
-        array_ptr = filc_ptr_with_offset(array_ptr, sizeof(filc_ptr));
+        array_ptr = filc_ptr_with_offset(array_ptr, sizeof(void*));
     }
 }
 
@@ -6283,7 +5518,7 @@ char** filc_check_and_get_null_terminated_string_array(filc_thread* my_thread,
     size_t index;
     for (index = array_length; index--;) {
         (array)[index] = filc_check_and_get_tmp_str(
-            my_thread, filc_ptr_load(my_thread, (filc_ptr*)filc_ptr_ptr(user_array_ptr) + index));
+            my_thread, filc_load_ptr(my_thread, user_array_ptr, index * sizeof(void*)));
     }
     return array;
 }
@@ -6389,38 +5624,25 @@ int filc_native_zsys_setregid(filc_thread* my_thread, unsigned rgid, unsigned eg
     return result;
 }
 
-int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr user_req_ptr, filc_ptr user_rem_ptr)
+int filc_native_zsys_nanosleep(filc_thread* my_thread, filc_ptr req_ptr, filc_ptr rem_ptr)
 {
-    filc_check_read_int(user_req_ptr, sizeof(filc_user_timespec), NULL);
-    struct timespec req;
-    struct timespec rem;
-    req.tv_sec = ((filc_user_timespec*)filc_ptr_ptr(user_req_ptr))->tv_sec;
-    req.tv_nsec = ((filc_user_timespec*)filc_ptr_ptr(user_req_ptr))->tv_nsec;
-    filc_exit(my_thread);
-    int result = nanosleep(&req, &rem);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    if (result < 0) {
-        filc_set_errno(my_errno);
-        if (my_errno == EINTR && filc_ptr_ptr(user_rem_ptr)) {
-            filc_check_write_int(user_rem_ptr, sizeof(filc_user_timespec), NULL);
-            ((filc_user_timespec*)filc_ptr_ptr(user_rem_ptr))->tv_sec = rem.tv_sec;
-            ((filc_user_timespec*)filc_ptr_ptr(user_rem_ptr))->tv_nsec = rem.tv_nsec;
-        }
-    }
-    return result;
+    if (filc_ptr_ptr(req_ptr))
+        filc_check_read(req_ptr, sizeof(struct timespec));
+    if (filc_ptr_ptr(rem_ptr))
+        filc_check_write(rem_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(my_thread, nanosleep((const struct timespec*)filc_ptr_ptr(req_ptr),
+                                             (struct timespec*)filc_ptr_ptr(rem_ptr)));
 }
 
-long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr buf_ptr, size_t bufsize)
+long filc_native_zsys_readlink(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr buf_ptr,
+                               size_t bufsize)
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_check_write_int(buf_ptr, bufsize, NULL);
-    filc_pin(filc_ptr_object(buf_ptr));
+    filc_check_write(buf_ptr, bufsize);
     filc_exit(my_thread);
     long result = readlink(path, (char*)filc_ptr_ptr(buf_ptr), bufsize);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(buf_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -6499,22 +5721,23 @@ static filc_ptr mmap_error_result(void)
     return filc_ptr_forge_invalid((void*)(intptr_t)-1);
 }
 
-filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t length, int user_prot,
-                               int user_flags, int fd, long offset)
+filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t length, int prot,
+                               int flags, int fd, long offset)
 {
     static const bool verbose = false;
+    length = pas_round_up_to_power_of_2(length, pas_page_malloc_alignment());
     if (filc_ptr_ptr(address)) {
+        filc_check_write(address, length);
+        check_mmap(address);
+        if (!(flags & MAP_FIXED)) {
+            filc_set_errno(EINVAL);
+            return mmap_error_result();
+        }
+    } else if ((flags & MAP_FIXED)) {
         filc_set_errno(EINVAL);
         return mmap_error_result();
     }
-    int prot;
-    if (!from_user_prot(user_prot, &prot)) {
-        filc_set_errno(EINVAL);
-        return mmap_error_result();
-    }
-    int flags;
-    if (!from_user_mmap_flags(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
+    if ((prot & PROT_EXEC)) {
         return mmap_error_result();
     }
     if (!(flags & MAP_SHARED) && !(flags & MAP_PRIVATE)) {
@@ -6525,8 +5748,14 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
         filc_set_errno(EINVAL);
         return mmap_error_result();
     }
+    if (!filc_ptr_ptr(address)) {
+        address = filc_ptr_create_with_object(
+            my_thread, allocate_aligned_impl(
+                my_thread, length, pas_page_malloc_alignment(), FILC_OBJECT_FLAG_MMAP));
+        flags |= MAP_FIXED;
+    }
     filc_exit(my_thread);
-    void* raw_result = mmap(NULL, length, prot, flags, fd, offset);
+    void* raw_result = mmap(filc_ptr_ptr(address), length, prot, flags, fd, offset);
     int my_errno = errno;
     filc_enter(my_thread);
     if (raw_result == (void*)(intptr_t)-1) {
@@ -6534,47 +5763,39 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
         return mmap_error_result();
     }
     PAS_ASSERT(raw_result);
-    filc_word_type initial_word_type;
-    if ((flags & MAP_PRIVATE) && (flags & MAP_ANON) && fd == -1 && !offset
-        && prot == (PROT_READ | PROT_WRITE)) {
-        if (verbose)
-            pas_log("using unset word type.\n");
-        initial_word_type = FILC_WORD_TYPE_UNSET;
-    } else {
-        if (verbose)
-            pas_log("using int word type.\n");
-        initial_word_type = FILC_WORD_TYPE_INT;
-    }
-    filc_object* object = filc_allocate_with_existing_data(
-        my_thread, raw_result, length, FILC_OBJECT_FLAG_MMAP, initial_word_type);
-    PAS_ASSERT(object->lower == raw_result);
-    return filc_ptr_create_with_manual_tracking(object);
+    PAS_ASSERT(raw_result == filc_ptr_ptr(address));
+    return address;
+}
+
+void filc_unmap(void* ptr, size_t size)
+{
+    PAS_ASSERT(pas_is_aligned((uintptr_t)ptr, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+    void* result_ptr = mmap(ptr, size,
+                            PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANON | MAP_FIXED,
+                            -1, 0);
+    PAS_ASSERT(result_ptr == ptr);
 }
 
 int filc_native_zsys_munmap(filc_thread* my_thread, filc_ptr address, size_t length)
 {
-    filc_object* object = object_for_deallocate(address);
-    FILC_CHECK(
-        filc_object_size(object) == length,
-        NULL,
-        "cannot partially munmap (ptr = %s, length = %zu).",
-        filc_ptr_to_new_string(address), length);
-    FILC_CHECK(
-        object->flags & FILC_OBJECT_FLAG_MMAP,
-        NULL,
-        "cannot munmap something that was not mmapped (ptr = %s).",
-        filc_ptr_to_new_string(address));
-    filc_free_yolo(my_thread, object);
+    if (!length)
+        return 0;
+    length = pas_round_up_to_power_of_2(length, pas_page_malloc_alignment());
+    filc_check_write(address, length);
+    check_mmap(address);
+    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(address), pas_page_malloc_alignment())) {
+        filc_set_errno(EINVAL);
+        return -1;
+    }
     filc_exit(my_thread);
-    filc_soft_handshake(filc_soft_handshake_no_op_callback, NULL);
-    fugc_handshake(); /* Make sure we don't try to mark unmapped memory. */
-    int result = munmap(filc_ptr_ptr(address), length);
-    int my_errno = errno;
+    filc_unmap(filc_ptr_ptr(address), length);
     filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    if (filc_ptr_ptr(address) == filc_ptr_lower(address) &&
+        length == filc_ptr_available(address))
+        filc_free(filc_ptr_object(address));
+    return 0;
 }
 
 int filc_native_zsys_ftruncate(filc_thread* my_thread, int fd, long length)
@@ -6590,13 +5811,11 @@ int filc_native_zsys_ftruncate(filc_thread* my_thread, int fd, long length)
 
 filc_ptr filc_native_zsys_getcwd(filc_thread* my_thread, filc_ptr buf_ptr, size_t size)
 {
-    filc_check_write_int(buf_ptr, size, NULL);
-    filc_pin(filc_ptr_object(buf_ptr));
+    filc_check_write(buf_ptr, size);
     filc_exit(my_thread);
     char* result = getcwd((char*)filc_ptr_ptr(buf_ptr), size);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(buf_ptr));
     PAS_ASSERT(!result || result == (char*)filc_ptr_ptr(buf_ptr));
     if (!result)
         filc_set_errno(my_errno);
@@ -6626,13 +5845,13 @@ filc_ptr filc_native_zsys_dlopen(filc_thread* my_thread, filc_ptr filename_ptr, 
         set_dlerror(dlerror());
         return filc_ptr_forge_null();
     }
-    return filc_ptr_create_with_manual_tracking(
-        filc_allocate_special_with_existing_payload(my_thread, handle, FILC_WORD_TYPE_DL_HANDLE));
+    return filc_ptr_create_with_special_object_and_manual_tracking(
+        filc_allocate_special_with_existing_payload(my_thread, handle, FILC_SPECIAL_TYPE_DL_HANDLE));
 }
 
 filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, filc_ptr symbol_ptr)
 {
-    filc_check_access_special(handle_ptr, FILC_WORD_TYPE_DL_HANDLE, NULL);
+    filc_check_access_special(handle_ptr, FILC_SPECIAL_TYPE_DL_HANDLE);
     void* handle = filc_ptr_ptr(handle_ptr);
     char* symbol = filc_check_and_get_tmp_str(my_thread, symbol_ptr);
     pas_allocation_config allocation_config;
@@ -6652,15 +5871,9 @@ filc_ptr filc_native_zsys_dlsym(filc_thread* my_thread, filc_ptr handle_ptr, fil
     return raw_symbol(NULL);
 }
 
-int filc_native_zsys_faccessat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr,
-                               int mode, int user_flags)
+int filc_native_zsys_faccessat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr, int mode,
+                               int flags)
 {
-    int dirfd = filc_from_user_atfd(user_dirfd);
-    int flags;
-    if (!from_user_fstatat_flag(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_exit(my_thread);
     int result = faccessat(dirfd, pathname, mode, flags);
@@ -6675,15 +5888,15 @@ int filc_native_zsys_sigwait(filc_thread* my_thread, filc_ptr sigmask_ptr, filc_
 {
     filc_check_user_sigset(sigmask_ptr, filc_read_access);
     sigset_t sigmask;
-    filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(sigmask_ptr), &sigmask);
+    filc_from_user_sigset((sigset_t*)filc_ptr_ptr(sigmask_ptr), &sigmask);
     filc_exit(my_thread);
     int signum;
     int result = sigwait(&sigmask, &signum);
     filc_enter(my_thread);
     if (result)
         return result;
-    filc_check_write_int(sig_ptr, sizeof(int), NULL);
-    *(int*)filc_ptr_ptr(sig_ptr) = filc_to_user_signum(signum);
+    filc_check_write(sig_ptr, sizeof(int));
+    *(int*)filc_ptr_ptr(sig_ptr) = signum;
     return 0;
 }
 
@@ -6726,42 +5939,19 @@ int filc_native_zsys_rmdir(filc_thread* my_thread, filc_ptr path_ptr)
     return result;
 }
 
-static void from_user_utime_timespec(filc_user_timespec* user_tv, struct timespec* tv)
-{
-    tv->tv_sec = user_tv->tv_sec;
-    tv->tv_nsec = user_tv->tv_nsec;
-}
-
-static struct timespec* from_user_utime_timespec_ptr(filc_thread* my_thread, filc_ptr times_ptr)
-{
-    if (!filc_ptr_ptr(times_ptr))
-        return NULL;
-    struct timespec* times = filc_bmalloc_allocate_tmp(my_thread, sizeof(struct timespec) * 2);
-    filc_check_read_int(times_ptr, sizeof(filc_user_timespec) * 2, NULL);
-    filc_user_timespec* user_times = (filc_user_timespec*)filc_ptr_ptr(times_ptr);
-    from_user_utime_timespec(user_times + 0, times + 0);
-    from_user_utime_timespec(user_times + 1, times + 1);
-    return times;
-}
-
 int filc_native_zsys_futimens(filc_thread* my_thread, int fd, filc_ptr times_ptr)
 {
-    struct timespec* times = from_user_utime_timespec_ptr(my_thread, times_ptr);
-    return FILC_SYSCALL(my_thread, futimens(fd, times));
+    filc_check_read(times_ptr, sizeof(struct timespec) * 2);
+    return FILC_SYSCALL(my_thread, futimens(fd, (const struct timespec*)filc_ptr_ptr(times_ptr)));
 }
 
-int filc_native_zsys_utimensat(filc_thread* my_thread, int user_dirfd, filc_ptr path_ptr,
-                               filc_ptr times_ptr, int user_flags)
+int filc_native_zsys_utimensat(filc_thread* my_thread, int dirfd, filc_ptr path_ptr,
+                               filc_ptr times_ptr, int flags)
 {
-    int dirfd = filc_from_user_atfd(user_dirfd);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    struct timespec* times = from_user_utime_timespec_ptr(my_thread, times_ptr);
-    int flags;
-    if (!from_user_fstatat_flag(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
-    return FILC_SYSCALL(my_thread, utimensat(dirfd, path, times, flags));
+    filc_check_read(times_ptr, sizeof(struct timespec) * 2);
+    return FILC_SYSCALL(my_thread, utimensat(dirfd, path,
+                                             (const struct timespec*)filc_ptr_ptr(times_ptr), flags));
 }
 
 int filc_native_zsys_fchown(filc_thread* my_thread, int fd, unsigned uid, unsigned gid)
@@ -6769,15 +5959,9 @@ int filc_native_zsys_fchown(filc_thread* my_thread, int fd, unsigned uid, unsign
     return FILC_SYSCALL(my_thread, fchown(fd, uid, gid));
 }
 
-int filc_native_zsys_fchownat(filc_thread* my_thread, int user_fd, filc_ptr pathname_ptr, unsigned uid,
-                              unsigned gid, int user_flags)
+int filc_native_zsys_fchownat(filc_thread* my_thread, int fd, filc_ptr pathname_ptr, unsigned uid,
+                              unsigned gid, int flags)
 {
-    int fd = filc_from_user_atfd(user_fd);
-    int flags;
-    if (!from_user_fstatat_flag(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, fchownat(fd, pathname, uid, gid, flags));
 }
@@ -6827,13 +6011,8 @@ int filc_native_zsys_mprotect(filc_thread* my_thread, filc_ptr addr_ptr, size_t 
         filc_set_errno(EINVAL);
         return -1;
     }
-    if (prot == (PROT_READ | PROT_WRITE))
-        filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
-    else {
-        /* Protect the GC. We don't want the GC scanning pointers in protected memory. */
-        filc_check_write_int(addr_ptr, len, NULL);
-    }
-    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_check_write(addr_ptr, len);
+    check_mmap(addr_ptr);
     filc_exit(my_thread);
     int result = mprotect(filc_ptr_ptr(addr_ptr), len, prot);
     int my_errno = errno;
@@ -6852,14 +6031,12 @@ int filc_native_zsys_getgroups(filc_thread* my_thread, int size, filc_ptr list_p
         NULL,
         "size argument too big, causes overflow; size = %d.",
         size);
-    filc_check_write_int(list_ptr, total_size, NULL);
-    filc_pin(filc_ptr_object(list_ptr));
+    filc_check_write(list_ptr, total_size);
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
     int result = getgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(list_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -6899,7 +6076,7 @@ int filc_native_zsys_setpgid(filc_thread* my_thread, int pid, int pgrp)
 long filc_native_zsys_pread(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t nbytes,
                             long offset)
 {
-    filc_cpt_write_int(my_thread, buf_ptr, nbytes);
+    filc_check_write(buf_ptr, nbytes);
     return FILC_SYSCALL(my_thread, pread(fd, filc_ptr_ptr(buf_ptr), nbytes, offset));
 }
 
@@ -6913,7 +6090,7 @@ long filc_native_zsys_preadv(filc_thread* my_thread, int fd, filc_ptr user_iov_p
 long filc_native_zsys_pwrite(filc_thread* my_thread, int fd, filc_ptr buf_ptr, size_t nbytes,
                              long offset)
 {
-    filc_cpt_read_int(my_thread, buf_ptr, nbytes);
+    filc_check_read(buf_ptr, nbytes);
     return FILC_SYSCALL(my_thread, pwrite(fd, filc_ptr_ptr(buf_ptr), nbytes, offset));
 }
 
@@ -6932,8 +6109,8 @@ int filc_native_zsys_getsid(filc_thread* my_thread, int pid)
 static int mlock_impl(filc_thread* my_thread, filc_ptr addr_ptr, size_t len,
                       int (*actual_mlock)(const void*, size_t))
 {
-    filc_check_access_common(addr_ptr, len, filc_read_access, NULL);
-    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_check_access(addr_ptr, len, filc_read_access);
+    check_mmap(addr_ptr);
     return FILC_SYSCALL(my_thread, actual_mlock(filc_ptr_ptr(addr_ptr), len));
 }
 
@@ -6947,19 +6124,8 @@ int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t l
     return mlock_impl(my_thread, addr_ptr, len, munlock);
 }
 
-static bool from_user_mlockall_flags(int user_flags, int* flags)
+int filc_native_zsys_mlockall(filc_thread* my_thread, int flags)
 {
-    *flags = user_flags;
-    return true;
-}
-
-int filc_native_zsys_mlockall(filc_thread* my_thread, int user_flags)
-{
-    int flags;
-    if (!from_user_mlockall_flags(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     return FILC_SYSCALL(my_thread, mlockall(flags));
 }
 
@@ -6974,7 +6140,7 @@ int filc_native_zsys_sigpending(filc_thread* my_thread, filc_ptr set_ptr)
     if (FILC_SYSCALL(my_thread, sigpending(&set)) < 0)
         return -1;
     filc_check_user_sigset(set_ptr, filc_write_access);
-    filc_to_user_sigset(&set, (filc_user_sigset*)filc_ptr_ptr(set_ptr));
+    filc_to_user_sigset(&set, (sigset_t*)filc_ptr_ptr(set_ptr));
     return 0;
 }
 
@@ -6984,18 +6150,11 @@ int filc_native_zsys_truncate(filc_thread* my_thread, filc_ptr path_ptr, long le
     return FILC_SYSCALL(my_thread, truncate(path, length));
 }
 
-int filc_native_zsys_linkat(filc_thread* my_thread, int user_fd1, filc_ptr path1_ptr, int user_fd2,
-                            filc_ptr path2_ptr, int user_flags)
+int filc_native_zsys_linkat(filc_thread* my_thread, int fd1, filc_ptr path1_ptr, int fd2,
+                            filc_ptr path2_ptr, int flags)
 {
-    int fd1 = filc_from_user_atfd(user_fd1);
     char* path1 = filc_check_and_get_tmp_str(my_thread, path1_ptr);
-    int fd2 = filc_from_user_atfd(user_fd2);
     char* path2 = filc_check_and_get_tmp_str(my_thread, path2_ptr);
-    int flags;
-    if (!from_user_fstatat_flag(user_flags, &flags)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     return FILC_SYSCALL(my_thread, linkat(fd1, path1, fd2, path2, flags));
 }
 
@@ -7022,11 +6181,11 @@ int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned 
     return FILC_SYSCALL(my_thread, mkfifo(path, mode));
 }
 
-int filc_native_zsys_mkdirat(filc_thread* my_thread, int user_dirfd, filc_ptr pathname_ptr,
+int filc_native_zsys_mkdirat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr,
                              unsigned mode)
 {
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
-    return FILC_SYSCALL(my_thread, mkdirat(filc_from_user_atfd(user_dirfd), pathname, mode));
+    return FILC_SYSCALL(my_thread, mkdirat(dirfd, pathname, mode));
 }
 
 int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode)
@@ -7035,27 +6194,15 @@ int filc_native_zsys_mkdir(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
     return FILC_SYSCALL(my_thread, mkdir(pathname, mode));
 }
 
-int filc_native_zsys_fchmodat(filc_thread* my_thread, int user_fd, filc_ptr path_ptr,
-                              unsigned mode, int user_flag)
+int filc_native_zsys_fchmodat(filc_thread* my_thread, int fd, filc_ptr path_ptr, unsigned mode,
+                              int flag)
 {
-    int fd = filc_from_user_atfd(user_fd);
-    int flag;
-    if (!from_user_fstatat_flag(user_flag, &flag)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, fchmodat(fd, path, mode, flag));
 }
 
-int filc_native_zsys_unlinkat(filc_thread* my_thread, int user_dirfd, filc_ptr path_ptr, int user_flag)
+int filc_native_zsys_unlinkat(filc_thread* my_thread, int dirfd, filc_ptr path_ptr, int flag)
 {
-    int dirfd = filc_from_user_atfd(user_dirfd);
-    int flag;
-    if (!from_user_fstatat_flag(user_flag, &flag)) {
-        filc_set_errno(EINVAL);
-        return -1;
-    }
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, unlinkat(dirfd, path, flag));
 }
@@ -7065,19 +6212,19 @@ int filc_to_user_errno(int errno_value)
     return errno_value;
 }
 
-void filc_from_user_sigset(filc_user_sigset* user_sigset,
+void filc_from_user_sigset(sigset_t* user_sigset,
                            sigset_t* sigset)
 {
-    PAS_ASSERT(sizeof(filc_user_sigset) == sizeof(sigset_t));
+    PAS_ASSERT(sizeof(sigset_t) == sizeof(sigset_t));
     memcpy(sigset, user_sigset, sizeof(sigset_t));
     PAS_ASSERT(!sigdelsetyolo(sigset, SIGTIMER));
     PAS_ASSERT(!sigdelsetyolo(sigset, SIGCANCEL));
     PAS_ASSERT(!sigdelsetyolo(sigset, SIGSYNCCALL));
 }
 
-void filc_to_user_sigset(sigset_t* sigset, filc_user_sigset* user_sigset)
+void filc_to_user_sigset(sigset_t* sigset, sigset_t* user_sigset)
 {
-    PAS_ASSERT(sizeof(sigset_t) == sizeof(filc_user_sigset));
+    PAS_ASSERT(sizeof(sigset_t) == sizeof(sigset_t));
     memcpy(user_sigset, sigset, sizeof(sigset_t));
 }
 
@@ -7095,17 +6242,11 @@ static void ioctl_callback(void* guarded_arg, void* user_arg)
 
 int filc_native_zsys_ioctl(filc_thread* my_thread, int fd, int request, filc_cc_cursor* args)
 {
-    if (!filc_cc_cursor_has_next(args, FILC_WORD_SIZE, FILC_WORD_TYPE_PTR)) {
-        if (filc_cc_cursor_has_next(args, sizeof(long), FILC_WORD_TYPE_INT)) {
-            return FILC_SYSCALL(
-                my_thread, ioctl(fd, request, filc_cc_cursor_get_next_long(args)));
-        }
-        return FILC_SYSCALL(my_thread, ioctl(fd, request));
-    }
-
-    filc_ptr arg_ptr = filc_cc_cursor_get_next_ptr(args);
-    if (!filc_ptr_ptr(arg_ptr))
-        return FILC_SYSCALL(my_thread, ioctl(fd, request, NULL));
+    filc_ptr arg_ptr;
+    if (filc_cc_cursor_has_next(args, sizeof(void*)))
+        arg_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+    else
+        arg_ptr = filc_ptr_forge_null();
 
     ioctl_data data;
     data.fd = fd;
@@ -7128,13 +6269,11 @@ int filc_native_zsys_socket(filc_thread* my_thread, int domain, int type, int pr
 int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int level, int optname,
                                 filc_ptr optval_ptr, unsigned optlen)
 {
-    filc_check_read_int(optval_ptr, optlen, NULL);
-    filc_pin(filc_ptr_object(optval_ptr));
+    filc_check_read(optval_ptr, optlen);
     filc_exit(my_thread);
     int result = setsockopt(sockfd, level, optname, filc_ptr_ptr(optval_ptr), optlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(optval_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -7142,13 +6281,11 @@ int filc_native_zsys_setsockopt(filc_thread* my_thread, int sockfd, int level, i
 
 int filc_native_zsys_bind(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, unsigned addrlen)
 {
-    filc_check_read_int(addr_ptr, addrlen, NULL);
-    filc_pin(filc_ptr_object(addr_ptr));
+    filc_check_read(addr_ptr, addrlen);
     filc_exit(my_thread);
     int result = bind(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -7156,13 +6293,11 @@ int filc_native_zsys_bind(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
 
 int filc_native_zsys_connect(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, unsigned addrlen)
 {
-    filc_check_read_int(addr_ptr, addrlen, NULL);
-    filc_pin(filc_ptr_object(addr_ptr));
+    filc_check_read(addr_ptr, addrlen);
     filc_exit(my_thread);
     int result = connect(sockfd, (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -7171,89 +6306,73 @@ int filc_native_zsys_connect(filc_thread* my_thread, int sockfd, filc_ptr addr_p
 int filc_native_zsys_getsockname(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
                                  filc_ptr addrlen_ptr)
 {
-    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write(addrlen_ptr, sizeof(unsigned));
     unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
 
-    filc_check_write_int(addr_ptr, addrlen, NULL);
+    filc_check_write(addr_ptr, addrlen);
 
-    filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
     int result = getsockname(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
 
     if (result < 0)
         filc_set_errno(my_errno);
-    else {
-        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+    else
         *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
-    }
     return result;
 }
 
 int filc_native_zsys_getsockopt(filc_thread* my_thread, int sockfd, int level, int optname,
                                 filc_ptr optval_ptr, filc_ptr optlen_ptr)
 {
-    filc_check_read_int(optlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write(optlen_ptr, sizeof(unsigned));
     unsigned optlen = *(unsigned*)filc_ptr_ptr(optlen_ptr);
 
-    filc_check_write_int(optval_ptr, optlen, NULL);
+    filc_check_write(optval_ptr, optlen);
 
-    filc_pin(filc_ptr_object(optval_ptr));
     filc_exit(my_thread);
     int result = getsockopt(sockfd, level, optname, filc_ptr_ptr(optval_ptr), &optlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(optval_ptr));
 
     if (result < 0)
         filc_set_errno(my_errno);
-    else {
-        filc_check_write_int(optlen_ptr, sizeof(unsigned), NULL);
+    else
         *(unsigned*)filc_ptr_ptr(optlen_ptr) = optlen;
-    }
     return result;
 }
 
 int filc_native_zsys_getpeername(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr,
                                  filc_ptr addrlen_ptr)
 {
-    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write(addrlen_ptr, sizeof(unsigned));
     unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
 
-    filc_check_write_int(addr_ptr, addrlen, NULL);
+    filc_check_write(addr_ptr, addrlen);
 
-    filc_pin(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
     int result = getpeername(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
 
     if (result < 0)
         filc_set_errno(my_errno);
-    else {
-        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+    else
         *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
-    }
     return result;
 }
 
 ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
                                 int flags, filc_ptr addr_ptr, unsigned addrlen)
 {
-    filc_check_read_int(buf_ptr, len, NULL);
-    filc_check_read_int(addr_ptr, addrlen, NULL);
-    filc_pin(filc_ptr_object(buf_ptr));
-    filc_pin(filc_ptr_object(addr_ptr));
+    filc_check_read(buf_ptr, len);
+    filc_check_read(addr_ptr, addrlen);
     filc_exit(my_thread);
     int result = sendto(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
                         (const struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(buf_ptr));
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -7262,13 +6381,13 @@ ssize_t filc_native_zsys_sendto(filc_thread* my_thread, int sockfd, filc_ptr buf
 ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr buf_ptr, size_t len,
                                   int flags, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
 {
-    filc_cpt_write_int(my_thread, buf_ptr, len);
+    filc_check_write(buf_ptr, len);
     unsigned* addrlen = NULL;
     if (filc_ptr_ptr(addrlen_ptr)) {
         addrlen = alloca(sizeof(unsigned));
-        filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+        filc_check_write(addrlen_ptr, sizeof(unsigned));
         *addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
-        filc_cpt_write_int(my_thread, addr_ptr, *addrlen);
+        filc_check_write(addr_ptr, *addrlen);
     } else if (filc_ptr_ptr(addr_ptr)) {
         filc_set_errno(EINVAL);
         return -1;
@@ -7279,145 +6398,120 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
                           (struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
-    else if (addrlen) {
-        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+    else if (addrlen)
         *(unsigned*)filc_ptr_ptr(addrlen_ptr) = *addrlen;
-    }
     return result;
 }
 
 int filc_native_zsys_accept(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, filc_ptr addrlen_ptr)
 {
-    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write(addrlen_ptr, sizeof(unsigned));
     unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
-    filc_check_write_int(addr_ptr, addrlen, NULL);
-    filc_pin(filc_ptr_object(addr_ptr));
+    filc_check_write(addr_ptr, addrlen);
     filc_exit(my_thread);
     int result = accept(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
-    else {
-        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+    else
         *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
-    }
     return result;
 }
 
 int filc_native_zsys_accept4(filc_thread* my_thread, int sockfd, filc_ptr addr_ptr, filc_ptr addrlen_ptr, int flg)
 {
-    filc_check_read_int(addrlen_ptr, sizeof(unsigned), NULL);
+    filc_check_write(addrlen_ptr, sizeof(unsigned));
     unsigned addrlen = *(unsigned*)filc_ptr_ptr(addrlen_ptr);
-    filc_check_write_int(addr_ptr, addrlen, NULL);
-    filc_pin(filc_ptr_object(addr_ptr));
+    filc_check_write(addr_ptr, addrlen);
     filc_exit(my_thread);
     int result = accept4(sockfd, (struct sockaddr*)filc_ptr_ptr(addr_ptr), &addrlen, flg);
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(addr_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
-    else {
-        filc_check_write_int(addrlen_ptr, sizeof(unsigned), NULL);
+    else
         *(unsigned*)filc_ptr_ptr(addrlen_ptr) = addrlen;
-    }
     return result;
 }
 
 int filc_native_zsys_socketpair(filc_thread* my_thread, int domain, int type, int protocol,
                                 filc_ptr sv_ptr)
 {
-    filc_check_write_int(sv_ptr, sizeof(int) * 2, NULL);
-    filc_pin(filc_ptr_object(sv_ptr));
+    filc_check_write(sv_ptr, sizeof(int) * 2);
     filc_exit(my_thread);
     int result = socketpair(domain, type, protocol, (int*)filc_ptr_ptr(sv_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(sv_ptr));
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
 }
 
-struct user_msghdr {
-    filc_ptr msg_name;
-    unsigned msg_namelen;
-    filc_ptr msg_iov;
-    int msg_iovlen;
-    filc_ptr msg_control;
-    unsigned msg_controllen;
-    int msg_flags;
-};
-
-static void check_user_msghdr(filc_ptr ptr, filc_access_kind access_kind)
+static void check_msghdr(filc_ptr ptr, filc_access_kind access_kind)
 {
-    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_name, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_namelen, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_iov, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_iovlen, access_kind);
-    FILC_CHECK_PTR_FIELD(ptr, struct user_msghdr, msg_control, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_controllen, access_kind);
-    FILC_CHECK_INT_FIELD(ptr, struct user_msghdr, msg_flags, access_kind);
+    filc_check_access(ptr, sizeof(struct msghdr), access_kind);
 }
 
-static void from_user_msghdr_base(filc_thread* my_thread,
-                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
-                                  filc_access_kind access_kind)
+static void from_user_msghdr_base(filc_thread* my_thread, filc_ptr user_msghdr_ptr,
+                                  struct msghdr* msghdr, filc_access_kind access_kind)
 {
+    struct msghdr* user_msghdr = (struct msghdr*)filc_ptr_ptr(user_msghdr_ptr);
+    
     pas_zero_memory(msghdr, sizeof(struct msghdr));
 
     int iovlen = user_msghdr->msg_iovlen;
     msghdr->msg_iov = filc_prepare_iovec(
-        my_thread, filc_ptr_load(my_thread, &user_msghdr->msg_iov), iovlen, access_kind);
+        my_thread, filc_load_ptr_at(my_thread, user_msghdr_ptr, &user_msghdr->msg_iov), iovlen,
+        access_kind);
     msghdr->msg_iovlen = iovlen;
 
     msghdr->msg_flags = user_msghdr->msg_flags;
 }
 
-static void from_user_msghdr_impl(filc_thread* my_thread,
-                                  struct user_msghdr* user_msghdr, struct msghdr* msghdr,
-                                  filc_access_kind access_kind)
+static void from_user_msghdr_impl(filc_thread* my_thread, filc_ptr user_msghdr_ptr,
+                                  struct msghdr* msghdr, filc_access_kind access_kind)
 {
-    from_user_msghdr_base(my_thread, user_msghdr, msghdr, access_kind);
+    from_user_msghdr_base(my_thread, user_msghdr_ptr, msghdr, access_kind);
 
+    struct msghdr* user_msghdr = (struct msghdr*)filc_ptr_ptr(user_msghdr_ptr);
+    
     unsigned msg_namelen = user_msghdr->msg_namelen;
     if (msg_namelen) {
-        filc_ptr msg_name = filc_ptr_load(my_thread, &user_msghdr->msg_name);
-        filc_check_access_int(msg_name, msg_namelen, access_kind, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(msg_name));
+        filc_ptr msg_name = filc_load_ptr_at(my_thread, user_msghdr_ptr, &user_msghdr->msg_name);
+        filc_check_access(msg_name, msg_namelen, access_kind);
         msghdr->msg_name = filc_ptr_ptr(msg_name);
         msghdr->msg_namelen = msg_namelen;
     }
 
     unsigned user_controllen = user_msghdr->msg_controllen;
     if (user_controllen) {
-        filc_ptr user_control = filc_ptr_load(my_thread, &user_msghdr->msg_control);
-        filc_check_access_int(user_control, user_controllen, access_kind, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(user_control));
+        filc_ptr user_control = filc_load_ptr_at(my_thread, user_msghdr_ptr,
+                                                 &user_msghdr->msg_control);
+        filc_check_access(user_control, user_controllen, access_kind);
         msghdr->msg_control = filc_ptr_ptr(user_control);
         msghdr->msg_controllen = user_controllen;
     }
 }
 
-static void from_user_msghdr_for_send(filc_thread* my_thread,
-                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+static void from_user_msghdr_for_send(filc_thread* my_thread, filc_ptr user_msghdr_ptr,
+                                      struct msghdr* msghdr)
 {
-    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_read_access);
+    from_user_msghdr_impl(my_thread, user_msghdr_ptr, msghdr, filc_read_access);
 }
 
-static void from_user_msghdr_for_recv(filc_thread* my_thread,
-                                      struct user_msghdr* user_msghdr, struct msghdr* msghdr)
+static void from_user_msghdr_for_recv(filc_thread* my_thread, filc_ptr user_msghdr_ptr,
+                                      struct msghdr* msghdr)
 {
-    from_user_msghdr_impl(my_thread, user_msghdr, msghdr, filc_write_access);
+    from_user_msghdr_impl(my_thread, user_msghdr_ptr, msghdr, filc_write_access);
 }
 
-static void to_user_msghdr_for_recv(struct msghdr* msghdr, struct user_msghdr* user_msghdr)
+static void to_user_msghdr_for_recv(struct msghdr* msghdr, filc_ptr user_msghdr_ptr)
 {
+    struct msghdr* user_msghdr = (struct msghdr*)filc_ptr_ptr(user_msghdr_ptr);
+    
     user_msghdr->msg_namelen = msghdr->msg_namelen;
     user_msghdr->msg_controllen = msghdr->msg_controllen;
     user_msghdr->msg_flags = msghdr->msg_flags;
@@ -7430,10 +6524,9 @@ ssize_t filc_native_zsys_sendmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
     if (verbose)
         pas_log("In sendmsg\n");
 
-    check_user_msghdr(msg_ptr, filc_read_access);
-    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    check_msghdr(msg_ptr, filc_read_access);
     struct msghdr msg;
-    from_user_msghdr_for_send(my_thread, user_msg, &msg);
+    from_user_msghdr_for_send(my_thread, msg_ptr, &msg);
     if (verbose)
         pas_log("Got this far\n");
     filc_exit(my_thread);
@@ -7453,10 +6546,9 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
 {
     static const bool verbose = false;
 
-    check_user_msghdr(msg_ptr, filc_read_access);
-    struct user_msghdr* user_msg = (struct user_msghdr*)filc_ptr_ptr(msg_ptr);
+    check_msghdr(msg_ptr, filc_write_access);
     struct msghdr msg;
-    from_user_msghdr_for_recv(my_thread, user_msg, &msg);
+    from_user_msghdr_for_recv(my_thread, msg_ptr, &msg);
     filc_exit(my_thread);
     if (verbose) {
         pas_log("Actually doing recvmsg\n");
@@ -7475,10 +6567,8 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
         if (verbose)
             pas_log("recvmsg failed: %s\n", strerror(errno));
         filc_set_errno(my_errno);
-    } else {
-        check_user_msghdr(msg_ptr, filc_write_access);
-        to_user_msghdr_for_recv(&msg, user_msg);
-    }
+    } else
+        to_user_msghdr_for_recv(&msg, msg_ptr);
     return result;
 
 einval:
@@ -7558,22 +6648,22 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_cc_curs
     int arg_int = 0;
     void* arg_ptr = NULL;
     if (have_arg_int)
-        arg_int = filc_cc_cursor_get_next_int(args);
+        arg_int = filc_cc_cursor_get_next_int(my_thread, args);
     else if (have_arg_flock) {
-        filc_ptr flock_ptr = filc_cc_cursor_get_next_ptr(args);
-        filc_cpt_access_int(my_thread, flock_ptr, sizeof(struct flock), ptr_access_kind);
+        filc_ptr flock_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_access(flock_ptr, sizeof(struct flock), ptr_access_kind);
         arg_ptr = filc_ptr_ptr(flock_ptr);
     } else if (have_arg_uint64_ptr) {
-        filc_ptr uint64_ptr = filc_cc_cursor_get_next_ptr(args);
-        filc_cpt_access_int(my_thread, uint64_ptr, sizeof(uint64_t), ptr_access_kind);
+        filc_ptr uint64_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_access(uint64_ptr, sizeof(uint64_t), ptr_access_kind);
         arg_ptr = filc_ptr_ptr(uint64_ptr);
     } else if (have_arg_f_owner_ex) {
-        filc_ptr f_owner_ex_ptr = filc_cc_cursor_get_next_ptr(args);
-        filc_cpt_access_int(my_thread, f_owner_ex_ptr, sizeof(struct f_owner_ex), ptr_access_kind);
+        filc_ptr f_owner_ex_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_access(f_owner_ex_ptr, sizeof(struct f_owner_ex), ptr_access_kind);
         arg_ptr = filc_ptr_ptr(f_owner_ex_ptr);
     } else if (have_arg_uids) {
-        filc_ptr uids_ptr = filc_cc_cursor_get_next_ptr(args);
-        filc_cpt_access_int(my_thread, uids_ptr, sizeof(uid_t) * 2, ptr_access_kind);
+        filc_ptr uids_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_access(uids_ptr, sizeof(uid_t) * 2, ptr_access_kind);
         arg_ptr = filc_ptr_ptr(uids_ptr);
     }
     if (verbose)
@@ -7598,10 +6688,10 @@ int filc_native_zsys_fcntl(filc_thread* my_thread, int fd, int cmd, filc_cc_curs
     return result;
 }
 
-int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned long nfds, int timeout)
+int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned long nfds,
+                          int timeout)
 {
-    filc_check_write_int(pollfds_ptr, filc_mul_size(sizeof(struct pollfd), nfds), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(pollfds_ptr));
+    filc_check_write(pollfds_ptr, filc_mul_size(sizeof(struct pollfd), nfds));
     struct pollfd* pollfds = (struct pollfd*)filc_ptr_ptr(pollfds_ptr);
     filc_exit(my_thread);
     int result = poll(pollfds, nfds, timeout);
@@ -7635,8 +6725,7 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
         NULL,
         "size argument too big, causes overflow; size = %zu.",
         size);
-    filc_check_read_int(list_ptr, total_size, NULL);
-    filc_pin(filc_ptr_object(list_ptr));
+    filc_check_read(list_ptr, total_size);
     filc_exit(my_thread);
     PAS_ASSERT(sizeof(gid_t) == sizeof(unsigned));
     if (verbose) {
@@ -7646,7 +6735,6 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
     int result = setgroups(size, (gid_t*)filc_ptr_ptr(list_ptr));
     int my_errno = errno;
     filc_enter(my_thread);
-    filc_unpin(filc_ptr_object(list_ptr));
     if (verbose)
         pas_log("result = %d, error = %s\n", result, strerror(my_errno));
     if (result < 0)
@@ -7656,8 +6744,8 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
 
 int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int behav)
 {
-    filc_check_access_common(addr_ptr, len, filc_write_access, NULL);
-    filc_check_pin_and_track_mmap(my_thread, addr_ptr);
+    filc_check_access(addr_ptr, len, filc_write_access);
+    check_mmap(addr_ptr);
     filc_exit(my_thread);
     int result = madvise(filc_ptr_ptr(addr_ptr), len, behav);
     int my_errno = errno;
@@ -7670,12 +6758,10 @@ int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr addr_ptr, size_t l
 
 int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, filc_ptr vec_ptr)
 {
-    filc_check_write_int(
+    filc_check_write(
         vec_ptr,
         pas_round_up_to_power_of_2(
-            len, pas_page_malloc_alignment()) >> pas_page_malloc_alignment_shift(),
-        NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(vec_ptr));
+            len, pas_page_malloc_alignment()) >> pas_page_malloc_alignment_shift());
     filc_exit(my_thread);
     int result = mincore(filc_ptr_ptr(addr), len, (unsigned char*)filc_ptr_ptr(vec_ptr));
     int my_errno = errno;
@@ -7712,14 +6798,10 @@ int filc_native_zsys_setpriority(filc_thread* my_thread, int which, int who, int
 
 int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
 {
-    if (filc_ptr_ptr(tp_ptr)) {
-        filc_check_write_int(tp_ptr, sizeof(struct timeval), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
-    }
-    if (filc_ptr_ptr(tzp_ptr)) {
-        filc_check_write_int(tzp_ptr, sizeof(struct timezone), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
-    }
+    if (filc_ptr_ptr(tp_ptr))
+        filc_check_write(tp_ptr, sizeof(struct timeval));
+    if (filc_ptr_ptr(tzp_ptr))
+        filc_check_write(tzp_ptr, sizeof(struct timezone));
     filc_exit(my_thread);
     int result = gettimeofday((struct timeval*)filc_ptr_ptr(tp_ptr),
                               (struct timezone*)filc_ptr_ptr(tzp_ptr));
@@ -7733,14 +6815,10 @@ int filc_native_zsys_gettimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_
 
 int filc_native_zsys_settimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_ptr tzp_ptr)
 {
-    if (filc_ptr_ptr(tp_ptr)) {
-        filc_check_read_int(tp_ptr, sizeof(struct timeval), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
-    }
-    if (filc_ptr_ptr(tzp_ptr)) {
-        filc_check_read_int(tzp_ptr, sizeof(struct timezone), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(tzp_ptr));
-    }
+    if (filc_ptr_ptr(tp_ptr))
+        filc_check_read(tp_ptr, sizeof(struct timeval));
+    if (filc_ptr_ptr(tzp_ptr))
+        filc_check_read(tzp_ptr, sizeof(struct timezone));
     filc_exit(my_thread);
     int result = settimeofday((const struct timeval*)filc_ptr_ptr(tp_ptr),
                               (const struct timezone*)filc_ptr_ptr(tzp_ptr));
@@ -7754,8 +6832,7 @@ int filc_native_zsys_settimeofday(filc_thread* my_thread, filc_ptr tp_ptr, filc_
 
 int filc_native_zsys_getrusage(filc_thread* my_thread, int who, filc_ptr rusage_ptr)
 {
-    filc_check_write_int(rusage_ptr, sizeof(struct rusage), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(rusage_ptr));
+    filc_check_write(rusage_ptr, sizeof(struct rusage));
     filc_exit(my_thread);
     int result = getrusage(who, (struct rusage*)filc_ptr_ptr(rusage_ptr));
     int my_errno = errno;
@@ -7782,10 +6859,8 @@ static int utimes_impl(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr times
                        int (*actual_utimes)(const char*, const struct timeval*))
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    if (filc_ptr_ptr(times_ptr)) {
-        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
-    }
+    if (filc_ptr_ptr(times_ptr))
+        filc_check_read(times_ptr, sizeof(struct timeval) * 2);
     filc_exit(my_thread);
     int result = actual_utimes(path, (const struct timeval*)filc_ptr_ptr(times_ptr));
     int my_errno = errno;
@@ -7808,14 +6883,10 @@ int filc_native_zsys_lutimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr
 
 int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_ptr olddelta_ptr)
 {
-    if (filc_ptr_ptr(delta_ptr)) {
-        filc_check_read_int(delta_ptr, sizeof(struct timeval), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(delta_ptr));
-    }
-    if (filc_ptr_ptr(olddelta_ptr)) {
-        filc_check_write_int(olddelta_ptr, sizeof(struct timeval), NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(olddelta_ptr));
-    }
+    if (filc_ptr_ptr(delta_ptr))
+        filc_check_read(delta_ptr, sizeof(struct timeval));
+    if (filc_ptr_ptr(olddelta_ptr))
+        filc_check_write(olddelta_ptr, sizeof(struct timeval));
     filc_exit(my_thread);
     int result = adjtime((const struct timeval*)filc_ptr_ptr(delta_ptr),
                          (struct timeval*)filc_ptr_ptr(olddelta_ptr));
@@ -7840,8 +6911,7 @@ long filc_native_zsys_fpathconf(filc_thread* my_thread, int fd, int name)
 
 int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rlp_ptr)
 {
-    filc_check_read_int(rlp_ptr, sizeof(struct rlimit), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(rlp_ptr));
+    filc_check_read(rlp_ptr, sizeof(struct rlimit));
     filc_exit(my_thread);
     int result = setrlimit(resource, (struct rlimit*)filc_ptr_ptr(rlp_ptr));
     int my_errno = errno;
@@ -7970,20 +7040,15 @@ int filc_native_zsys_msgsnd(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr
 
 int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
 {
-    if (filc_ptr_ptr(times_ptr)) {
-        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
-    }
-    filc_exit(my_thread);
+    if (filc_ptr_ptr(times_ptr))
+        filc_check_read(times_ptr, sizeof(struct timeval) * 2);
     return FILC_SYSCALL(my_thread, futimes(fd, (const struct timeval*)filc_ptr_ptr(times_ptr)));
 }
 
 int filc_native_zsys_futimesat(filc_thread* my_thread, int fd, filc_ptr path_ptr, filc_ptr times_ptr)
 {
-    if (filc_ptr_ptr(times_ptr)) {
-        filc_check_read_int(times_ptr, sizeof(struct timeval) * 2, NULL);
-        filc_pin_tracked(my_thread, filc_ptr_object(times_ptr));
-    }
+    if (filc_ptr_ptr(times_ptr))
+        filc_check_read(times_ptr, sizeof(struct timeval) * 2);
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, futimesat(fd, path,
                                              (const struct timeval*)filc_ptr_ptr(times_ptr)));
@@ -7991,8 +7056,7 @@ int filc_native_zsys_futimesat(filc_thread* my_thread, int fd, filc_ptr path_ptr
 
 int filc_native_zsys_clock_settime(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
 {
-    filc_check_read_int(tp_ptr, sizeof(struct timespec), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_check_read(tp_ptr, sizeof(struct timespec));
     filc_exit(my_thread);
     int result = clock_settime(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
     int my_errno = errno;
@@ -8005,8 +7069,7 @@ int filc_native_zsys_clock_settime(filc_thread* my_thread, int clock_id, filc_pt
 
 int filc_native_zsys_clock_getres(filc_thread* my_thread, int clock_id, filc_ptr tp_ptr)
 {
-    filc_check_write_int(tp_ptr, sizeof(struct timespec), NULL);
-    filc_pin_tracked(my_thread, filc_ptr_object(tp_ptr));
+    filc_check_write(tp_ptr, sizeof(struct timespec));
     filc_exit(my_thread);
     int result = clock_getres(clock_id, (struct timespec*)filc_ptr_ptr(tp_ptr));
     int my_errno = errno;
@@ -8028,9 +7091,9 @@ int filc_native_zsys_issetugid(filc_thread* my_thread)
 int filc_native_zsys_getresgid(filc_thread* my_thread, filc_ptr rgid_ptr, filc_ptr egid_ptr,
                                filc_ptr sgid_ptr)
 {
-    filc_cpt_write_int(my_thread, rgid_ptr, sizeof(gid_t));
-    filc_cpt_write_int(my_thread, egid_ptr, sizeof(gid_t));
-    filc_cpt_write_int(my_thread, sgid_ptr, sizeof(gid_t));
+    filc_check_write(rgid_ptr, sizeof(gid_t));
+    filc_check_write(egid_ptr, sizeof(gid_t));
+    filc_check_write(sgid_ptr, sizeof(gid_t));
     return FILC_SYSCALL(my_thread, getresgid((gid_t*)filc_ptr_ptr(rgid_ptr),
                                              (gid_t*)filc_ptr_ptr(egid_ptr),
                                              (gid_t*)filc_ptr_ptr(sgid_ptr)));
@@ -8039,9 +7102,9 @@ int filc_native_zsys_getresgid(filc_thread* my_thread, filc_ptr rgid_ptr, filc_p
 int filc_native_zsys_getresuid(filc_thread* my_thread, filc_ptr ruid_ptr, filc_ptr euid_ptr,
                                filc_ptr suid_ptr)
 {
-    filc_cpt_write_int(my_thread, ruid_ptr, sizeof(uid_t));
-    filc_cpt_write_int(my_thread, euid_ptr, sizeof(uid_t));
-    filc_cpt_write_int(my_thread, suid_ptr, sizeof(uid_t));
+    filc_check_write(ruid_ptr, sizeof(uid_t));
+    filc_check_write(euid_ptr, sizeof(uid_t));
+    filc_check_write(suid_ptr, sizeof(uid_t));
     return FILC_SYSCALL(my_thread, getresuid((uid_t*)filc_ptr_ptr(ruid_ptr),
                                              (uid_t*)filc_ptr_ptr(euid_ptr),
                                              (uid_t*)filc_ptr_ptr(suid_ptr)));
@@ -8059,21 +7122,21 @@ int filc_native_zsys_setresuid(filc_thread* my_thread, unsigned ruid, unsigned e
 
 int filc_native_zsys_sched_setparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
 {
-    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    filc_check_read(param_buf, sizeof(struct sched_param));
     return FILC_SYSCALL(
         my_thread, sched_setparam(pid, (const struct sched_param*)filc_ptr_ptr(param_buf)));
 }
 
 int filc_native_zsys_sched_getparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
 {
-    filc_cpt_write_int(my_thread, param_buf, sizeof(struct sched_param));
+    filc_check_write(param_buf, sizeof(struct sched_param));
     return FILC_SYSCALL(my_thread, sched_getparam(pid, (struct sched_param*)filc_ptr_ptr(param_buf)));
 }
 
 int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int policy,
                                         filc_ptr param_buf)
 {
-    filc_cpt_read_int(my_thread, param_buf, sizeof(struct sched_param));
+    filc_check_read(param_buf, sizeof(struct sched_param));
     return FILC_SYSCALL(
         my_thread, sched_setscheduler(pid, policy,
                                       (const struct sched_param*)filc_ptr_ptr(param_buf)));
@@ -8096,7 +7159,7 @@ int filc_native_zsys_sched_get_priority_max(filc_thread* my_thread, int policy)
 
 int filc_native_zsys_sched_rr_get_interval(filc_thread* my_thread, int pid, filc_ptr interval_ptr)
 {
-    filc_cpt_write_int(my_thread, interval_ptr, sizeof(struct timespec));
+    filc_check_write(interval_ptr, sizeof(struct timespec));
     return FILC_SYSCALL(
         my_thread, sched_rr_get_interval(pid, (struct timespec*)filc_ptr_ptr(interval_ptr)));
 }
@@ -8128,7 +7191,7 @@ int filc_native_zsys_isatty(filc_thread* my_thread, int fd)
 
 int filc_native_zsys_uname(filc_thread* my_thread, filc_ptr buf_ptr)
 {
-    filc_cpt_write_int(my_thread, buf_ptr, sizeof(struct utsname));
+    filc_check_write(buf_ptr, sizeof(struct utsname));
     return FILC_SYSCALL(my_thread, uname((struct utsname*)filc_ptr_ptr(buf_ptr)));
 }
 
@@ -8137,7 +7200,7 @@ int filc_native_zsys_sendfile(filc_thread* my_thread, int out_fd, int in_fd, fil
 {
     if (filc_ptr_ptr(offset_ptr)) {
         PAS_ASSERT(sizeof(long) == sizeof(off_t));
-        filc_cpt_write_int(my_thread, offset_ptr, sizeof(off_t));
+        filc_check_write(offset_ptr, sizeof(off_t));
     }
     return FILC_SYSCALL(my_thread, sendfile(out_fd, in_fd, (off_t*)filc_ptr_ptr(offset_ptr), count));
 }
@@ -8151,7 +7214,7 @@ void filc_native_zsys_futex_wake(filc_thread* my_thread, filc_ptr addr_ptr, int 
 
 void filc_native_zsys_futex_wait(filc_thread* my_thread, filc_ptr addr_ptr, int val, int priv)
 {
-    filc_cpt_read_int(my_thread, addr_ptr, sizeof(int));
+    filc_check_read(addr_ptr, sizeof(int));
     filc_exit(my_thread);
     futex_wait((volatile int*)filc_ptr_ptr(addr_ptr), val, priv);
     filc_enter(my_thread);
@@ -8160,9 +7223,9 @@ void filc_native_zsys_futex_wait(filc_thread* my_thread, filc_ptr addr_ptr, int 
 int filc_native_zsys_futex_timedwait(filc_thread* my_thread, filc_ptr addr_ptr, int val, int clock_id,
                                      filc_ptr timeout_ptr, int priv)
 {
-    filc_cpt_read_int(my_thread, addr_ptr, sizeof(int));
+    filc_check_read(addr_ptr, sizeof(int));
     if (filc_ptr_ptr(timeout_ptr))
-        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+        filc_check_read(timeout_ptr, sizeof(struct timespec));
     filc_exit(my_thread);
     int result = futex_timedwait((volatile int*)filc_ptr_ptr(addr_ptr), val, clock_id,
                                  (const struct timespec*)filc_ptr_ptr(timeout_ptr), priv);
@@ -8172,7 +7235,7 @@ int filc_native_zsys_futex_timedwait(filc_thread* my_thread, filc_ptr addr_ptr, 
 
 int filc_native_zsys_futex_unlock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv)
 {
-    filc_cpt_write_int(my_thread, addr_ptr, sizeof(int));
+    filc_check_write(addr_ptr, sizeof(int));
     filc_exit(my_thread);
     int result = futex_unlock_pi((volatile int*)filc_ptr_ptr(addr_ptr), priv);
     filc_enter(my_thread);
@@ -8182,9 +7245,9 @@ int filc_native_zsys_futex_unlock_pi(filc_thread* my_thread, filc_ptr addr_ptr, 
 int filc_native_zsys_futex_lock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv,
                                    filc_ptr timeout_ptr)
 {
-    filc_cpt_write_int(my_thread, addr_ptr, sizeof(int));
+    filc_check_write(addr_ptr, sizeof(int));
     if (filc_ptr_ptr(timeout_ptr))
-        filc_cpt_read_int(my_thread, timeout_ptr, sizeof(struct timespec));
+        filc_check_read(timeout_ptr, sizeof(struct timespec));
     filc_exit(my_thread);
     int result = futex_lock_pi((volatile int*)filc_ptr_ptr(addr_ptr), priv,
                                (const struct timespec*)filc_ptr_ptr(timeout_ptr));
@@ -8203,14 +7266,14 @@ void filc_native_zsys_futex_requeue(filc_thread* my_thread, filc_ptr addr_ptr, i
 
 int filc_native_zsys_getdents(filc_thread* my_thread, int fd, filc_ptr dirent_ptr, size_t size)
 {
-    filc_cpt_write_int(my_thread, dirent_ptr, size);
+    filc_check_write(dirent_ptr, size);
     return FILC_SYSCALL(my_thread, getdents(fd, (struct dirent*)filc_ptr_ptr(dirent_ptr), size));
 }
 
 long filc_native_zsys_getrandom(filc_thread* my_thread, filc_ptr buf_ptr, size_t buflen,
                                 unsigned flags)
 {
-    filc_cpt_write_int(my_thread, buf_ptr, buflen);
+    filc_check_write(buf_ptr, buflen);
     return FILC_SYSCALL(my_thread, getrandom(filc_ptr_ptr(buf_ptr), buflen, flags));
 }
 
@@ -8219,73 +7282,88 @@ int filc_native_zsys_epoll_create1(filc_thread* my_thread, int flags)
     return FILC_SYSCALL(my_thread, epoll_create1(flags));
 }
 
-typedef union user_epoll_data {
-	int fd;
-	uint32_t u32;
-	uint64_t u64;
-} user_epoll_data_t;
-
 struct user_epoll_event {
 	uint32_t events;
 	epoll_data_t data;
-} __attribute__ ((__packed__));
+};
 
-static void check_epoll_struct(void)
+static struct epoll_event* from_user_epoll_event(filc_thread* my_thread, filc_ptr ev_ptr)
 {
-    PAS_ASSERT(sizeof(user_epoll_data_t) == sizeof(epoll_data_t));
-    PAS_ASSERT(sizeof(struct user_epoll_event) == sizeof(struct epoll_event));
-    PAS_ASSERT(PAS_OFFSETOF(struct user_epoll_event, data) == PAS_OFFSETOF(struct epoll_event, data));
+    if (!filc_ptr_ptr(ev_ptr))
+        return NULL;
+    struct epoll_event* ev = filc_bmalloc_allocate_tmp(my_thread, sizeof(struct epoll_event));
+    filc_check_read(ev_ptr, sizeof(struct user_epoll_event));
+    struct user_epoll_event* user_ev = (struct user_epoll_event*)filc_ptr_ptr(ev_ptr);
+    ev->events = user_ev->events;
+    memcpy(&ev->data, &user_ev->data, sizeof(epoll_data_t));
+    return ev;
+}
+
+static struct epoll_event* make_epoll_events(filc_thread* my_thread, int maxevents)
+{
+    return filc_bmalloc_allocate_tmp(my_thread, filc_mul_size(maxevents, sizeof(struct epoll_event)));
+}
+
+static int to_user_epoll_events(int result, struct epoll_event* evs, filc_ptr evs_ptr)
+{
+    if (result < 0)
+        return result;
+    filc_check_write(evs_ptr, filc_mul_size(result, sizeof(struct user_epoll_event)));
+    struct user_epoll_event* user_evs = (struct user_epoll_event*)filc_ptr_ptr(evs_ptr);
+    int index;
+    for (index = result; index--;) {
+        user_evs[index].events = evs[index].events;
+        memcpy(&user_evs[index].data, &evs[index].data, sizeof(epoll_data_t));
+    }
+    return result;
 }
 
 int filc_native_zsys_epoll_ctl(filc_thread* my_thread, int epfd, int op, int fd, filc_ptr event_ptr)
 {
-    check_epoll_struct();
-    if (filc_ptr_ptr(event_ptr))
-        filc_cpt_read_int(my_thread, event_ptr, sizeof(struct epoll_event));
-    return FILC_SYSCALL(
-        my_thread, epoll_ctl(epfd, op, fd, (struct epoll_event*)filc_ptr_ptr(event_ptr)));
+    struct epoll_event* ev = from_user_epoll_event(my_thread, event_ptr);
+    return FILC_SYSCALL(my_thread, epoll_ctl(epfd, op, fd, ev));
 }
 
 int filc_native_zsys_epoll_wait(filc_thread* my_thread, int epfd, filc_ptr events_ptr, int maxevents,
                                 int timeout)
 {
-    check_epoll_struct();
-    filc_cpt_write_int(my_thread, events_ptr, filc_mul_size(maxevents, sizeof(struct epoll_event)));
-    return FILC_SYSCALL(my_thread, epoll_wait(epfd, (struct epoll_event*)filc_ptr_ptr(events_ptr),
-                                              maxevents, timeout));
+    struct epoll_event* evs = make_epoll_events(my_thread, maxevents);
+    return to_user_epoll_events(
+        FILC_SYSCALL(my_thread, epoll_wait(epfd, evs, maxevents, timeout)),
+        evs, events_ptr);
 }
 
 int filc_native_zsys_epoll_pwait(filc_thread* my_thread, int epfd, filc_ptr events_ptr, int maxevents,
                                  int timeout, filc_ptr sigmask_ptr)
 {
-    check_epoll_struct();
-    filc_cpt_write_int(my_thread, events_ptr, filc_mul_size(maxevents, sizeof(struct epoll_event)));
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(sigmask_ptr)) {
         filc_check_user_sigset(sigmask_ptr, filc_read_access);
         sigmask = alloca(sizeof(sigset_t));
-        filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(sigmask_ptr), sigmask);
+        filc_from_user_sigset((sigset_t*)filc_ptr_ptr(sigmask_ptr), sigmask);
     }
-    return FILC_SYSCALL(my_thread, epoll_pwait(epfd, (struct epoll_event*)filc_ptr_ptr(events_ptr),
-                                               maxevents, timeout, sigmask));
+    struct epoll_event* evs = make_epoll_events(my_thread, maxevents);
+    return to_user_epoll_events(
+        FILC_SYSCALL(my_thread, epoll_pwait(epfd, evs, maxevents, timeout, sigmask)),
+        evs, events_ptr);
 }
 
 int filc_native_zsys_sysinfo(filc_thread* my_thread, filc_ptr info_ptr)
 {
-    filc_cpt_write_int(my_thread, info_ptr, sizeof(struct sysinfo));
+    filc_check_write(info_ptr, sizeof(struct sysinfo));
     return FILC_SYSCALL(my_thread, sysinfo((struct sysinfo*)filc_ptr_ptr(info_ptr)));
 }
 
 int filc_native_zsys_sched_setaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
 {
-    filc_cpt_read_int(my_thread, set_ptr, size);
+    filc_check_read(set_ptr, size);
     return FILC_SYSCALL(
         my_thread, sched_setaffinity(tid, size, (const cpu_set_t*)filc_ptr_ptr(set_ptr)));
 }
 
 int filc_native_zsys_sched_getaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
 {
-    filc_cpt_write_int(my_thread, set_ptr, size);
+    filc_check_write(set_ptr, size);
     return FILC_SYSCALL(my_thread, sched_getaffinity(tid, size, (cpu_set_t*)filc_ptr_ptr(set_ptr)));
 }
 
@@ -8297,14 +7375,14 @@ int filc_native_zsys_posix_fadvise(filc_thread* my_thread, int fd, long base, lo
 int filc_native_zsys_ppoll(filc_thread* my_thread, filc_ptr fds_ptr, unsigned long nfds,
                            filc_ptr to_ptr, filc_ptr mask_ptr)
 {
-    filc_cpt_write_int(my_thread, fds_ptr, filc_mul_size(sizeof(struct pollfd), nfds));
+    filc_check_write(fds_ptr, filc_mul_size(sizeof(struct pollfd), nfds));
     if (filc_ptr_ptr(to_ptr))
-        filc_cpt_read_int(my_thread, to_ptr, sizeof(struct timespec));
+        filc_check_read(to_ptr, sizeof(struct timespec));
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(mask_ptr)) {
         filc_check_user_sigset(mask_ptr, filc_read_access);
         sigmask = alloca(sizeof(sigset_t));
-        filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(mask_ptr), sigmask);
+        filc_from_user_sigset((sigset_t*)filc_ptr_ptr(mask_ptr), sigmask);
     }
     return FILC_SYSCALL(my_thread, ppoll((struct pollfd*)filc_ptr_ptr(fds_ptr), nfds,
                                          (const struct timespec*)filc_ptr_ptr(to_ptr), sigmask));
@@ -8314,9 +7392,9 @@ int filc_native_zsys_wait4(filc_thread* my_thread, int pid, filc_ptr status_ptr,
                            filc_ptr ru_ptr)
 {
     if (filc_ptr_ptr(status_ptr))
-        filc_cpt_write_int(my_thread, status_ptr, sizeof(int));
+        filc_check_write(status_ptr, sizeof(int));
     if (filc_ptr_ptr(ru_ptr))
-        filc_cpt_write_int(my_thread, ru_ptr, sizeof(struct rusage));
+        filc_check_write(ru_ptr, sizeof(struct rusage));
     return FILC_SYSCALL(my_thread, wait4(pid, (int*)filc_ptr_ptr(status_ptr), options,
                                          (struct rusage*)filc_ptr_ptr(ru_ptr)));
 }
@@ -8325,7 +7403,7 @@ int filc_native_zsys_sigsuspend(filc_thread* my_thread, filc_ptr mask_ptr)
 {
     sigset_t mask;
     filc_check_user_sigset(mask_ptr, filc_read_access);
-    filc_from_user_sigset((filc_user_sigset*)filc_ptr_ptr(mask_ptr), &mask);
+    filc_from_user_sigset((sigset_t*)filc_ptr_ptr(mask_ptr), &mask);
     return FILC_SYSCALL(my_thread, sigsuspend(&mask));
 }
 
@@ -8333,7 +7411,7 @@ int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* a
 {
     switch (option) {
     case PR_SET_DUMPABLE: {
-        unsigned long value = filc_cc_cursor_get_next_unsigned_long(args);
+        unsigned long value = filc_cc_cursor_get_next_unsigned_long(my_thread, args);
         return FILC_SYSCALL(my_thread, prctl(PR_SET_DUMPABLE, value));
     }
     
@@ -8379,12 +7457,22 @@ filc_ptr filc_native_zthread_get_cookie(filc_thread* my_thread, filc_ptr thread_
     PAS_UNUSED_PARAM(my_thread);
     check_zthread(thread_ptr);
     filc_thread* thread = (filc_thread*)filc_ptr_ptr(thread_ptr);
-    return filc_ptr_load_with_manual_tracking(&thread->cookie_ptr);
+    return filc_flight_ptr_load_with_manual_tracking(&thread->cookie_ptr);
 }
 
 void filc_native_zthread_set_self_cookie(filc_thread* my_thread, filc_ptr cookie_ptr)
 {
-    filc_ptr_store(my_thread, &my_thread->cookie_ptr, cookie_ptr);
+    static const bool verbose = false;
+    if (verbose) {
+        pas_log("setting cookie: ");
+        filc_ptr_dump(cookie_ptr, &pas_log_stream.base);
+        pas_log("\n");
+    }
+    filc_flight_ptr_store(my_thread, &my_thread->cookie_ptr, cookie_ptr);
+    if (verbose) {
+        pas_log("cookie lower: %p\n", my_thread->cookie_ptr.lower);
+        pas_log("cookie ptr: %p\n", my_thread->cookie_ptr.ptr);
+    }
 }
 
 void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
@@ -8402,7 +7490,7 @@ void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
     PAS_ASSERT(!thread->has_stopped);
     PAS_ASSERT(thread->thread);
     PAS_ASSERT(thread->thread == pthread_self());
-    filc_ptr_store(thread, &thread->result_ptr, result);
+    filc_flight_ptr_store(thread, &thread->result_ptr, result);
     pas_system_mutex_unlock(&thread->lock);
 
     thread->top_frame = NULL;
@@ -8411,7 +7499,7 @@ void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
             filc_unlock_top_native_frame(thread);
         filc_pop_native_frame(thread, thread->top_native_frame);
     }
-    thread->allocation_roots.num_objects = 0;
+    thread->allocation_roots.size = 0;
 
     sigset_t set;
     pas_reasonably_fill_sigset(&set);
@@ -8425,6 +7513,8 @@ void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
     thread->is_stopping = true;
     filc_thread_undo_create(thread);
     pas_thread_local_cache_destroy(pas_lock_is_not_held);
+    bmalloc_deallocate(thread->cc_outline_buffer);
+    bmalloc_deallocate(thread->cc_outline_aux_buffer);
     filc_exit(thread);
 
     pas_system_mutex_lock(&thread->lock);
@@ -8492,21 +7582,14 @@ static void* start_thread(void* arg)
     thread->tlc_node = verse_heap_get_thread_local_cache_node();
     thread->tlc_node_version = pas_thread_local_cache_node_version(thread->tlc_node);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "start_thread", 0);
-
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    FILC_DEFINE_FRAME("start_thread");
     filc_push_frame(thread, frame);
 
     filc_native_frame native_frame;
     filc_push_native_frame(thread, &native_frame);
 
-    filc_ptr arg_ptr = filc_ptr_load(thread, &thread->arg_ptr);
-    filc_ptr_store(thread, &thread->arg_ptr, filc_ptr_forge_null());
+    filc_ptr arg_ptr = filc_flight_ptr_load(thread, &thread->arg_ptr);
+    filc_flight_ptr_store(thread, &thread->arg_ptr, filc_ptr_forge_null());
 
     if (verbose)
         pas_log("thread %u calling main function\n", tid);
@@ -8522,7 +7605,7 @@ static void* start_thread(void* arg)
 filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr arg_ptr)
 {
     filc_check_function_call(callback_ptr);
-    filc_thread* thread = filc_thread_create();
+    filc_thread* thread = filc_thread_create_with_manual_tracking();
     filc_thread_track_object(my_thread, filc_object_for_special_payload(thread));
     pas_system_mutex_lock(&thread->lock);
     /* I don't see how this could ever happen. */
@@ -8530,8 +7613,8 @@ filc_ptr filc_native_zthread_create(filc_thread* my_thread, filc_ptr callback_pt
     PAS_ASSERT(filc_ptr_is_totally_null(thread->arg_ptr));
     PAS_ASSERT(filc_ptr_is_totally_null(thread->result_ptr));
     PAS_ASSERT(filc_ptr_is_totally_null(thread->cookie_ptr));
-    thread->thread_main = (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(callback_ptr);
-    filc_ptr_store(my_thread, &thread->arg_ptr, arg_ptr);
+    thread->thread_main = (pizlonated_function)filc_ptr_ptr(callback_ptr);
+    filc_flight_ptr_store(my_thread, &thread->arg_ptr, arg_ptr);
     pas_system_mutex_unlock(&thread->lock);
     filc_exit(my_thread);
     /* Make sure we don't create threads while in a handshake. This will hold the thread in the
@@ -8586,10 +7669,9 @@ bool filc_native_zthread_join(filc_thread* my_thread, filc_ptr thread_ptr, filc_
     pas_system_mutex_unlock(&thread->lock);
     filc_enter(my_thread);
     if (filc_ptr_ptr(result_ptr)) {
-        filc_check_write_ptr(result_ptr, NULL);
-        filc_ptr_store(
-            my_thread, (filc_ptr*)filc_ptr_ptr(result_ptr),
-            filc_ptr_load_with_manual_tracking(&thread->result_ptr));
+        filc_check_write(result_ptr, sizeof(void*));
+        filc_store_ptr(my_thread, result_ptr, 0,
+                       filc_flight_ptr_load(my_thread, &thread->result_ptr));
     }
     return true;
 }
@@ -8652,8 +7734,17 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
                                                                  void* user_arg),
                                         void* user_arg)
 {
-    static const uintptr_t min_address = 16384;
-    
+    static const uintptr_t min_address = (uintptr_t)1 << (uintptr_t)32;
+
+    /* It's possible that someone is calling an ioctl that takes an int or long argument. But, we
+       don't know if the ioctl will actually interpret the argument as an int or long - it might
+       interpreter it as a pointer!
+       
+       So, we only allow passing an integer through to ioctl if we know that it cannot possibly be a
+       valid pointer in userspace.
+       
+       If we ever find ioctls that require integers bigger than min_address, then they'd have to be
+       special case by our wrapping. */
     if (filc_ptr_ptr(arg_ptr) < (void*)min_address) {
         PAS_ASSERT(!filc_ptr_object(arg_ptr) || filc_ptr_ptr(arg_ptr) < filc_ptr_lower(arg_ptr));
         filc_exit(my_thread);
@@ -8670,32 +7761,19 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
     char* base = (char*)filc_ptr_ptr(arg_ptr);
     filc_object* object = filc_ptr_object(arg_ptr);
     size_t maximum_extent = filc_ptr_available(arg_ptr);
+    filc_check_read(arg_ptr, maximum_extent);
     for(;;) {
         size_t limited_extent = pas_min_uintptr(maximum_extent, extent_limit);
-        size_t index;
-        for (index = 0; index < limited_extent; ++index) {
-            filc_word_type word_type = filc_object_get_word_type(
-                object, filc_object_word_type_index_for_ptr(object, base + index));
-            if (word_type != FILC_WORD_TYPE_UNSET && word_type != FILC_WORD_TYPE_INT) {
-                limited_extent = index;
-                break;
-            }
-        }
 
         char* input_copy = bmalloc_allocate(limited_extent);
-        for (index = 0; index < limited_extent; ++index) {
-            char value = base[index];
-            if (value)
-                filc_check_read_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
-            input_copy[index] = value;
-        }
+        memcpy(input_copy, filc_ptr_ptr(arg_ptr), limited_extent);
 
         char* start_of_space =
             filc_thread_get_end_of_space_with_guard_page_with_size(my_thread, limited_extent)
             - limited_extent;
         memcpy(start_of_space, input_copy, limited_extent);
 
-        bool is_readonly = !!(object->flags & FILC_OBJECT_FLAG_READONLY);
+        bool is_readonly = !!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_READONLY);
         if (is_readonly)
             filc_thread_make_space_with_guard_page_readonly(my_thread);
 
@@ -8706,10 +7784,10 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
         filc_enter(my_thread);
         if (my_errno != EFAULT) {
             if (!my_errno && !is_readonly) {
+                size_t index;
                 for (index = 0; index < limited_extent; ++index) {
                     if (start_of_space[index] == input_copy[index])
                         continue;
-                    filc_check_write_int(filc_ptr_with_ptr(arg_ptr, base + index), 1, NULL);
                     base[index] = start_of_space[index];
                 }
             }

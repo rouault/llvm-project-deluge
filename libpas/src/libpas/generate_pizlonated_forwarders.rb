@@ -26,7 +26,7 @@
 def checkType(type)
     case type
     when 'filc_ptr', 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'double', 'bool',
-         'ssize_t', 'unsigned short', 'unsigned long long', 'long long', 'pas_uint128'
+         'ssize_t', 'unsigned short', 'unsigned long long', 'long long'
     else
         raise "Bad type #{type}"
     end
@@ -43,7 +43,7 @@ end
 def unsignedType(type)
     case type
     when 'filc_ptr', 'unsigned', 'unsigned long', 'size_t', 'double', 'bool',
-         'unsigned short', 'unsigned long long', 'pas_uint128'
+         'unsigned short', 'unsigned long long'
         type
     when 'int'
         'unsigned'
@@ -60,7 +60,7 @@ end
 
 def canonicalArgType(type)
     case type
-    when 'filc_ptr', 'double', 'pas_uint128'
+    when 'filc_ptr', 'double'
         type
     when 'int', 'unsigned', 'long', 'unsigned long', 'size_t', 'bool',
          'ssize_t', 'unsigned short', 'unsigned long long', 'long long'
@@ -150,9 +150,6 @@ addSig "void", "zgc_free", "filc_ptr"
 addSig "filc_ptr", "zgetlower", "filc_ptr"
 addSig "filc_ptr", "zgetupper", "filc_ptr"
 addSig "bool", "zhasvalidcap", "filc_ptr"
-addSig "bool", "zisunset", "filc_ptr"
-addSig "bool", "zisint", "filc_ptr"
-addSig "int", "zptrphase", "filc_ptr"
 addSig "filc_ptr", "zptrtable_new"
 addSig "size_t", "zptrtable_encode", "filc_ptr", "filc_ptr"
 addSig "filc_ptr", "zptrtable_decode", "filc_ptr", "size_t"
@@ -161,9 +158,9 @@ addSig "size_t", "zexact_ptrtable_encode", "filc_ptr", "filc_ptr"
 addSig "filc_ptr", "zexact_ptrtable_decode", "filc_ptr", "size_t"
 addSig "size_t", "ztesting_get_num_ptrtables"
 addSig "filc_ptr", "zptr_to_new_string", "filc_ptr"
+addSig "filc_ptr", "zptr_contents_to_new_string", "filc_ptr"
 addSig "void", "zmemset", "filc_ptr", "unsigned", "size_t"
 addSig "void", "zmemmove", "filc_ptr", "filc_ptr", "size_t"
-addSig "int", "zmemcmp", "filc_ptr", "filc_ptr", "size_t"
 addSig "void", "zrun_deferred_global_ctors"
 addSig "void", "zprint", "filc_ptr"
 addSig "void", "zprint_long", "long"
@@ -171,9 +168,7 @@ addSig "void", "zprint_ptr", "filc_ptr"
 addSig "size_t", "zstrlen", "filc_ptr"
 addSig "int", "zisdigit", "int"
 addSig "void", "zerror", "filc_ptr"
-addSig "pas_uint128", "zcall_int", "filc_ptr", "filc_ptr"
-addSig "filc_ptr", "zcall_ptr", "filc_ptr", "filc_ptr"
-addSig "void", "zcall_void", "filc_ptr", "filc_ptr"
+addSig "filc_ptr", "zcall", "filc_ptr", "filc_ptr"
 addSig "bool", "zis_runtime_testing_enabled"
 addSig "void", "zvalidate_ptr", "filc_ptr"
 addSig "void", "zgc_request_and_wait"
@@ -232,7 +227,6 @@ addSig "int", "zsys_getitimer", "int", "filc_ptr"
 addSig "int", "zsys_setitimer", "int", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_pause"
 addSig "int", "zsys_pselect", "int", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr", "filc_ptr"
-addSig "int", "zsys_getpeereid", "int", "filc_ptr", "filc_ptr"
 addSig "int", "zsys_kill", "int", "int"
 addSig "int", "zsys_raise", "int"
 addSig "int", "zsys_dup", "int"
@@ -427,7 +421,7 @@ when "src/libpas/filc_native.h"
             | signature |
             outp.print "PAS_API #{signature.rets} "
             outp.print "filc_call_user_#{signature.name}(filc_thread* my_thread, "
-            outp.print "bool (*target)(PIZLONATED_SIGNATURE)"
+            outp.print "pizlonated_function target"
             unless signature.args.empty?
                 outp.print(", " + signature.args.map.with_index {
                                | arg, index |
@@ -446,24 +440,20 @@ when "src/libpas/filc_native_forwarders.c"
         outp.puts "#include \"filc_native.h\""
         $signatures.each {
             | signature |
-            outp.puts "static bool native_thunk_#{signature.name}(PIZLONATED_SIGNATURE)"
+            outp.puts "static pizlonated_return_value native_thunk_#{signature.name}("
+            outp.puts "    filc_thread* my_thread, size_t argument_size)"
             outp.puts "{"
-            outp.puts "    FILC_DEFINE_RUNTIME_ORIGIN(origin, \"#{signature.name}\", 0);"
-            outp.puts "    struct {"
-            outp.puts "        FILC_FRAME_BODY;"
-            outp.puts "    } actual_frame;"
-            outp.puts "    pas_zero_memory(&actual_frame, sizeof(actual_frame));"
-            outp.puts "    filc_frame* frame = (filc_frame*)&actual_frame;"
-            outp.puts "    frame->origin = &origin;"
+            outp.puts "    FILC_DEFINE_FRAME(\"#{signature.name}\");"
             outp.puts "    filc_native_frame native_frame;"
             outp.puts "    filc_push_frame(my_thread, frame);"
             outp.puts "    filc_push_native_frame(my_thread, &native_frame);"
-            outp.puts "    filc_cc_cursor args_cursor = filc_cc_cursor_create_begin(args);"
+            outp.puts "    filc_cc_cursor args_cursor = filc_cc_cursor_create_begin(argument_size);"
             signature.args.each_with_index {
                 | arg, index |
                 if arg != "..."
                     outp.puts "    #{arg} arg#{index} = "
-                    outp.puts "        filc_cc_cursor_get_next_#{underbarType(arg)}(&args_cursor);"
+                    outp.puts "        filc_cc_cursor_get_next_#{underbarType(arg)}("
+                    outp.puts "            my_thread, &args_cursor);"
                 end
             }
             case signature.rets
@@ -486,12 +476,18 @@ when "src/libpas/filc_native_forwarders.c"
                            }.join(", "))
             end
             outp.puts ");"
+            outp.puts "    filc_cc_sizer rets_sizer = filc_cc_sizer_create();"
             if signature.actualRets == "void"
-                outp.puts "    PAS_UNUSED_PARAM(rets);"
+                outp.puts "    filc_cc_sizer_add_int(&rets_sizer);"
+                outp.puts "    filc_cc_cursor rets_cursor ="
+                outp.puts "        filc_cc_sizer_get_cursor(my_thread, &rets_sizer);"
+                outp.puts "    filc_cc_cursor_set_next_int(my_thread, &rets_cursor, 0);"
             else
-                outp.puts "    filc_cc_cursor rets_cursor = filc_cc_cursor_create_begin(rets);"
+                outp.puts "    filc_cc_sizer_add_#{underbarType(signature.actualRets)}(&rets_sizer);"
+                outp.puts "    filc_cc_cursor rets_cursor ="
+                outp.puts "        filc_cc_sizer_get_cursor(my_thread, &rets_sizer);"
                 outp.puts "    filc_cc_cursor_set_next_#{underbarType(signature.actualRets)}("
-                outp.print "        &rets_cursor, "
+                outp.print "        my_thread, &rets_cursor, "
                 if signature.throwsException
                     outp.puts "result.value);"
                 else
@@ -500,38 +496,43 @@ when "src/libpas/filc_native_forwarders.c"
             end
             outp.puts "    filc_pop_native_frame(my_thread, &native_frame);"
             outp.puts "    filc_pop_frame(my_thread, frame);"
+            outp.print "    return pizlonated_return_value_create("
             if signature.throwsException
-                outp.puts "    return result.has_exception;"
+                outp.print "result.has_exception, "
             else
-                outp.puts "    return false;"
+                outp.print "false, "
             end
+            outp.puts "filc_cc_sizer_total_size(&rets_sizer));"
             outp.puts "}"
+            # FUCK: The way that I've arranged for aux to work means that function capabilities have
+            # to be GC-allocated or patched at runtime, since the aux needs to point at the function
+            # shifted up.
+            #
+            # Is there some way to rescue this?
             outp.puts "static filc_object function_object_#{signature.name} = {"
-            outp.puts "    .lower = native_thunk_#{signature.name},"
-            outp.puts "    .upper = (char*)native_thunk_#{signature.name} + FILC_WORD_SIZE,"
-            outp.puts "    .flags = FILC_OBJECT_FLAG_GLOBAL | FILC_OBJECT_FLAG_SPECIAL,"
-            outp.puts "    .word_types = { FILC_WORD_TYPE_FUNCTION }"
+            outp.puts "    .upper = &function_object_#{signature.name} + 1,"
+            outp.puts "    .aux = FILC_AUX_CREATE("
+            outp.puts "        FILC_OBJECT_FLAGS_CREATE("
+            outp.puts "            FILC_OBJECT_FLAG_GLOBAL |"
+            outp.puts "            FILC_OBJECT_FLAG_READONLY,"
+            outp.puts "            FILC_SPECIAL_TYPE_FUNCTION,"
+            outp.puts "            0),"
+            outp.puts "        native_thunk_#{signature.name})"
             outp.puts "};"
             outp.puts "filc_ptr pizlonated_#{signature.name}("
             outp.puts "    filc_global_initialization_context* context)"
             outp.puts "{"
             outp.puts "    PAS_UNUSED_PARAM(context);"
-            outp.puts "    return filc_ptr_create_with_ptr_and_manual_tracking("
+            outp.puts "    return filc_ptr_create_with_object_and_ptr_and_manual_tracking("
             outp.puts "        &function_object_#{signature.name},"
-            outp.puts "        &native_thunk_#{signature.name});"
+            outp.puts "        native_thunk_#{signature.name});"
             outp.puts "}"
         }
         $outSignatures.each {
             | signature |
-            outp.puts "struct call_user_#{signature.name}_args {"
-            signature.args.each_with_index {
-                | arg, index |
-                outp.puts "    #{canonicalArgType(arg)} arg#{index};"
-            }
-            outp.puts "};"
             outp.print "#{signature.rets} "
             outp.print "filc_call_user_#{signature.name}(filc_thread* my_thread, "
-            outp.print "bool (*target)(PIZLONATED_SIGNATURE)"
+            outp.print "pizlonated_function target"
             unless signature.args.empty?
                 outp.print(", " + signature.args.map.with_index {
                                | arg, index |
@@ -540,68 +541,38 @@ when "src/libpas/filc_native_forwarders.c"
             end
             outp.puts ")"
             outp.puts "{"
-            outp.puts "    size_t args_size = pas_round_up_to_power_of_2("
-            outp.puts "        sizeof(struct call_user_#{signature.name}_args), FILC_WORD_SIZE);"
-            outp.puts "    size_t num_arg_words = args_size / FILC_WORD_SIZE;"
-            outp.puts "    filc_cc_ptr args;"
-            outp.puts "    filc_cc_type* args_type = alloca(PAS_OFFSETOF(filc_cc_type, word_types) + "
-            outp.puts "                                     num_arg_words * sizeof(filc_word_type));"
-            outp.puts "    args.type = args_type;"
-            outp.puts "    args_type->num_words = num_arg_words;"
-            outp.puts "    size_t index;"
-            outp.puts "    for (index = num_arg_words; index--;)"
-            outp.puts "        args_type->word_types[index] = FILC_WORD_TYPE_UNSET;"
-            outp.puts "    struct call_user_#{signature.name}_args* args_obj = "
-            outp.puts "        (struct call_user_#{signature.name}_args*)alloca("
-            outp.puts "            sizeof(struct call_user_#{signature.name}_args));"
-            outp.puts "    pas_zero_memory(args_obj, sizeof(struct call_user_#{signature.name}_args));"
-            outp.puts "    args.base = args_obj;"
+            outp.puts "    filc_cc_sizer args_sizer = filc_cc_sizer_create();"
+            signature.args.each {
+                | arg |
+                outp.puts "    filc_cc_sizer_add_#{underbarType(arg)}(&args_sizer);"
+            }
+            outp.puts "    filc_cc_cursor args_cursor ="
+            outp.puts "        filc_cc_sizer_get_cursor(my_thread, &args_sizer);"
             signature.args.each_with_index {
                 | arg, index |
-                outp.puts "    PAS_ASSERT(sizeof(#{canonicalArgType(arg)})"
-                outp.puts "               == alignof(#{canonicalArgType(arg)}));"
-                outp.puts "    PAS_ASSERT(pas_is_power_of_2(sizeof(#{canonicalArgType(arg)})));"
-                outp.puts "    index = PAS_OFFSETOF(struct call_user_#{signature.name}_args,"
-                outp.puts "                         arg#{index}) / FILC_WORD_SIZE;"
-                outp.puts "    PAS_ASSERT(index < num_arg_words);"
                 if arg == "filc_ptr"
                     outp.puts "    filc_thread_track_object(my_thread, filc_ptr_object(arg#{index}));"
-                    wantedType = "FILC_WORD_TYPE_PTR"
-                else
-                    wantedType = "FILC_WORD_TYPE_INT"
                 end
-                outp.puts "    PAS_ASSERT(args_type->word_types[index] == FILC_WORD_TYPE_UNSET ||"
-                outp.puts "               args_type->word_types[index] == #{wantedType});"
-                outp.puts "    args_type->word_types[index] = #{wantedType};"
-                outp.print "    args_obj->arg#{index} = "
-                if unsignedType(arg) != arg
-                    outp.print "(#{unsignedType(arg)})"
-                end
-                outp.puts "arg#{index};"
+                outp.puts "    filc_cc_cursor_set_next_#{underbarType(arg)}("
+                outp.puts "        my_thread, &args_cursor, arg#{index});"
             }
-            outp.puts "    filc_cc_ptr rets;"
-            if signature.rets == "filc_ptr"
-                outp.puts "    filc_ptr rets_obj = filc_ptr_forge_null();"
-                outp.puts "    rets.type = &filc_ptr_cc_type;"
-                outp.puts "    rets.base = &rets_obj;"
-            else
-                outp.puts "    pas_uint128 rets_obj = 0;"
-                if signature.rets == "void"
-                    outp.puts "    rets.type = &filc_void_cc_type;"
-                else
-                    outp.puts "    rets.type = &filc_int_cc_type;"
-                end
-                outp.puts "    rets.base = &rets_obj;"
-            end
             outp.puts "    filc_lock_top_native_frame(my_thread);"
-            outp.puts "    PAS_ASSERT(!target(my_thread, args, rets));"
+            outp.puts "    pizlonated_return_value return_value ="
+            outp.puts "        target(my_thread, filc_cc_sizer_total_size(&args_sizer));"
+            outp.puts "    PAS_ASSERT(!return_value.has_exception);"
             outp.puts "    filc_unlock_top_native_frame(my_thread);"
-            if signature.rets == "filc_ptr"
-                outp.puts "    filc_thread_track_object(my_thread, filc_ptr_object(rets_obj));"
-                outp.puts "    return rets_obj;"
-            elsif signature.rets != "void"
-                outp.puts "    return (#{signature.rets})"
-                outp.puts "        *(#{canonicalArgType(signature.rets)}*)&rets_obj;"
+            if signature.rets != "void"
+                outp.puts "    filc_cc_cursor rets_cursor ="
+                outp.puts "        filc_cc_cursor_create_begin(return_value.return_size);"
+                if signature.rets == "filc_ptr"
+                    outp.puts "    filc_ptr result ="
+                    outp.puts "        filc_cc_cursor_get_next_ptr(my_thread, &rets_cursor);"
+                    outp.puts "    filc_thread_track_object(my_thread, filc_ptr_object(result));"
+                    outp.puts "    return result;"
+                else
+                    outp.puts "    return filc_cc_cursor_get_next_#{underbarType(signature.rets)}("
+                    outp.puts "        my_thread, &rets_cursor);"
+                end
             end
             outp.puts "}"
         }

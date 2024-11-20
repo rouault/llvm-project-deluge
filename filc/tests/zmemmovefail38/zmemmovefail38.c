@@ -1,11 +1,12 @@
 #include <stdfil.h>
+#include <inttypes.h>
 
 int main()
 {
     zptrtable* src = zptrtable_new();
-    __int128 dst;
+    int64_t dst;
 
-    zmemmove(&dst, src, 16);
+    zmemmove(&dst, src, 8);
 
     return 0;
 }

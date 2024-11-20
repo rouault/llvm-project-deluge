@@ -1,6 +1,4 @@
 return:
-  failure
-output-includes:
-  - "filc safety error"
+  success
 output-excludes:
-  - "Should not get here"
+  - "filc safety error"

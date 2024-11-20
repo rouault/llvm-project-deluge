@@ -206,15 +206,16 @@ int main(int argc, char** argv)
     f.d = 1410;
     FILE* fout = fopen("filc/test-output/fileio/fiotest.txt", "w");
     ZASSERT(fout);
-    ZASSERT(1 == fwrite_znullify(&f, sizeof(f), 1, fout));
+    ZASSERT(1 == fwrite(&f, sizeof(f), 1, fout));
     ZASSERT(!fclose(fout));
 
     struct foo f2;
     fin = fopen("filc/test-output/fileio/fiotest.txt", "r");
     ZASSERT(fin);
-    ZASSERT(1 == fread_znullify(&f2, sizeof(f2), 1, fin));
+    ZASSERT(1 == fread(&f2, sizeof(f2), 1, fin));
     ZASSERT(!fclose(fin));
-    ZASSERT(!f2.a);
+    ZASSERT(!zhasvalidcap(f2.a));
+    ZASSERT(f2.a == f.a);
     ZASSERT(f2.b == 42);
     ZASSERT(f2.c == 666);
     ZASSERT(f2.d == 1410);

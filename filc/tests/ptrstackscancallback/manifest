@@ -1,5 +1,5 @@
 return:
-  failure
-output-includes:
+  success
+output-excludes:
   - "filc safety error"
-  - "return type mismatch"
+

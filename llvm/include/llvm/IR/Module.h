@@ -198,7 +198,7 @@ private:
                                   ///< Format: (arch)(sub)-(vendor)-(sys0-(abi)
   NamedMDSymTabType NamedMDSymTab;  ///< NamedMDNode names.
   DataLayout DL;                  ///< DataLayout associated with the module
-  DataLayout DLAfterFilC;
+  DataLayout DLAfterFilC; // FIXME: Kill this with fire, it's no longer needed.
   StringMap<unsigned>
       CurrentIntrinsicIds; ///< Keep track of the current unique id count for
                            ///< the specified intrinsic basename.

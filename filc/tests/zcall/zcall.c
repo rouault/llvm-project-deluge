@@ -45,40 +45,40 @@ char* stuff(int x)
 int main()
 {
     zprintf("calling foo1:");
-    zcall_void(foo, NULL);
+    zcall(foo, NULL);
     zprintf("calling foo2:");
-    ZASSERT(!zcall_int(foo, NULL));
+    ZASSERT(!*(int64_t*)zcall(foo, NULL));
     zprintf("calling foo3:");
-    ZASSERT(!zcall_ptr(foo, NULL));
+    ZASSERT(!*(void**)zcall(foo, NULL));
 
     int64_t* bar_args = malloc(100 * sizeof(int64_t));
     int index;
     for (index = 100; index--;)
         bar_args[index] = index * 3;
-    zcall_void(bar, bar_args);
-    zcall_void(bar, bar_args + 1);
-    zcall_void(bar, bar_args + 7);
-    ZASSERT(!zcall_int(bar, bar_args + 8));
-    ZASSERT(!zcall_ptr(bar, bar_args + 11));
+    zcall(bar, bar_args);
+    zcall(bar, bar_args + 1);
+    zcall(bar, bar_args + 7);
+    ZASSERT(!*(int64_t*)zcall(bar, bar_args + 8));
+    ZASSERT(!*(void**)zcall(bar, bar_args + 11));
 
     struct baz_arg_packet* baz_args = malloc(100 * sizeof(struct baz_arg_packet));
     for (index = 100; index--;) {
         baz_args[index].a = zasprintf("%d", index * 1410);
         baz_args[index].b = index * 1410;
     }
-    zcall_void(baz, baz_args);
-    zcall_void(baz, baz_args + 1);
-    zcall_void(baz, baz_args + 7);
-    ZASSERT(!zcall_int(baz, baz_args + 8));
-    ZASSERT(!zcall_ptr(baz, baz_args + 11));
+    zcall(baz, baz_args);
+    zcall(baz, baz_args + 1);
+    zcall(baz, baz_args + 7);
+    ZASSERT(!*(int64_t*)zcall(baz, baz_args + 8));
+    ZASSERT(!*(void**)zcall(baz, baz_args + 11));
 
     char* thingy_arg = "666";
-    zcall_void(thingy, &thingy_arg);
-    ZASSERT(zcall_int(thingy, &thingy_arg) == 666);
+    zcall(thingy, &thingy_arg);
+    ZASSERT(*(int**)zcall(thingy, &thingy_arg) == 666);
 
     int stuff_arg = 666;
-    zcall_void(stuff, &stuff_arg);
-    ZASSERT(!strcmp(zcall_ptr(stuff, &stuff_arg), "666"));
+    zcall(stuff, &stuff_arg);
+    ZASSERT(!strcmp(*(char**)zcall(stuff, &stuff_arg), "666"));
     
     return 0;
 }

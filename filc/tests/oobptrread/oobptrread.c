@@ -5,6 +5,6 @@
 int main()
 {
     char* ptr = malloc(16);
-    printf("value = %s\n", *((char**)opaque(ptr + 8)));
+    printf("value = %s\n", *((char**)opaque(ptr + 16)));
     return 0;
 }

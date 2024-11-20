@@ -32,5 +32,5 @@ set -x
 ./build_usermusl.sh
 ./build_cxx.sh
 
-filc/run-tests
+
 

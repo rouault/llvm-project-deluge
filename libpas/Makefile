@@ -62,6 +62,9 @@ clean:
 	rm -f ../pizfix/lib/libpizlo.so
 	rm -f ../pizfix/lib_test/libpizlo.so
 
+.filc-objs: $(FILPIZLOOBJS)
+.yoloc-objs: $(PASPIZLOOBJS)
+
 ../pizfix/lib/libpizlo.so: $(PASPIZLOOBJS) $(FILPIZLOOBJS)
 	$(SHLD) -o ../pizfix/lib/libpizlo.so $(PASPIZLOOBJS) $(FILPIZLOOBJS) $(SHLDPOST)
 

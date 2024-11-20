@@ -4,6 +4,6 @@
 int main()
 {
     char* ptr = malloc(16);
-    *((char**)opaque(ptr + 8)) = "hello";
+    *((char**)opaque(ptr + 16)) = "hello";
     return 0;
 }

@@ -21,7 +21,7 @@ int main()
     foo1.d = NULL;
 
     char* buf = malloc(3 + sizeof(foo1));
-    zmemmove_nullify(buf + 3, &foo1, sizeof(foo1));
+    zmemmove(buf + 3, &foo1, sizeof(foo1));
 
     zmemmove(&foo2, buf + 3, sizeof(foo1));
 

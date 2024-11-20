@@ -36,8 +36,8 @@ extern char** environ;
 
 static void really_start_program(
     int argc, char** argv,
-    filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
-    filc_ptr pizlonated_main(filc_global_initialization_context*))
+    pizlonated_linker_stub pizlonated___libc_start_main,
+    pizlonated_linker_stub pizlonated_main)
 {
     static const bool verbose = false;
     
@@ -64,26 +64,21 @@ static void really_start_program(
     filc_native_frame native_frame;
     filc_push_native_frame(my_thread, &native_frame);
 
-    pizlonated_argv = filc_ptr_create(
-        my_thread, filc_allocate(my_thread, filc_mul_size(sizeof(filc_ptr), (argc + 1))));
+    pizlonated_argv = filc_ptr_create_with_object(
+        my_thread, filc_allocate(my_thread, filc_mul_size(sizeof(void*), (argc + 1))));
 
     for (index = 0; index < argc; ++index) {
         filc_ptr arg;
-        filc_ptr arg_ptr;
         size_t size;
-        arg_ptr = filc_ptr_with_offset(pizlonated_argv, filc_mul_size(index, sizeof(filc_ptr)));
         size = strlen(argv[index]) + 1;
-        arg = filc_ptr_create(my_thread, filc_allocate_int(my_thread, size));
+        arg = filc_ptr_create_with_object(my_thread, filc_allocate(my_thread, size));
         memcpy(filc_ptr_ptr(arg), argv[index], size);
-        filc_check_write_ptr(arg_ptr, NULL);
-        filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(arg_ptr), arg);
+        filc_store_ptr(my_thread, pizlonated_argv, filc_mul_size(index, sizeof(void*)), arg);
     }
 
-    filc_ptr arg_ptr = filc_ptr_with_offset(pizlonated_argv, filc_mul_size(argc, sizeof(filc_ptr)));
-    filc_check_write_ptr(arg_ptr, NULL);
-    filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(arg_ptr), filc_ptr_forge_null());
-
     main_ptr = pizlonated_main(NULL);
+    if (verbose)
+        pas_log("main_ptr.ptr = %p, main_ptr.lower = %p\n", main_ptr.ptr, main_ptr.lower);
     filc_thread_track_object(my_thread, filc_ptr_object(main_ptr));
 
     if (pizlonated___libc_start_main) {
@@ -94,12 +89,10 @@ static void really_start_program(
         for (environ_size = 0; environ[environ_size]; ++environ_size);
         environ_size++;
 
-        environ_ptr = filc_ptr_create(
-            my_thread, filc_allocate(my_thread, filc_mul_size(sizeof(filc_ptr), environ_size)));
+        environ_ptr = filc_ptr_create_with_object(
+            my_thread, filc_allocate(my_thread, filc_mul_size(sizeof(void*), environ_size)));
 
         for (index = 0; index < environ_size; ++index) {
-            filc_ptr env_ptr = filc_ptr_with_offset(
-                environ_ptr, filc_mul_size(index, sizeof(filc_ptr)));
             filc_ptr env_value;
             if (index == environ_size - 1) {
                 PAS_ASSERT(!environ[index]);
@@ -109,16 +102,16 @@ static void really_start_program(
                 filc_ptr env_copy;
                 PAS_ASSERT(environ[index]);
                 size = strlen(environ[index]) + 1;
-                env_copy = filc_ptr_create(my_thread, filc_allocate_int(my_thread, size));
-                filc_ptr_store(my_thread, (filc_ptr*)filc_ptr_ptr(env_ptr), env_copy);
+                env_copy = filc_ptr_create_with_object(my_thread, filc_allocate(my_thread, size));
                 memcpy(filc_ptr_ptr(env_copy), environ[index], size);
+                filc_store_ptr(my_thread, environ_ptr, filc_mul_size(index, sizeof(void*)), env_copy);
             }
         }
 
         size_t max_num_keys = AT_MAX_KEY + 1;
         size_t num_entries = (max_num_keys * 2 + 1);
-        filc_ptr auxv_ptr = filc_ptr_create(
-            my_thread, filc_allocate_int(my_thread, num_entries * sizeof(size_t)));
+        filc_ptr auxv_ptr = filc_ptr_create_with_object(
+            my_thread, filc_allocate(my_thread, num_entries * sizeof(size_t)));
         size_t* auxv = (size_t*)filc_ptr_ptr(auxv_ptr);
         size_t key;
         size_t index;
@@ -140,15 +133,15 @@ static void really_start_program(
         if (verbose) {
             pas_log("__libc_start_main object = %p\n", filc_ptr_object(__libc_start_main_ptr));
             pas_log("__libc_start_main object->lower = %p\n",
-                    filc_ptr_object(__libc_start_main_ptr)->lower);
+                    filc_ptr_lower(__libc_start_main_ptr));
             pas_log("__libc_start_main object->upper = %p\n",
-                    filc_ptr_object(__libc_start_main_ptr)->upper);
+                    filc_ptr_upper(__libc_start_main_ptr));
             pas_log("__libc_start_main ptr = %p\n", filc_ptr_ptr(__libc_start_main_ptr));
         }
         filc_thread_track_object(my_thread, filc_ptr_object(__libc_start_main_ptr));
         filc_check_function_call(__libc_start_main_ptr);
         filc_call_user_libc_start_main(
-            my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(__libc_start_main_ptr),
+            my_thread, (pizlonated_function)filc_ptr_ptr(__libc_start_main_ptr),
             main_ptr, argc, pizlonated_argv, environ_ptr, auxv_ptr);
         PAS_ASSERT(!"Should not be reached");
     }
@@ -157,7 +150,7 @@ static void really_start_program(
 
     filc_check_function_call(main_ptr);
     int exit_status = filc_call_user_int_int_ptr(
-        my_thread, (bool (*)(PIZLONATED_SIGNATURE))filc_ptr_ptr(main_ptr), argc, pizlonated_argv);
+        my_thread, (pizlonated_function)filc_ptr_ptr(main_ptr), argc, pizlonated_argv);
 
     if (verbose)
         pas_log("Exiting!\n");
@@ -170,8 +163,8 @@ static void really_start_program(
 struct args {
     int argc;
     char** argv;
-    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*);
-    filc_ptr (*pizlonated_main)(filc_global_initialization_context*);
+    pizlonated_linker_stub pizlonated___libc_start_main;
+    pizlonated_linker_stub pizlonated_main;
     sigset_t oldset;
 };
 
@@ -181,9 +174,8 @@ static void* thread_main(void* arg)
 
     int argc = args->argc;
     char** argv = args->argv;
-    filc_ptr (*pizlonated___libc_start_main)(filc_global_initialization_context*) =
-        args->pizlonated___libc_start_main;
-    filc_ptr (*pizlonated_main)(filc_global_initialization_context*) = args->pizlonated_main;
+    pizlonated_linker_stub pizlonated___libc_start_main = args->pizlonated___libc_start_main;
+    pizlonated_linker_stub pizlonated_main = args->pizlonated_main;
 
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &args->oldset, NULL));
 
@@ -196,8 +188,8 @@ static void* thread_main(void* arg)
 }
 
 void filc_start_program(int argc, char** argv,
-                        filc_ptr pizlonated___libc_start_main(filc_global_initialization_context*),
-                        filc_ptr pizlonated_main(filc_global_initialization_context*))
+                        pizlonated_linker_stub pizlonated___libc_start_main,
+                        pizlonated_linker_stub pizlonated_main)
 {
     PAS_ASSERT(!pthread_getstack_yolo(pthread_self()));
     PAS_ASSERT(!pthread_getstacksize_yolo(pthread_self()));

@@ -110,6 +110,7 @@ class VarTemplateDecl;
 class VTableContextBase;
 struct BlockVarCopyInit;
 
+// FIXME: This is no longer necessary, I should remove it.
 enum class ConstexprOrNot : bool {
   Not,
   Constexpr

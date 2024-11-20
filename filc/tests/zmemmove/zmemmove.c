@@ -25,7 +25,7 @@ static void test1(void)
     char* src = "hello";
     char* dst;
 
-    zmemmove(&dst, &src, 16);
+    zmemmove(&dst, &src, 8);
 
     ZASSERT(!strcmp(dst, "hello"));
 }

@@ -1,5 +1,6 @@
 return:
-  failure
-output-includes:
+  success
+output-excludes:
   - "filc safety error"
-  - "cannot access 11 bytes as int, span contains non-ints"
+  - "filc user error"
+  - "filc panic"

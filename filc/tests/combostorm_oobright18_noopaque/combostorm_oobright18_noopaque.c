@@ -2,37 +2,41 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = (malloc(36));
-    *(int32_t*)(buf + 0) = 42;
-    *(int32_t*)(buf + 4) = 42;
-    *(int32_t*)(buf + 8) = 42;
-    *(int32_t*)(buf + 12) = 42;
-    *(int32_t*)(buf + 16) = 42;
-    *(int32_t*)(buf + 20) = 42;
-    *(int32_t*)(buf + 24) = 42;
-    *(int32_t*)(buf + 28) = 42;
-    *(int32_t*)(buf + 32) = 42;
+    init_test();
+    char* buf = (malloc(24));
+    *(int32_t*)(buf + 4) = value;
+    *(int32_t*)(buf + 12) = value;
+    *(int32_t*)(buf + 20) = value;
     buf = (char*)(buf) + 26208;
-    int32_t f0 = *(int32_t*)(buf + 0);
-    int32_t f1 = *(int32_t*)(buf + 4);
-    int32_t f2 = *(int32_t*)(buf + 8);
-    int32_t f3 = *(int32_t*)(buf + 12);
-    int32_t f4 = *(int32_t*)(buf + 16);
-    int32_t f5 = *(int32_t*)(buf + 20);
-    int32_t f6 = *(int32_t*)(buf + 24);
-    int32_t f7 = *(int32_t*)(buf + 28);
-    int32_t f8 = *(int32_t*)(buf + 32);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(f4 == 42);
-    ZASSERT(f5 == 42);
-    ZASSERT(f6 == 42);
-    ZASSERT(f7 == 42);
-    ZASSERT(f8 == 42);
+    int32_t f0 = *(int32_t*)(buf + 4);
+    int32_t f1 = *(int32_t*)(buf + 12);
+    int32_t f2 = *(int32_t*)(buf + 20);
+    ZASSERT(f0 == value);
+    ZASSERT(f1 == value);
+    ZASSERT(f2 == value);
     return 0;
 }

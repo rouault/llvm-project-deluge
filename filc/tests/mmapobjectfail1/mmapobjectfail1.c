@@ -20,8 +20,8 @@ int main()
     foo->x = 42;
     foo->y = "hello";
     struct foo* foo2 = opaque(foo);
-    printf("x = %d\n", foo2->x);
-    printf("y = %s\n", foo2->y);
+    zprintf("x = %d\n", foo2->x);
+    zprintf("y = %s\n", foo2->y);
     ZASSERT(!munmap(foo2, 16384));
     return 0;
 }

@@ -1,5 +1,6 @@
 return:
-  failure
+  success
 output-includes:
   - "YES"
+output-excludes:
   - filc safety error

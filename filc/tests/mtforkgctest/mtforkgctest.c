@@ -65,7 +65,7 @@ static void verify(void)
     }
 }
 
-static foo* thread_node;
+static foo* _Atomic thread_node;
 static bool thread_should_stop;
 
 static void* thread_main(void* arg)

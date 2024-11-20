@@ -13,6 +13,6 @@ int thingy(char* x)
 int main()
 {
     char* thingy_arg = "666";
-    zcall_void(thingy, thingy_arg);
+    zcall(thingy, thingy_arg);
     return 0;
 }

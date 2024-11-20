@@ -1,4 +1,5 @@
 #include <stdfil.h>
+#include <string.h>
 
 int main()
 {
@@ -8,6 +9,8 @@ int main()
     zprintf("got this far\n");
     for (i = 4; i--;)
         array[i] = "hello";
+    for (i = 4; i--;)
+        ZASSERT(!strcmp(array[i], "hello"));
     return 0;
 }
 

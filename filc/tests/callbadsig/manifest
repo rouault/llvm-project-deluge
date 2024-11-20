@@ -1,10 +1,10 @@
 return:
-   failure
+   success
 output-includes:
  - thingy
  - stuff
  - yay
- - filc safety error
-output-excludes:
  - nonono
+output-excludes:
  - hello
+ - filc safety error

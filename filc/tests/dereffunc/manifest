@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - filc safety error
-  - type mismatch
+  - cannot write pointer to special object
 output-excludes:
   blah

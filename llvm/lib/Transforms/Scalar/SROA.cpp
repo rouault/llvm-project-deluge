@@ -4763,7 +4763,8 @@ AllocaInst *SROAPass::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
       return nullptr;
 
     // Fil-C Hack!
-    constexpr uint64_t FilCWordSize = 16;
+    // FIXME: We can almost certainly get rid of this, once we have misaligned capability support.
+    constexpr uint64_t FilCWordSize = 8;
     uint64_t Skew = P.beginOffset() % FilCWordSize;
     if (DL.isNonIntegralAddressSpace(0) && NoType && Skew != 0 && P.size() >= FilCWordSize) {
       // If we have made a nonpromotable alloca without a type then it's likely that we

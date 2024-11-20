@@ -2,6 +2,6 @@ return:
   failure
 output-includes:
   - filc safety error
-  - cannot read pointer with ptr >= upper
+  - cannot read pointer with null object
 output-excludes:
   nono

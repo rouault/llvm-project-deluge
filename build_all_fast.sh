@@ -29,5 +29,5 @@ set -x
 rm -rf pizfix
 
 ./configure_llvm.sh
-./build_base.sh
+./build_and_test_base.sh
 

@@ -2,19 +2,35 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = opaque(malloc(48));
-    *(char**)(buf + 0) = "hello";
-    *(__int128*)(buf + 16) = 42;
-    *(__int128*)(buf + 32) = 42;
+    init_test();
+    char* buf = opaque(malloc(16));
+    *(char**)(buf + 8) = hello;
     buf = (char*)(buf) + 0;
-    __int128 f0 = *(__int128*)(buf + 0);
-    __int128 f1 = *(__int128*)(buf + 16);
-    __int128 f2 = *(__int128*)(buf + 32);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
+    int64_t f0 = *(int64_t*)(buf + 8);
+    ZASSERT(f0 == value);
     return 0;
 }

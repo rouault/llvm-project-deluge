@@ -1,9 +1,9 @@
 return:
-  failure
-output-excludes:
-  - Kurza melodia
+  success
 output-includes:
   - Spoko
+  - Kurza melodia
+output-excludes:
   - filc safety error
-  - span contains non-ints
+
 

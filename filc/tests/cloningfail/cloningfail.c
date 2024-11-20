@@ -33,6 +33,10 @@ int main(int argc, char** argv)
     __builtin_memcpy(f2, (char*)(f + 10) + 1, sizeof(struct foo));
 
     zprintf("Kurza melodia\n");
+
+    for (index = zlength(f2); index--;)
+        ZASSERT(!((char*)f2)[index]);
+    
     return 0;
 }
 

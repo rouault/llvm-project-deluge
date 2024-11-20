@@ -2,15 +2,37 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = opaque(malloc(32));
-    *(int16_t*)(buf + 2) = 42;
-    *(int16_t*)(buf + 6) = 42;
-    *(int16_t*)(buf + 10) = 42;
-    *(int16_t*)(buf + 14) = 42;
-    *(char**)(buf + 16) = "hello";
+    init_test();
+    char* buf = opaque(malloc(24));
+    *(int16_t*)(buf + 2) = value;
+    *(int16_t*)(buf + 6) = value;
+    *(char**)(buf + 8) = hello;
+    *(int16_t*)(buf + 18) = value;
+    *(int16_t*)(buf + 22) = value;
     buf = (char*)(buf) + 0;
     int16_t f0 = *(int16_t*)(buf + 2);
     int16_t f1 = *(int16_t*)(buf + 6);
@@ -18,15 +40,11 @@ int main()
     int16_t f3 = *(int16_t*)(buf + 14);
     int16_t f4 = *(int16_t*)(buf + 18);
     int16_t f5 = *(int16_t*)(buf + 22);
-    int16_t f6 = *(int16_t*)(buf + 26);
-    int16_t f7 = *(int16_t*)(buf + 30);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(f4 == 42);
-    ZASSERT(f5 == 42);
-    ZASSERT(f6 == 42);
-    ZASSERT(f7 == 42);
+    ZASSERT(f0 == value);
+    ZASSERT(f1 == value);
+    ZASSERT(f2 == value);
+    ZASSERT(f3 == value);
+    ZASSERT(f4 == value);
+    ZASSERT(f5 == value);
     return 0;
 }

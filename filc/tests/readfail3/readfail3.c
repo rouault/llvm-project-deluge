@@ -17,7 +17,13 @@ int main()
     char* array[100];
     for (index = 100; index--;)
         array[index] = "hello";
-    read(fds[0], array, 100);
+    ZASSERT(read(fds[0], array, 100) == 100);
+    for (index = 100; index--;) {
+        ZASSERT(((char*)array)[index] == (char)(index + 666));
+        ZASSERT(!strcmp((char*)zgetlower(array[index]), "hello"));
+    }
+    for (index = (100 + sizeof(char*) - 1) / sizeof(char*) + 1; index < 100; ++index)
+        ZASSERT(!strcmp(array[index], "hello"));
     return 0;
 }
 

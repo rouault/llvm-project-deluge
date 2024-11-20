@@ -44,34 +44,95 @@ PAS_API void fugc_resume(void);
 /* Needed for munmap/mprotect support. */
 PAS_API void fugc_handshake(void);
 
-static inline void fugc_mark(filc_object_array* mark_stack, filc_object* object)
+static PAS_ALWAYS_INLINE void fugc_mark(filc_object_array* mark_stack, filc_object* object)
 {
     static const bool verbose = false;
     if (verbose)
         pas_log("Marking object %p\n", object);
     if (!object)
         return;
-    if ((object->flags & FILC_OBJECT_FLAG_GLOBAL))
+    uintptr_t aux = object->aux;
+    filc_object_flags flags = filc_aux_get_flags(aux);
+    if ((flags & FILC_OBJECT_FLAG_GLOBAL))
         return;
-    if (!verse_heap_set_is_marked_relaxed(object, true))
+    void* mark_base = filc_object_mark_base_with_flags(object, flags);
+    if (verbose)
+        pas_log("for object %p mark_base = %p\n", object, mark_base);
+    if (!verse_heap_set_is_marked_relaxed(mark_base, true))
         return;
-    filc_object_array_push(mark_stack, object);
+    /* FIXME: We could tell by looking at the special type whether it needs to be pushed. For example,
+       functions do not need to be pushed. */
+    if (filc_aux_get_ptr(aux) || (flags & FILC_OBJECT_FLAGS_SPECIAL_MASK))
+        filc_object_array_push(mark_stack, object);
 }
 
-static inline void fugc_mark_or_free(filc_object_array* mark_stack, filc_ptr* ptr)
+static PAS_ALWAYS_INLINE void fugc_mark_or_free_flight(filc_object_array* mark_stack, filc_ptr* ptr)
 {
     for (;;) {
-        filc_object* object = filc_ptr_load_object(ptr);
-        if (!object)
+        void* lower = filc_flight_ptr_load_lower(ptr);
+        if (!lower)
             return;
-        if (!(object->flags & FILC_OBJECT_FLAG_FREE)) {
+        filc_object* object = filc_object_for_lower_not_null(lower);
+        if (!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_FREE)) {
             fugc_mark(mark_stack, object);
             return;
         }
         if (object == &filc_free_singleton)
             return;
-        if (filc_ptr_unfenced_unbarriered_weak_cas_object(
-                ptr, object, (filc_object*)&filc_free_singleton))
+        if (filc_flight_ptr_unfenced_unbarriered_weak_cas_lower(
+                ptr, lower, filc_object_lower_not_null((filc_object*)&filc_free_singleton)))
+            return;
+    }
+}
+
+static PAS_ALWAYS_INLINE void fugc_mark_or_free_lower_or_box(filc_object_array* mark_stack,
+                                                             filc_lower_or_box* lower_or_box_ptr)
+{
+    for (;;) {
+        filc_lower_or_box lower_or_box = filc_lower_or_box_load_unfenced(lower_or_box_ptr);
+        if (filc_lower_or_box_is_null(lower_or_box))
+            return;
+        if (PAS_UNLIKELY(filc_lower_or_box_is_box(lower_or_box))) {
+            filc_atomic_box* box = filc_lower_or_box_get_box(lower_or_box);
+            /* It's tempting to say that if the box is marked then it's not necessary to mark its
+               contents.
+               
+               But that would be wrong!
+               
+               Consider this race:
+               
+               0. GC hasn't started yet, but will do so soon. We're not marking.
+               1. Mutator starts doing an atomic store. It doesn't run the barrier for the value
+                  being stored, because we're not marking. Mutator doesn't yet get to the part where
+                  it creates the atomic box.
+               2. GC starts, sets marking to true.
+               3. Mutator gets a bit further - now creates the atomic box, realizes that we're
+                  marking, so it marks the box.
+
+               Now we have a marked box with unmarked contents. Note that the box will be stored into
+               an aux, or the box will get thrown away (can happen for ptr CAS). If it's thrown away,
+               then it doesn't matter if it's marked or not, and it doesn't matter if its contents is
+               marked or not.
+               
+               But if it's stored into the aux, then we'll find it here, and we'll see that it's
+               marked already. And we need to mark whatever it points at even though the box is
+               marked! */
+            verse_heap_set_is_marked_relaxed(box, true);
+            fugc_mark_or_free_flight(mark_stack, &box->ptr);
+            return;
+        }
+        filc_object* object = filc_object_for_lower_not_null(
+            filc_lower_or_box_get_lower(lower_or_box));
+        if (!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_FREE)) {
+            fugc_mark(mark_stack, object);
+            return;
+        }
+        if (object == &filc_free_singleton)
+            return;
+        if (filc_lower_or_box_cas_weak_unfenced_unbarriered(
+                lower_or_box_ptr, lower_or_box,
+                filc_lower_or_box_create_lower(
+                    filc_object_lower_not_null((filc_object*)&filc_free_singleton))))
             return;
     }
 }

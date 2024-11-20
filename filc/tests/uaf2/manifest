@@ -2,6 +2,7 @@ return:
   failure
 output-includes:
   - filc safety error
-  - ",free,"
+  - "cannot read pointer to free object"
+  - ",free"
 output-excludes:
   - hello

@@ -1,8 +1,9 @@
 #include <stdfil.h>
+#include <inttypes.h>
 
 int main()
 {
-    __int128 dst[4];
+    int64_t dst[4];
     char* src[4];
 
     unsigned i = 0;
@@ -10,6 +11,9 @@ int main()
         src[i] = "hello";
 
     zmemmove((char*)dst + 5, src, 1);
+    ZASSERT(!zhasvalidcap(((char**)dst)[0]));
+    for (i = 1; i < 4; ++i)
+        ZASSERT(!dst[i]);
 
     return 0;
 }

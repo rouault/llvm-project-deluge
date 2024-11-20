@@ -6,7 +6,6 @@ static bool callback(zstack_frame_description description,
                      void* arg)
 {
     *(char**)description.function_name = "hello";
-    zprintf("Should not get here.\n");
     return true;
 }
 

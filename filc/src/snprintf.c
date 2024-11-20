@@ -188,6 +188,7 @@ typedef long ssize_t;
 #define CNK_NUM     9
 #define CNK_PRCNT   10
 #define CNK_DELPTR  11
+#define CNK_DELOBJ  12
 
 #define char_to_int(p) ((p)- '0')
 #ifndef MAX
@@ -232,6 +233,8 @@ static int add_cnk_list_entry(struct pr_chunk_x **list,
 
 static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_list args_in)
 {
+	static const int verbose = 0;
+	
 	char ch;
 	int state;
 	int pflag;
@@ -262,6 +265,13 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 		if (ch == '\0')
 			state = DP_S_DONE;
 
+		if (verbose) {
+			zprint("at state ");
+			zprint_long(state);
+			zprint(", cnk = ");
+			zprint_ptr(cnk);
+			zprint("\n");
+		}
 		switch(state) {
 		case DP_S_DEFAULT:
 
@@ -270,6 +280,11 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 				cnk = cnk->next;
 			} else {
 				cnk = new_chunk();
+			}
+			if (verbose) {
+				zprint("after allocation, cnk = ");
+				zprint_ptr(cnk);
+				zprint("\n");
 			}
 			if (!cnk) goto done;
 			if (!chunks) chunks = cnk;
@@ -282,6 +297,11 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 				cnk->start = format - base -1;
 				while ((ch != '\0') && (ch != '%')) ch = *format++;
 				cnk->len = format - base - cnk->start -1;
+			}
+			if (verbose) {
+				zprint("after allocation and initialization, cnk = ");
+				zprint_ptr(cnk);
+				zprint("\n");
 			}
 			break;
 		case DP_S_FLAGS:
@@ -456,6 +476,11 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 			state = DP_S_CONV;
 			break;
 		case DP_S_CONV:
+			if (verbose) {
+				zprint("cnk = ");
+				zprint_ptr(cnk);
+				zprint("\n");
+			}
 			if (cnk->num == 0) cnk->num = ++pnum;
 			max_pos = add_cnk_list_entry(&clist, max_pos, cnk);
 			if (max_pos == 0) /* out of memory :-( */
@@ -505,6 +530,10 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 				break;
 			case 'P':
 				cnk->type = CNK_DELPTR;
+				cnk->flags |= DP_F_UNSIGNED;
+				break;
+			case 'O':
+				cnk->type = CNK_DELOBJ;
 				cnk->flags |= DP_F_UNSIGNED;
 				break;
 			case 'n':
@@ -622,6 +651,7 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 
 		case CNK_PTR:
                 case CNK_DELPTR:
+		case CNK_DELOBJ:
 			cnk->strvalue = __builtin_va_arg (args, void *);
 			for (i = 1; i < clist[pnum].num; i++) {
 				clist[pnum].chunks[i]->strvalue = cnk->strvalue;
@@ -708,16 +738,25 @@ static int dopr(char *buffer, size_t maxlen, const char *format, __builtin_va_li
 			break;
 
 		case CNK_PTR:
-                    fmtint (buffer, &currlen, maxlen, (long)(__SIZE_TYPE__)(cnk->strvalue), 16, min, max, cnk->flags);
-                    break;
-
+			fmtint (buffer, &currlen, maxlen, (long)(__SIZE_TYPE__)(cnk->strvalue), 16, min, max, cnk->flags);
+			break;
+			
                 case CNK_DELPTR: {
-                    char* text = zptr_to_new_string(cnk->strvalue);
-                    if (max == -1)
-                        max = zstrlen(text);
-                    fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
-                    zgc_free(text);
-                    break;
+			char* text = zptr_to_new_string(cnk->strvalue);
+			if (max == -1)
+				max = zstrlen(text);
+			fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
+			zgc_free(text);
+			break;
+                }
+			
+                case CNK_DELOBJ: {
+			char* text = zptr_contents_to_new_string(cnk->strvalue);
+			if (max == -1)
+				max = zstrlen(text);
+			fmtstr (buffer, &currlen, maxlen, text, cnk->flags, min, max);
+			zgc_free(text);
+			break;
                 }
 
 		case CNK_NUM:
@@ -1122,7 +1161,9 @@ static void dopr_outch(char *buffer, size_t *currlen, size_t maxlen, char c)
 }
 
 static struct pr_chunk *new_chunk(void) {
-    struct pr_chunk *new_c = zgc_alloc(sizeof(struct pr_chunk));
+	static const int verbose = 0;
+	
+	struct pr_chunk *new_c = zgc_alloc(sizeof(struct pr_chunk));
 
 	if (!new_c)
 		return NULL;
@@ -1142,6 +1183,12 @@ static struct pr_chunk *new_chunk(void) {
 	new_c->strvalue = NULL;
 	new_c->pnum = NULL;
 	new_c->next = NULL;
+
+	if (verbose) {
+		zprint("new_c = ");
+		zprint_ptr(new_c);
+		zprint("\n");
+	}
 
 	return new_c;
 }
@@ -1218,74 +1265,74 @@ int zsnprintf(char *str,size_t count,const char *fmt,...)
 
 int zvsprintf(char* buf, const char* format, __builtin_va_list args)
 {
-    if (buf < (char*)zgetlower(buf) || buf >= (char*)zgetupper(buf))
-        zerror("Cannot zvsprintf with a buffer pointer that is not in bounds");
-    return zvsnprintf(buf, (char*)zgetupper(buf) - buf, format, args);
+	if (buf < (char*)zgetlower(buf) || buf >= (char*)zgetupper(buf))
+		zerror("Cannot zvsprintf with a buffer pointer that is not in bounds");
+	return zvsnprintf(buf, (char*)zgetupper(buf) - buf, format, args);
 }
 
 int zsprintf(char* buf, const char* format, ...)
 {
-    int result;
-    __builtin_va_list args;
-    __builtin_va_start(args, format);
-    result = zvsprintf(buf, format, args);
-    __builtin_va_end(args);
-    return result;
+	int result;
+	__builtin_va_list args;
+	__builtin_va_start(args, format);
+	result = zvsprintf(buf, format, args);
+	__builtin_va_end(args);
+	return result;
 }
 
 char* zvasprintf(const char* format, __builtin_va_list args)
 {
-    int snprintf_result;
-    __builtin_va_list args2;
-    char* result;
-    
-    __builtin_va_copy(args2, args);
-    snprintf_result = zvsnprintf(NULL, 0, format, args2);
-    __builtin_va_end(args2);
-    if (snprintf_result < 0)
-        return NULL;
-
-    result = zgc_alloc(snprintf_result + 1);
-    if (!result)
-        NULL;
-
-    zvsnprintf(result, snprintf_result + 1, format, args);
-    return result;
+	int snprintf_result;
+	__builtin_va_list args2;
+	char* result;
+	
+	__builtin_va_copy(args2, args);
+	snprintf_result = zvsnprintf(NULL, 0, format, args2);
+	__builtin_va_end(args2);
+	if (snprintf_result < 0)
+		return NULL;
+	
+	result = zgc_alloc(snprintf_result + 1);
+	if (!result)
+		NULL;
+	
+	zvsnprintf(result, snprintf_result + 1, format, args);
+	return result;
 }
 
 char* zasprintf(const char* format, ...)
 {
-    char* result;
-    __builtin_va_list args;
-    __builtin_va_start(args, format);
-    result = zvasprintf(format, args);
-    __builtin_va_end(args);
-    return result;
+	char* result;
+	__builtin_va_list args;
+	__builtin_va_start(args, format);
+	result = zvasprintf(format, args);
+	__builtin_va_end(args);
+	return result;
 }
 
 void zvprintf(const char* format, __builtin_va_list args)
 {
-    char* str = zvasprintf(format, args);
-    if (!str)
-        zerror("Cannot printf");
-    zprint(str);
+	char* str = zvasprintf(format, args);
+	if (!str)
+		zerror("Cannot printf");
+	zprint(str);
 }
 
 void zprintf(const char* format, ...)
 {
-    __builtin_va_list args;
-    __builtin_va_start(args, format);
-    zvprintf(format, args);
-    __builtin_va_end(args);
+	__builtin_va_list args;
+	__builtin_va_start(args, format);
+	zvprintf(format, args);
+	__builtin_va_end(args);
 }
 
 void zerrorf(const char* format, ...)
 {
-    char* str;
-    __builtin_va_list args;
-    __builtin_va_start(args, format);
-    str = zvasprintf(format, args);
-    __builtin_va_end(args);
-    zerror(str);
+	char* str;
+	__builtin_va_list args;
+	__builtin_va_start(args, format);
+	str = zvasprintf(format, args);
+	__builtin_va_end(args);
+	zerror(str);
 }
 

@@ -408,6 +408,7 @@ public:
     return getPointerAlignElem(AS).TypeBitWidth;
   }
 
+  // FIXME: We don't need this anymore!
   unsigned getPointerPayloadSizeInBits(unsigned AS = 0) const {
     return getPointerAlignElem(AS).PayloadBitWidth;
   }

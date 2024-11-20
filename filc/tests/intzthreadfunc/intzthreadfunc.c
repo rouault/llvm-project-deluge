@@ -16,6 +16,7 @@ int main()
     void* result = hello;
     ZASSERT(zthread_join(t, &result));
     zprintf("wtf\n");
+    ZASSERT(result == (void*)666);
     return 0;
 }
 

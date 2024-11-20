@@ -225,6 +225,10 @@ int main(int argc, char** argv)
     ZASSERT(errno == EACCES);
     ZASSERT(!access("filc/test-output/miscsyscall/execonly.txt", X_OK));
 
+    ts.tv_sec = 0;
+    ts.tv_nsec = 1;
+    ZASSERT(!nanosleep(&ts, NULL));
+
     zprintf("No worries.\n");
     return 0;
 }

@@ -25,7 +25,7 @@
 
 require 'fileutils'
 
-BYTE_LIMIT = 32
+BYTE_LIMIT = 24
 
 class Field
     attr_reader :type, :offset, :size
@@ -34,9 +34,9 @@ class Field
         raise unless type == :int or type == :ptr or type == :padding
         case type
         when :int
-            raise unless size == 1 or size == 2 or size == 4 or size == 8 or size == 16
+            raise unless size == 1 or size == 2 or size == 4 or size == 8
         when :ptr
-            raise unless size == 16
+            raise unless size == 8
         when :padding
             raise unless size > 0
         else
@@ -88,8 +88,6 @@ class Field
                 "int32_t"
             when 8
                 "int64_t"
-            when 16
-                "__int128"
             else
                 raise
             end
@@ -138,9 +136,9 @@ def addPossibility(fields)
     $allPossibilities[fields] = true
 end
 
-[1, 2, 4, 8, 16].each {
+[1, 2, 4, 8].each {
     | wordSize |
-    [0, 1, 5, 9, 16].each {
+    [0, 1, 5, 7, 8].each {
         | padding |
         [[], withField([], :padding, padding)].each {
             | fields |
@@ -160,7 +158,7 @@ def recurse(fields)
     end
     recurse(withField(fields, :padding, 8))
     recurse(withField(fields, :int, 8))
-    recurse(withField(fields, :ptr, 16))
+    recurse(withField(fields, :ptr, 8))
 end
 
 recurse([])
@@ -197,9 +195,9 @@ def generateTest(outp, writeFields, readFields, offset, opaqueCfg)
     writeFields.each_with_index {
         | field, index |
         if field.type == :ptr
-            outp.puts "    #{field.bufAccess} = \"hello\";"
+            outp.puts "    #{field.bufAccess} = hello;"
         else
-            outp.puts "    #{field.bufAccess} = 42;"
+            outp.puts "    #{field.bufAccess} = value;"
         end
     }
     outp.puts "    buf = (char*)#{opaqueCfg.opaque2}(buf) + #{offset};"
@@ -212,54 +210,89 @@ def generateTest(outp, writeFields, readFields, offset, opaqueCfg)
         if field.type == :ptr
             outp.puts "    ZASSERT(!strcmp(f#{index}, \"hello\"));"
         else
-            outp.puts "    ZASSERT(f#{index} == 42);"
+            outp.puts "    ZASSERT(f#{index} == value);"
         end
     }
 end
 
-def generateIncludes(outp)
+def generateTop(outp)
     outp.puts "#include <stdfil.h>"
     outp.puts "#include <inttypes.h>"
     outp.puts "#include <string.h>"
     outp.puts "#include <stdlib.h>"
+    outp.puts "#include <stdbool.h>"
     outp.puts "#include \"utils.h\""
+    outp.puts "static char* hello = \"hello\";"
+    outp.puts "static unsigned char value;"
+    outp.puts "static void init_test(void)"
+    outp.puts "{"
+    outp.puts "    unsigned index;"
+    outp.puts "    value = 42;"
+    outp.puts "    bool good = false;"
+    outp.puts "    while (!good) {"
+    outp.puts "        good = true;"
+    outp.puts "        for (index = sizeof(char*); index--;) {"
+    outp.puts "            if (((char*)&hello)[index] == value) {"
+    outp.puts "                good = false;"
+    outp.puts "                break;"
+    outp.puts "            }"
+    outp.puts "        }"
+    outp.puts "        if (good)"
+    outp.puts "            break;"
+    outp.puts "        value++;"
+    outp.puts "    }"
+    outp.puts "}"
 end
 
-FileUtils.mkdir_p("filc/tests/combostorm_success")
-File.open("filc/tests/combostorm_success/combostorm_success.c", "w") {
-    | outp |
-    generateIncludes(outp)
-    numTests = 0
-    $allPossibilities.keys.each_with_index {
-        | fields, index |
-        OPAQUE_CFGS.each {
-            | opaqueCfg |
-            outp.puts "static void test#{numTests}(void)"
-            outp.puts "{"
-            generateTest(outp, fields, fields, 0, opaqueCfg)
-            outp.puts "}"
-            numTests += 1
-            
-            unless fields.select{ | field | field.type == :ptr }.empty? or
-                  fields.select{ | field | field.type == :int }.empty?
+chunkedPossibilities = [[]]
+$allPossibilities.keys.each_with_index {
+    | fields, index |
+    if chunkedPossibilities.last.size >= 10
+        chunkedPossibilities << []
+    end
+    chunkedPossibilities.last << [fields, index]
+}
+chunkedPossibilities.each_with_index {
+    | chunk, chunkIndex |
+    FileUtils.mkdir_p("filc/tests/combostorm_success#{chunkIndex}")
+    File.open("filc/tests/combostorm_success#{chunkIndex}/combostorm_success#{chunkIndex}.c", "w") {
+        | outp |
+        generateTop(outp)
+        numTests = 0
+        chunk.each {
+            | entry |
+            fields = entry[0]
+            index = entry[1]
+            OPAQUE_CFGS.each {
+                | opaqueCfg |
                 outp.puts "static void test#{numTests}(void)"
                 outp.puts "{"
-                generateTest(outp, fields, fields.select{ | field | field.type != :ptr }, 0, opaqueCfg)
+                generateTest(outp, fields, fields, 0, opaqueCfg)
                 outp.puts "}"
                 numTests += 1
-            end
+                
+                unless fields.select{ | field | field.type == :ptr }.empty? or
+                      fields.select{ | field | field.type == :int }.empty?
+                    outp.puts "static void test#{numTests}(void)"
+                    outp.puts "{"
+                    generateTest(outp, fields, fields.select{ | field | field.type != :ptr }, 0, opaqueCfg)
+                    outp.puts "}"
+                    numTests += 1
+                end
+            }
         }
+        outp.puts "int main()"
+        outp.puts "{"
+        outp.puts "    init_test();"
+        numTests.times {
+            | index |
+            outp.puts "    test#{index}();"
+        }
+        outp.puts "    return 0;"
+        outp.puts "}"
     }
-    outp.puts "int main()"
-    outp.puts "{"
-    numTests.times {
-        | index |
-        outp.puts "    test#{index}();"
-    }
-    outp.puts "    return 0;"
-    outp.puts "}"
+    IO::write("filc/tests/combostorm_success#{chunkIndex}/manifest", "return: success\nslow: true")
 }
-IO::write("filc/tests/combostorm_success/manifest", "return: success\nslow: true")
 
 $allPossibilities.keys.each_with_index {
     | fields, index |
@@ -269,9 +302,10 @@ $allPossibilities.keys.each_with_index {
         FileUtils.mkdir_p("filc/tests/#{testName}")
         File.open("filc/tests/#{testName}/#{testName}.c", "w") {
             | outp |
-            generateIncludes(outp)
+            generateTop(outp)
             outp.puts "int main()"
             outp.puts "{"
+            outp.puts "    init_test();"
             generateTest(outp, fields, fields, -0x6660, opaqueCfg)
             outp.puts "    return 0;"
             outp.puts "}"
@@ -283,9 +317,10 @@ $allPossibilities.keys.each_with_index {
         FileUtils.mkdir_p("filc/tests/#{testName}")
         File.open("filc/tests/#{testName}/#{testName}.c", "w") {
             | outp |
-            generateIncludes(outp)
+            generateTop(outp)
             outp.puts "int main()"
             outp.puts "{"
+            outp.puts "    init_test();"
             generateTest(outp, fields, fields, 0x6660, opaqueCfg)
             outp.puts "    return 0;"
             outp.puts "}"
@@ -301,7 +336,7 @@ def replaceIntsWithPtrs(fields)
         | index |
         field = fields[index]
         next unless field.type == :int
-        newField = Field.new(:ptr, field.offset / 16 * 16, 16)
+        newField = Field.new(:ptr, field.offset / 8 * 8, 8)
         newFields = fields.dup
         newFields[index] = newField
         newFields.filter! {
@@ -326,9 +361,10 @@ $allPossibilities.keys.each_with_index {
             FileUtils.mkdir_p("filc/tests/#{testName}")
             File.open("filc/tests/#{testName}/#{testName}.c", "w") {
                 | outp |
-                generateIncludes(outp)
+                generateTop(outp)
                 outp.puts "int main()"
                 outp.puts "{"
+                outp.puts "    init_test();"
                 generateTest(outp, fields, otherFields, 0, opaqueCfg)
                 outp.puts "    return 0;"
                 outp.puts "}"
@@ -340,15 +376,16 @@ $allPossibilities.keys.each_with_index {
             FileUtils.mkdir_p("filc/tests/#{testName}")
             File.open("filc/tests/#{testName}/#{testName}.c", "w") {
                 | outp |
-                generateIncludes(outp)
+                generateTop(outp)
                 outp.puts "int main()"
                 outp.puts "{"
+                outp.puts "    init_test();"
                 generateTest(outp, otherFields, fields, 0, opaqueCfg)
                 outp.puts "    return 0;"
                 outp.puts "}"
             }
             IO::write("filc/tests/#{testName}/manifest",
-                      "return: failure\noutput-includes: \"filc safety error\"")
+                      "return: failure\noutput-includes: \"filc user error\"")
         }
     }
 }

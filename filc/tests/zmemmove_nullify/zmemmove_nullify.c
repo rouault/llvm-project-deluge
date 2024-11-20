@@ -33,74 +33,77 @@ static void foo_bar(struct foo* f, struct bar* b,
     }
 
     __builtin_memcpy(f2, f, sizeof(struct foo) * 10);
-    __builtin_memcpy(b2, b, sizeof(struct bar) * 15);
+    __builtin_memcpy(b2, b, sizeof(struct bar) * 20);
 
-    zmemmove_nullify(b2, f, sizeof(struct foo) * 10);
-    zmemmove_nullify(f2, b, sizeof(struct foo) * 10);
+    zmemmove(b2, f, sizeof(struct foo) * 10);
+    zmemmove(f2, b, sizeof(struct foo) * 10);
 
-    for (index = 15; index--;) {
-        ZASSERT(!b2[index].a);
-        ZASSERT(!b2[index].b);
-    }
-
+    struct foo* f3 = (struct foo*)b2;
+    struct bar* b3 = (struct bar*)f2;
+        
     for (index = 10; index--;) {
+        ZASSERT(!strcmp(f3[index].s, zasprintf("s = %zu", index)));
         for (index2 = 3; index2--;)
-            ZASSERT(!f2[index].v[index2]);
-        ZASSERT(!f2[index].s);
-        ZASSERT(!f2[index].t);
+            ZASSERT(f3[index].v[index2] == index + index2);
+        ZASSERT(!strcmp(f3[index].t, zasprintf("t = %zu", index)));
     }
-
-    zmemmove_nullify(f2, f, sizeof(struct foo) * 10);
-    zmemmove_nullify(b2, b, sizeof(struct bar) * 15);
-
     for (index = 15; index--;) {
-        ZASSERT(!b2[index].a);
-        ZASSERT(!b2[index].b);
+        ZASSERT(!strcmp(b3[index].a, zasprintf("a = %zu", index)));
+        ZASSERT(!strcmp(b3[index].b, zasprintf("b = %zu", index)));
     }
+
+    zmemmove(f2, f, sizeof(struct foo) * 10);
+    zmemmove(b2, b, sizeof(struct bar) * 20);
 
     for (index = 10; index--;) {
+        ZASSERT(!strcmp(f2[index].s, zasprintf("s = %zu", index)));
         for (index2 = 3; index2--;)
             ZASSERT(f2[index].v[index2] == index + index2);
-        ZASSERT(!f2[index].s);
-        ZASSERT(!f2[index].t);
+        ZASSERT(!strcmp(f2[index].t, zasprintf("t = %zu", index)));
+    }
+    for (index = 15; index--;) {
+        ZASSERT(!strcmp(b2[index].a, zasprintf("a = %zu", index)));
+        ZASSERT(!strcmp(b2[index].b, zasprintf("b = %zu", index)));
     }
 }
 
 int main()
 {
     struct foo* f = zgc_alloc(sizeof(struct foo) * 10);
-    struct bar* b = zgc_alloc(sizeof(struct bar) * 15);
+    struct bar* b = zgc_alloc(sizeof(struct bar) * 20);
     struct foo* f2 = zgc_alloc(sizeof(struct foo) * 10);
-    struct bar* b2 = zgc_alloc(sizeof(struct bar) * 15);
+    struct bar* b2 = zgc_alloc(sizeof(struct bar) * 20);
 
     foo_bar(f, b, f2, b2);
 
     zprintf("doing it again\n");
     memset(f, 0, sizeof(struct foo) * 10);
-    memset(b, 0, sizeof(struct bar) * 15);
+    memset(b, 0, sizeof(struct bar) * 20);
     memset(f2, 0, sizeof(struct foo) * 10);
-    memset(b2, 0, sizeof(struct bar) * 15);
+    memset(b2, 0, sizeof(struct bar) * 20);
     
     foo_bar(f2, b2, f, b);
 
     char* buf = zgc_alloc(100);
     const char* str = "tam to tak tego tam";
-    zmemmove_nullify(buf, str, strlen(str) + 1);
+    zmemmove(buf, str, strlen(str) + 1);
     ZASSERT(!strcmp(buf, str));
 
-    char buf2[16];
+    char buf2[8];
     unsigned i;
-    for (i = 16; i--;)
+    for (i = 8; i--;)
         buf2[i] = 0;
     char* ptr;
-    zmemmove_nullify(&ptr, buf2, 16);
+    zmemmove(&ptr, buf2, 8);
+    zprintf("ptr = %P\n", ptr);
+    zprintf("hello = %P\n", "hello");
     *(char**)opaque(&ptr) = "hello";
+    zprintf("ptr = %P\n", ptr);
     ZASSERT(!strcmp(ptr, "hello"));
 
     char* src_ptr = "hello";
     char* dst_ptr;
-    zmemmove_nullify(&dst_ptr, &src_ptr, sizeof(src_ptr));
-    ZASSERT(!dst_ptr);
+    zmemmove(&dst_ptr, &src_ptr, sizeof(src_ptr));
     dst_ptr = "world";
     ZASSERT(!strcmp(*(char**)opaque(&dst_ptr), "world"));
 

@@ -437,9 +437,10 @@ static PAS_ALWAYS_INLINE void* try_allocate_impl(
         alignment = pas_max_uintptr(alignment, verse_heap_type_get_alignment(heap->type));
         
         directory = pas_heap_ensure_size_directory_for_size(
-            heap, size, alignment, pas_force_size_lookup, VERSE_HEAP_CONFIG, NULL, &verse_heap_allocator_counts);
+            heap, aligned_size, alignment, pas_force_size_lookup, VERSE_HEAP_CONFIG, NULL,
+            &verse_heap_allocator_counts);
         if (!directory)
-            return try_allocate_large(heap, size, alignment, result_filter);
+            return try_allocate_large(heap, aligned_size, alignment, result_filter);
 
         PAS_ASSERT(pas_segregated_size_directory_has_tlc_allocator(directory));
         baseline_allocator_result = pas_segregated_size_directory_get_allocator_from_tlc(

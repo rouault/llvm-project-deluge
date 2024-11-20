@@ -1,13 +1,13 @@
 return:
     success
 output-includes:
-    - "sizeof(void*) = 16"
-    - "sizeof(struct foo) = 48"
+    - "sizeof(void*) = 8"
+    - "sizeof(struct foo) = 24"
     - "__builtin_offsetof(struct foo, x) = 0"
-    - "__builtin_offsetof(struct foo, string) = 16"
-    - "__builtin_offsetof(struct foo, y) = 32"
+    - "__builtin_offsetof(struct foo, string) = 8"
+    - "__builtin_offsetof(struct foo, y) = 16"
     - "OFFSETOF(struct foo, x) = 0"
-    - "OFFSETOF(struct foo, string) = 16"
-    - "OFFSETOF(struct foo, y) = 32"
-    - "_Alignof(void*) = 16"
-    - "_Alignof(struct foo) = 16"
+    - "OFFSETOF(struct foo, string) = 8"
+    - "OFFSETOF(struct foo, y) = 16"
+    - "_Alignof(void*) = 8"
+    - "_Alignof(struct foo) = 8"

@@ -165,6 +165,9 @@ Instruction *InstCombinerImpl::SimplifyAnyMemTransfer(AnyMemTransferInst *MI) {
   if (Size > 8 || (Size&(Size-1)))
     return nullptr;  // If not 1/2/4/8 bytes, exit.
 
+  if (DL.isNonIntegralAddressSpace(0) && Size >= DL.getPointerSize(0))
+    return nullptr; // May be copying a nonintegral pointer, exit.
+
   // If it is an atomic and alignment is less than the size then we will
   // introduce the unaligned memory access which will be later transformed
   // into libcall in CodeGen. This is not evident performance gain so disable

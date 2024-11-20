@@ -1,11 +1,14 @@
 #include <stdfil.h>
+#include <inttypes.h>
 
 int main()
 {
     char* dst = "hello";
-    __int128 src = 666;
+    int64_t src = 666;
 
-    zmemmove(&dst, &src, 16);
+    zmemmove(&dst, &src, 8);
+    ZASSERT(dst == (char*)666);
+    ZASSERT(!zhasvalidcap(dst));
 
     return 0;
 }

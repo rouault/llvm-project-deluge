@@ -1428,13 +1428,14 @@ static inline unsigned pas_hash32(unsigned a)
 
 static inline unsigned pas_hash64(uint64_t value)
 {
-    /* Just mix the high and low 32-bit hashes.  I think that this works well for pointers in
-       practice. */
+    /* Just mix the high and low 32-bit hashes. I think that this works well for pointers in
+       practice. But it's probably just a bad idea. */
     return pas_hash32((unsigned)value) ^ pas_hash32((unsigned)(value >> 32));
 }
 
 static inline unsigned pas_hash128(pas_uint128 value)
 {
+    /* This hash function is probably really bad. */
     return pas_hash64((uint64_t)value) ^ pas_hash64((uint64_t)(value >> (pas_uint128)64));
 }
 

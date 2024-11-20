@@ -20,13 +20,14 @@ struct bar {
 int main(void) {
     PRINT(sizeof(struct foo));
     struct foo* ptr = zgc_alloc(sizeof(struct foo));
+    char* hello = "hello";
     ptr->x = 42;
-    ptr->string = "hello";
+    ptr->string = hello;
     struct bar* ptr2 = (struct bar*)ptr;
-    if (ptr2->x == 42)
-        zprint("NO\n");
-    if (ptr2->string == "hello")
-        zprint("NO\n");
+    zprintf("x = %d\n", ptr2->x); /* This'll be some weird value. */
+    ZASSERT(ptr2->x == (int)hello);
+    ZASSERT(ptr2->string != hello);
+    ZASSERT(!zhasvalidcap(ptr2->string));
     return 0;
 }
 

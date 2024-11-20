@@ -3,7 +3,7 @@
 static void test1(void)
 {
     char* array[4];
-    zmemset((char*)array + 16, 0, 47);
+    zmemset((char*)array + 8, 0, 23);
     unsigned i;
     for (i = 4; i--;)
         array[i] = "bruh";
@@ -30,7 +30,7 @@ static void test3(void)
 static void test4(void)
 {
     char* array[4];
-    zmemset((char*)array + 1, 0, 47);
+    zmemset((char*)array + 1, 0, 23);
     unsigned i;
     for (i = 4; i--;)
         array[i] = "bruh";
@@ -39,7 +39,7 @@ static void test4(void)
 static void test5(void)
 {
     char* array[4];
-    zmemset((char*)array + 1, 0, 62);
+    zmemset((char*)array + 1, 0, 31);
     unsigned i;
     for (i = 4; i--;)
         array[i] = "bruh";

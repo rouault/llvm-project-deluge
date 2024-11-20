@@ -1,5 +1,7 @@
 return:
-  failure
+  success
 output-includes:
+  - "hello"
+output-excludes:
   - "filc safety error"
-  - "type mismatch"
+

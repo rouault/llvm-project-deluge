@@ -2,19 +2,41 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = (malloc(32));
-    *(int8_t*)(buf + 1) = 42;
-    *(int8_t*)(buf + 3) = 42;
-    *(int8_t*)(buf + 5) = 42;
-    *(int8_t*)(buf + 7) = 42;
-    *(int8_t*)(buf + 9) = 42;
-    *(int8_t*)(buf + 11) = 42;
-    *(int8_t*)(buf + 13) = 42;
-    *(int8_t*)(buf + 15) = 42;
-    *(char**)(buf + 16) = "hello";
+    init_test();
+    char* buf = (malloc(24));
+    *(int8_t*)(buf + 1) = value;
+    *(int8_t*)(buf + 3) = value;
+    *(int8_t*)(buf + 5) = value;
+    *(int8_t*)(buf + 7) = value;
+    *(char**)(buf + 8) = hello;
+    *(int8_t*)(buf + 17) = value;
+    *(int8_t*)(buf + 19) = value;
+    *(int8_t*)(buf + 21) = value;
+    *(int8_t*)(buf + 23) = value;
     buf = (char*)opaque(buf) + 0;
     int8_t f0 = *(int8_t*)(buf + 1);
     int8_t f1 = *(int8_t*)(buf + 3);
@@ -28,25 +50,17 @@ int main()
     int8_t f9 = *(int8_t*)(buf + 19);
     int8_t f10 = *(int8_t*)(buf + 21);
     int8_t f11 = *(int8_t*)(buf + 23);
-    int8_t f12 = *(int8_t*)(buf + 25);
-    int8_t f13 = *(int8_t*)(buf + 27);
-    int8_t f14 = *(int8_t*)(buf + 29);
-    int8_t f15 = *(int8_t*)(buf + 31);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(f4 == 42);
-    ZASSERT(f5 == 42);
-    ZASSERT(f6 == 42);
-    ZASSERT(f7 == 42);
-    ZASSERT(f8 == 42);
-    ZASSERT(f9 == 42);
-    ZASSERT(f10 == 42);
-    ZASSERT(f11 == 42);
-    ZASSERT(f12 == 42);
-    ZASSERT(f13 == 42);
-    ZASSERT(f14 == 42);
-    ZASSERT(f15 == 42);
+    ZASSERT(f0 == value);
+    ZASSERT(f1 == value);
+    ZASSERT(f2 == value);
+    ZASSERT(f3 == value);
+    ZASSERT(f4 == value);
+    ZASSERT(f5 == value);
+    ZASSERT(f6 == value);
+    ZASSERT(f7 == value);
+    ZASSERT(f8 == value);
+    ZASSERT(f9 == value);
+    ZASSERT(f10 == value);
+    ZASSERT(f11 == value);
     return 0;
 }

@@ -27,60 +27,6 @@
 #include <pizlonated_syscalls.h>
 #include <pizlonated_runtime.h>
 
-_Bool zisintorptr(void* ptr)
-{
-    return zisint(ptr) || zisptr(ptr);
-}
-
-static void copy_byte_to_nonptr(char* dst, char* src, __SIZE_TYPE__ index)
-{
-    if (zisint(src + index)) {
-        char value = src[index];
-        if (!value && zisunset(dst + index))
-            return;
-        dst[index] = value;
-        return;
-    }
-    if (zisunset(dst + index))
-        return;
-    dst[index] = 0;
-}
-
-void zmemmove_nullify(void* dst_ptr, const void* src_ptr, __SIZE_TYPE__ count)
-{
-    char* dst = (char*)dst_ptr;
-    char* src = (char*)src_ptr;
-
-    __SIZE_TYPE__ index;
-
-    if (dst < src) {
-        for (index = 0; index < count; ++index) {
-            int dst_ptrphase = zptrphase(dst + index);
-            if (dst_ptrphase < 0) {
-                copy_byte_to_nonptr(dst, src, index);
-                continue;
-            }
-            ZASSERT(!dst_ptrphase);
-            *(void**)(dst + index) = (void*)0;
-            index += sizeof(void*) - 1;
-        }
-    } else {
-        for (index = count; index--;) {
-            int dst_ptrphase = zptrphase(dst + index);
-            if (dst_ptrphase < 0) {
-                copy_byte_to_nonptr(dst, src, index);
-                continue;
-            }
-            ZASSERT(dst_ptrphase == sizeof(void*) - 1);
-            *(void**)(dst + index - sizeof(void*) + 1) = (void*)0;
-            if (index < sizeof(void*) - 1)
-                index = 0;
-            else
-                index -= sizeof(void*) - 1;
-        }
-    }
-}
-
 void* zthread_self_cookie(void)
 {
     return zthread_get_cookie(zthread_self());

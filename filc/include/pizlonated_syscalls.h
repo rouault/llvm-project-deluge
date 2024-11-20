@@ -75,7 +75,6 @@ int zsys_setitimer(int which, const void* new_value, void* old_value);
 int zsys_pause(void);
 int zsys_pselect(int nfds, void* readfds, void* writefds, void* exceptfds, const void* timeout,
                  const void* sigmask);
-int zsys_getpeereid(int fd, unsigned* uid, unsigned* gid);
 int zsys_kill(int pid, int sig);
 int zsys_raise(int sig);
 int zsys_dup(int fd);

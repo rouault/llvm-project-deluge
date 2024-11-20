@@ -1,8 +1,7 @@
 return:
-  failure
+  success
 output-includes:
   - "Got this far!"
-  - "filc safety error"
-output-excludes:
-  - "x ="
-  - "y ="
+  - "x = 42"
+  - "y = hello"
+

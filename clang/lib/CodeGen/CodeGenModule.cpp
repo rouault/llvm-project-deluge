@@ -359,7 +359,7 @@ CodeGenModule::CodeGenModule(ASTContext &C,
     llvm::IntegerType::get(LLVMContext, C.getTargetInfo().getCharWidth());
   IntTy = llvm::IntegerType::get(LLVMContext, C.getTargetInfo().getIntWidth());
   IntPtrTy = llvm::IntegerType::get(LLVMContext,
-    C.getTargetInfo().getMaxPointerWidth() / 2);
+    C.getTargetInfo().getMaxPointerWidth());
   Int8PtrTy = Int8Ty->getPointerTo(0);
   Int8PtrPtrTy = Int8PtrTy->getPointerTo(0);
   const llvm::DataLayout &DL = M.getDataLayout();

@@ -2,25 +2,41 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "utils.h"
+static char* hello = "hello";
+static unsigned char value;
+static void init_test(void)
+{
+    unsigned index;
+    value = 42;
+    bool good = false;
+    while (!good) {
+        good = true;
+        for (index = sizeof(char*); index--;) {
+            if (((char*)&hello)[index] == value) {
+                good = false;
+                break;
+            }
+        }
+        if (good)
+            break;
+        value++;
+    }
+}
 int main()
 {
-    char* buf = opaque(malloc(48));
-    *(int64_t*)(buf + 0) = 42;
-    *(int64_t*)(buf + 8) = 42;
-    *(int64_t*)(buf + 16) = 42;
-    *(int64_t*)(buf + 24) = 42;
-    *(char**)(buf + 32) = "hello";
+    init_test();
+    char* buf = opaque(malloc(32));
+    *(char**)(buf + 0) = hello;
+    *(int64_t*)(buf + 8) = value;
+    *(char**)(buf + 24) = hello;
     buf = (char*)opaque(buf) + 26208;
-    int64_t f0 = *(int64_t*)(buf + 0);
+    char* f0 = *(char**)(buf + 0);
     int64_t f1 = *(int64_t*)(buf + 8);
-    int64_t f2 = *(int64_t*)(buf + 16);
-    int64_t f3 = *(int64_t*)(buf + 24);
-    char* f4 = *(char**)(buf + 32);
-    ZASSERT(f0 == 42);
-    ZASSERT(f1 == 42);
-    ZASSERT(f2 == 42);
-    ZASSERT(f3 == 42);
-    ZASSERT(!strcmp(f4, "hello"));
+    char* f2 = *(char**)(buf + 24);
+    ZASSERT(!strcmp(f0, "hello"));
+    ZASSERT(f1 == value);
+    ZASSERT(!strcmp(f2, "hello"));
     return 0;
 }

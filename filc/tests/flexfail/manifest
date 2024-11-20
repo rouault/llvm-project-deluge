@@ -1,7 +1,4 @@
 return:
-  failure
-output-includes:
-  - filc safety error
-  - type mismatch
+  success
 output-excludes:
-  FAIL
+  - filc safety error
