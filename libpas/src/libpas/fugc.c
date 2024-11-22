@@ -301,8 +301,8 @@ static void wait_and_start_marking(void)
     PAS_ASSERT(completed_cycle <= requested_cycle);
 
     if (verbose >= VERBOSE_PHASES) {
-        pas_log("[%d] fugc: waiting with threshold %zu bytes\n",
-                pas_getpid(), verse_heap_live_bytes_trigger_threshold);
+        pas_log("[%d] fugc: waiting with threshold %zu bytes, currently at %zu.\n",
+                pas_getpid(), verse_heap_live_bytes_trigger_threshold, verse_heap_live_bytes);
     }
     
     while (completed_cycle == requested_cycle
@@ -583,6 +583,11 @@ void fugc_initialize(void)
 
     verbose = filc_get_unsigned_env("FUGC_VERBOSE", 0);
     should_stop_the_world = filc_get_bool_env("FUGC_STW", false);
+
+    if (verbose >= VERBOSE_PHASES) {
+        pas_log("[%d] fugc: initializing GC with %zu live bytes.\n",
+                pas_getpid(), verse_heap_live_bytes);
+    }
 
     collector_thread_is_running = true;
     create_thread();

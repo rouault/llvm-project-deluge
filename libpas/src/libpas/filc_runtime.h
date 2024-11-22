@@ -613,7 +613,6 @@ struct PAS_ALIGNED(FILC_CC_ALIGNMENT) filc_thread {
        by having a guard page. */
     char* space_with_guard_page;
     char* guard_page;
-    bool space_with_guard_page_is_readonly;
 };
 
 struct filc_global_initialization_context {
@@ -3069,7 +3068,6 @@ PAS_API char** filc_check_and_get_null_terminated_string_array(
 PAS_API void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread);
 PAS_API char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
                                                                      size_t desired_size);
-PAS_API void filc_thread_make_space_with_guard_page_readonly(filc_thread* my_thread);
 
 /* Calls syscall_callback with the data from arg_ptr copied into memory guarded by a
    guard page that indicates the end of accessible primitive memory in arg_ptr. If

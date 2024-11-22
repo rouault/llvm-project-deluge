@@ -7693,16 +7693,15 @@ void filc_thread_destroy_space_with_guard_page(filc_thread* my_thread)
 char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thread,
                                                              size_t desired_size)
 {
+    static const bool verbose = false;
+    if (!desired_size)
+        desired_size = 1;
     PAS_ASSERT(my_thread->guard_page >= my_thread->space_with_guard_page);
     if ((size_t)(my_thread->guard_page - my_thread->space_with_guard_page) >= desired_size) {
         PAS_ASSERT(my_thread->space_with_guard_page);
         PAS_ASSERT(my_thread->guard_page);
-        if (my_thread->space_with_guard_page_is_readonly) {
-            pas_page_malloc_unprotect_reservation(
-                my_thread->space_with_guard_page,
-                my_thread->guard_page - my_thread->space_with_guard_page);
-            my_thread->space_with_guard_page_is_readonly = false;
-        }
+        if (verbose)
+            pas_log("returning existing guard page: %p\n", my_thread->guard_page);
         return my_thread->guard_page;
     }
     filc_thread_destroy_space_with_guard_page(my_thread);
@@ -7714,18 +7713,12 @@ char* filc_thread_get_end_of_space_with_guard_page_with_size(filc_thread* my_thr
     pas_page_malloc_protect_reservation((char*)result.result + size, pas_page_malloc_alignment());
     my_thread->space_with_guard_page = (char*)result.result;
     my_thread->guard_page = (char*)result.result + size;
-    my_thread->space_with_guard_page_is_readonly = false;
+    if (verbose) {
+        pas_log("created new space with guard page: %p, guard page: %p\n",
+                my_thread->space_with_guard_page,
+                my_thread->guard_page);
+    }
     return (char*)result.result + size;
-}
-
-void filc_thread_make_space_with_guard_page_readonly(filc_thread* my_thread)
-{
-    if (my_thread->space_with_guard_page_is_readonly)
-        return;
-    pas_page_malloc_make_readonly(
-        my_thread->space_with_guard_page,
-        my_thread->guard_page - my_thread->space_with_guard_page);
-    my_thread->space_with_guard_page_is_readonly = true;
 }
 
 void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
@@ -7734,6 +7727,8 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
                                                                  void* user_arg),
                                         void* user_arg)
 {
+    static const bool verbose = false;
+    
     static const uintptr_t min_address = (uintptr_t)1 << (uintptr_t)32;
 
     /* It's possible that someone is calling an ioctl that takes an int or long argument. But, we
@@ -7761,9 +7756,13 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
     char* base = (char*)filc_ptr_ptr(arg_ptr);
     filc_object* object = filc_ptr_object(arg_ptr);
     size_t maximum_extent = filc_ptr_available(arg_ptr);
+    if (verbose)
+        pas_log("maximum_extent = %zu\n", maximum_extent);
     filc_check_read(arg_ptr, maximum_extent);
     for(;;) {
         size_t limited_extent = pas_min_uintptr(maximum_extent, extent_limit);
+        if (verbose)
+            pas_log("limited_extent = %zu\n", limited_extent);
 
         char* input_copy = bmalloc_allocate(limited_extent);
         memcpy(input_copy, filc_ptr_ptr(arg_ptr), limited_extent);
@@ -7771,11 +7770,9 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
         char* start_of_space =
             filc_thread_get_end_of_space_with_guard_page_with_size(my_thread, limited_extent)
             - limited_extent;
+        if (verbose)
+            pas_log("start_of_space = %p\n", start_of_space);
         memcpy(start_of_space, input_copy, limited_extent);
-
-        bool is_readonly = !!(filc_object_get_flags(object) & FILC_OBJECT_FLAG_READONLY);
-        if (is_readonly)
-            filc_thread_make_space_with_guard_page_readonly(my_thread);
 
         filc_exit(my_thread);
         errno = 0;
@@ -7783,12 +7780,18 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
         int my_errno = errno;
         filc_enter(my_thread);
         if (my_errno != EFAULT) {
-            if (!my_errno && !is_readonly) {
+            if (!my_errno) {
                 size_t index;
+                bool is_same = true;
                 for (index = 0; index < limited_extent; ++index) {
-                    if (start_of_space[index] == input_copy[index])
-                        continue;
-                    base[index] = start_of_space[index];
+                    if (start_of_space[index] != input_copy[index]) {
+                        is_same = false;
+                        break;
+                    }
+                }
+                if (!is_same) {
+                    filc_check_write(arg_ptr, limited_extent);
+                    memcpy(base, start_of_space, limited_extent);
                 }
             }
             if (my_errno)
@@ -7803,7 +7806,7 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
                 NULL,
                 "was only able to pass %zu int bytes to the syscall but the kernel wanted more "
                 "(arg ptr = %s).",
-                extent_limit, filc_ptr_to_new_string(arg_ptr));
+                limited_extent, filc_ptr_to_new_string(arg_ptr));
         }
         PAS_ASSERT(!pas_mul_uintptr_overflow(extent_limit, 2, &extent_limit));
     }
