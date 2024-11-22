@@ -6742,18 +6742,11 @@ int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr lis
     return result;
 }
 
-int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr addr_ptr, size_t len, int behav)
+int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr ptr, size_t length, int advice)
 {
-    filc_check_access(addr_ptr, len, filc_write_access);
-    check_mmap(addr_ptr);
-    filc_exit(my_thread);
-    int result = madvise(filc_ptr_ptr(addr_ptr), len, behav);
-    int my_errno = errno;
-    filc_enter(my_thread);
-    PAS_ASSERT(!result || result == -1);
-    if (result < 0)
-        filc_set_errno(my_errno);
-    return result;
+    filc_check_write(ptr, length);
+    check_mmap(ptr);
+    return FILC_SYSCALL(my_thread, madvise(filc_ptr_ptr(ptr), length, advice));
 }
 
 int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, filc_ptr vec_ptr)
