@@ -51,14 +51,7 @@ static void really_start_program(
     filc_thread* my_thread = filc_get_my_thread();
     filc_enter(my_thread);
 
-    FILC_DEFINE_RUNTIME_ORIGIN(origin, "start_program", 0);
-
-    struct {
-        FILC_FRAME_BODY;
-    } actual_frame;
-    pas_zero_memory(&actual_frame, sizeof(actual_frame));
-    filc_frame* frame = (filc_frame*)&actual_frame;
-    frame->origin = &origin;
+    FILC_DEFINE_FRAME("start_program");
     filc_push_frame(my_thread, frame);
 
     filc_native_frame native_frame;
