@@ -23,24 +23,21 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-./build_zlib.sh
-./build_bzip2.sh
-./build_xz.sh
-./build_openssl.sh
-./build_curl.sh
-./build_openssh.sh
-./build_pcre.sh
-./build_pcre2.sh
-./build_jpeg-6b.sh
-./build_ncurses.sh
-./build_mg.sh
-./build_tcl.sh
-./build_sqlite.sh
-./build_cpython.sh
-./build_zsh.sh
-./build_lua.sh
-./build_simdutf.sh
-./build_benchmarks.sh
+cd pizlonated-tcl/unix
+
+($MAKE distclean || echo whatever)
+CC="$PWD/../../build/bin/clang -g -O2" ./configure --prefix=`realpath $PWD/../../pizfix`
+$MAKE -j $NCPU
+$MAKE install
+
+cd ../../pizfix/bin
+ln -fs tclsh9.0 tclsh
+
+cd ../lib
+ln -fs `realpath $PWD/../../pizlonated-tcl/library` tcl9.0
+

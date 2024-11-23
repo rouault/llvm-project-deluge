@@ -71,6 +71,7 @@
 #include <sys/sysinfo.h>
 #include <sched.h>
 #include <sys/prctl.h>
+#include <sys/eventfd.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -7412,6 +7413,11 @@ int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* a
         filc_set_errno(ENOSYS);
         return -1;
     }
+}
+
+int filc_native_zsys_eventfd(filc_thread* my_thread, unsigned initval, int flags)
+{
+    return FILC_SYSCALL(my_thread, eventfd(initval, flags));
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)

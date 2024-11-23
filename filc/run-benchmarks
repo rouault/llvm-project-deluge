@@ -27,7 +27,7 @@ require 'pathname'
 require 'getoptlong'
 require 'shellwords'
 
-BENCHMARK_NAME = "PizBench9004"
+BENCHMARK_NAME = "PizBench9005"
 
 $repeats = 5
 $filter = /./
@@ -310,6 +310,11 @@ $benchmarks << Benchmark.new(
     "-P utf8_length_from_latin1+haswell " +
     "-P validate_utf8+haswell " +
     "-P validate_utf8_with_errors+haswell",
+    [])
+
+$benchmarks << Benchmark.new(
+    "bin/tclsh",
+    "benchmarkData/richards.tcl",
     [])
 
 $benchmarks.filter! {
