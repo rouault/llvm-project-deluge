@@ -32,6 +32,6 @@ cd pizlonated-sqlite
 
 $MAKE -f Makefile.filc TOP=$PWD clean
 $MAKE -f Makefile.filc TOP=$PWD CC="$CCPREFIX$PWD/../build/bin/clang -g -O2" \
-      -j $NCPU
+      -j $NCPU all
 $MAKE -f Makefile.filc TOP=$PWD PREFIX=$PWD/../pizfix install
 

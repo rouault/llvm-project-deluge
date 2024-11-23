@@ -76,3 +76,4 @@ handle_git pizlonated-zsh.git pizlonated-zsh
 handle_git pizlonated-nghttp2.git pizlonated-nghttp2
 handle_git pizlonated-lua.git pizlonated-lua
 handle_git pizlonated-simdutf pizlonated-simdutf
+handle_git pizlonated-tcl pizlonated-tcl
