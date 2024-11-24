@@ -32,16 +32,10 @@ cd pizlonated-tcl/unix
 
 ($MAKE distclean || echo whatever)
 CC="$PWD/../../build/bin/clang -g -O2" ./configure --prefix=`realpath $PWD/../../pizfix`
-$MAKE -j $NCPU || {
-    # The tcl build has a flaky failure where it can't create this zip file due to some symlink issue.
-    rm -f libtcl9.0.0.zip
-    $MAKE
-}
 $MAKE install
 
 cd ../../pizfix/bin
-ln -fs tclsh9.0 tclsh
+ln -fs tclsh8.6 tclsh
 
 cd ../lib
-ln -fs `realpath $PWD/../../pizlonated-tcl/library` tcl9.0
-
+ln -fs libtcl8.6.so libtcl.so
