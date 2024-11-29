@@ -5950,7 +5950,8 @@ int filc_native_zsys_utimensat(filc_thread* my_thread, int dirfd, filc_ptr path_
                                filc_ptr times_ptr, int flags)
 {
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
-    filc_check_read(times_ptr, sizeof(struct timespec) * 2);
+    if (filc_ptr_ptr(times_ptr))
+        filc_check_read(times_ptr, sizeof(struct timespec) * 2);
     return FILC_SYSCALL(my_thread, utimensat(dirfd, path,
                                              (const struct timespec*)filc_ptr_ptr(times_ptr), flags));
 }

@@ -229,6 +229,8 @@ int main(int argc, char** argv)
     ts.tv_nsec = 1;
     ZASSERT(!nanosleep(&ts, NULL));
 
+    ZASSERT(!utimensat(AT_FDCWD, "filc/tests/miscsyscall/testfile.txt", NULL, 0));
+
     zprintf("No worries.\n");
     return 0;
 }
