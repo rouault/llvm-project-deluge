@@ -1,0 +1,6 @@
+return:
+  success
+output-excludes:
+  - "filc user error"
+slow:
+  true
