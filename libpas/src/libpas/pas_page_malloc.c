@@ -261,8 +261,6 @@ static void posix_decommit(void* ptr, size_t size, pas_mmap_capability mmap_capa
             pas_log("Going down Darwin madvise path.\n");
         PAS_SYSCALL(madvise(ptr, size, MADV_FREE_REUSABLE));
     }
-#elif defined(MADV_FREE)
-    PAS_SYSCALL(madvise(ptr, size, MADV_FREE));
 #else
     PAS_SYSCALL(madvise(ptr, size, MADV_DONTNEED));
 #endif
