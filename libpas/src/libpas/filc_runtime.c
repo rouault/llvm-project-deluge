@@ -3199,7 +3199,9 @@ PAS_ALWAYS_INLINE static void memmove_aux_loop_body(filc_thread* my_thread,
                                                     bool do_barrier,
                                                     bool has_dst_aux,
                                                     filc_object* dst_object,
-                                                    bool is_up)
+                                                    filc_object* src_object,
+                                                    bool is_up,
+                                                    const filc_origin* passed_origin)
 {
     PAS_TESTING_ASSERT(dst_end_offset >= dst_start_offset);
     PAS_TESTING_ASSERT(pas_is_aligned(dst_start_offset, FILC_WORD_SIZE));
@@ -3235,9 +3237,22 @@ PAS_ALWAYS_INLINE static void memmove_aux_loop_body(filc_thread* my_thread,
         void* lower = filc_lower_or_box_extract_lower(src_lower_or_box);
         bool do_store = true;
         if (!has_dst_aux && !*dst_aux_ptr) {
-            if (lower)
+            if (lower) {
                 *dst_aux_ptr = filc_object_ensure_aux_ptr(my_thread, dst_object);
-            else
+
+                /* We could have exited so recheck that the objects aren't free. Note that checking the dst_object is
+                   optional for memory safety (if it's free then it doesn't matter if we copy dangling pointers into it). */
+                FILC_CHECK(
+                    !(filc_object_get_flags(dst_object) & FILC_OBJECT_FLAG_FREE),
+                    passed_origin,
+                    "destination object became free during memmove (object = %s).",
+                    filc_object_to_new_string(dst_object));
+                FILC_CHECK(
+                    !(filc_object_get_flags(src_object) & FILC_OBJECT_FLAG_FREE),
+                    passed_origin,
+                    "source object became free during memmove (object = %s).",
+                    filc_object_to_new_string(src_object));
+            } else
                 do_store = false;
         }
         if (do_store) {
@@ -3288,7 +3303,7 @@ PAS_ALWAYS_INLINE static void memmove_aux_loop(filc_thread* my_thread,
     case filc_small_size:
         memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
                               dst_start_offset, src_start_offset, dst_end_offset,
-                              do_barrier, has_dst_aux, dst_object, is_up);
+                              do_barrier, has_dst_aux, dst_object, src_object, is_up, passed_origin);
         break;
 
     case filc_large_size: {
@@ -3341,13 +3356,13 @@ PAS_ALWAYS_INLINE static void memmove_aux_loop(filc_thread* my_thread,
                 memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
                                       current_dst_start_offset, current_src_start_offset,
                                       current_dst_end_offset,
-                                      do_barrier, has_dst_aux, dst_object, is_up);
+                                      do_barrier, has_dst_aux, dst_object, src_object, is_up, passed_origin);
             } else {
                 bool do_barrier = false;
                 memmove_aux_loop_body(my_thread, &dst_aux_ptr, src_aux_ptr,
                                       current_dst_start_offset, current_src_start_offset,
                                       current_dst_end_offset,
-                                      do_barrier, has_dst_aux, dst_object, is_up);
+                                      do_barrier, has_dst_aux, dst_object, src_object, is_up, passed_origin);
             }
             if (PAS_UNLIKELY(filc_pollcheck(my_thread, passed_origin))) {
                 /* NOTE: The destination object check isn't strictly necessary for memory safety. */
@@ -3441,13 +3456,15 @@ PAS_NEVER_INLINE static void memmove_aux_small_no_dst(filc_thread* my_thread,
                                                       size_t dst_start_offset,
                                                       size_t src_start_offset,
                                                       size_t dst_end_offset,
-                                                      filc_object* dst_object)
+                                                      filc_object* dst_object,
+                                                      filc_object* src_object,
+                                                      const filc_origin* passed_origin)
 {
     bool do_barrier = false;
     bool has_dst_aux = false;
     memmove_aux_barrier_specialized(my_thread, dst_aux_ptr, src_aux_ptr,
                                     dst_start_offset, src_start_offset, dst_end_offset,
-                                    filc_small_size, do_barrier, has_dst_aux, dst_object, NULL, NULL);
+                                    filc_small_size, do_barrier, has_dst_aux, dst_object, src_object, passed_origin);
 }
 
 PAS_NEVER_INLINE static void memmove_aux_large_no_dst(filc_thread* my_thread,
@@ -3560,7 +3577,7 @@ PAS_ALWAYS_INLINE static void memmove_impl_size_specialized(filc_thread* my_thre
         if (size_mode == filc_small_size) {
             memmove_aux_small_no_dst(my_thread, dst_aux_ptr, src_aux_ptr,
                                      dst_start_offset, src_start_offset, dst_end_offset,
-                                     dst_object);
+                                     dst_object, src_object, origin);
             return;
         }
         memmove_aux_large_no_dst(my_thread, dst_aux_ptr, src_aux_ptr,
