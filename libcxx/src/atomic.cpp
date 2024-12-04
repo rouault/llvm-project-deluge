@@ -20,6 +20,9 @@
 #ifdef __linux__
 
 #include <unistd.h>
+#ifdef __PIZLONATOR_WAS_HERE__
+#include <pizlonated_syscalls.h>
+#else
 #include <linux/futex.h>
 #include <sys/syscall.h>
 
@@ -28,6 +31,7 @@
 #if !defined(SYS_futex) && defined(SYS_futex_time64)
 # define SYS_futex SYS_futex_time64
 #endif
+#endif // !defined(__PIZLONATOR_WAS_HERE__)
 
 #elif defined(__FreeBSD__)
 
@@ -47,14 +51,22 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 static void __libcpp_platform_wait_on_address(__cxx_atomic_contention_t const volatile* __ptr,
                                               __cxx_contention_t __val)
 {
+#ifdef __PIZLONATOR_WAS_HERE__
+    zsys_futex_wait((volatile int*)__ptr, __val, 1);
+#else
     static constexpr timespec __timeout = { 2, 0 };
     syscall(SYS_futex, __ptr, FUTEX_WAIT_PRIVATE, __val, &__timeout, 0, 0);
+#endif
 }
 
 static void __libcpp_platform_wake_by_address(__cxx_atomic_contention_t const volatile* __ptr,
                                               bool __notify_one)
 {
+#ifdef __PIZLONATOR_WAS_HERE__
+    zsys_futex_wake((volatile int*)__ptr, __notify_one ? 1 : INT_MAX, 1);
+#else
     syscall(SYS_futex, __ptr, FUTEX_WAKE_PRIVATE, __notify_one ? 1 : INT_MAX, 0, 0, 0);
+#endif
 }
 
 #elif defined(__APPLE__) && defined(_LIBCPP_USE_ULOCK)

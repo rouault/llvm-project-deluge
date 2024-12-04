@@ -33,3 +33,11 @@ cd yolomusl
 $MAKE clean
 $MAKE -j $NCPU
 $MAKE install
+
+cd ../pizfix/yolo/include
+rm -f linux
+ln -s /usr/include/linux .
+rm -f asm
+ln -s /usr/include/x86_64-linux-gnu/asm .
+rm -f asm-generic
+ln -s /usr/include/asm-generic .

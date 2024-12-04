@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Apple Inc. All rights reserved.
+ * Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,6 +31,12 @@
 
 PAS_BEGIN_EXTERN_C;
 
+/* One limitation of the fd stream is that you can only push this many bytes into it at a time.
+   In practice, this is fine.
+
+   If you find this being a problem, break up your printfs into something smaller. */
+#define PAS_FD_STREAM_MAX_BYTES 1024
+
 struct pas_fd_stream;
 typedef struct pas_fd_stream pas_fd_stream;
 
@@ -44,8 +51,6 @@ PAS_API extern pas_stream_functions pas_fd_stream_functions;
         .base = PAS_STREAM_INITIALIZER(&pas_fd_stream_functions), \
         .fd = passed_fd \
     }
-
-PAS_API extern pas_fd_stream pas_log_stream;
 
 PAS_API void pas_fd_stream_construct(pas_fd_stream* stream, int fd);
 

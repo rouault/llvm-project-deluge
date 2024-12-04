@@ -28,10 +28,17 @@
 set -e
 set -x
 
-(cd usermusl && \
-     CC="$CCPREFIX$PWD/../build/bin/clang" ./configure \
-         --prefix=$PWD/../pizfix && \
-     $MAKE clean && \
-     $MAKE -j $NCPU && \
-     $MAKE install)
+cd usermusl
 
+CC="$CCPREFIX$PWD/../build/bin/clang" ./configure --prefix=$PWD/../pizfix
+$MAKE clean
+$MAKE -j $NCPU
+$MAKE install
+
+cd ../pizfix/include
+rm -f linux
+ln -s /usr/include/linux .
+rm -f asm
+ln -s /usr/include/x86_64-linux-gnu/asm .
+rm -f asm-generic
+ln -s /usr/include/asm-generic .

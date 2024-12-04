@@ -490,6 +490,12 @@ void* zcall(void* callee, void* args);
 /* Returns from the calling function, passing the contents of the rets object as the return value. */
 void zreturn(void* rets);
 
+/* Tells you if a va_list has another argument. */
+static inline filc_bool zcan_va_arg(__builtin_va_list list)
+{
+    return zvalinbounds(*(void**)list, 8);
+}
+
 /* Returns true if running in the build of the runtime that has extra (super expensive) testing
    checks.
 

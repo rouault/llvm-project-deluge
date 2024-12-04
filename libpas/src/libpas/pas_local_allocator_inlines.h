@@ -742,9 +742,9 @@ pas_local_allocator_prepare_to_allocate(
                     pas_log("Setting medium entry for page = %p, boundary = %p, entry_ptr = %p, "
                             "old_header = ",
                             page, (void*)page_boundary, entry_ptr);
-                    verse_heap_chunk_map_entry_header_dump(old_header, &pas_log_stream.base);
+                    verse_heap_chunk_map_entry_header_dump(old_header, pas_log_stream);
                     pas_log(", new_header = ");
-                    verse_heap_chunk_map_entry_header_dump(header, &pas_log_stream.base);
+                    verse_heap_chunk_map_entry_header_dump(header, pas_log_stream);
                     pas_log("\n");
                 }
                 verse_heap_chunk_map_entry_store_header(entry_ptr, header);

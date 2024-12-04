@@ -1113,9 +1113,9 @@ static void check_size_lookup_recomputation_set_index_to_small_size_directory(
                 "index_to_small_size_directory[%zu] = ", index);
         pas_segregated_size_directory_dump_reference(
             pas_compact_atomic_segregated_size_directory_ptr_load(
-                data->heap->index_to_small_size_directory + index), &pas_log_stream.base);
+                data->heap->index_to_small_size_directory + index), pas_log_stream);
         pas_log(", value = ");
-        pas_segregated_size_directory_dump_reference(directory, &pas_log_stream.base);
+        pas_segregated_size_directory_dump_reference(directory, pas_log_stream);
         pas_log("\n");
         check_size_lookup_recomputation_did_become_not_all_good(data);
     }
@@ -1150,10 +1150,10 @@ static void check_size_lookup_recomputation_set_medium_directory_tuple(
                 medium_tuple_index);
         pas_segregated_size_directory_dump_reference(
             pas_compact_atomic_segregated_size_directory_ptr_load(&tuples[medium_tuple_index].directory),
-            &pas_log_stream.base);
+            pas_log_stream);
         pas_log(", value->directory = ");
         pas_segregated_size_directory_dump_reference(
-            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), &pas_log_stream.base);
+            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), pas_log_stream);
         pas_log("\n");
         check_size_lookup_recomputation_did_become_not_all_good(data);
     }
@@ -1164,7 +1164,7 @@ static void check_size_lookup_recomputation_set_medium_directory_tuple(
                 "%u, value->allocator_index = %u for directory = ",
                 medium_tuple_index, tuples[medium_tuple_index].allocator_index, value->allocator_index);
         pas_segregated_size_directory_dump_reference(
-            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), &pas_log_stream.base);
+            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), pas_log_stream);
         pas_log("\n");
         check_size_lookup_recomputation_did_become_not_all_good(data);
     }
@@ -1174,7 +1174,7 @@ static void check_size_lookup_recomputation_set_medium_directory_tuple(
                 "value->begin_index = %u for directory = ",
                 medium_tuple_index, tuples[medium_tuple_index].begin_index, value->begin_index);
         pas_segregated_size_directory_dump_reference(
-            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), &pas_log_stream.base);
+            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), pas_log_stream);
         pas_log("\n");
         check_size_lookup_recomputation_did_become_not_all_good(data);
     }
@@ -1184,7 +1184,7 @@ static void check_size_lookup_recomputation_set_medium_directory_tuple(
                 "value->end_index = %u for directory = ",
                 medium_tuple_index, tuples[medium_tuple_index].end_index, value->end_index);
         pas_segregated_size_directory_dump_reference(
-            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), &pas_log_stream.base);
+            pas_compact_atomic_segregated_size_directory_ptr_load(&value->directory), pas_log_stream);
         pas_log("\n");
         check_size_lookup_recomputation_did_become_not_all_good(data);
     }
@@ -1198,7 +1198,7 @@ static bool check_size_lookup_recomputation_dump_directory(pas_segregated_heap* 
     PAS_ASSERT(!arg);
 
     pas_log("    ");
-    pas_segregated_size_directory_dump_reference(directory, &pas_log_stream.base);
+    pas_segregated_size_directory_dump_reference(directory, pas_log_stream);
     pas_log(": min_index = %u, object_size = %u, allocator_index = %u",
             pas_segregated_size_directory_min_index(directory),
             directory->object_size,
@@ -1258,7 +1258,7 @@ static void check_size_lookup_recomputation(pas_segregated_heap* heap,
                     "index_to_small_size_directory[%zu] = ", index);
             pas_segregated_size_directory_dump_reference(
                 pas_compact_atomic_segregated_size_directory_ptr_load(
-                    heap->index_to_small_size_directory + index), &pas_log_stream.base);
+                    heap->index_to_small_size_directory + index), pas_log_stream);
             pas_log(", value not set\n");
             check_size_lookup_recomputation_did_become_not_all_good(&data);
         }
@@ -1282,7 +1282,7 @@ static void check_size_lookup_recomputation(pas_segregated_heap* heap,
                 heap, pas_heap_config_kind_get_string(config->kind));
         parent_heap = pas_heap_for_segregated_heap(heap);
         if (parent_heap)
-            config->dump_type(parent_heap->type, &pas_log_stream.base);
+            config->dump_type(parent_heap->type, pas_log_stream);
         else
             pas_log("no type");
         pas_log(") at %s.\n", where);

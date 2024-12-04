@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019 Apple Inc. All rights reserved.
- * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -29,86 +29,15 @@
 #if LIBPAS_ENABLED
 
 #include "pas_log.h"
+#include "pas_fd_stream.h"
 
-#include <errno.h>
-#include "pas_snprintf.h"
-#ifdef _WIN32
-#include <io.h>
-#else
-#include <unistd.h>
-#endif
-#include <stddef.h>
+static pas_fd_stream log_fd_stream = PAS_FD_STREAM_INITIALIZER(PAS_LOG_DEFAULT_FD);
 
-pas_system_thread_id pas_thread_that_is_crash_logging;
-
-// Debug option to log to a file instead of stdout by default.
-// This does not affect pas_fd_stream.
-#define PAS_DEBUG_LOG_TO_SYSLOG 0
-
-#if PAS_DEBUG_LOG_TO_SYSLOG
-#include <sys/syslog.h>
-#endif
-
-void pas_vlog_fd(int fd, const char* format, va_list list)
-{
-    char buf[PAS_LOG_MAX_BYTES];
-    ptrdiff_t result;
-    char* ptr;
-    size_t bytes_left_to_write;
-    pas_system_thread_id thread_that_is_crash_logging;
-
-    thread_that_is_crash_logging = pas_thread_that_is_crash_logging;
-    while (thread_that_is_crash_logging && thread_that_is_crash_logging != pas_get_current_system_thread_id()) {
-        pas_compiler_fence();
-        thread_that_is_crash_logging = pas_thread_that_is_crash_logging;
-    }
-
-    result = pas_vsnprintf(buf, PAS_LOG_MAX_BYTES, format, list);
-
-    PAS_ASSERT(result >= 0);
-
-    if ((size_t)result < PAS_LOG_MAX_BYTES)
-        bytes_left_to_write = (size_t)result;
-    else
-        bytes_left_to_write = PAS_LOG_MAX_BYTES - 1;
-
-    ptr = buf;
-
-    while (bytes_left_to_write) {
-#ifdef _WIN32
-        result = _write(fd, ptr, bytes_left_to_write);
-#else
-        result = write(fd, ptr, bytes_left_to_write);
-#endif
-        if (result < 0) {
-            PAS_ASSERT(errno == EINTR);
-            continue;
-        }
-
-        PAS_ASSERT(result);
-
-        ptr += result;
-        bytes_left_to_write -= (size_t)result;
-    }
-}
-
-void pas_log_fd(int fd, const char* format, ...)
-{
-    va_list arg_list;
-    va_start(arg_list, format);
-    pas_vlog_fd(fd, format, arg_list);
-    va_end(arg_list);
-}
+pas_stream* pas_log_stream = &log_fd_stream.base;
 
 void pas_vlog(const char* format, va_list list)
 {
-#if PAS_DEBUG_LOG_TO_SYSLOG
-    PAS_IGNORE_WARNINGS_BEGIN("format-nonliteral");
-    syslog(LOG_WARNING, format, list);
-    PAS_IGNORE_WARNINGS_END;
-#else
-    pas_vlog_fd(PAS_LOG_DEFAULT_FD, format, list);
-#endif
+    pas_stream_vprintf(pas_log_stream, format, list);
 }
 
 void pas_log(const char* format, ...)
@@ -117,12 +46,6 @@ void pas_log(const char* format, ...)
     va_start(arg_list, format);
     pas_vlog(format, arg_list);
     va_end(arg_list);
-}
-
-void pas_start_crash_logging(void)
-{
-    pas_thread_that_is_crash_logging = pas_get_current_system_thread_id();
-    pas_fence();
 }
 
 #endif /* LIBPAS_ENABLED */

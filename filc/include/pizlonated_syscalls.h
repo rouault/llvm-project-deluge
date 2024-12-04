@@ -28,6 +28,14 @@
 
 #include <stdfil.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if 0
+} /* tell emacs what's up */
+#endif
+
 /* This file defines pizlonated syscall APIs.
 
    There's no guarantee that the APIs in this file will be stable over time.
@@ -205,8 +213,12 @@ int zsys_uname(void* buf);
 int zsys_sendfile(int out_fd, int in_fd, long* offset, __SIZE_TYPE__ count);
 void zsys_futex_wake(volatile int* addr, int cnt, int priv);
 void zsys_futex_wait(volatile int* addr, int val, int priv);
-/* These futex calls return the errno as a negative value. They do not set errno. */
-int zsys_futex_timedwait(volatile int* addr, int val, int clock_id, const void* timeout, int priv);
+/* These futex calls return the errno as a negative value. They do not set errno.
+ 
+   NOTE: the futex_timedwait uses an absolute timeout, which is not what the real futex syscall
+   uses! */
+int zsys_futex_timedwait(volatile int* addr, int val, int clock_id, const void* absolute_timeout,
+                         int priv);
 int zsys_futex_unlock_pi(volatile int* addr, int priv);
 int zsys_futex_lock_pi(volatile int* addr, int priv, const void* timeout);
 void zsys_futex_requeue(volatile int* addr, int priv, int wake_count, int requeue_count,
@@ -226,5 +238,18 @@ int zsys_wait4(int pid, int* status, int options, void* ru);
 int zsys_sigsuspend(const void* mask);
 int zsys_prctl(int option, ...);
 int zsys_eventfd(unsigned initval, int flags);
+long zsys_listxattr(const char* path, char* list, __SIZE_TYPE__ size);
+long zsys_llistxattr(const char* path, char* list, __SIZE_TYPE__ size);
+long zsys_flistxattr(int fd, char* list, __SIZE_TYPE__ size);
+int zsys_landlock_create_ruleset(const void* attr, __SIZE_TYPE__ size, unsigned flags);
+int zsys_landlock_add_rule(int fd, int rule_type, const void* rule_attr, unsigned flags);
+int zsys_landlock_restrict_self(int fd, unsigned flags);
+int zsys_perf_event_open(void* attr, int pid, int cpu, int fd, unsigned long flags);
+void* zsys_mremap(void* old_address, __SIZE_TYPE__ old_size, __SIZE_TYPE__ new_size, int flags,
+                  void* new_address);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* PIZLONATED_COMMON_SYSCALLS_H */

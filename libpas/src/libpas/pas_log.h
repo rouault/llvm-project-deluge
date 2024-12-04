@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019-2021 Apple Inc. All rights reserved.
- * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,26 +28,18 @@
 #define PAS_LOG_N
 
 #include "pas_utils.h"
+#include "pas_stream.h"
 #include <stdarg.h>
 
 PAS_BEGIN_EXTERN_C;
 
-#define PAS_LOG_MAX_BYTES 1024
 #define PAS_LOG_DEFAULT_FD 2
 
-/* If this is set to non-NULL, then all pthread_log calls from other threads wait. */
-extern PAS_API pas_system_thread_id pas_thread_that_is_crash_logging;
-
-/* Logging functions that don't require any allocation. You cannot log more than
-   PAS_LOG_MAX_BYTES at a time. */
-
-PAS_API void pas_vlog_fd(int fd, const char* format, va_list) PAS_FORMAT_PRINTF(2, 0);
-PAS_API void pas_log_fd(int fd, const char* format, ...) PAS_FORMAT_PRINTF(2, 3);
+/* It's legal to repoint this to something else at any time. */
+PAS_API extern pas_stream* pas_log_stream;
 
 PAS_API void pas_vlog(const char* format, va_list) PAS_FORMAT_PRINTF(1, 0);
 PAS_API void pas_log(const char* format, ...) PAS_FORMAT_PRINTF(1, 2);
-
-PAS_API void pas_start_crash_logging(void);
 
 PAS_END_EXTERN_C;
 

@@ -1202,6 +1202,7 @@ static pas_thread_return_type status_reporter_thread_main(void* arg)
 
     PAS_UNUSED_PARAM(arg);
 
+    /* FIXME: This feels janky. */
     pas_fd_stream_construct(&fd_stream, PAS_LOG_DEFAULT_FD);
     
     for (;;) {
@@ -1245,7 +1246,7 @@ void pas_status_reporter_print_everything(void)
     pas_heap_lock_lock();
     old_enabled = pas_status_reporter_enabled;
     pas_status_reporter_enabled = 100;
-    pas_status_reporter_dump_everything((pas_stream*)&pas_log_stream);
+    pas_status_reporter_dump_everything(pas_log_stream);
     pas_status_reporter_enabled = old_enabled;
     pas_heap_lock_unlock();
 }

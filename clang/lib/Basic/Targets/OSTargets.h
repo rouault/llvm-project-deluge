@@ -371,7 +371,7 @@ protected:
                     MacroBuilder &Builder) const override {
     // Linux defines; list based off of gcc output
     DefineStd(Builder, "unix", Opts);
-    DefineStd(Builder, "pizlonated_linux", Opts);
+    DefineStd(Builder, "linux", Opts);
     if (Triple.isAndroid()) {
       Builder.defineMacro("__ANDROID__", "1");
       this->PlatformName = "android";

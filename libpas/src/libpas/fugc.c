@@ -141,7 +141,7 @@ static void dump_handshake(filc_thread* thread, const char* handshake_name)
         pas_log("[%d] fugc: %s handshake with thread %u (%p) %s\n",
                 pas_getpid(), handshake_name, thread->tid, thread, pollcheck_message_for_thread(thread));
         if (verbose >= VERBOSE_HANDSHAKE_STACKS) {
-            filc_thread_dump_stack(thread, &pas_log_stream.base);
+            filc_thread_dump_stack(thread, pas_log_stream);
             pas_lock_unlock(&dump_handshake_lock);
         }
     }
@@ -218,10 +218,10 @@ static void mark_outgoing_special_ptrs(filc_object_array* stack, filc_object* ob
         break;
     default:
         pas_log("Got a bad special ptr type: ");
-        filc_special_type_dump(special_type, &pas_log_stream.base);
+        filc_special_type_dump(special_type, pas_log_stream);
         pas_log("\n");
         pas_log("Object: ");
-        filc_object_dump(object, &pas_log_stream.base);
+        filc_object_dump(object, pas_log_stream);
         pas_log("\n");
         PAS_ASSERT(!"Bad special word type");
         break;
@@ -268,6 +268,8 @@ static void destruct_object_callback(void* allocation, void* arg)
         pas_log("allocation = %p, starts with = %p\n", allocation, *(void**)allocation);
     filc_object* object = filc_allocation_get_object(allocation);
     if (filc_object_get_flags(object) & FILC_OBJECT_FLAG_MMAP) {
+        if (verbose)
+            pas_log("Deleting mmap at %p\n", filc_object_lower(object));
         if (filc_object_get_flags(object) & FILC_OBJECT_FLAG_FREE)
             return;
         filc_unmap(filc_object_lower(object), filc_object_size(object));

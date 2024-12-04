@@ -400,7 +400,7 @@ static PAS_ALWAYS_INLINE void pas_segregated_page_note_full_emptiness(pas_segreg
             if (verbose) {
                 pas_log("Cleared small entry for page = %p, boundary = %p, entry_ptr = %p, new entry = ",
                         page, (void*)boundary, entry_ptr);
-                verse_heap_chunk_map_entry_dump(*entry_ptr, &pas_log_stream.base);
+                verse_heap_chunk_map_entry_dump(*entry_ptr, pas_log_stream);
                 pas_log("\n");
             }
             break;
@@ -420,9 +420,9 @@ static PAS_ALWAYS_INLINE void pas_segregated_page_note_full_emptiness(pas_segreg
             if (verbose) {
                 pas_log("Clearing medium entry for page = %p, boundary = %p, entry_ptr = %p, old_header = ",
                         page, (void*)boundary, entry_ptr);
-                verse_heap_chunk_map_entry_header_dump(old_header, &pas_log_stream.base);
+                verse_heap_chunk_map_entry_header_dump(old_header, pas_log_stream);
                 pas_log(", new_header = ");
-                verse_heap_chunk_map_entry_header_dump(new_header, &pas_log_stream.base);
+                verse_heap_chunk_map_entry_header_dump(new_header, pas_log_stream);
                 pas_log("\n");
             }
             verse_heap_chunk_map_entry_store_header(entry_ptr, new_header);

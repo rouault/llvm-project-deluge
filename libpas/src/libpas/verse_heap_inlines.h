@@ -107,7 +107,7 @@ static PAS_ALWAYS_INLINE uintptr_t verse_heap_find_allocated_object_start_inline
 
     if (verbose) {
         pas_log("entry_header = ");
-        verse_heap_chunk_map_entry_header_dump(entry_header, &pas_log_stream.base);
+        verse_heap_chunk_map_entry_header_dump(entry_header, pas_log_stream);
         pas_log("\n");
     }
 

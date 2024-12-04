@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Apple Inc. All rights reserved.
+ * Copyright (c) 2024 Epic Games, Inc. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,8 +29,15 @@
 #if LIBPAS_ENABLED
 
 #include "pas_fd_stream.h"
+#include "pas_snprintf.h"
 
-#include "pas_log.h"
+#include <errno.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+#include <stddef.h>
 
 static PAS_FORMAT_PRINTF(2, 0) void fd_stream_vprintf(pas_stream* stream, const char* format, va_list arg_list)
 {
@@ -40,8 +48,6 @@ pas_stream_functions pas_fd_stream_functions = {
     .vprintf = fd_stream_vprintf
 };
 
-pas_fd_stream pas_log_stream = PAS_FD_STREAM_INITIALIZER(PAS_LOG_DEFAULT_FD);
-
 void pas_fd_stream_construct(pas_fd_stream* stream, int fd)
 {
     stream->base.functions = &pas_fd_stream_functions;
@@ -50,7 +56,38 @@ void pas_fd_stream_construct(pas_fd_stream* stream, int fd)
 
 void pas_fd_stream_vprintf(pas_fd_stream* stream, const char* format, va_list arg_list)
 {
-    pas_vlog_fd(stream->fd, format, arg_list);
+    char buf[PAS_FD_STREAM_MAX_BYTES];
+    ptrdiff_t result;
+    char* ptr;
+    size_t bytes_left_to_write;
+
+    result = pas_vsnprintf(buf, PAS_FD_STREAM_MAX_BYTES, format, arg_list);
+
+    PAS_ASSERT(result >= 0);
+
+    if ((size_t)result < PAS_FD_STREAM_MAX_BYTES)
+        bytes_left_to_write = (size_t)result;
+    else
+        bytes_left_to_write = PAS_FD_STREAM_MAX_BYTES - 1;
+
+    ptr = buf;
+
+    while (bytes_left_to_write) {
+#ifdef _WIN32
+        result = _write(stream->fd, ptr, bytes_left_to_write);
+#else
+        result = write(stream->fd, ptr, bytes_left_to_write);
+#endif
+        if (result < 0) {
+            PAS_ASSERT(errno == EINTR);
+            continue;
+        }
+
+        PAS_ASSERT(result);
+
+        ptr += result;
+        bytes_left_to_write -= (size_t)result;
+    }
 }
 
 #endif /* LIBPAS_ENABLED */
