@@ -326,17 +326,27 @@ static void set_stack_limit(filc_thread* thread)
 
 static int file_log_fd = -1;
 
+static void open_new_log_file(void)
+{
+    char buf[100];
+    snprintf(buf, sizeof(buf), "filc-log-%d.txt", getpid());
+    file_log_fd = open(buf, O_CREAT | O_WRONLY, 0644);
+    PAS_ASSERT(file_log_fd >= 0);
+    pas_fd_stream* stream = (pas_fd_stream*)bmalloc_allocate(sizeof(pas_fd_stream));
+    pas_fd_stream_construct(stream, file_log_fd);
+    pas_log_stream = &stream->base;
+}
+
+static void open_new_log_file_if_necessary(void)
+{
+    if (file_log_fd >= 0)
+        open_new_log_file();
+}
+
 void filc_initialize(void)
 {
-    if (filc_get_bool_env("FILC_LOG_TO_FILE", false)) {
-        char buf[100];
-        snprintf(buf, sizeof(buf), "filc-log-%d.txt", getpid());
-        file_log_fd = open(buf, O_CREAT | O_WRONLY, 0644);
-        PAS_ASSERT(file_log_fd >= 0);
-        pas_fd_stream* stream = (pas_fd_stream*)bmalloc_allocate(sizeof(pas_fd_stream));
-        pas_fd_stream_construct(stream, file_log_fd);
-        pas_log_stream = &stream->base;
-    }
+    if (filc_get_bool_env("FILC_LOG_TO_FILE", false))
+        open_new_log_file();
     
     PAS_ASSERT(!is_initialized);
 
@@ -2170,8 +2180,16 @@ static filc_object* finish_reallocate(
 
     size_t common_size = pas_min_uintptr(new_size, old_size);
     char* new_aux_ptr = NULL;
-    if (old_aux_ptr)
+    if (old_aux_ptr) {
         new_aux_ptr = filc_thread_allocate(my_thread, new_size);
+        if (PAS_UNLIKELY(filc_is_marking)) {
+            /* It's posssible that the allocation of the object observed that we're in black
+               allocation mode, but the allocation of the aux didn't, because of how TLCs work. So,
+               we need to mark the aux if marking is set, just like allocating the aux in
+               filc_object_ensure_aux_ptr_slow. */
+            verse_heap_set_is_marked_relaxed(new_aux_ptr, true);
+        }
+    }
 
     filc_object* result = initialize_object_header(
         allocation, new_size, alignment, offset_to_payload, 0, new_aux_ptr);
@@ -4959,11 +4977,16 @@ struct iovec* filc_prepare_iovec(filc_thread* my_thread, filc_ptr user_iov, int 
     return iov;
 }
 
-static void check_fd(int fd)
+static bool is_reserved_fd(int fd)
 {
     if (file_log_fd < 0)
-        return;
-    FILC_ASSERT(fd != file_log_fd, NULL);
+        return false;
+    return fd == file_log_fd;
+}
+
+static void check_fd(int fd)
+{
+    FILC_ASSERT(!is_reserved_fd(fd), NULL);
 }
 
 ssize_t filc_native_zsys_writev(filc_thread* my_thread, int fd, filc_ptr user_iov, int iovcnt)
@@ -5010,7 +5033,8 @@ ssize_t filc_native_zsys_write(filc_thread* my_thread, int fd, filc_ptr buf, siz
 
 int filc_native_zsys_close(filc_thread* my_thread, int fd)
 {
-    check_fd(fd);
+    if (is_reserved_fd(fd))
+        return 0;
     filc_exit(my_thread);
     int result = close(fd);
     int my_errno = errno;
@@ -5528,6 +5552,7 @@ int filc_native_zsys_fork(filc_thread* my_thread)
     if (verbose)
         pas_log("fork result = %d\n", result);
     if (!result) {
+        open_new_log_file_if_necessary();
         /* We're in the child. Make sure that the thread list only contains the current thread and that
            the other threads know that they are dead due to fork. */
         for (thread = filc_first_thread; thread;) {
