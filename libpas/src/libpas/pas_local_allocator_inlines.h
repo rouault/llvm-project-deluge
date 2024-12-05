@@ -501,7 +501,10 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator** allocator_ptr,
 			cache = pas_thread_local_cache_try_get();
 			
 			PAS_TESTING_ASSERT(cache);
-			pas_thread_local_cache_testing_assert_owns_allocator(cache, allocator);
+            pas_local_allocator_location allocator_location =
+                pas_local_allocator_scavenger_data_location(&allocator->scavenger_data);
+            if (allocator_location == pas_local_allocator_in_thread_local_cache)
+                pas_thread_local_cache_testing_assert_owns_allocator(cache, allocator);
 			PAS_TESTING_ASSERT(page->lock_ptr == &exclusive_view->ownership_lock);
 			PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
 
@@ -547,8 +550,10 @@ pas_local_allocator_set_up_free_bits(pas_local_allocator** allocator_ptr,
 				PAS_TESTING_ASSERT(page->is_in_use_for_allocation);
 			}
 
-			pas_thread_local_cache_update_after_possible_realloc(&cache, (void**)allocator_ptr);
-            allocator = *allocator_ptr;
+            if (allocator_location == pas_local_allocator_in_thread_local_cache) {
+                pas_thread_local_cache_update_after_possible_realloc(&cache, (void**)allocator_ptr);
+                allocator = *allocator_ptr;
+            }
             allocator->is_stashing_alloc_bits = false;
         }
     }
@@ -661,8 +666,10 @@ pas_local_allocator_prepare_to_allocate(
     if (!pas_segregated_page_config_is_utility(page_config))
         pas_lock_testing_assert_held(page->lock_ptr);
 
-    if (verbose)
-        pas_log("Preparing to allocate in view %p, page %p\n", view, page);
+    if (verbose) {
+        pas_log("[%d] Preparing to allocate in view %p, page %p, allocator %p\n",
+                pas_getpid(), view, page, allocator);
+    }
 
     page_boundary = (uintptr_t)pas_segregated_page_boundary(page, page_config);
 
@@ -675,7 +682,7 @@ pas_local_allocator_prepare_to_allocate(
         unsigned* full_alloc_bits;
 
         if (verbose)
-            pas_log("Refilling with bump.\n");
+            pas_log("[%d] Refilling with bump.\n", pas_getpid());
 
         if (pas_segregated_page_config_is_verse(page_config)) {
             uint64_t iteration_version;
@@ -812,7 +819,7 @@ pas_local_allocator_prepare_to_allocate(
     }
     
     if (verbose)
-        pas_log("Refilling with %p using free_bits\n", page);
+        pas_log("[%d] Refilling with %p using free_bits\n", pas_getpid(), page);
     pas_local_allocator_set_up_free_bits(
         allocator_ptr,
         view_kind,

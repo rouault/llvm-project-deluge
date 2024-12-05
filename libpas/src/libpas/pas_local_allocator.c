@@ -215,6 +215,9 @@ bool pas_local_allocator_stop(
     pas_lock_lock_mode page_lock_mode)
 {
     static const bool verbose = false;
+
+    if (verbose)
+        pas_log("[%d] stopping allocator %p\n", pas_getpid(), allocator);
     
     bool result;
     bool is_in_use;
@@ -283,7 +286,7 @@ bool pas_local_allocator_stop(
 
     if (result) {
         if (verbose)
-            pas_log("Did stop allocator %p\n", allocator);
+            pas_log("[%d] Did stop allocator %p\n", pas_getpid(), allocator);
         allocator->scavenger_data.should_stop_count = 0;
         pas_local_allocator_scavenger_data_set_kind(
             &allocator->scavenger_data, pas_local_allocator_stopped_allocator_kind);

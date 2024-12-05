@@ -109,10 +109,6 @@ filc_thread* filc_first_thread;
 pthread_key_t filc_thread_key;
 bool filc_is_marking;
 
-pas_heap* filc_default_heap;
-pas_heap* filc_destructor_heap;
-verse_heap_object_set* filc_destructor_set;
-
 const filc_object filc_free_singleton = {
     .upper = (void*)(&filc_free_singleton + 1),
     .aux = FILC_AUX_CREATE(FILC_OBJECT_FLAG_FREE |
@@ -149,7 +145,7 @@ filc_thread* filc_thread_create_with_manual_tracking(void)
         FILC_THREAD_SIZE_WITH_ALLOCATORS, FILC_CC_ALIGNMENT, FILC_SPECIAL_TYPE_THREAD);
     filc_thread* thread = filc_object_lower(thread_object);
     if (verbose)
-        pas_log("created thread: %p\n", thread);
+        pas_log("created thread: %p, size %zu\n", thread, (size_t)FILC_THREAD_SIZE_WITH_ALLOCATORS);
     PAS_ASSERT(filc_object_for_special_payload(thread) == thread_object);
 
     pas_system_mutex_construct(&thread->lock);
@@ -165,7 +161,7 @@ filc_thread* filc_thread_create_with_manual_tracking(void)
         PAS_ASSERT(size); \
         PAS_ASSERT(pas_is_aligned((size), VERSE_HEAP_MIN_ALIGN)); \
         verse_local_allocator_construct( \
-            filc_thread_allocator(thread, allocator_index), filc_default_heap, (size), \
+            filc_thread_allocator(thread, allocator_index), fugc_default_heap, (size), \
             FILC_THREAD_ALLOCATOR_SIZE); \
         last_size = (size); \
         allocator_index++; \
@@ -304,6 +300,7 @@ static bool exit_on_panic = false;
 static bool dump_errnos = false;
 static bool run_global_ctors = true;
 static bool run_global_dtors = true;
+static bool verbose_stop_the_world = false;
 
 static void set_stack_limit(filc_thread* thread)
 {
@@ -376,11 +373,7 @@ void filc_initialize(void)
 
     pas_system_condition_construct(&filc_stop_the_world_cond);
 
-    filc_default_heap = verse_heap_create(1, 0, 0);
-    filc_destructor_heap = verse_heap_create(1, 0, 0);
-    filc_destructor_set = verse_heap_object_set_create();
-    verse_heap_add_to_set(filc_destructor_heap, filc_destructor_set);
-    verse_heap_did_become_ready_for_allocation();
+    fugc_initialize_heaps();
 
     filc_object_array_construct(&filc_global_variable_roots);
 
@@ -397,12 +390,13 @@ void filc_initialize(void)
     set_stack_limit(thread);
 
     /* This has to happen *after* we do our primordial allocations. */
-    fugc_initialize();
+    fugc_initialize_collector();
 
     exit_on_panic = filc_get_bool_env("FILC_EXIT_ON_PANIC", false);
     dump_errnos = filc_get_bool_env("FILC_DUMP_ERRNOS", false);
     run_global_ctors = filc_get_bool_env("FILC_RUN_GLOBAL_CTORS", true);
     run_global_dtors = filc_get_bool_env("FILC_RUN_GLOBAL_DTORS", true);
+    verbose_stop_the_world = filc_get_bool_env("FILC_VERBOSE_STW", false);
     
     if (filc_get_bool_env("FILC_DUMP_SETUP", false)) {
         pas_log("filc setup:\n");
@@ -411,10 +405,16 @@ void filc_initialize(void)
         pas_log("    dump errnos: %s\n", dump_errnos ? "yes" : "no");
         pas_log("    run global ctors: %s\n", run_global_ctors ? "yes" : "no");
         pas_log("    run global dtors: %s\n", run_global_dtors ? "yes" : "no");
+        pas_log("    verbose stop the world: %s\n", verbose_stop_the_world ? "yes" : "no");
         fugc_dump_setup();
     }
     
     is_initialized = true;
+}
+
+PAS_NEVER_INLINE void* filc_thread_allocate_slow(size_t size)
+{
+    return verse_heap_allocate(fugc_default_heap, size);
 }
 
 filc_thread* filc_get_my_thread(void)
@@ -725,14 +725,6 @@ static void run_pollcheck_callback_if_necessary(filc_thread* my_thread)
     }
 }
 
-static void stop_if_necessary(filc_thread* my_thread)
-{
-    while ((my_thread->state & FILC_THREAD_STATE_STOP_REQUESTED)) {
-        PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_ENTERED));
-        pas_system_condition_wait(&my_thread->cond, &my_thread->lock);
-    }
-}
-
 void filc_enter(filc_thread* my_thread)
 {
     static const bool verbose = false;
@@ -766,6 +758,11 @@ void filc_enter(filc_thread* my_thread)
             PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_DEFERRED_SIGNAL));
             PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_ENTERED));
             run_pollcheck_callback_if_necessary(my_thread);
+            if ((my_thread->state & FILC_THREAD_STATE_STOP_REQUESTED)
+                && verbose_stop_the_world) {
+                pas_log("[%d] thread %u (%p) stopping\n", pas_getpid(), my_thread->tid, my_thread);
+                filc_thread_dump_stack(my_thread, pas_log_stream);
+            }
             while ((my_thread->state & FILC_THREAD_STATE_STOP_REQUESTED)) {
                 PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_ENTERED));
                 pas_system_condition_wait(&my_thread->cond, &my_thread->lock);
@@ -1116,6 +1113,13 @@ void filc_pollcheck_outline(filc_thread* my_thread, const filc_origin* origin)
     filc_pollcheck(my_thread, origin);
 }
 
+static void stop_thread_allocators(filc_thread* my_thread)
+{
+    unsigned index;
+    for (index = FILC_THREAD_NUM_ALLOCATORS; index--;)
+        verse_local_allocator_stop(filc_thread_allocator(my_thread, index));
+}
+
 void filc_thread_stop_allocators(filc_thread* my_thread)
 {
     assert_participates_in_pollchecks(my_thread);
@@ -1125,9 +1129,7 @@ void filc_thread_stop_allocators(filc_thread* my_thread)
     if (node && version)
         verse_heap_thread_local_cache_node_stop_local_allocators(node, version);
 
-    unsigned index;
-    for (index = FILC_THREAD_NUM_ALLOCATORS; index--;)
-        verse_local_allocator_stop(filc_thread_allocator(my_thread, index));
+    stop_thread_allocators(my_thread);
 }
 
 void filc_thread_mark_roots(filc_thread* my_thread)
@@ -1947,9 +1949,9 @@ filc_object* filc_allocate_special_early(size_t size, size_t alignment,
 
     pas_heap* heap;
     if (filc_special_type_has_destructor(special_type))
-        heap = filc_destructor_heap;
+        heap = fugc_destructor_heap;
     else
-        heap = filc_default_heap;
+        heap = fugc_default_heap;
 
     size_t total_size;
     size_t base_size;
@@ -2133,9 +2135,9 @@ static PAS_ALWAYS_INLINE filc_object* allocate_aligned_impl(
     pas_heap* heap;
     if ((object_flags & FILC_OBJECT_FLAG_MMAP)) {
         PAS_TESTING_ASSERT(alignment == pas_page_malloc_alignment());
-        heap = filc_destructor_heap;
+        heap = fugc_destructor_heap;
     } else
-        heap = filc_default_heap;
+        heap = fugc_default_heap;
 
     alignment = pas_max_uintptr(alignment, FILC_WORD_SIZE);
     size_t num_words;
@@ -2249,7 +2251,7 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
     size_t total_size;
     prepare_allocate(&new_size, alignment, &offset_to_payload, &total_size);
     return finish_reallocate(
-        my_thread, verse_heap_allocate_with_alignment(filc_default_heap, total_size, alignment),
+        my_thread, verse_heap_allocate_with_alignment(fugc_default_heap, total_size, alignment),
         object, new_size, alignment, offset_to_payload);
 }
 
@@ -5546,6 +5548,8 @@ int filc_native_zsys_fork(filc_thread* my_thread)
                    into libpas. */
                 if (thread->tlc_node && thread->tlc_node->version == thread->tlc_node_version)
                     pas_thread_local_cache_destroy_remote_from_node(thread->tlc_node->cache);
+
+                stop_thread_allocators(thread);
             }
             pas_system_mutex_unlock(&thread->lock);
             thread = next_thread;

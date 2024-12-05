@@ -2,6 +2,7 @@ return:
   success
 subRuns:
   default: true
+  scribble: true
   release: true
 output-includes:
   - "Sukces!"

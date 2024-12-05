@@ -69,6 +69,11 @@
    verse_heap that I wrote for the Verse VM, which in turn relies on the excellent libpas malloc,
    which I wrote for WebKit. */
 
+pas_heap* fugc_default_heap;
+pas_heap* fugc_destructor_heap;
+verse_heap_object_set* fugc_destructor_set;
+verse_heap_object_set* fugc_scribble_set;
+
 static pas_system_mutex collector_thread_state_lock;
 static pas_system_condition collector_thread_state_cond;
 static bool collector_thread_is_running = false;
@@ -89,6 +94,9 @@ static pas_lock global_stack_lock;
 
 static size_t destruct_size = SIZE_MAX;
 static size_t destruct_index = SIZE_MAX;
+
+static size_t scribble_size = SIZE_MAX;
+static size_t scribble_index = SIZE_MAX;
 
 static size_t sweep_size = SIZE_MAX;
 static size_t sweep_index = SIZE_MAX;
@@ -111,11 +119,15 @@ static double overall_end_time;
 
 static unsigned verbose;
 static bool should_stop_the_world;
+static bool should_scribble;
+static bool scribble_concurrently;
+static bool rage_mode;
 
 enum collector_state {
     collector_waiting,
     collector_marking,
     collector_destructing,
+    collector_scribbling,
     collector_sweeping
 };
 
@@ -264,8 +276,10 @@ static void destruct_object_callback(void* allocation, void* arg)
 {
     static const bool verbose = false;
     PAS_ASSERT(!arg);
-    if (verbose)
-        pas_log("allocation = %p, starts with = %p\n", allocation, *(void**)allocation);
+    if (verbose) {
+        pas_log("destruct_object: allocation = %p, starts with = %p\n",
+                allocation, *(void**)allocation);
+    }
     filc_object* object = filc_allocation_get_object(allocation);
     if (filc_object_get_flags(object) & FILC_OBJECT_FLAG_MMAP) {
         if (verbose)
@@ -296,6 +310,21 @@ static void destruct_object_callback(void* allocation, void* arg)
     }
 }
 
+static void scribble_object_callback(void* allocation, void* arg)
+{
+    static const bool verbose = false;
+    PAS_ASSERT(!arg);
+    if (verbose) {
+        pas_log("scribble_object: allocation = %p, starts with = %p\n",
+                allocation, *(void**)allocation);
+    }
+    void* start = (void*)verse_heap_find_allocated_object_start((uintptr_t)allocation);
+    PAS_ASSERT(start <= allocation);
+    size_t size = verse_heap_get_allocation_size((uintptr_t)start);
+    PAS_ASSERT(size);
+    memset(start, 0xac, size);
+}
+
 static void wait_and_start_marking(void)
 {
     PAS_ASSERT(!filc_is_marking);
@@ -308,11 +337,13 @@ static void wait_and_start_marking(void)
     }
     
     while (completed_cycle == requested_cycle
-           && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold) {
+           && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold
+           && !rage_mode) {
         pas_system_mutex_lock(&collector_thread_state_lock);
         PAS_ASSERT(completed_cycle <= requested_cycle);
         while (completed_cycle == requested_cycle
                && verse_heap_live_bytes < verse_heap_live_bytes_trigger_threshold
+               && !rage_mode
                && !collector_control_request)
             pas_system_condition_wait(&collector_thread_state_cond, &collector_thread_state_lock);
         pas_system_mutex_unlock(&collector_thread_state_lock);
@@ -394,15 +425,15 @@ static void mark_and_start_destructing(void)
 
     PAS_ASSERT(destruct_size == SIZE_MAX);
     PAS_ASSERT(destruct_index == SIZE_MAX);
-    verse_heap_object_set_start_iterate_before_handshake(filc_destructor_set);
+    verse_heap_object_set_start_iterate_before_handshake(fugc_destructor_set);
     filc_soft_handshake(after_marking_pollcheck_callback, NULL);
-    destruct_size = verse_heap_object_set_start_iterate_after_handshake(filc_destructor_set);
+    destruct_size = verse_heap_object_set_start_iterate_after_handshake(fugc_destructor_set);
     destruct_index = 0;
 
     current_collector_state = collector_destructing;
 }
 
-static void destruct_and_start_sweeping(void)
+static void destruct_and_start_scribbling(void)
 {
     if (verbose >= VERBOSE_PHASES) {
         pas_log("[%d] fugc: marking took %lf ms; destructing\n",
@@ -417,14 +448,62 @@ static void destruct_and_start_sweeping(void)
             return;
         size_t next_destruct_index = pas_min_uintptr(destruct_index + 10, destruct_size);
         verse_heap_object_set_iterate_range_inline(
-            filc_destructor_set, destruct_index, next_destruct_index,
+            fugc_destructor_set, destruct_index, next_destruct_index,
             verse_heap_iterate_unmarked, destruct_object_callback, NULL);
     }
 
     destruct_index = SIZE_MAX;
     destruct_size = SIZE_MAX;
 
-    verse_heap_object_set_end_iterate(filc_destructor_set);
+    verse_heap_object_set_end_iterate(fugc_destructor_set);
+
+    if (should_scribble) {
+        PAS_ASSERT(scribble_size == SIZE_MAX);
+        PAS_ASSERT(scribble_index == SIZE_MAX);
+        verse_heap_object_set_start_iterate_before_handshake(fugc_scribble_set);
+        filc_soft_handshake(stop_allocators_pollcheck_callback, NULL);
+        scribble_size = verse_heap_object_set_start_iterate_after_handshake(fugc_scribble_set);
+        scribble_index = 0;
+    }
+
+    current_collector_state = collector_scribbling;
+}
+
+static void scribble_and_start_sweeping(void)
+{
+    if (verbose >= VERBOSE_PHASES)
+        pas_log("[%d] fugc: scribbling\n", pas_getpid());
+        
+    PAS_ASSERT(!filc_is_marking);
+    PAS_ASSERT(current_collector_state == collector_scribbling);
+
+    /* Scribbling is a debug mode for catching GC bugs by overwriting dead objects with garbage. */
+    if (should_scribble) {
+        /* By default, we stop the world to scribble, because scribbling concurrently means positive
+           feedback in the concurrent GC. It can easily lead to memory exhaustion. */
+        if (!scribble_concurrently)
+            filc_stop_the_world();
+        
+        for (; scribble_index < scribble_size; scribble_index += 10) {
+            if (collector_control_request) {
+                if (!scribble_concurrently)
+                    filc_resume_the_world();
+                return;
+            }
+            size_t next_scribble_index = pas_min_uintptr(scribble_index + 10, scribble_size);
+            verse_heap_object_set_iterate_range_inline(
+                fugc_scribble_set, scribble_index, next_scribble_index,
+                verse_heap_iterate_unmarked, scribble_object_callback, NULL);
+        }
+        
+        scribble_index = SIZE_MAX;
+        scribble_size = SIZE_MAX;
+        
+        verse_heap_object_set_end_iterate(fugc_scribble_set);
+
+        if (!scribble_concurrently)
+            filc_resume_the_world();
+    }
 
     PAS_ASSERT(live_bytes_before_sweeping == SIZE_MAX);
     live_bytes_before_sweeping = verse_heap_live_bytes;
@@ -520,9 +599,14 @@ static pas_thread_return_type collector_thread(void* arg)
     PAS_ASSERT(!arg);
     
     PAS_ASSERT(collector_thread_is_running);
+    
+    if (verbose >= VERBOSE_PHASES)
+        pas_log("[%d] fugc: thread started\n", pas_getpid());
 
     while (!(collector_control_request & COLLECTOR_CONTROL_REQUEST_SUSPEND)) {
         if ((collector_control_request & COLLECTOR_CONTROL_REQUEST_HANDSHAKE)) {
+            if (verbose >= VERBOSE_PHASES)
+                pas_log("[%d] fugc: handshaking with mutator\n", pas_getpid());
             pas_system_mutex_lock(&collector_thread_state_lock);
             collector_control_request &= ~COLLECTOR_CONTROL_REQUEST_HANDSHAKE;
             pas_system_condition_broadcast(&collector_thread_state_cond);
@@ -536,7 +620,10 @@ static pas_thread_return_type collector_thread(void* arg)
             mark_and_start_destructing();
             continue;
         case collector_destructing:
-            destruct_and_start_sweeping();
+            destruct_and_start_scribbling();
+            continue;
+        case collector_scribbling:
+            scribble_and_start_sweeping();
             continue;
         case collector_sweeping:
             sweep_and_end();
@@ -544,6 +631,9 @@ static pas_thread_return_type collector_thread(void* arg)
         }
         PAS_ASSERT(!"Invalid collector state");
     }
+
+    if (verbose >= VERBOSE_PHASES)
+        pas_log("[%d] fugc: thread stopping\n", pas_getpid());
 
     pas_thread_local_cache_destroy(pas_lock_is_not_held);
 
@@ -572,19 +662,40 @@ static void create_thread(void)
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
 }
 
-void fugc_initialize(void)
+void fugc_initialize_heaps(void)
 {
-    pas_system_mutex_construct(&collector_thread_state_lock);
-    pas_system_condition_construct(&collector_thread_state_cond);
-    filc_object_array_construct(&global_stack);
-    pas_lock_construct(&global_stack_lock);
-
     minimum_threshold = filc_get_size_env("FUGC_MIN_THRESHOLD", 1024 * 1024);
     verse_heap_live_bytes_trigger_threshold = minimum_threshold;
     verse_heap_live_bytes_trigger_callback = trigger_callback;
 
     verbose = filc_get_unsigned_env("FUGC_VERBOSE", 0);
     should_stop_the_world = filc_get_bool_env("FUGC_STW", false);
+    should_scribble = filc_get_bool_env("FUGC_SCRIBBLE", false);
+    scribble_concurrently = filc_get_bool_env("FUGC_SCRIBBLE_CONCURRENTLY", false);
+    if (scribble_concurrently)
+        should_scribble = true;
+    rage_mode = filc_get_bool_env("FUGC_RAGE_MODE", false);
+
+    fugc_default_heap = verse_heap_create(1, 0, 0);
+    fugc_destructor_heap = verse_heap_create(1, 0, 0);
+    fugc_destructor_set = verse_heap_object_set_create();
+    verse_heap_add_to_set(fugc_destructor_heap, fugc_destructor_set);
+
+    if (should_scribble) {
+        fugc_scribble_set = verse_heap_object_set_create();
+        verse_heap_add_to_set(fugc_default_heap, fugc_scribble_set);
+        verse_heap_add_to_set(fugc_destructor_heap, fugc_scribble_set);
+    }
+    
+    verse_heap_did_become_ready_for_allocation();
+}
+
+void fugc_initialize_collector(void)
+{
+    pas_system_mutex_construct(&collector_thread_state_lock);
+    pas_system_condition_construct(&collector_thread_state_cond);
+    filc_object_array_construct(&global_stack);
+    pas_lock_construct(&global_stack_lock);
 
     if (verbose >= VERBOSE_PHASES) {
         pas_log("[%d] fugc: initializing GC with %zu live bytes.\n",
@@ -693,6 +804,11 @@ void fugc_dump_setup(void)
     pas_log("    fugc minimum threshold: %zu\n", minimum_threshold);
     pas_log("    fugc verbose level: %u\n", verbose);
     pas_log("    fugc stop the world: %s\n", should_stop_the_world ? "yes" : "no");
+    pas_log("    fugc scribble: %s\n",
+            should_scribble
+            ? (scribble_concurrently ? "yes, concurrently" : "yes")
+            : "no");
+    pas_log("    fugc rage mode: %s\n", rage_mode ? "yes" : "no");
 }
 
 #endif /* PAS_ENABLE_FILC */

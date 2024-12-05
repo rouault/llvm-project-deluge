@@ -35,7 +35,13 @@
    how Fil-C works. Examples: pollchecks, enter/exit, filc_thread, using the verse_heap, store barriers,
    etc. */
 
-PAS_API void fugc_initialize(void);
+PAS_API extern pas_heap* fugc_default_heap;
+PAS_API extern pas_heap* fugc_destructor_heap;
+PAS_API extern verse_heap_object_set* fugc_destructor_set;
+PAS_API extern verse_heap_object_set* fugc_scribble_set; /* Only used if FUGC_SCRIBBLE=1 */
+
+PAS_API void fugc_initialize_heaps(void); /* Called first. */
+PAS_API void fugc_initialize_collector(void); /* Called second. */
 
 /* Needed for fork(). Has no other purpose. */
 PAS_API void fugc_suspend(void);

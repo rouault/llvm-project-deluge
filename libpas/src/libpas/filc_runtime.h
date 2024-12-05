@@ -901,10 +901,6 @@ PAS_API extern pthread_key_t filc_thread_key;
 
 PAS_API extern bool filc_is_marking;
 
-PAS_API extern pas_heap* filc_default_heap;
-PAS_API extern pas_heap* filc_destructor_heap;
-PAS_API extern verse_heap_object_set* filc_destructor_set;
-
 PAS_API extern const filc_object filc_free_singleton;
 
 PAS_API extern filc_object_array filc_global_variable_roots;
@@ -995,6 +991,8 @@ static inline void* filc_thread_allocate_with_allocator_index(filc_thread* threa
     return verse_local_allocator_allocate(filc_thread_allocator(thread, allocator_index));
 }
 
+PAS_API PAS_NEVER_INLINE void* filc_thread_allocate_slow(size_t size);
+
 /* Super fast allocation function usable only when for the default heap and only if you don't need
    special alignment. */
 static inline void* filc_thread_allocate(filc_thread* thread, size_t size)
@@ -1002,7 +1000,7 @@ static inline void* filc_thread_allocate(filc_thread* thread, size_t size)
     size_t allocator_index = filc_compute_allocator_index(size);
     if (PAS_LIKELY(filc_is_fast_allocator_index(allocator_index)))
         return filc_thread_allocate_with_allocator_index(thread, allocator_index);
-    return verse_heap_allocate(filc_default_heap, size);
+    return filc_thread_allocate_slow(size);
 }
 
 PAS_API filc_thread* filc_get_my_thread(void);

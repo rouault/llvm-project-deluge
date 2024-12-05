@@ -121,11 +121,13 @@ $testDirectory.each_entry {
     justRunScript = outputPath + "justRun.sh"
     justRunReleaseScript = outputPath + "justRunRelease.sh"
     subRunScript = outputPath + "subRun.sh"
+    subRunScribbleScript = outputPath + "subRunScribble.sh"
     subRunSTWScript = outputPath + "subRunSTW.sh"
     subRunReleaseScript = outputPath + "subRunRelease.sh"
     binary = outputPath + testName
     compilerOutput = outputPath + "compilerOutput.txt"
     output = outputPath + "output.txt"
+    outputScribble = outputPath + "outputScribble.txt"
     outputSTW = outputPath + "outputSTW.txt"
     outputRelease = outputPath + "outputRelease.txt"
     File.open(compileScript, "w") {
@@ -258,9 +260,13 @@ $testDirectory.each_entry {
             outp.puts "#{Shellwords.shellescape(binary)}"
         }
         [{:script => subRunScript,
-          :cmdPrefix => "FUGC_MIN_THRESHOLD=0",
+          :cmdPrefix => "FUGC_RAGE_MODE=1",
           :justRunScript => justRunScript,
           :output => output},
+         {:script => subRunScribbleScript,
+          :cmdPrefix => "FUGC_RAGE_MODE=1 FUGC_SCRIBBLE=1",
+          :justRunScript => justRunScript,
+          :output => outputScribble},
          {:script => subRunSTWScript,
           :cmdPrefix => "FUGC_MIN_THRESHOLD=0 FUGC_STW=1",
           :justRunScript => justRunScript,
@@ -336,6 +342,9 @@ $testDirectory.each_entry {
             if not subRuns or subRuns["default"]
                 outp.puts "#{Shellwords.shellescape(subRunScript)}"
             end
+            if not subRuns or subRuns["scribble"]
+                outp.puts "#{Shellwords.shellescape(subRunScribbleScript)}"
+            end
             if not subRuns or subRuns["stw"]
                 outp.puts "#{Shellwords.shellescape(subRunSTWScript)}"
             end
@@ -349,6 +358,7 @@ $testDirectory.each_entry {
         justRunScript.chmod(0755)
         justRunReleaseScript.chmod(0755)
         subRunScript.chmod(0755)
+        subRunScribbleScript.chmod(0755)
         subRunSTWScript.chmod(0755)
         subRunReleaseScript.chmod(0755)
     end
