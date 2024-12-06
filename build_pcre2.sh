@@ -35,4 +35,5 @@ make distclean || echo whatever
 CC="$PWD/../build/bin/clang -g -O" ./configure --prefix=$PWD/../pizfix \
     --enable-pcre2-16 --enable-pcre2-32 --enable-pcre2grep-libz
 make -j $NCPU
+make check
 make install
