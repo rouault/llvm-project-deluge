@@ -5560,11 +5560,8 @@ int filc_native_zsys_fork(filc_thread* my_thread)
             thread->prev_thread = NULL;
             thread->next_thread = NULL;
             if (thread != my_thread) {
-                thread->forked = true;
-                thread->tid = 0;
-                thread->has_set_tid = true; /* Prevent anyone from waiting for this thread to set its
-                                               tid. */
-                thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
+                if (!thread->is_stopping)
+                    stop_thread_allocators(thread);
 
                 /* We can inspect the thread's TLC without any locks, since the thread is dead and
                    stopped. Also, start_thread (and other parts of the runtime) ensure that we only
@@ -5574,7 +5571,11 @@ int filc_native_zsys_fork(filc_thread* my_thread)
                 if (thread->tlc_node && thread->tlc_node->version == thread->tlc_node_version)
                     pas_thread_local_cache_destroy_remote_from_node(thread->tlc_node->cache);
 
-                stop_thread_allocators(thread);
+                thread->forked = true;
+                thread->tid = 0;
+                thread->has_set_tid = true; /* Prevent anyone from waiting for this thread to set its
+                                               tid. */
+                thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
             }
             pas_system_mutex_unlock(&thread->lock);
             thread = next_thread;

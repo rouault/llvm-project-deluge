@@ -31,6 +31,7 @@ set -x
 cd pizlonated-simdutf
 rm -rf build
 CC="$PWD/../build/bin/clang -g -O3" CXX="$PWD/../build/bin/clang++ -g -O3" \
+    ICU_ROOT=$PWD/../pizfix \
     cmake -DSIMDUTF_BENCHMARKS=ON -B build
 cmake --build build -j $NCPU
 build/singleheader/amalgamation_demo

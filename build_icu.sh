@@ -23,25 +23,15 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-./build_icu.sh
-./build_zlib.sh
-./build_bzip2.sh
-./build_xz.sh
-./build_openssl.sh
-./build_curl.sh
-./build_openssh.sh
-./build_pcre.sh
-./build_pcre2.sh
-./build_jpeg-6b.sh
-./build_ncurses.sh
-./build_mg.sh
-./build_tcl.sh
-./build_sqlite.sh
-./build_cpython.sh
-./build_zsh.sh
-./build_lua.sh
-./build_simdutf.sh
-./build_benchmarks.sh
+cd pizlonated-icu/icu4c/source
+
+make distclean || echo whatever
+THE_OS=Linux THE_COMP="the Clang C++" CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ CFLAGS="-O3 -g" CXXFLAGS="-O3 -g" ./configure --enable-debug --prefix="$PWD/../../../pizfix"
+make -j $NCPU
+make -j $NCPU check
+make install

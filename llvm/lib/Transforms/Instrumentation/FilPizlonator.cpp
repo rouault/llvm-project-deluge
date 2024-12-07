@@ -5360,6 +5360,24 @@ class Pizlonator {
     CallInst* CI = CallInst::Create(StackCheckAsm, { GEP }, "", InsertBefore);
     CI->addParamAttr(0, Attribute::get(C, Attribute::ElementType, RawPtrTy));
   }
+  
+  void undefineAvailableExternally() {
+    for (GlobalVariable& G : M.globals()) {
+      if (G.getLinkage() == GlobalValue::AvailableExternallyLinkage) {
+        G.setInitializer(nullptr);
+        G.setLinkage(GlobalValue::ExternalLinkage);
+      }
+    }
+    for (Function& F : M.functions()) {
+      if (F.getLinkage() == GlobalValue::AvailableExternallyLinkage) {
+        F.deleteBody();
+        F.setIsMaterializable(false);
+      }
+    }
+    /* FIXME: Should be able to do something for these. */
+    for (GlobalAlias& G : M.aliases())
+      assert(G.getLinkage() != GlobalValue::AvailableExternallyLinkage);
+  }
 
   void lowerThreadLocals() {
     // - Lower all threadlocal variables to pthread_key_t, which is an i32, and a function that allocates
@@ -6090,7 +6108,8 @@ public:
     RawNull = ConstantPointerNull::get(RawPtrTy);
 
     Dummy = makeDummy(Int32Ty);
-    
+
+    undefineAvailableExternally();
     lowerThreadLocals();
     makeEHDatas();
     compileModuleAsm();

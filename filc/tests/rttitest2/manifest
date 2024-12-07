@@ -1,0 +1,11 @@
+return:
+  success
+output-includes:
+  - "Bar::thingy;Bar:yes,Bar::thingy;Baz:no;OtherBaz:no;Blah:no;OtherBlah:no;Stuff:no;OtherStuff:no"
+  - "Baz::thingy;Bar:yes,Baz::thingy;Baz:yes,Baz::thingy;OtherBaz:no;Blah:no;OtherBlah:no;Stuff:no;OtherStuff:no"
+  - "OtherBaz::thingy;Bar:yes,OtherBaz::thingy;Baz:no;OtherBaz:yes,OtherBaz::thingy;Blah:no;OtherBlah:no;Stuff:no;OtherStuff:no"
+  - "Blah::thingy;Bar:yes,Blah::thingy;Baz:yes,Blah::thingy;OtherBaz:no;Blah:yes,Blah::thingy;OtherBlah:no;Stuff:no;OtherStuff:no"
+  - "OtherBlah::thingy;Bar:yes,OtherBlah::thingy;Baz:yes,OtherBlah::thingy;OtherBaz:no;Blah:no;OtherBlah:yes,OtherBlah::thingy;Stuff:no;OtherStuff:no"
+  - "Stuff::thingy;Bar:yes,Stuff::thingy;Baz:yes,Stuff::thingy;OtherBaz:no;Blah:yes,Stuff::thingy;OtherBlah:no;Stuff:yes,Stuff::thingy;OtherStuff:no"
+  - "OtherStuff::thingy;Bar:yes,OtherStuff::thingy;Baz:yes,OtherStuff::thingy;OtherBaz:no;Blah:yes,OtherStuff::thingy;OtherBlah:no;Stuff:no;OtherStuff:yes,OtherStuff::thingy"
+
