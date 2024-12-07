@@ -32,6 +32,7 @@ cd pizlonated-tcl/unix
 
 ($MAKE distclean || echo whatever)
 CC="$PWD/../../build/bin/clang -g -O2" ./configure --prefix=`realpath $PWD/../../pizfix`
+$MAKE -j $NCPU
 $MAKE install
 
 cd ../../pizfix/bin
