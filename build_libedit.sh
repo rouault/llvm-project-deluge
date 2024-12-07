@@ -23,26 +23,16 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
-./build_icu.sh
-./build_zlib.sh
-./build_bzip2.sh
-./build_xz.sh
-./build_pcre.sh      # Hilariously, pcre + pcre2 would like to depend on libedit, but libedit depends
-./build_pcre2.sh     # on ncurses, and ncurses depends on pcre2. Luckily, only pcretest wants libedit.
-./build_jpeg-6b.sh
-./build_ncurses.sh
-./build_libedit.sh
-./build_openssl.sh
-./build_curl.sh
-./build_openssh.sh
-./build_mg.sh
-./build_tcl.sh
-./build_sqlite.sh
-./build_cpython.sh
-./build_zsh.sh
-./build_lua.sh
-./build_simdutf.sh
-./build_benchmarks.sh
+cd pizlonated-libedit
+
+($MAKE distclean || echo whatever)
+CC="$PWD/../build/bin/clang -g -O3" CPPFLAGS="-I$PWD/../pizfix/include/ncurses" ./configure --prefix="$PWD/../pizfix"
+$MAKE -j $NCPU
+$MAKE install
+
+
