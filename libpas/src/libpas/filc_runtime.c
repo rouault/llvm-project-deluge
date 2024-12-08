@@ -6386,7 +6386,6 @@ int filc_to_user_errno(int errno_value)
 void filc_from_user_sigset(sigset_t* user_sigset,
                            sigset_t* sigset)
 {
-    PAS_ASSERT(sizeof(sigset_t) == sizeof(sigset_t));
     memcpy(sigset, user_sigset, sizeof(sigset_t));
     PAS_ASSERT(!sigdelsetyolo(sigset, SIGTIMER));
     PAS_ASSERT(!sigdelsetyolo(sigset, SIGCANCEL));
@@ -6395,7 +6394,6 @@ void filc_from_user_sigset(sigset_t* user_sigset,
 
 void filc_to_user_sigset(sigset_t* sigset, sigset_t* user_sigset)
 {
-    PAS_ASSERT(sizeof(sigset_t) == sizeof(sigset_t));
     memcpy(user_sigset, sigset, sizeof(sigset_t));
 }
 
