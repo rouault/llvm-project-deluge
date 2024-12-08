@@ -77,6 +77,7 @@
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
+#include <sys/signalfd.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -7880,6 +7881,19 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
 
     filc_set_errno(errno);
     return mmap_error_result();
+}
+
+int filc_native_zsys_signalfd(filc_thread* my_thread, int fd, filc_ptr mask_ptr, int flags)
+{
+    filc_check_user_sigset(mask_ptr, filc_read_access);
+    sigset_t set;
+    filc_from_user_sigset((sigset_t*)filc_ptr_ptr(mask_ptr), &set);
+    int sig;
+    for (sig = 1; sig <= FILC_MAX_USER_SIGNUM; ++sig) {
+        if (is_unsafe_signal_for_handlers(sig))
+            PAS_ASSERT(!sigdelsetyolo(&set, sig));
+    }
+    return FILC_SYSCALL(my_thread, signalfd(fd, &set, flags));
 }
 
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
