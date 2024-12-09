@@ -55,6 +55,7 @@ size_t pas_page_malloc_cached_alignment_shift;
 bool pas_page_malloc_decommit_zero_fill = false;
 #endif /* PAS_OS(DARWIN) */
 
+/* FIXME: This is probably wrong. */
 #if PAS_OS(LINUX)
 #define PAS_NORESERVE MAP_NORESERVE
 #else

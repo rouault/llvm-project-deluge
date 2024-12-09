@@ -73,8 +73,8 @@ static constexpr uint16_t ObjectFlagGlobal = 1;
 static constexpr uint16_t ObjectFlagReadonly = 2;
 static constexpr uint16_t ObjectFlagFree = 4;
 static constexpr uint16_t ObjectFlagGlobalAux = 16;
-static constexpr uint16_t ObjectFlagsSpecialShift = 5;
-static constexpr uint16_t ObjectFlagsAlignShift = 9;
+static constexpr uint16_t ObjectFlagsSpecialShift = 6;
+static constexpr uint16_t ObjectFlagsAlignShift = 10;
 
 static constexpr uintptr_t AtomicBoxBit = 1;
 

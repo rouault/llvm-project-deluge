@@ -194,11 +194,13 @@ typedef uintptr_t filc_word;
                                                                      points to is allocated in global
                                                                      memory, so it shouldn't be
                                                                      marked. */
-#define FILC_OBJECT_FLAGS_SPECIAL_SHIFT   ((filc_object_flags)5)  /* The shift amount to get to the
+#define FILC_OBJECT_FLAG_SYSV_SHM         ((filc_object_flags)32) /* The object is a System V IPC
+                                                                     shared memory mapping. */
+#define FILC_OBJECT_FLAGS_SPECIAL_SHIFT   ((filc_object_flags)6)  /* The shift amount to get to the
                                                                      special type. */
 #define FILC_OBJECT_FLAGS_SPECIAL_MASK    ((filc_object_flags)FILC_SPECIAL_TYPE_MASK \
                                            << FILC_OBJECT_FLAGS_SPECIAL_SHIFT)
-#define FILC_OBJECT_FLAGS_ALIGN_SHIFT     ((filc_object_flags)9)  /* The shift amount to get the log
+#define FILC_OBJECT_FLAGS_ALIGN_SHIFT     ((filc_object_flags)10) /* The shift amount to get the log
                                                                      align. */
 
 #define FILC_ATOMIC_BOX_BIT               ((uintptr_t)1)

@@ -78,6 +78,10 @@
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
 #include <sys/signalfd.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <sys/msg.h>
 
 #define DEFINE_LOCK(name) \
     pas_system_mutex filc_## name ## _lock; \
@@ -370,8 +374,8 @@ void filc_initialize(void)
     PAS_ASSERT(FILC_OBJECT_FLAG_READONLY == 2);
     PAS_ASSERT(FILC_OBJECT_FLAG_FREE == 4);
     PAS_ASSERT(FILC_OBJECT_FLAG_GLOBAL_AUX == 16);
-    PAS_ASSERT(FILC_OBJECT_FLAGS_SPECIAL_SHIFT == 5);
-    PAS_ASSERT(FILC_OBJECT_FLAGS_ALIGN_SHIFT == 9);
+    PAS_ASSERT(FILC_OBJECT_FLAGS_SPECIAL_SHIFT == 6);
+    PAS_ASSERT(FILC_OBJECT_FLAGS_ALIGN_SHIFT == 10);
     PAS_ASSERT(FILC_ATOMIC_BOX_BIT == 1);
     PAS_ASSERT(FILC_NUM_UNWIND_REGISTERS == 2);
     PAS_ASSERT(FILC_CC_INLINE_SIZE == 256);
@@ -1423,6 +1427,10 @@ void filc_object_flags_dump_with_comma(filc_object_flags flags, bool* comma, pas
     if (flags & FILC_OBJECT_FLAG_READONLY) {
         pas_stream_print_comma(stream, comma, ",");
         pas_stream_printf(stream, "readonly");
+    }
+    if (flags & FILC_OBJECT_FLAG_SYSV_SHM) {
+        pas_stream_print_comma(stream, comma, ",");
+        pas_stream_printf(stream, "sysv_shm");
     }
     if (filc_object_flags_is_aligned(flags)) {
         pas_stream_print_comma(stream, comma, ",");
@@ -5907,6 +5915,7 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
         filc_set_errno(my_errno);
         return mmap_error_result();
     }
+    filc_check_write(address, length); /* Make sure someone didn't munmap concurrently. */
     PAS_ASSERT(raw_result);
     PAS_ASSERT(raw_result == filc_ptr_ptr(address));
     return address;
@@ -5941,12 +5950,12 @@ int filc_native_zsys_munmap(filc_thread* my_thread, filc_ptr address, size_t len
         pas_log("unmapping %p...%p (%zu bytes).\n",
                 filc_ptr_ptr(address), (char*)filc_ptr_ptr(address) + length, length);
     }
-    filc_exit(my_thread);
-    filc_unmap(filc_ptr_ptr(address), length);
-    filc_enter(my_thread);
     if (filc_ptr_ptr(address) == filc_ptr_lower(address) &&
         length == filc_ptr_available(address))
         filc_free(filc_ptr_object(address));
+    filc_exit(my_thread);
+    filc_unmap(filc_ptr_ptr(address), length);
+    filc_enter(my_thread);
     return 0;
 }
 
@@ -7103,118 +7112,189 @@ int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rl
 
 /* It's totally a goal to implement SysV IPC, including the shared memory parts. I just don't have to,
    yet. */
-int filc_native_zsys_semget(filc_thread* my_thread, long key, int nsems, int flag)
+int filc_native_zsys_semget(filc_thread* my_thread, int key, int nsems, int flag)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(key);
-    PAS_UNUSED_PARAM(nsems);
-    PAS_UNUSED_PARAM(flag);
-    filc_internal_panic(NULL, "zsys_semget not implemented.");
-    return -1;
+    return FILC_SYSCALL(my_thread, semget(key, nsems, flag));
 }
 
 int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd,
                             filc_cc_cursor* args)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(semid);
-    PAS_UNUSED_PARAM(semnum);
-    PAS_UNUSED_PARAM(cmd);
-    PAS_UNUSED_PARAM(args);
-    filc_internal_panic(NULL, "zsys_semctl not implemented.");
-    return -1;
+    switch (cmd) {
+    case IPC_STAT:
+    case IPC_SET:
+    case SEM_STAT: {
+        filc_ptr semid_ds_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_write(semid_ds_ptr, sizeof(struct semid_ds));
+        return FILC_SYSCALL(
+            my_thread, semctl(semid, semnum, cmd, (struct semid_ds*)filc_ptr_ptr(semid_ds_ptr)));
+    }
+
+    case IPC_RMID:
+    case GETNCNT:
+    case GETPID:
+    case GETVAL:
+    case GETZCNT:
+        return FILC_SYSCALL(my_thread, semctl(semid, semnum, cmd));
+
+    case IPC_INFO:
+    case SEM_INFO:
+    case SEM_STAT_ANY: {
+        filc_ptr seminfo_ptr = filc_cc_cursor_get_next_ptr(my_thread, args);
+        filc_check_write(seminfo_ptr, sizeof(struct seminfo));
+        return FILC_SYSCALL(
+            my_thread, semctl(semid, semnum, cmd, (struct seminfo*)filc_ptr_ptr(seminfo_ptr)));
+    }
+
+    case GETALL:
+    case SETALL:
+        filc_set_errno(ENOSYS);
+        return -1;
+
+    case SETVAL: {
+        int val = filc_cc_cursor_get_next_int(my_thread, args);
+        return FILC_SYSCALL(my_thread, semctl(semid, semnum, cmd, val));
+    }
+
+    default:
+        filc_set_errno(EINVAL);
+        return -1;
+    }
 }
 
 int filc_native_zsys_semop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(semid);
-    PAS_UNUSED_PARAM(array_ptr);
-    PAS_UNUSED_PARAM(nops);
-    filc_internal_panic(NULL, "zsys_semop not implemented.");
-    return -1;
+    filc_check_write(array_ptr, filc_mul_size(nops, sizeof(struct sembuf)));
+    return FILC_SYSCALL(my_thread, semop(semid, (struct sembuf*)filc_ptr_ptr(array_ptr), nops));
 }
 
-int filc_native_zsys_shmget(filc_thread* my_thread, long key, size_t size, int flag)
+int filc_native_zsys_semtimedop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops,
+                                filc_ptr ts_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(key);
-    PAS_UNUSED_PARAM(size);
-    PAS_UNUSED_PARAM(flag);
-    filc_internal_panic(NULL, "zsys_shmget not implemented.");
-    return -1;
+    if (filc_ptr_ptr(ts_ptr))
+        filc_check_read(ts_ptr, sizeof(struct timespec));
+    filc_check_write(array_ptr, filc_mul_size(nops, sizeof(struct sembuf)));
+    return FILC_SYSCALL(
+        my_thread, semtimedop(semid, (struct sembuf*)filc_ptr_ptr(array_ptr), nops,
+                              (const struct timespec*)filc_ptr_ptr(ts_ptr)));
+}
+
+int filc_native_zsys_shmget(filc_thread* my_thread, int key, size_t size, int flag)
+{
+    return FILC_SYSCALL(my_thread, shmget(key, size, flag));
 }
 
 int filc_native_zsys_shmctl(filc_thread* my_thread, int shmid, int cmd, filc_ptr buf_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(shmid);
-    PAS_UNUSED_PARAM(cmd);
-    PAS_UNUSED_PARAM(buf_ptr);
-    filc_internal_panic(NULL, "zsys_shmctl not implemented.");
-    return -1;
+    if (filc_ptr_ptr(buf_ptr))
+        filc_check_write(buf_ptr, sizeof(struct shmid_ds));
+    return FILC_SYSCALL(my_thread, shmctl(shmid, cmd, (struct shmid_ds*)filc_ptr_ptr(buf_ptr)));
 }
 
 filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr_ptr, int flag)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(shmid);
-    PAS_UNUSED_PARAM(addr_ptr);
-    PAS_UNUSED_PARAM(flag);
-    filc_internal_panic(NULL, "zsys_shmat not implemented.");
-    return filc_ptr_forge_null();
+    size_t length;
+    filc_ptr result = mmap_error_result();
+
+    if (filc_ptr_ptr(addr_ptr)) {
+        filc_set_errno(EINVAL);
+        return mmap_error_result();
+    }
+
+    /* We need to know the size of the shared memory before we attach it for real. We can ask for the
+       size using semctl, but the trouble with that is that any other process could delete the shmid
+       and presumably cause it to get reused (with a different size) in between when we ask for the
+       size and when we rely on the size.
+       
+       So, we "lock" the shmid by doing a dummy shmat, and then shmdt'ing the dummy.
+       
+       Gross! */
+    void* dummy = FILC_SYSCALL(my_thread, shmat(shmid, NULL, SHM_RDONLY));
+    PAS_ASSERT(dummy);
+    if (dummy == (void*)(intptr_t)-1)
+        return mmap_error_result();
+
+    struct shmid_ds stat;
+    if (FILC_SYSCALL(my_thread, shmctl(shmid, IPC_STAT, &stat)) < 0)
+        goto done;
+    
+    length = stat.shm_segsz;
+
+    /* And now we hold the dummy attachment until we make the real attachment, so that the length we
+       got from it remains valid. */
+    
+    addr_ptr = filc_ptr_create_with_object(
+        my_thread, allocate_aligned_impl(
+            my_thread, length, pas_page_malloc_alignment(),
+            FILC_OBJECT_FLAG_MMAP | FILC_OBJECT_FLAG_SYSV_SHM));
+
+    void* raw_result = FILC_SYSCALL(
+        my_thread, shmat(shmid, filc_ptr_ptr(addr_ptr), flag | SHM_REMAP));
+
+    PAS_ASSERT(raw_result == (void*)(intptr_t)-1 || raw_result == filc_ptr_ptr(addr_ptr));
+    if (raw_result == filc_ptr_ptr(addr_ptr)) {
+        filc_check_write(addr_ptr, length); /* Make sure someone didn't munmap concurrently. */
+        result = addr_ptr;
+    }
+    
+done:
+    filc_exit(my_thread);
+    shmdt(dummy);
+    filc_enter(my_thread);
+    return result;
 }
 
 int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(addr_ptr);
-    filc_internal_panic(NULL, "zsys_shmdt not implemented.");
-    return -1;
+    FILC_CHECK(
+        filc_ptr_ptr(addr_ptr) == filc_ptr_lower(addr_ptr),
+        NULL,
+        "attempt to shmdt a pointer not to the base of the capability (ptr = %s).",
+        filc_ptr_to_new_string(addr_ptr));
+    size_t available = filc_ptr_available(addr_ptr);
+    FILC_CHECK(
+        available,
+        NULL,
+        "attempt to shmdt a pointer with zero bytes available (ptr = %s).",
+        filc_ptr_to_new_string(addr_ptr));
+    filc_check_write(addr_ptr, available);
+    check_mmap(addr_ptr);
+    FILC_CHECK(
+        filc_object_get_flags(filc_ptr_object(addr_ptr)) & FILC_OBJECT_FLAG_SYSV_SHM,
+        NULL,
+        "attempt to shmdt a pointer not to System V IPC shared memory (ptr = %s).",
+        filc_ptr_to_new_string(addr_ptr));
+    filc_free(filc_ptr_object(addr_ptr));
+    filc_exit(my_thread);
+    filc_unmap(filc_ptr_ptr(addr_ptr), available);
+    filc_enter(my_thread);
+    return 0;
 }
 
-int filc_native_zsys_msgget(filc_thread* my_thread, long key, int msgflg)
+int filc_native_zsys_msgget(filc_thread* my_thread, int key, int msgflg)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(key);
-    PAS_UNUSED_PARAM(msgflg);
-    filc_internal_panic(NULL, "zsys_msgget not implemented.");
-    return -1;
+    return FILC_SYSCALL(my_thread, msgget(key, msgflg));
 }
 
 int filc_native_zsys_msgctl(filc_thread* my_thread, int msgid, int cmd, filc_ptr buf_ptr)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(msgid);
-    PAS_UNUSED_PARAM(cmd);
-    PAS_UNUSED_PARAM(buf_ptr);
-    filc_internal_panic(NULL, "zsys_msgctl not implemented.");
-    return -1;
+    if (filc_ptr_ptr(buf_ptr))
+        filc_check_write(buf_ptr, sizeof(struct msqid_ds));
+    return FILC_SYSCALL(my_thread, msgctl(msgid, cmd, (struct msqid_ds*)filc_ptr_ptr(buf_ptr)));
 }
 
 long filc_native_zsys_msgrcv(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
                              long msgtyp, int msgflg)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(msgid);
-    PAS_UNUSED_PARAM(msgp_ptr);
-    PAS_UNUSED_PARAM(msgsz);
-    PAS_UNUSED_PARAM(msgtyp);
-    PAS_UNUSED_PARAM(msgflg);
-    filc_internal_panic(NULL, "zsys_msgrcv not implemented.");
-    return -1;
+    filc_check_write(msgp_ptr, PAS_OFFSETOF(struct msgbuf, mtext) + msgsz);
+    return FILC_SYSCALL(my_thread, msgrcv(msgid, filc_ptr_ptr(msgp_ptr), msgsz, msgtyp, msgflg));
 }
 
 int filc_native_zsys_msgsnd(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
                             int msgflg)
 {
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(msgid);
-    PAS_UNUSED_PARAM(msgp_ptr);
-    PAS_UNUSED_PARAM(msgsz);
-    PAS_UNUSED_PARAM(msgflg);
-    filc_internal_panic(NULL, "zsys_msgsnd not implemented.");
-    return -1;
+    filc_check_read(msgp_ptr, PAS_OFFSETOF(struct msgbuf, mtext) + msgsz);
+    return FILC_SYSCALL(my_thread, msgsnd(msgid, filc_ptr_ptr(msgp_ptr), msgsz, msgflg));
 }
 
 int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
@@ -7775,6 +7855,9 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
        mremap fails. Or something. See big ass comment below.
     
        Wacky! */
+
+    /* FIXME: It would be great to filc_free() the old mapping. We should do that right before
+       filc_unmapping, and we need to be entered to do it. */
     
     filc_exit(my_thread);
     void* result;
@@ -7867,13 +7950,8 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
     filc_enter(my_thread);
 
     if (result == filc_ptr_ptr(new_address_ptr)) {
-        if (filc_ptr_ptr(old_address_ptr) == filc_ptr_lower(old_address_ptr) &&
-            old_size == filc_ptr_available(old_address_ptr) &&
-            (flags & MREMAP_MAYMOVE)) {
-            if (verbose)
-                pas_log("freeing the mapping at %p.\n", filc_ptr_ptr(old_address_ptr));
-            filc_free(filc_ptr_object(old_address_ptr));
-        }
+        filc_check_write(new_address_ptr, new_size); /* Make sure someone didn't munmap
+                                                        concurrently. */
         return new_address_ptr;
     }
 

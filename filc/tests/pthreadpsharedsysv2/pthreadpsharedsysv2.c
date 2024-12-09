@@ -7,7 +7,9 @@
 #include <stdbool.h>
 #include <stdfil.h>
 #include <sys/wait.h>
-#include <pthread.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
 
 #define ASSERT(exp) do { \
     if ((exp)) \
@@ -19,50 +21,53 @@
 struct shared {
     char buf[100];
     bool flag;
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
 };
 
 static struct shared* memory;
+static int semid;
 
 static void child(void)
 {
     strcpy(memory->buf, "hello, world!\n");
 
-    pthread_mutex_lock(&memory->lock);
     memory->flag = true;
-    pthread_cond_broadcast(&memory->cond);
-    pthread_mutex_unlock(&memory->lock);
 
-    ASSERT(!munmap(memory, 16384));
+    struct sembuf opbuf;
+    opbuf.sem_num = 0;
+    opbuf.sem_op = 1;
+    opbuf.sem_flg = 0;
+    ASSERT(!semop(semid, &opbuf, 1));
+    
+    ASSERT(!shmdt(memory));
 }
 
 static void parent(void)
 {
-    pthread_mutex_lock(&memory->lock);
-    while (!memory->flag)
-        pthread_cond_wait(&memory->cond, &memory->lock);
-    pthread_mutex_unlock(&memory->lock);
+    struct sembuf opbuf;
+    opbuf.sem_num = 0;
+    opbuf.sem_op = -1;
+    opbuf.sem_flg = 0;
+    ASSERT(!semop(semid, &opbuf, 1));
+    ASSERT(memory->flag);
     ASSERT(!strcmp(memory->buf, "hello, world!\n"));
     printf("%s", memory->buf);
 
-    ASSERT(!munmap(memory, 16384));
+    ASSERT(!shmdt(memory));
 }
       
 int main()
 {
-    memory = mmap(NULL, 16384, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANON, -1, 0);
+    int shmid = shmget(IPC_PRIVATE, 16384, IPC_CREAT | IPC_EXCL | 0600);
+    ASSERT(shmid >= 0);
+
+    memory = shmat(shmid, NULL, 0);
     ASSERT(memory);
     ASSERT(memory != (void*)(intptr_t)-1);
 
-    pthread_mutexattr_t lock_attr;
-    ASSERT(!pthread_mutexattr_init(&lock_attr));
-    ASSERT(!pthread_mutexattr_setpshared(&lock_attr, 1));
-    ASSERT(!pthread_mutex_init(&memory->lock, &lock_attr));
-    pthread_condattr_t cond_attr;
-    ASSERT(!pthread_condattr_init(&cond_attr));
-    ASSERT(!pthread_condattr_setpshared(&cond_attr, 1));
-    ASSERT(!pthread_cond_init(&memory->cond, &cond_attr));
+    ASSERT(!shmctl(shmid, IPC_RMID, NULL));
+
+    semid = semget(IPC_PRIVATE, 1, IPC_CREAT | IPC_EXCL | 0600);
+    ASSERT(semid >= 0);
     
     int fork_result = fork();
     ASSERT(fork_result >= 0);
@@ -75,6 +80,7 @@ int main()
         ASSERT(wait_result == fork_result);
         ASSERT(WIFEXITED(status));
         ASSERT(!WEXITSTATUS(status));
+        ASSERT(!semctl(semid, 0, IPC_RMID));
     }
     return 0;
 }

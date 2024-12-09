@@ -8,6 +8,8 @@
 #include <stdfil.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #define ASSERT(exp) do { \
     if ((exp)) \
@@ -34,7 +36,7 @@ static void child(void)
     pthread_cond_broadcast(&memory->cond);
     pthread_mutex_unlock(&memory->lock);
 
-    ASSERT(!munmap(memory, 16384));
+    ASSERT(!shmdt(memory));
 }
 
 static void parent(void)
@@ -46,14 +48,19 @@ static void parent(void)
     ASSERT(!strcmp(memory->buf, "hello, world!\n"));
     printf("%s", memory->buf);
 
-    ASSERT(!munmap(memory, 16384));
+    ASSERT(!shmdt(memory));
 }
       
 int main()
 {
-    memory = mmap(NULL, 16384, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANON, -1, 0);
+    int shmid = shmget(IPC_PRIVATE, 16384, IPC_CREAT | IPC_EXCL | 0600);
+    ASSERT(shmid >= 0);
+
+    memory = shmat(shmid, NULL, 0);
     ASSERT(memory);
     ASSERT(memory != (void*)(intptr_t)-1);
+
+    ASSERT(!shmctl(shmid, IPC_RMID, NULL));
 
     pthread_mutexattr_t lock_attr;
     ASSERT(!pthread_mutexattr_init(&lock_attr));
