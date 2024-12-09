@@ -3690,6 +3690,10 @@ static filc_ptr promote_cc_to_heap(filc_thread* my_thread, size_t size)
             filc_lower_or_box_load_unfenced(
                 filc_thread_cc_aux_slot_at_offset(my_thread, offset)));
         if (lower) {
+            /* FIXME: We should do all of this tracking before we trigger aux creation.
+               
+               Also, we shouldn't do the tracking at all when we're promoting args to heap, since the
+               args are already tracked by the calleer. */
             filc_thread_track_object(my_thread, filc_object_for_lower(lower));
             char* aux_ptr = filc_object_ensure_aux_ptr(my_thread, result_object);
             filc_store_barrier(my_thread, filc_object_for_lower(lower));
@@ -7218,8 +7222,8 @@ filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr
     if (FILC_SYSCALL(my_thread, shmctl(shmid, IPC_STAT, &stat)) < 0)
         goto done;
     
-    length = stat.shm_segsz;
-
+    length = pas_round_up_to_power_of_2(stat.shm_segsz, pas_page_malloc_alignment());
+    
     /* And now we hold the dummy attachment until we make the real attachment, so that the length we
        got from it remains valid. */
     
@@ -7264,6 +7268,7 @@ int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
         NULL,
         "attempt to shmdt a pointer not to System V IPC shared memory (ptr = %s).",
         filc_ptr_to_new_string(addr_ptr));
+    PAS_ASSERT(pas_is_aligned(available, pas_page_malloc_alignment()));
     filc_free(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
     filc_unmap(filc_ptr_ptr(addr_ptr), available);
