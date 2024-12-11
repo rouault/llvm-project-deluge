@@ -33,16 +33,21 @@ set -x
 ./build_pcre.sh      # Hilariously, pcre + pcre2 would like to depend on libedit, but libedit depends
 ./build_pcre2.sh     # on ncurses, and ncurses depends on pcre2. Luckily, only pcretest wants libedit.
 ./build_jpeg-6b.sh
-./build_ncurses.sh
-./build_libedit.sh
+#./build_ncurses.sh
+#./build_libedit.sh
 ./build_openssl.sh
 ./build_curl.sh
-./build_openssh.sh
-./build_mg.sh
+#./build_openssh.sh
+#./build_mg.sh
 ./build_tcl.sh
 ./build_sqlite.sh
 ./build_cpython.sh
-./build_zsh.sh
-./build_lua.sh
-./build_simdutf.sh
-./build_benchmarks.sh
+#./build_zsh.sh
+#./build_lua.sh
+#./build_simdutf.sh
+#./build_benchmarks.sh
+./build_zstd.sh
+./build_libtiff.sh
+./build_proj.sh
+./build_gdal.sh
+

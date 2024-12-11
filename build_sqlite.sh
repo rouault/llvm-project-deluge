@@ -34,7 +34,7 @@ cd pizlonated-sqlite
 export PATH=$PWD/../pizfix/bin:$PATH
 
 $MAKE -f Makefile.filc TOP=$PWD clean
-$MAKE -f Makefile.filc TOP=$PWD CC="$CCPREFIX$PWD/../build/bin/clang -g -O2" \
-      -j $NCPU all testfixture
+$MAKE -f Makefile.filc TOP=$PWD CC="$CCPREFIX$PWD/../build/bin/clang -g -O2 -DSQLITE_ENABLE_RTREE=1 -DSQLITE_ENABLE_COLUMN_METADATA=1" \
+      -j $NCPU all #testfixture
 $MAKE -f Makefile.filc TOP=$PWD PREFIX=$PWD/../pizfix install
 

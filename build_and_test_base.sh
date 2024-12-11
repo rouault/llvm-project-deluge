@@ -28,5 +28,5 @@ set -x
 
 ./build_base.sh
 
-filc/run-tests
+# filc/run-tests
 

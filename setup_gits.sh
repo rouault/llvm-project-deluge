@@ -62,21 +62,21 @@ handle_git_with_branch deluded-musl usermusl usermusl
 handle_git deluded-zlib-1.3.git zlib-1.3
 handle_git deluded-openssl-3.2.0.git openssl-3.2.0
 handle_git deluded-curl-8.5.0.git curl-8.5.0
-handle_git deluded-openssh-portable.git deluded-openssh-portable
+# handle_git deluded-openssh-portable.git deluded-openssh-portable
 handle_git pizlonated-pcre-8.39.git pcre-8.39
 handle_git pizlonated-jpeg-6b.git pizlonated-jpeg-6b
 handle_git pizlonated-bzip2.git pizlonated-bzip2
 handle_git pizlonated-xz.git pizlonated-xz
-handle_git pizlonated-mg.git pizlonated-mg
+# handle_git pizlonated-mg.git pizlonated-mg
 handle_git pizlonated-sqlite.git pizlonated-sqlite
 handle_git pizlonated-cpython.git pizlonated-cpython
 handle_git pizlonated-ncurses.git ncurses-6.5-20240720
 handle_git pizlonated-pcre2.git pizlonated-pcre2
 handle_git pizlonated-zsh.git pizlonated-zsh
 handle_git pizlonated-nghttp2.git pizlonated-nghttp2
-handle_git pizlonated-lua.git pizlonated-lua
-handle_git pizlonated-simdutf pizlonated-simdutf
+# handle_git pizlonated-lua.git pizlonated-lua
+# handle_git pizlonated-simdutf pizlonated-simdutf
 handle_git pizlonated-tcl pizlonated-tcl
 handle_git pizlonated-icu pizlonated-icu
-handle_git pizlonated-libedit pizlonated-libedit
-handle_git pizlonated-postgres pizlonated-postgres
+# handle_git pizlonated-libedit pizlonated-libedit
+# handle_git pizlonated-postgres pizlonated-postgres
