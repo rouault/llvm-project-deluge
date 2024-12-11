@@ -231,6 +231,8 @@ int main(int argc, char** argv)
 
     ZASSERT(!utimensat(AT_FDCWD, "filc/tests/miscsyscall/testfile.txt", NULL, 0));
 
+    ZASSERT(sysconf(_SC_NPROCESSORS_ONLN) >= 1);
+
     zprintf("No worries.\n");
     return 0;
 }
