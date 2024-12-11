@@ -90,6 +90,16 @@ void* zgc_realloc(void* old_ptr, __SIZE_TYPE__ count);
    memory. */
 void* zgc_aligned_realloc(void* old_ptr, __SIZE_TYPE__ alignment, __SIZE_TYPE__ count);
 
+/* Just like `zgc_realloc`, but allocated thee reallocated memory using the same alignment constraint
+   that the original memory was allocated with.
+   
+   It's valid to call this with NULL old_ptr (just like realloc), and then you get default alignment.
+
+   This is a useful function and it would be great if something like it was part of the C stdlib.
+   Note that you can call this even for memory returned from malloc, since malloc just forwards to
+   zgc_alloc. */
+void* zgc_realloc_preserving_alignment(void* old_ptr, __SIZE_TYPE__ count);
+
 /* Frees the object pointed to by `ptr`. `ptr` must satisfy `ptr == zgetlower(ptr)`, otherwise the
    runtime panics your process. `ptr` must point to memory allocated by `zgc_alloc`,
    `zgc_aligned_alloc`, `zgc_realloc`, or `zgc_aligned_realloc`, and that memory must not have been

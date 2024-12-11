@@ -2693,7 +2693,17 @@ filc_ptr filc_native_zgc_aligned_realloc(filc_thread* my_thread,
     if (!filc_ptr_ptr(old_ptr))
         return filc_native_zgc_aligned_alloc(my_thread, alignment, size);
     return filc_ptr_create_with_object_and_manual_tracking(
-        filc_reallocate_with_alignment(my_thread, object_for_deallocate(old_ptr), alignment, size));
+        filc_reallocate_with_alignment(my_thread, object_for_deallocate(old_ptr), size, alignment));
+}
+
+filc_ptr filc_native_zgc_realloc_preserving_alignment(filc_thread* my_thread, filc_ptr old_ptr,
+                                                      size_t size)
+{
+    if (!filc_ptr_ptr(old_ptr))
+        return filc_native_zgc_alloc(my_thread, size);
+    filc_object* object = object_for_deallocate(old_ptr);
+    return filc_ptr_create_with_object_and_manual_tracking(
+        filc_reallocate_with_alignment(my_thread, object, size, filc_object_alignment(object)));
 }
 
 void filc_native_zgc_free(filc_thread* my_thread, filc_ptr ptr)
