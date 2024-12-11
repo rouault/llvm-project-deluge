@@ -2641,6 +2641,8 @@ filc_ptr filc_native_zgc_alloc(filc_thread* my_thread, size_t size)
 
 filc_ptr filc_native_zgc_aligned_alloc(filc_thread* my_thread, size_t alignment, size_t size)
 {
+    if (alignment <= FILC_MINALIGN)
+        return filc_native_zgc_alloc(my_thread, size);
     return filc_ptr_create_with_object_and_manual_tracking(
         filc_allocate_with_alignment(my_thread, size, alignment));
 }
