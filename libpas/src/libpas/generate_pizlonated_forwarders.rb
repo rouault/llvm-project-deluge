@@ -383,6 +383,7 @@ addSig "int", "zsys_landlock_restrict_self", "int", "unsigned"
 addSig "int", "zsys_perf_event_open", "filc_ptr", "int", "int", "int", "unsigned long"
 addSig "filc_ptr", "zsys_mremap", "filc_ptr", "size_t", "size_t", "int", "filc_ptr"
 addSig "int", "zsys_signalfd", "int", "filc_ptr", "int"
+addSig "int", "zsys_clock_nanosleep", "int", "int", "filc_ptr", "filc_ptr"
 
 addSig "filc_ptr", "zthread_self"
 addSig "unsigned", "zthread_get_id", "filc_ptr"

@@ -233,6 +233,10 @@ int main(int argc, char** argv)
 
     ZASSERT(sysconf(_SC_NPROCESSORS_ONLN) >= 1);
 
+    ts.tv_sec = 0;
+    ts.tv_nsec = 1;
+    ZASSERT(!clock_nanosleep(CLOCK_REALTIME, 0, &ts, NULL));
+
     zprintf("No worries.\n");
     return 0;
 }

@@ -7991,6 +7991,18 @@ int filc_native_zsys_signalfd(filc_thread* my_thread, int fd, filc_ptr mask_ptr,
     return FILC_SYSCALL(my_thread, signalfd(fd, &set, flags));
 }
 
+int filc_native_zsys_clock_nanosleep(filc_thread* my_thread, int clockid, int flags, filc_ptr req_ptr,
+                                     filc_ptr rem_ptr)
+{
+    if (filc_ptr_ptr(req_ptr))
+        filc_check_read(req_ptr, sizeof(struct timespec));
+    if (filc_ptr_ptr(rem_ptr))
+        filc_check_write(rem_ptr, sizeof(struct timespec));
+    return FILC_SYSCALL(my_thread, clock_nanosleep(clockid, flags,
+                                                   (const struct timespec*)filc_ptr_ptr(req_ptr),
+                                                   (struct timespec*)filc_ptr_ptr(rem_ptr)));
+}
+
 filc_ptr filc_native_zthread_self(filc_thread* my_thread)
 {
     static const bool verbose = false;

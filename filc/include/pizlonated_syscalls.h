@@ -249,6 +249,7 @@ int zsys_perf_event_open(void* attr, int pid, int cpu, int fd, unsigned long fla
 void* zsys_mremap(void* old_address, __SIZE_TYPE__ old_size, __SIZE_TYPE__ new_size, int flags,
                   void* new_address);
 int zsys_signalfd(int fd, const void* mask, int flags);
+int zsys_clock_nanosleep(int clockid, int flags, const void* request, void* remain);
 
 #ifdef __cplusplus
 }
