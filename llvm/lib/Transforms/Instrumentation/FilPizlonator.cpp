@@ -1020,6 +1020,7 @@ class Pizlonator {
   FunctionCallee LifetimeStart;
   FunctionCallee LifetimeEnd;
   FunctionCallee StackCheckAsm;
+  FunctionCallee ThreadlocalAddress;
 
   Constant* IsMarking;
 
@@ -5380,6 +5381,48 @@ class Pizlonator {
   }
 
   void lowerThreadLocals() {
+    // All uses of threadlocals except threadlocal_address need to go through threadlocal_address.
+    for (Function& F : M.functions()) {
+      if (F.isDeclaration())
+        continue;
+      
+      for (BasicBlock& BB : F) {
+        std::vector<Instruction*> Insts;
+        for (Instruction& I : BB)
+          Insts.push_back(&I);
+        for (Instruction* I : Insts) {
+          IntrinsicInst* II = dyn_cast<IntrinsicInst>(I);
+          if (II && II->getIntrinsicID() == Intrinsic::threadlocal_address)
+            continue;
+
+          for (unsigned Index = I->getNumOperands(); Index--;) {
+            Use& U = I->getOperandUse(Index);
+            if (GlobalVariable* G = dyn_cast<GlobalVariable>(U)) {
+              if (G->isThreadLocal()) {
+                CallInst* CI = CallInst::Create(
+                  ThreadlocalAddress, { U }, "filc_threadlocal_address", I);
+                CI->setDebugLoc(I->getDebugLoc());
+                U = CI;
+              }
+            }
+          }
+        }
+      }
+
+      std::unordered_map<Value*, std::vector<Instruction*>> ThreadlocalAddressCalls;
+      for (BasicBlock& BB : F) {
+        for (Instruction& I : BB) {
+          IntrinsicInst* II = dyn_cast<IntrinsicInst>(&I);
+          if (!II || II->getIntrinsicID() != Intrinsic::threadlocal_address)
+            continue;
+          
+          ThreadlocalAddressCalls[II->getArgOperand(0)].push_back(II);
+        }
+      }
+      
+      simpleCSE(F, ThreadlocalAddressCalls);
+    }
+    
     // - Lower all threadlocal variables to pthread_key_t, which is an i32, and a function that allocates
     //   the initial "value" (i.e. object containing the initial value). I guess that function can call
     //   malloc and just store the value.
@@ -6106,6 +6149,7 @@ public:
     SetjmpTy = FunctionType::get(Int32Ty, RawPtrTy, false);
     SigsetjmpTy = FunctionType::get(Int32Ty, { RawPtrTy, Int32Ty }, false);
     RawNull = ConstantPointerNull::get(RawPtrTy);
+    ThreadlocalAddress = Intrinsic::getDeclaration(&M, Intrinsic::threadlocal_address, { RawPtrTy });
 
     Dummy = makeDummy(Int32Ty);
 
