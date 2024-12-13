@@ -2765,7 +2765,6 @@ class Pizlonator {
     assert(Size);
     assert(Alignment);
     assert(!((Alignment - 1) & Alignment));
-    assert(Size >= Alignment);
     assert((int32_t)Offset == Offset);
     Alignment = std::min(Alignment, static_cast<int64_t>(WordSize));
     Checks.push_back(
@@ -2790,7 +2789,7 @@ class Pizlonator {
                           const CombinedDI* DI, std::vector<AccessCheckWithDI>& Checks) {
     if (!hasPtrs(T)) {
       buildCheck(
-        DL.getTypeAllocSize(T), MinAlign(DL.getABITypeAlign(T).value(), Alignment), HighP,
+        DL.getTypeStoreSize(T), MinAlign(DL.getABITypeAlign(T).value(), Alignment), HighP,
         Offset, AK, DI, Checks);
       return;
     }

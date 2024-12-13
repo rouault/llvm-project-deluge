@@ -879,6 +879,26 @@ static void handle_deferred_signals(filc_thread* my_thread)
     }
 }
 
+static void broadcast_if_thread_stopped(filc_thread* my_thread)
+{
+    static const bool verbose = false;
+    
+    if ((my_thread->state & FILC_THREAD_STATE_STOP_REQUESTED)) {
+        sigset_t fullset;
+        sigset_t oldset;
+        pas_reasonably_fill_sigset(&fullset);
+        if (verbose)
+            pas_log("%s: blocking signals\n", __PRETTY_FUNCTION__);
+        PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, &oldset));
+        pas_system_mutex_lock(&my_thread->lock);
+        pas_system_condition_broadcast(&my_thread->cond);
+        pas_system_mutex_unlock(&my_thread->lock);
+        if (verbose)
+            pas_log("%s: unblocking signals\n", __PRETTY_FUNCTION__);
+        PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
+    }
+}
+
 void filc_exit(filc_thread* my_thread)
 {
     static const bool verbose = false;
@@ -913,20 +933,7 @@ void filc_exit(filc_thread* my_thread)
     PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_DEFERRED_SIGNAL));
     PAS_ASSERT(!(my_thread->state & FILC_THREAD_STATE_ENTERED));
 
-    if ((my_thread->state & FILC_THREAD_STATE_STOP_REQUESTED)) {
-        sigset_t fullset;
-        sigset_t oldset;
-        pas_reasonably_fill_sigset(&fullset);
-        if (verbose)
-            pas_log("%s: blocking signals\n", __PRETTY_FUNCTION__);
-        PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &fullset, &oldset));
-        pas_system_mutex_lock(&my_thread->lock);
-        pas_system_condition_broadcast(&my_thread->cond);
-        pas_system_mutex_unlock(&my_thread->lock);
-        if (verbose)
-            pas_log("%s: unblocking signals\n", __PRETTY_FUNCTION__);
-        PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
-    }
+    broadcast_if_thread_stopped(my_thread);
 }
 
 void filc_enter_with_allocation_root(filc_thread* my_thread, void* allocation_root)
@@ -1295,6 +1302,13 @@ static void signal_pizlonator(int signum)
         }
         return;
     }
+
+    /* We might be servicing a signal while we're in filc_exit(), right after we cleared the entered
+       state, but right before we notified anyone.
+       
+       So, the GC thread could be waiting to STW right now, thinking that we haven't actually stopped
+       the world. */
+    broadcast_if_thread_stopped(thread);
 
     /* These shenanigans work only because if we ever grab the thread's lock, we are either entered
        (so we won't get here) or we block all signals (so we won't get here). */
