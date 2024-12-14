@@ -4418,6 +4418,21 @@ class Pizlonator {
       assert(GlobalToGetter.count(G));
       Function* Getter = GlobalToGetter[G];
       assert(Getter);
+      if (Getter->isDeclaration() &&
+          (Getter->hasWeakAnyLinkage() || Getter->hasExternalWeakLinkage())) {
+        ICmpInst* IsNull = new ICmpInst(
+          InsertBefore, ICmpInst::ICMP_EQ, Getter, RawNull, "filc_weak_symbol_is_null");
+        IsNull->setDebugLoc(InsertBefore->getDebugLoc());
+        Instruction* NotNullTerm = SplitBlockAndInsertIfElse(IsNull, InsertBefore, false);
+        Instruction* NotNullResult = CallInst::Create(
+        GlobalGetterTy, Getter, { InitializationContext }, "filc_call_weak_getter", NotNullTerm);
+        NotNullResult->setDebugLoc(InsertBefore->getDebugLoc());
+        PHINode* Result = PHINode::Create(FlightPtrTy, 2, "filc_weak_getter_result", InsertBefore);
+        Result->setDebugLoc(InsertBefore->getDebugLoc());
+        Result->addIncoming(FlightNull, IsNull->getParent());
+        Result->addIncoming(NotNullResult, NotNullResult->getParent());
+        return Result;
+      }
       Instruction* Result = CallInst::Create(
         GlobalGetterTy, Getter, { InitializationContext }, "filc_call_getter", InsertBefore);
       Result->setDebugLoc(InsertBefore->getDebugLoc());
