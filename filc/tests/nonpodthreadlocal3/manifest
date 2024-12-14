@@ -1,3 +1,2 @@
-# This test should succeed eventually, but currently fails.
 return:
-  failure
+  success

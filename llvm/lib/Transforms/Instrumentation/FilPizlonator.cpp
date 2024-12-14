@@ -2064,8 +2064,11 @@ class Pizlonator {
         // NOTE: We might be given IR with unreachable blocks. Those will have live-at-head. Like,
         // whatever. But if it's the root block and it has live-at-head then what the fugc.
         if (!BlockIndex) {
-          for (Value* V : Live)
+          for (Value* V : Live) {
+            if (!isa<Argument>(V))
+              errs() << "Unexpected live: " << *V << "\n";
             assert(isa<Argument>(V));
+          }
         }
 
         for (BasicBlock* PBB : predecessors(BB)) {
@@ -5394,6 +5397,37 @@ class Pizlonator {
       assert(G.getLinkage() != GlobalValue::AvailableExternallyLinkage);
   }
 
+  void lowerThreadLocalOperands(Instruction* I) {
+    IntrinsicInst* II = dyn_cast<IntrinsicInst>(I);
+    if (II && II->getIntrinsicID() == Intrinsic::threadlocal_address)
+      return;
+    
+    for (unsigned Index = I->getNumOperands(); Index--;) {
+      Instruction* InsertBefore;
+      if (PHINode* P = dyn_cast<PHINode>(I))
+        InsertBefore = P->getIncomingBlock(Index)->getTerminator();
+      else
+        InsertBefore = I;
+      
+      Use& U = I->getOperandUse(Index);
+      if (GlobalVariable* G = dyn_cast<GlobalVariable>(U)) {
+        if (G->isThreadLocal()) {
+          CallInst* CI = CallInst::Create(
+            ThreadlocalAddress, { U }, "filc_threadlocal_address", InsertBefore);
+          CI->setDebugLoc(I->getDebugLoc());
+          U = CI;
+        }
+        continue;
+      }
+      
+      if (ConstantExpr* CE = dyn_cast<ConstantExpr>(U)) {
+        Instruction* NewI = CE->getAsInstruction(InsertBefore);
+        lowerThreadLocalOperands(NewI);
+        U = NewI;
+      }
+    }
+  }
+
   void lowerThreadLocals() {
     // All uses of threadlocals except threadlocal_address need to go through threadlocal_address.
     for (Function& F : M.functions()) {
@@ -5404,23 +5438,8 @@ class Pizlonator {
         std::vector<Instruction*> Insts;
         for (Instruction& I : BB)
           Insts.push_back(&I);
-        for (Instruction* I : Insts) {
-          IntrinsicInst* II = dyn_cast<IntrinsicInst>(I);
-          if (II && II->getIntrinsicID() == Intrinsic::threadlocal_address)
-            continue;
-
-          for (unsigned Index = I->getNumOperands(); Index--;) {
-            Use& U = I->getOperandUse(Index);
-            if (GlobalVariable* G = dyn_cast<GlobalVariable>(U)) {
-              if (G->isThreadLocal()) {
-                CallInst* CI = CallInst::Create(
-                  ThreadlocalAddress, { U }, "filc_threadlocal_address", I);
-                CI->setDebugLoc(I->getDebugLoc());
-                U = CI;
-              }
-            }
-          }
-        }
+        for (Instruction* I : Insts)
+          lowerThreadLocalOperands(I);
       }
 
       std::unordered_map<Value*, std::vector<Instruction*>> ThreadlocalAddressCalls;
@@ -6168,10 +6187,20 @@ public:
     Dummy = makeDummy(Int32Ty);
 
     undefineAvailableExternally();
+    removeIrrelevantIntrinsics();
+
+    if (verbose) {
+      errs() << "Module with irrelevant intrinsics removed:\n" << M << "\n";
+    }
+    
     lowerThreadLocals();
+
+    if (verbose) {
+      errs() << "Module with irrelevant intrinsics removed and lowered thread locals:\n" << M << "\n";
+    }
+    
     makeEHDatas();
     compileModuleAsm();
-    removeIrrelevantIntrinsics();
     lazifyAllocas();
     canonicalizeGEPs();
     
